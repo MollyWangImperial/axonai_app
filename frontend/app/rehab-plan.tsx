@@ -1,11 +1,22 @@
-import { useEffect, useState } from "react";
+import React, { useEffect, useState } from "react";
 import { View, Text, StyleSheet, Pressable, ScrollView, ActivityIndicator } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
-import { useLocalSearchParams, useRouter } from "expo-router";
+import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
 import * as Haptics from "expo-haptics";
 import { colors, spacing, radius } from "@/src/theme";
 import { fetchAssessment, Assessment } from "@/src/api";
+import { storage } from "@/src/utils/storage";
+
+type ExerciseProgress = {
+  completed_reps: number;
+  total_reps: number;
+  last_score: number | null;   // 0-100, average of last session
+  best_score: number | null;
+  sessions: number;
+};
+
+const PROGRESS_KEY = (planId: string, exId: string) => `ex_progress_v1:${planId}:${exId}`;
 
 export default function RehabPlanScreen() {
   const insets = useSafeAreaInsets();
@@ -13,24 +24,46 @@ export default function RehabPlanScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const [data, setData] = useState<Assessment | null>(null);
   const [loading, setLoading] = useState(true);
-  const [done, setDone] = useState<Record<string, boolean>>({});
+  const [progress, setProgress] = useState<Record<string, ExerciseProgress>>({});
+
+  const planId = id || "default";
+
+  const loadProgress = async (plan: Assessment) => {
+    const out: Record<string, ExerciseProgress> = {};
+    for (const ex of plan.rehab_plan) {
+      try {
+        const raw = await storage.getItem(PROGRESS_KEY(planId, ex.id));
+        if (raw) out[ex.id] = JSON.parse(raw);
+        else out[ex.id] = { completed_reps: 0, total_reps: ex.sets * ex.reps, last_score: null, best_score: null, sessions: 0 };
+      } catch {
+        out[ex.id] = { completed_reps: 0, total_reps: ex.sets * ex.reps, last_score: null, best_score: null, sessions: 0 };
+      }
+    }
+    setProgress(out);
+  };
 
   useEffect(() => {
     (async () => {
       try {
-        if (id) setData(await fetchAssessment(id));
+        if (id) {
+          const a = await fetchAssessment(id);
+          setData(a);
+          await loadProgress(a);
+        }
       } finally {
         setLoading(false);
       }
     })();
   }, [id]);
 
-  const toggle = (exId: string) => {
-    Haptics.selectionAsync();
-    setDone((d) => ({ ...d, [exId]: !d[exId] }));
-  };
+  // Reload progress whenever the screen comes back into focus (after exercise returns)
+  useFocusEffect(
+    React.useCallback(() => {
+      if (data) loadProgress(data);
+    }, [data])
+  );
 
-  const completedCount = Object.values(done).filter(Boolean).length;
+  const completedCount = Object.values(progress).filter((p) => p.completed_reps >= p.total_reps).length;
 
   if (loading) {
     return (
@@ -70,7 +103,9 @@ export default function RehabPlanScreen() {
         </View>
 
         {data.rehab_plan.map((ex, i) => {
-          const isDone = !!done[ex.id];
+          const p = progress[ex.id] || { completed_reps: 0, total_reps: ex.sets * ex.reps, last_score: null, best_score: null, sessions: 0 };
+          const pct = Math.round((p.completed_reps / Math.max(1, p.total_reps)) * 100);
+          const isDone = pct >= 100;
           return (
             <View
               key={ex.id}
@@ -89,28 +124,33 @@ export default function RehabPlanScreen() {
                   <Text style={styles.exTitle}>{ex.name}</Text>
                   <Text style={styles.exMeta}>{ex.sets} sets × {ex.reps} reps · {ex.frequency}</Text>
                 </View>
+                <View style={styles.pctBadge} testID={`exercise-progress-${ex.id}`}>
+                  <Text style={styles.pctBadgeText}>{pct}%</Text>
+                </View>
               </View>
+
+              <View style={styles.progressMini}>
+                <View style={[styles.progressMiniFill, { width: `${pct}%` }, isDone && { backgroundColor: colors.success }]} />
+              </View>
+              {p.last_score != null && (
+                <Text style={styles.scoreLine} testID={`exercise-score-${ex.id}`}>
+                  ⭐ Last session score: {p.last_score}/100{p.best_score != null && p.best_score > p.last_score ? ` · Best ${p.best_score}` : ""}
+                </Text>
+              )}
+
               <Text style={styles.exDesc}>{ex.description}</Text>
               <Text style={styles.exSource}>📖 {ex.source}</Text>
               <View style={styles.exActions}>
                 <Pressable
                   onPress={() => {
                     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-                    router.push({ pathname: "/exercise", params: { exercise_id: ex.id, name: ex.name } });
+                    router.push({ pathname: "/exercise", params: { exercise_id: ex.id, name: ex.name, plan_id: planId, sets: String(ex.sets), reps: String(ex.reps) } });
                   }}
                   style={styles.guidedBtn}
                   testID={`exercise-guided-${ex.id}`}
                 >
-                  <Ionicons name="videocam" size={18} color="#fff" />
-                  <Text style={styles.guidedBtnText}>Guided practice</Text>
-                </Pressable>
-                <Pressable
-                  onPress={() => toggle(ex.id)}
-                  style={styles.markBtn}
-                  testID={`exercise-mark-${ex.id}`}
-                >
-                  <Ionicons name={isDone ? "checkmark-circle" : "ellipse-outline"} size={18} color={isDone ? colors.success : colors.onSurfaceSecondary} />
-                  <Text style={[styles.markBtnText, isDone && { color: colors.success }]}>{isDone ? "Done" : "Mark done"}</Text>
+                  <Ionicons name="play" size={18} color="#fff" />
+                  <Text style={styles.guidedBtnText}>{isDone ? "Practice again" : pct > 0 ? "Continue exercise" : "Start exercise"}</Text>
                 </Pressable>
               </View>
             </View>
@@ -155,13 +195,16 @@ const styles = StyleSheet.create({
   exNumText: { color: "#fff", fontSize: 16, fontWeight: "800" },
   exTitle: { fontSize: 17, fontWeight: "700", color: colors.onSurface, marginBottom: 2 },
   exMeta: { fontSize: 13, color: colors.brandPrimary, fontWeight: "600" },
+  pctBadge: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: 999, backgroundColor: colors.brandTertiary, minWidth: 50, alignItems: "center" },
+  pctBadgeText: { fontSize: 12, fontWeight: "800", color: colors.onBrandTertiary },
+  progressMini: { height: 6, backgroundColor: "rgba(28,32,29,0.12)", borderRadius: 3, overflow: "hidden" },
+  progressMiniFill: { height: "100%", backgroundColor: colors.brandPrimary, borderRadius: 3 },
+  scoreLine: { fontSize: 12, color: colors.brandPrimary, fontWeight: "700" },
   exDesc: { fontSize: 14, color: colors.onSurfaceSecondary, lineHeight: 20 },
   exSource: { fontSize: 12, color: colors.onSurfaceTertiary, fontStyle: "italic" },
   exActions: { flexDirection: "row", gap: spacing.sm, marginTop: spacing.sm },
   guidedBtn: { flex: 1, flexDirection: "row", gap: 6, backgroundColor: colors.brandPrimary, paddingVertical: 12, borderRadius: radius.md, alignItems: "center", justifyContent: "center" },
   guidedBtnText: { color: "#fff", fontWeight: "700", fontSize: 14 },
-  markBtn: { flexDirection: "row", gap: 6, backgroundColor: colors.surfaceTertiary, paddingVertical: 12, paddingHorizontal: spacing.md, borderRadius: radius.md, alignItems: "center", justifyContent: "center" },
-  markBtnText: { color: colors.onSurfaceSecondary, fontWeight: "700", fontSize: 14 },
   disclaimer: { fontSize: 12, color: colors.onSurfaceTertiary, fontStyle: "italic", marginTop: spacing.lg, lineHeight: 18 },
   ctaBar: { position: "absolute", left: 0, right: 0, bottom: 0, padding: spacing.md, backgroundColor: colors.surface, borderTopWidth: 1, borderTopColor: colors.divider },
   cta: { flexDirection: "row", gap: spacing.sm, backgroundColor: colors.brandPrimary, borderRadius: radius.lg, padding: spacing.md, alignItems: "center", justifyContent: "center", minHeight: 56 },

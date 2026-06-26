@@ -1,0 +1,68 @@
+{
+  "summary": "Iteration 11 backend-only verification: 16/16 pytest cases pass against the public EXPO_PUBLIC_BACKEND_URL. All new iter-11 gates and helpers are present in the served WebView HTML, the literal 'Voice input error' phrase has been removed from /api/rehab/runner, /api/assessment/history is correctly per-user-filtered (anonymous → []), POST→GET onboarding round-trip persists profile, /api/chat/proactive(+/messages) personalize on preferred_name, /api/community/stories returns 8 seed stories with full author names (Marisol Reyes, Daniel Okafor, Asha Narayan present), and TTS (OpenAI Nova) is healthy with valid base64 MP3 output. No 5xx errors observed in backend logs during the run.",
+  "tests_run": [
+    "GET /api/pose/runner contains: voiceFinishedAt, arrivedAfterMovement, updateMovementGate, effectiveRadius, step-active, stepStartWristXY, 'sw * 0.55', 'sw * 0.70', dynamicTargetPos",
+    "GET /api/pose/runner still contains iter8 backbone (HandLandmarker, WRIST_DYNAMIC, MOUTH, CHEST, HAND_OPEN, PINCH, ICON_EMOJI, computeHandMetrics, getEffectiveTargetXY) and is HTML-well-formed (single <script type=module>, balanced script tags)",
+    "GET /api/rehab/runner?exercise_id=ex_maintenance contains: computeRepScore, lastRepScore, repBarFill, 't.r * 1.55', 'Heard you' AND does NOT contain 'Voice input error'",
+    "GET /api/assessment/tasks → 7 tasks, voice_id='nova', steps include icons cup/table/ball/coin/towel",
+    "GET /api/tts/health → ok=true provider=openai voice=nova model=tts-1",
+    "POST /api/tts/generate {text:'Iteration eleven test'} → 200 with valid base64-decoded MP3 (ID3 or 0xFFEx frame-sync header)",
+    "GET /api/assessment/history without header → []; with X-User-Id header → only that user's assessments (cross-user isolation verified by submitting as user A and confirming user B's history excludes it)",
+    "POST /api/users/onboarding then GET /api/users/onboarding → onboarding_complete=true, profile.preferred_name and primary_goal round-trip correctly",
+    "POST /api/chat/proactive with X-User-Id of onboarded user (preferred_name='Riya') → returned text contains 'Riya'",
+    "GET /api/chat/proactive/messages?n=3 with X-User-Id of onboarded user (preferred_name='Kavi') → 3 messages returned, name='Kavi', most messages personalized",
+    "POST /api/assessment/submit → 200 Assessment with non-empty functional_issues + rehab_plan (each rehab item has id/name/targets_issue)",
+    "GET /api/community/stories → >=8 stories, authors include 'Marisol Reyes', 'Daniel Okafor', 'Asha Narayan'"
+  ],
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "/api/rehab/runner",
+        "issue": "Endpoint accepts arbitrary exercise_id and returns HTML even for unknown ids (silent fallback). Functional but masks 404s; consider returning 404 when exercise_id is not in the rehab catalog."
+      },
+      {
+        "endpoint": "/api/tts/generate",
+        "issue": "(Carried over from iter 8) Empty-text payload returns 500 from upstream OpenAI client instead of a clean 422 via Pydantic min_length=1. Not regressed; just still cosmetic."
+      },
+      {
+        "endpoint": "/api/community/stories",
+        "issue": "Returns user_stories + STORIES_SEED concatenated each call — over time user-submitted stories will dominate the top of the feed; seed is appended last (acceptable today, watch for pagination later)."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter11_features.py",
+    "/app/test_reports/pytest/iter11_results.xml"
+  ],
+  "action_items": [
+    "(Optional) Return 404 from /api/rehab/runner when exercise_id is unknown instead of silently serving generic HTML.",
+    "(Optional, still open from iter 8) Add Pydantic constr(min_length=1) on TTSRequest.text so empty text yields 422 instead of 500.",
+    "(Optional, still open from iter 8) Hoist `logger = logging.getLogger(__name__)` near top of server.py — currently declared at the bottom (line 2871) yet referenced earlier in /api/tts/generate.",
+    "(Maintainability, still open from iter 8) server.py is ~2877 lines; consider splitting into modules (tts.py, assessment.py, pose_runner.py, rehab_runner.py, users.py, community.py, chat.py)."
+  ],
+  "critical_code_review_comments": [
+    "All 9 iter-11 pose-runner gate tokens are present in the served HTML and look semantically coherent (voiceFinishedAt is set when intro voice ends, updateMovementGate watches wrist drift vs stepStartWristXY, effectiveRadius enforces min sw*0.55 / sw*0.70 floors — addressing reported issues #1, #2, #3, #7).",
+    "computeRepScore + lastRepScore + repBarFill + 't.r * 1.55' are all present in /api/rehab/runner — covers iter-11 issues #4, #5, #7. Softer voice fallback message 'Heard you' is present and the literal phrase 'Voice input error' is no longer in the served HTML — covers issue #6.",
+    "/api/assessment/history correctly returns [] for anonymous (no X-User-Id) and filters by user_id for signed-in users — cross-user isolation verified by an actual two-user test, not just a header presence check.",
+    "/api/chat/proactive and /api/chat/proactive/messages both read preferred_name from user.profile and fall back gracefully to first-token of user.name; tested with two distinct onboarded users.",
+    "server.py still ~2877 lines; logger init is still at the bottom — pre-existing issue, not introduced by iter 11.",
+    "ChatRequest schema requires `text` even for /chat/proactive which never reads it — minor API ergonomics; current frontend already sends an empty string so not breaking."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iter11_features.py (new — iter-11 regression suite)",
+    "/app/test_reports/pytest/iter11_results.xml (pytest junit output)"
+  ],
+  "success_rate": {"backend": "100% (16/16)", "frontend": "not tested (backend-only request per testing_type)"},
+  "seed_data_creation": "Tests create a handful of TEST_iter11_*@example.com users (each suffixed with a uuid hex) plus a few TEST assessments via /api/assessment/submit. Volume is negligible (<10 docs per run); no cleanup is performed since the public collection already accumulates seed/TEST data across iterations.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Iter 11 regression suite lives at /app/backend/tests/test_iter11_features.py — reusable, fully parameterized on EXPO_PUBLIC_BACKEND_URL. All 16 cases pass on the public preview URL. The MediaPipe WebView assessment + exercise loops still need a real camera-bearing device for full e2e; testing_agent verified only the HTTP contracts and the static HTML payload tokens emitted by /api/pose/runner and /api/rehab/runner. EMERGENT_LLM_KEY (OpenAI TTS Nova) remains the active TTS provider.",
+  "rca_of_issue": "n/a — all 12 requested backend contract checks pass on iter 11."
+}

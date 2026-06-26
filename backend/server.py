@@ -623,7 +623,11 @@ POSE_RUNNER_HTML = r"""<!DOCTYPE html>
   #top .dot.done{background:#4A7856}
   #top .label{font-size:14px;font-weight:600;opacity:0.95}
   #exitBtn{background:rgba(255,255,255,0.18);border:none;color:#fff;padding:8px 12px;border-radius:16px;font-weight:600;font-size:13px;pointer-events:auto;cursor:pointer}
-  #bottom{background:rgba(28,32,29,0.85);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);border-radius:24px;padding:16px 18px;pointer-events:auto}
+  #bottom{background:rgba(28,32,29,0.85);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);border-radius:24px;padding:16px 18px;pointer-events:auto;transition:opacity .4s ease, transform .4s ease;will-change:opacity,transform}
+  /* While voice is playing, show the instruction card. Once voice ends, fade
+     it to a compact, semi-transparent badge so the patient can see the target circle clearly. */
+  body.step-active #bottom{opacity:.30;transform:scale(.92) translateY(8px)}
+  body.step-active #bottom:hover,body.step-active #bottom:focus-within{opacity:.95;transform:none}
   #stepTitle{font-size:14px;color:#D9E5DC;font-weight:600;margin-bottom:6px}
   #caption{font-size:18px;font-weight:600;line-height:1.35}
   #voiceRow{display:flex;align-items:center;gap:10px;margin-top:10px;opacity:0.85}
@@ -850,6 +854,10 @@ async function startStep(){
   const task = tasks[currentTaskIdx];
   if(!step) return;
   stepStartTime = performance.now();
+  stepStartedAt = stepStartTime;
+  voiceFinishedAt = 0;
+  arrivedAfterMovement = false;
+  stepStartWristXY = null;
   inTargetSince = null;
   lastInTargetTs = 0;
   stepCompleted = false;
@@ -861,8 +869,15 @@ async function startStep(){
   stepTitle.textContent = `Task ${currentTaskIdx+1} of ${tasks.length} · ${task.title}`;
   captionEl.textContent = step.caption;
   renderDots();
+  // Show step intro card (caption + voice waveform)
+  document.body.classList.add("voice-playing");
+  document.body.classList.remove("step-active");
   postRN({type:"step_start", task_id: task.id, step_id: step.id});
   await playVoice(step.voice);
+  // Voice finished → unlock the target and fade the bottom card
+  voiceFinishedAt = performance.now();
+  document.body.classList.remove("voice-playing");
+  document.body.classList.add("step-active");
 }
 
 function distance(a,b){ return Math.hypot(a.x-b.x, a.y-b.y); }
@@ -998,32 +1013,73 @@ function shoulderWidth(lm){
 }
 
 // Effective hit radius for a step — scales with the user's body so it's stable
-// regardless of how close they are to the camera. Min 14% of frame, max 26%.
+// regardless of how close they are to the camera. Tightened (Phase B+) so a
+// resting wrist doesn't accidentally trigger the next target.
 function effectiveRadius(step, lm){
-  const baseR = step.target.r || 0.12;
+  const baseR = step.target.r || 0.10;
   const sw = shoulderWidth(lm);
-  // Translate: a "1.0" radius unit ≈ one shoulder-width. baseR is the configured
-  // radius — but we lift it to AT LEAST shoulder_width * 0.9 so a wrist near the
-  // mouth/chest reliably qualifies. For MOUTH/CHEST we expand even more because
-  // the wrist's z-depth makes 2D screen distance unforgiving.
+  // Tighter radius — about 0.55 × shoulder-width for most targets,
+  // 0.70 × for body-anchored targets (MOUTH/CHEST) since they're depth-tricky.
   const which = step.target.landmark;
-  let r = Math.max(baseR, sw * 0.85);
+  let r = Math.max(baseR, sw * 0.55);
   if(which === "MOUTH" || which === "CHEST"){
-    r = Math.max(r, sw * 1.05);
+    r = Math.max(r, sw * 0.70);
   }
-  return Math.min(r, 0.28);
+  return Math.min(r, 0.18);
+}
+
+// State for "must actually move" rule and voice-gate. Reset on every step.
+let stepStartedAt = 0;
+let voiceFinishedAt = 0;        // 0 until voice intro for current step finishes
+let arrivedAfterMovement = false; // becomes true once wrist has moved >= 0.18 from step-start
+let stepStartWristXY = null;    // wrist position captured at step start
+
+function distXY(a,b){ if(!a||!b) return Infinity; return Math.hypot(a.x-b.x, a.y-b.y); }
+
+function activeWrist(lm){
+  if(!lm) return null;
+  // pick the wrist closer to the current effective target
+  const step = getCurrentStep();
+  if(!step) return mirrorX(lm[15]);
+  const target = getEffectiveTargetXY(step);
+  const lW = mirrorX(lm[15]); const rW = mirrorX(lm[16]);
+  const dL = lW ? Math.hypot(lW.x - target.x, lW.y - target.y) : Infinity;
+  const dR = rW ? Math.hypot(rW.x - target.x, rW.y - target.y) : Infinity;
+  return dL < dR ? lW : rW;
+}
+
+function updateMovementGate(lm){
+  if(!stepStartWristXY){
+    const w = activeWrist(lm);
+    if(w) stepStartWristXY = {x: w.x, y: w.y};
+    return;
+  }
+  if(arrivedAfterMovement) return;
+  const w = activeWrist(lm);
+  if(!w) return;
+  // Required movement scales with shoulder-width to be size-invariant
+  const requiredMove = Math.max(0.12, shoulderWidth(lm) * 0.75);
+  if(distXY(w, stepStartWristXY) >= requiredMove) arrivedAfterMovement = true;
 }
 
 function checkTarget(landmarks){
   const step = getCurrentStep();
   if(!step || !landmarks) return false;
+  // VOICE GATE — target is NOT detectable until the voice intro has finished
+  // playing AND a short settle window (350ms) has elapsed. Prevents the patient
+  // accidentally triggering the step while Aria is still explaining it.
+  if(voiceFinishedAt === 0) return false;
+  if(performance.now() - voiceFinishedAt < 350) return false;
+  // MOVEMENT GATE — wrist must have moved meaningfully from its position at
+  // step-start before the target can fire. Stops "I didn't move and the next
+  // circle counted because I was already inside it" bug.
+  if(!arrivedAfterMovement) return false;
+
   const target = step.target;
   const which = target.landmark;
   const targetXY = getEffectiveTargetXY(step);
   const R = effectiveRadius(step, landmarks);
 
-  // Helper — distance from a wrist to the target, optionally checking BOTH wrists
-  // and returning the smaller. Returns Infinity if no wrist available.
   const wristDist = () => {
     const lW = mirrorX(landmarks[15]);
     const rW = mirrorX(landmarks[16]);
@@ -1032,8 +1088,6 @@ function checkTarget(landmarks){
     return Math.min(dL, dR);
   };
 
-  // For HAND_OPEN / PINCH we ALSO require the gesture, but if HandLandmarker
-  // is unavailable, fall back to spatial-only check so the step still completes.
   if(which === "HAND_OPEN"){
     const near = wristDist() < R;
     const gestureOk = handLandmarker ? handOpenScore > 0.45 : true;
@@ -1044,19 +1098,12 @@ function checkTarget(landmarks){
     const gestureOk = handLandmarker ? pinchScore > 0.45 : true;
     return near && gestureOk;
   }
-
-  // MOUTH / CHEST: wrist needs to come close to the body landmark in screen
-  // space. We use an enlarged radius (~shoulder-width) so this is achievable.
   if(which === "MOUTH" || which === "CHEST"){
     return wristDist() < R;
   }
-
-  // WRIST_DYNAMIC: hand returning to a locked starting position
   if(which === "WRIST_DYNAMIC"){
     return wristDist() < R;
   }
-
-  // WRISTS (both hands must be near the target)
   if(which === "WRISTS"){
     const lW = mirrorX(landmarks[15]);
     const rW = mirrorX(landmarks[16]);
@@ -1064,8 +1111,6 @@ function checkTarget(landmarks){
     const okR = rW && Math.hypot(rW.x - targetXY.x, rW.y - targetXY.y) < R;
     return okL && okR;
   }
-
-  // Default: WRIST — any wrist near target
   return wristDist() < R;
 }
 
@@ -1087,18 +1132,29 @@ function drawOverlay(landmarks){
   // Visual radius MATCHES the actual hit radius — so what the user sees == what triggers.
   const effR = effectiveRadius(step, landmarks);
   const tr = effR * Math.min(canvas.width, canvas.height);
+  const armed = (voiceFinishedAt > 0) && (performance.now() - voiceFinishedAt >= 350) && arrivedAfterMovement;
   const pulse = 1 + 0.08*Math.sin(performance.now()/250);
-  // outer pulsing ring
+  // outer pulsing ring — dashed/dim when not yet armed (voice still playing or movement gate not met)
+  ctx.save();
   ctx.beginPath();
   ctx.arc(tx, ty, tr*pulse, 0, Math.PI*2);
   ctx.lineWidth = 6;
-  ctx.strokeStyle = "#E18E6D";
+  if(armed){
+    ctx.strokeStyle = "#E18E6D";
+    ctx.setLineDash([]);
+  } else {
+    ctx.strokeStyle = "rgba(225,142,109,0.45)";
+    ctx.setLineDash([10, 8]);
+  }
   ctx.stroke();
-  // inner glow
-  ctx.beginPath();
-  ctx.arc(tx, ty, tr*0.55, 0, Math.PI*2);
-  ctx.fillStyle = "rgba(225,142,109,0.4)";
-  ctx.fill();
+  ctx.restore();
+  // inner glow only when armed
+  if(armed){
+    ctx.beginPath();
+    ctx.arc(tx, ty, tr*0.55, 0, Math.PI*2);
+    ctx.fillStyle = "rgba(225,142,109,0.4)";
+    ctx.fill();
+  }
 
   // icon emoji (cup / table / towel ...) — drawn unmirrored using counter-flip
   const icon = step.target.icon;
@@ -1267,7 +1323,10 @@ function loop(){
   let landmarks = null;
   if(result && result.landmarks && result.landmarks[0]) landmarks = result.landmarks[0];
   latestPoseLandmarks = landmarks;
-  if(landmarks) computeMetrics(landmarks);
+  if(landmarks){
+    computeMetrics(landmarks);
+    updateMovementGate(landmarks);
+  }
 
   // Hand landmarks (optional)
   if(handLandmarker){
@@ -1570,6 +1629,9 @@ REHAB_RUNNER_HTML_TEMPLATE = r"""<!DOCTYPE html>
       <div class="meta">
         <div class="name" id="exName">Exercise</div>
         <div class="rep" id="repLabel">Rep 1 of 5</div>
+        <div id="repBar" style="height:6px;background:rgba(255,255,255,0.18);border-radius:3px;margin-top:6px;overflow:hidden">
+          <div id="repBarFill" style="height:100%;width:0%;background:#E18E6D;border-radius:3px;transition:width .3s ease"></div>
+        </div>
       </div>
     </div>
     <div id="bottom">
@@ -1723,8 +1785,11 @@ function checkTarget(lm){
   const sub = CFG.cycle[currentSubStep];
   if(!sub || !sub.target || !lm) return false;
   const t = sub.target;
+  // Slightly enlarge the hit radius so users don't have to lean in (Phase B+).
+  // Visual circle below uses the same multiplier so what you see == what triggers.
+  const R = t.r * 1.55;
   const Lw=lm[15], Rw=lm[16];
-  const ok = (p) => p && Math.hypot((1-p.x)-t.x, p.y-t.y) < t.r;
+  const ok = (p) => p && Math.hypot((1-p.x)-t.x, p.y-t.y) < R;
   return ok(Lw) || ok(Rw);
 }
 
@@ -1738,7 +1803,7 @@ function drawOverlay(lm){
   if(sub && sub.target){
     const tx = sub.target.x*canvas.width;
     const ty = sub.target.y*canvas.height;
-    const tr = sub.target.r*Math.min(canvas.width,canvas.height);
+    const tr = sub.target.r * 1.55 * Math.min(canvas.width,canvas.height);
     const pulse = 1 + 0.08*Math.sin(performance.now()/250);
     ctx.beginPath(); ctx.arc(tx,ty,tr*pulse,0,Math.PI*2);
     ctx.lineWidth = 6; ctx.strokeStyle = "#E18E6D"; ctx.stroke();
@@ -1757,6 +1822,12 @@ async function startRep(){
   currentSubStep = 0;
   trunkLeanMax = 0; shoulderHikeDetected = false; reachMax = 0;
   repLabel.textContent = `Repetition ${currentRep+1} of ${CFG.reps}`;
+  // Update the visual rep progress bar
+  try{
+    const pct = Math.round((currentRep / Math.max(1, CFG.reps)) * 100);
+    const fill = document.getElementById("repBarFill");
+    if(fill) fill.style.width = pct + "%";
+  }catch(e){}
   if(CFG.pose_mode === "tap"){
     tapBtn.classList.remove("hidden");
   }else{
@@ -1800,10 +1871,13 @@ let yesHeard = false, understandHeard = false;
 const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
 function startListening(){
   yesHeard = false; understandHeard = false;
-  checkYes.textContent = "○ Yes";
-  checkUnderstand.textContent = '○ "I understand my problem now"';
-  fbHeard.textContent = SR ? "Listening…" : "Voice input unavailable on this device — tap the button when ready.";
-  if(!SR) return;
+  checkYes.textContent = "○ Say \"yes\"";
+  // Second-check kept hidden; we ONLY require a single "yes" now — the long
+  // phrase confused users and the SpeechRecognition API often errors silently
+  // in WebViews.
+  checkUnderstand.textContent = "";
+  fbHeard.textContent = SR ? "Listening… or tap Continue when ready." : "Tap Continue when ready.";
+  if(!SR){ understandHeard = true; return; }
   try{
     recognition = new SR();
     recognition.continuous = true;
@@ -1815,32 +1889,28 @@ function startListening(){
         txt += e.results[i][0].transcript.toLowerCase();
       }
       fbHeard.textContent = '"' + txt.slice(-60).trim() + '"';
-      if(!yesHeard && /\byes\b/.test(txt)){
+      if(!yesHeard && /\b(yes|yeah|yep|okay|ok|continue|next)\b/.test(txt)){
         yesHeard = true;
-        checkYes.textContent = "✓ Yes";
+        checkYes.textContent = "✓ Heard you";
         checkYes.classList.add("ok");
-      }
-      if(!understandHeard && /(i understand my problem now)|(understand my problem)/i.test(txt)){
-        understandHeard = true;
-        checkUnderstand.textContent = '✓ "I understand my problem now"';
-        checkUnderstand.classList.add("ok");
-      }
-      if(yesHeard && understandHeard){
+        // Single confirmation is enough — proceed.
         stopListening();
         confirmAndContinue();
       }
     };
     recognition.onerror = (ev) => {
-      fbHeard.textContent = "Voice input error — tap the button when ready.";
+      // Silently fall back — never alarm the user. The tap button always works.
+      fbHeard.textContent = "Tap Continue when ready.";
+      try{ recognition.onend = null; }catch(e){}
     };
     recognition.onend = () => {
-      if(running && !(yesHeard && understandHeard)){
+      if(running && !yesHeard){
         try{ recognition.start(); }catch(e){}
       }
     };
     recognition.start();
   }catch(e){
-    fbHeard.textContent = "Voice input unavailable — tap the button when ready.";
+    fbHeard.textContent = "Tap Continue when ready.";
   }
 }
 function stopListening(){
@@ -1851,20 +1921,47 @@ function stopListening(){
 }
 
 let lastFeedbackText = "";
+let lastRepScore = 0;
+
+// Score 0-100 for a single repetition. Deductions for compensations (trunk lean
+// past 5°, shoulder hike) and incomplete reach. Tuned to be encouraging — most
+// effortful reps land 70-95.
+function computeRepScore(){
+  let s = 100;
+  // Trunk lean: tolerate up to 5°, then deduct 1.5 per degree, capped at 30.
+  const leanPenalty = Math.min(30, Math.max(0, (trunkLeanMax - 5)) * 1.5);
+  s -= leanPenalty;
+  // Shoulder hike: 12 point deduction
+  if(shoulderHikeDetected) s -= 12;
+  // Incomplete reach: scale 0..30 deduction
+  s -= (1 - reachMax) * 30;
+  s = Math.max(0, Math.min(100, Math.round(s)));
+  return s;
+}
+
+function scoreLabel(s){
+  if(s >= 90) return "Excellent form";
+  if(s >= 75) return "Great work";
+  if(s >= 60) return "Good effort";
+  if(s >= 45) return "Keep practicing";
+  return "Take it gently";
+}
 
 async function showFeedback(){
   const feedback = pickFeedback();
   lastFeedbackText = feedback;
-  fbStep.textContent = `Repetition ${currentRep+1} of ${CFG.reps} complete`;
-  fbTitle.textContent = "Here's what I noticed";
+  lastRepScore = computeRepScore();
+  const label = scoreLabel(lastRepScore);
+  fbStep.textContent = `Repetition ${currentRep+1} of ${CFG.reps} complete · ${label}`;
+  fbTitle.textContent = `Your score: ${lastRepScore}/100`;
   fbBody.textContent = feedback;
   if(navigator.vibrate) navigator.vibrate([50, 30, 80]);
   fbEl.classList.remove("hidden");
   requestAnimationFrame(() => fbEl.classList.add("show"));
-  postRN({type:"rep_complete", rep: currentRep+1, total: CFG.reps, feedback});
+  postRN({type:"rep_complete", rep: currentRep+1, total: CFG.reps, score: lastRepScore, feedback});
 
   // Voice: feedback + ask for "yes"
-  await playVoice(feedback + " When you're ready for the next repetition, please say yes. Then say: I understand my problem now.");
+  await playVoice(`Your score is ${lastRepScore} out of 100. ${label}. ${feedback} When you're ready, tap continue, or say yes to keep going.`);
   startListening();
 }
 
