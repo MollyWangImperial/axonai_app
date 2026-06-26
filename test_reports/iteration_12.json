@@ -1,0 +1,72 @@
+{
+  "summary": "Phase C persona-chat credit-consumption retest — ALL 23/23 tests pass (100%). The iter10 CRITICAL bug is fixed: /api/personas/chat now requires X-User-Id (401 if missing), charges 10 premium_chat_message credits BEFORE the LLM call, returns 402 with 'Not enough credits to chat' when balance < 10, and intentionally bypasses the subscription bypass so subscribers are still charged 10 credits. The route alias POST /api/chat/persona/message is wired via a second @api_router.post decorator on the same handler and charges identically. No regressions: all other Phase C endpoints (credits/balance, progress/summary, billing/{subscribe,buy-credits,verify-session,webhook}, auth/google/session, subscription bypass for assessment, tts/health, assessment/tasks, pose/runner, rehab/runner, onboarding round-trip) continue to pass exactly as iter10.",
+  "tests_run": [
+    "POST /api/personas/chat (th_001, signed in) → 200 + balance 100→90 ✅",
+    "POST /api/chat/persona/message (alias, th_002, signed in) → 200 + balance 100→90 ✅",
+    "POST /api/personas/chat WITHOUT X-User-Id → 401 'Sign in required to chat with AI therapist' ✅",
+    "POST /api/personas/chat with credits=5 → 402 'Not enough credits to chat. Need 10, have 5...' and balance remains 5 (no decrement on 402) ✅",
+    "POST /api/personas/chat with subscription_active=true → 200 + balance 100→90 (subscription does NOT cover AI chat) ✅",
+    "GET /api/credits/balance (anon + signed in) → costs map + subscription_active flag intact ✅",
+    "GET /api/progress/summary (anon / new / post-assessment) → empty / empty / contains submitted id ✅",
+    "POST /api/billing/subscribe (no auth → 401; signed in → 500 'Invalid API Key' from sentinel) ✅",
+    "POST /api/billing/buy-credits (signed in → 500 'api key') ✅",
+    "GET /api/billing/verify-session?session_id=fake → 404 'Unknown session' ✅",
+    "POST /api/billing/webhook (no signature, secret unset) → 200 {ok:true} ✅",
+    "POST /api/auth/google/session (empty → 400 'session_id required'; bogus → 401) ✅",
+    "Subscription bypass for assessment (subscribed user POST /api/assessment/submit → balance unchanged at 100) ✅",
+    "GET /api/tts/health → 200 ok=true ✅",
+    "GET /api/assessment/tasks → 200, 7 tasks, voice=nova ✅",
+    "GET /api/pose/runner → 200 HTML ✅",
+    "GET /api/rehab/runner?exercise_id=ex_maintenance → 200 HTML ✅",
+    "POST + GET /api/users/onboarding round-trip (preferred_name + primary_goal persisted) ✅"
+  ],
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "POST /api/billing/subscribe & /api/billing/buy-credits",
+        "issue": "Still return 500 'Invalid API Key' on the sentinel Stripe key. Consider mapping stripe.error.AuthenticationError → 503 'Stripe not configured' for cleaner monitoring (already flagged in iter10; not a launch-blocker)."
+      },
+      {
+        "endpoint": "POST /api/billing/webhook",
+        "issue": "Trusts unsigned bodies when STRIPE_WEBHOOK_SECRET is unset. Documented dev-mode behavior — must require the secret in prod (flagged in iter10)."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_phase_c_features.py",
+    "/app/test_reports/pytest/iter11_phasec_results.xml"
+  ],
+  "action_items": [
+    "Frontend: ensure persona chat screen handles 402 ('Not enough credits to chat...') by routing the user to the paywall / buy-credits flow, and 401 by routing to sign-in. Both error bodies follow {detail: '...'} from FastAPI HTTPException.",
+    "Frontend: persona chat now requires X-User-Id header on EVERY request — verify the chat client is reading the auth header from the user store before POST.",
+    "(Optional, iter10 follow-up) Map Stripe AuthenticationError → 503 in /billing/subscribe + /billing/buy-credits.",
+    "(Optional) Refactor server.py — it's ~3200 lines; recommend splitting (auth, billing, assessment, chat) before next feature."
+  ],
+  "critical_code_review_comments": [
+    "Fix is correctly placed: server.py:2219-2246 — auth check via _user_from_header → cost lookup from CREDIT_COSTS → balance check → atomic-ish $set update + credit_log insert, ALL BEFORE the LLM call. So a 502 from LiteLLM won't refund credits, but that's the explicit design ('don't burn LLM budget on bouncers').",
+    "Alias is implemented cleanly as a second @api_router.post('/chat/persona/message') decorator on the same handler (server.py:2220) — both surfaces share identical behavior, no duplication.",
+    "Subscription bypass is intentionally NOT applied (comment at line 2232-2233 documents the design — AI therapist chat is the credit-pack revenue lever). Matches spec.",
+    "402 is the correct HTTP status for 'payment required / insufficient funds' — good RFC alignment.",
+    "Minor: there's no transactional safeguard between the $set credits and the credit_log insert. If mongo crashes mid-call, credits decrement but log entry is missing. Low risk on local mongo; consider a session/transaction for prod.",
+    "server.py is now 3199 lines — splitting recommendation from iter10 still stands."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_phase_c_features.py (replaced TestPersonaChatCredits with 5 new tests covering: canonical route 10-credit burn, alias 10-credit burn, missing-auth 401, low-credit 402, subscriber-still-pays)"
+  ],
+  "success_rate": {
+    "backend": "100% (23/23)",
+    "frontend": "N/A (backend-only review per request)"
+  },
+  "seed_data_creation": "No persistent seed. Each test creates fresh TEST_phasec_<uuid8>@example.com users; the insufficient-credits and subscriber tests mutate that user's own row (credits=5 or subscription_active=true) and do not touch other data.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Phase C is fully green. Persona-chat credit-consumption bug is closed. Next focus areas if iterating: (1) frontend integration of 401/402 handling on the chat screen, (2) optional Stripe error-mapping refactor in /billing/*, (3) server.py modularization. The pytest suite at /app/backend/tests/test_phase_c_features.py is now a stable regression baseline (23 tests, ~22s wall time).",
+  "rca_of_issue": "Bug was in /app/backend/server.py:2219 — handler signature was `persona_chat(req: PersonaChatRequest)` with no Request injection, no _user_from_header call, no consume_credits call. Fix (verified live): handler now (a) accepts `request: Request`, (b) resolves user via _user_from_header → 401 if missing, (c) reads cost = CREDIT_COSTS['premium_chat_message'] (=10), (d) returns 402 if user.credits < cost, (e) does db.users.update_one $set credits = new_credits and inserts a credit_log entry with kind=premium_chat_message, (f) THEN invokes LlmChat. The alias /api/chat/persona/message is added as a stacked @api_router.post decorator (line 2220) so the same handler serves both URLs — no code duplication. Subscription bypass is deliberately skipped here (commented in code) per spec — AI therapist chat must remain a credit sink even for subscribers."
+}

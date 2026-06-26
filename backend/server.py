@@ -2217,12 +2217,33 @@ class PersonaChatRequest(BaseModel):
 
 
 @api_router.post("/personas/chat")
-async def persona_chat(req: PersonaChatRequest):
+@api_router.post("/chat/persona/message")
+async def persona_chat(req: PersonaChatRequest, request: Request):
     if not EMERGENT_LLM_KEY:
         raise HTTPException(status_code=503, detail="Chat unavailable — LLM key not configured.")
+    # Auth required — persona chat costs credits, even for subscribers.
+    user = await _user_from_header(dict(request.headers))
+    if not user:
+        raise HTTPException(status_code=401, detail="Sign in required to chat with AI therapist")
     persona = _find_persona(req.persona_id)
     if not persona:
         raise HTTPException(status_code=404, detail="Persona not found")
+    # Charge credits BEFORE LLM call so we don't burn LLM budget on bouncers.
+    # Note: this intentionally bypasses the subscription bypass — AI therapist
+    # chat is the credit-pack revenue lever and subscribers still pay per message.
+    cost = CREDIT_COSTS.get("premium_chat_message", 10)
+    if user["credits"] < cost:
+        raise HTTPException(
+            status_code=402,
+            detail=f"Not enough credits to chat. Need {cost}, have {user['credits']}. Buy a credit pack from the paywall.",
+        )
+    new_credits = user["credits"] - cost
+    await db.users.update_one({"id": user["id"]}, {"$set": {"credits": new_credits}})
+    await db.credit_log.insert_one({
+        "user_id": user["id"], "kind": "premium_chat_message", "cost": cost,
+        "new_balance": new_credits, "persona_id": req.persona_id,
+        "ts": datetime.now(timezone.utc).isoformat(),
+    })
 
     storage_session = f"persona:{req.persona_id}:{req.session_id}"
     sess = await db.chat_sessions.find_one({"session_id": storage_session}, {"_id": 0})

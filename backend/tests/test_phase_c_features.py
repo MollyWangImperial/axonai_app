@@ -213,35 +213,101 @@ class TestSubscriptionBypass:
 # ============ Persona chat still burns 10 credits (premium_chat_message) ============
 class TestPersonaChatCredits:
     """Spec says POST /api/chat/persona/message should burn 10 credits even for subscribers.
-    Note: actual endpoint name in code is /api/personas/chat. We test both surfaces."""
-
-    def test_persona_chat_endpoint_exists_and_consumes_credits(self, api):
-        u = _new_user(api)
-        # Try the spec-stated endpoint first
-        r1 = api.post(f"{BASE_URL}/api/chat/persona/message",
-                      json={"persona_id": "p_marisol", "session_id": "test_sess",
-                            "text": "Hi"},
-                      headers={"X-User-Id": u["id"]})
-        if r1.status_code == 404:
-            pytest.skip("Spec endpoint /api/chat/persona/message not wired; "
-                        "actual route is /api/personas/chat (no credit consumption)")
+    Both /api/personas/chat (canonical) and /api/chat/persona/message (alias) must work."""
 
     def test_personas_chat_route_credit_behavior(self, api):
-        """The actual /api/personas/chat endpoint — verify whether it consumes credits.
+        """The canonical /api/personas/chat endpoint — must burn 10 credits.
         Valid persona ids are th_001..th_006."""
         u = _new_user(api)
         r = api.post(f"{BASE_URL}/api/personas/chat",
                      json={"persona_id": "th_001", "session_id": f"sess_{uuid.uuid4().hex[:6]}",
                            "text": "Hello"},
                      headers={"X-User-Id": u["id"]},
-                     timeout=60)
-        # Accept 200 or 502 (LLM upstream)
+                     timeout=90)
         assert r.status_code in (200, 502), f"persona chat returned {r.status_code}: {r.text[:300]}"
         bal = api.get(f"{BASE_URL}/api/credits/balance", headers={"X-User-Id": u["id"]})
         credits_after = bal.json()["credits"]
-        # SPEC: premium_chat_message should burn 10 credits. If 100, it's NOT burning credits → bug.
+        # On 502 (LLM error) credits should still have been consumed because charge happens BEFORE LLM call.
         assert credits_after == 90, \
-            f"premium_chat_message should burn 10 credits; balance={credits_after} (no consumption — likely bug)"
+            f"premium_chat_message should burn 10 credits; balance={credits_after} (expected 90)"
+
+    def test_chat_persona_message_alias_also_charges_10(self, api):
+        """Alias /api/chat/persona/message must also charge 10 credits and return 200."""
+        u = _new_user(api)
+        r = api.post(f"{BASE_URL}/api/chat/persona/message",
+                     json={"persona_id": "th_002", "session_id": f"sess_{uuid.uuid4().hex[:6]}",
+                           "text": "Hi there"},
+                     headers={"X-User-Id": u["id"]},
+                     timeout=90)
+        # Endpoint must NOT 404 (it's the spec-stated alias)
+        assert r.status_code != 404, f"alias endpoint not wired: {r.status_code} {r.text[:200]}"
+        assert r.status_code in (200, 502), f"alias returned {r.status_code}: {r.text[:300]}"
+        bal = api.get(f"{BASE_URL}/api/credits/balance", headers={"X-User-Id": u["id"]})
+        credits_after = bal.json()["credits"]
+        assert credits_after == 90, \
+            f"alias should burn 10 credits; balance={credits_after} (expected 90)"
+
+    def test_personas_chat_without_user_id_returns_401(self, api):
+        """No X-User-Id header → 401 'Sign in required'."""
+        r = api.post(f"{BASE_URL}/api/personas/chat",
+                     json={"persona_id": "th_001", "session_id": "anon_sess",
+                           "text": "Hi"},
+                     timeout=15)
+        assert r.status_code == 401, f"expected 401 without X-User-Id, got {r.status_code}: {r.text[:200]}"
+        detail = (r.json() or {}).get("detail", "").lower()
+        assert "sign in" in detail or "required" in detail, f"unexpected detail: {detail}"
+
+    def test_personas_chat_insufficient_credits_returns_402(self, api):
+        """User with <10 credits → 402 'Not enough credits to chat'."""
+        u = _new_user(api)
+        # Set credits to 5 directly in mongo
+        async def set_low():
+            cli = AsyncIOMotorClient("mongodb://localhost:27017")
+            await cli["test_database"].users.update_one(
+                {"id": u["id"]}, {"$set": {"credits": 5}}
+            )
+            cli.close()
+        asyncio.get_event_loop().run_until_complete(set_low())
+
+        r = api.post(f"{BASE_URL}/api/personas/chat",
+                     json={"persona_id": "th_001", "session_id": "lowc",
+                           "text": "Hi"},
+                     headers={"X-User-Id": u["id"]},
+                     timeout=15)
+        assert r.status_code == 402, f"expected 402, got {r.status_code}: {r.text[:300]}"
+        detail = (r.json() or {}).get("detail", "").lower()
+        assert "not enough credits" in detail, f"unexpected 402 detail: {detail}"
+
+        # And credits must NOT have been decremented further (still 5)
+        bal = api.get(f"{BASE_URL}/api/credits/balance", headers={"X-User-Id": u["id"]})
+        assert bal.json()["credits"] == 5, f"402 path should not decrement; got {bal.json()['credits']}"
+
+    def test_subscribed_user_still_pays_for_persona_chat(self, api):
+        """Subscription bypass should NOT cover AI therapist chat — subscribers still pay 10 credits."""
+        u = _new_user(api)
+        async def flip_sub():
+            cli = AsyncIOMotorClient("mongodb://localhost:27017")
+            await cli["test_database"].users.update_one(
+                {"id": u["id"]}, {"$set": {"subscription_active": True}}
+            )
+            cli.close()
+        asyncio.get_event_loop().run_until_complete(flip_sub())
+
+        # Confirm subscription active and credits=100
+        bal0 = api.get(f"{BASE_URL}/api/credits/balance", headers={"X-User-Id": u["id"]})
+        assert bal0.json()["subscription_active"] is True
+        assert bal0.json()["credits"] == 100
+
+        r = api.post(f"{BASE_URL}/api/personas/chat",
+                     json={"persona_id": "th_001", "session_id": f"sub_{uuid.uuid4().hex[:6]}",
+                           "text": "Hello as subscriber"},
+                     headers={"X-User-Id": u["id"]},
+                     timeout=90)
+        assert r.status_code in (200, 502), f"persona chat returned {r.status_code}: {r.text[:300]}"
+
+        bal1 = api.get(f"{BASE_URL}/api/credits/balance", headers={"X-User-Id": u["id"]})
+        assert bal1.json()["credits"] == 90, \
+            f"subscribers MUST still pay for AI chat; got {bal1.json()['credits']} (expected 90)"
 
 
 # ============ Existing endpoints unaffected ============

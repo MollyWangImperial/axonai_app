@@ -7,6 +7,8 @@ import * as Haptics from "expo-haptics";
 import { colors, spacing, radius } from "@/src/theme";
 import { storage } from "@/src/utils/storage";
 import TypingIndicator from "@/src/components/TypingIndicator";
+import PaywallModal from "@/src/components/PaywallModal";
+import { authedFetch } from "@/src/auth";
 
 const BASE = process.env.EXPO_PUBLIC_BACKEND_URL;
 
@@ -23,6 +25,8 @@ export default function PersonaChatScreen() {
   const [turns, setTurns] = useState<Turn[]>([]);
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
+  const [paywallOpen, setPaywallOpen] = useState(false);
+  const [paywallReason, setPaywallReason] = useState<string | undefined>();
   const [paywall, setPaywall] = useState<Paywall>(null);
   const listRef = useRef<FlatList<Turn>>(null);
 
@@ -61,11 +65,18 @@ export default function PersonaChatScreen() {
     setInput("");
     setSending(true);
     try {
-      const r = await fetch(`${BASE}/api/personas/chat`, {
+      const r = await authedFetch(`/api/personas/chat`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ persona_id, session_id: sessionId, text: txt }),
       });
+      if (r.status === 402) {
+        // Out of credits — pop the paywall instead of an error bubble
+        setTurns((t) => t.slice(0, -1)); // remove the optimistic user bubble
+        setInput(txt);                   // restore the text so they can resend after subscribing
+        setPaywallReason("You're out of credits. Buy a credit pack to keep chatting with your AI therapist.");
+        setPaywallOpen(true);
+        return;
+      }
       if (!r.ok) throw new Error("chat fail");
       const d = await r.json();
       setTurns((t) => [...t, { role: "assistant", text: d.text, ts: new Date().toISOString() }]);
@@ -79,6 +90,7 @@ export default function PersonaChatScreen() {
   };
 
   return (
+    <>
     <View style={[styles.container, { paddingTop: insets.top }]}>
       <View style={styles.header}>
         <Pressable onPress={() => router.back()} style={styles.backBtn} testID="persona-back">
@@ -162,6 +174,12 @@ export default function PersonaChatScreen() {
         </View>
       </KeyboardAvoidingView>
     </View>
+      <PaywallModal
+        visible={paywallOpen}
+        onClose={() => setPaywallOpen(false)}
+        reason={paywallReason}
+      />
+    </>
   );
 }
 
