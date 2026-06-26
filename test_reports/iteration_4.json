@@ -1,0 +1,37 @@
+{
+  "summary": "Iteration 4 backend + frontend testing complete. All 14 pytest tests PASS (friendly labels, therapists list/match, community list/create, Hope chat message/history/proactive, regression for tasks/history/tts/pose-runner/rehab-runner). Frontend mobile UI verified: bottom tabs Home/Community/Therapists/Hope all render and navigate; community shows seed + user-created stories with like buttons; therapists shows TOP MATCH badge + Connect button + sorted ranking; Hope chat shows a spontaneous proactive greeting on first open and returns a real warm Claude reply when user types; designing-plan screen renders the animated 'Designing your rehab plan' checklist. Note: tab-level data-testid (tabBarTestID) does not render on Expo Router web preview (it does on native) — links work via href/text and per-screen testIDs are all present. Backend chat momentarily hit a LiteLLM budget warning ('Budget has been exceeded! Current cost: 0.0, Max budget: 0.0') on the first call but recovered immediately; both message tests and live UI received valid replies — monitor if it recurs under load.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "POST /api/chat/message", "issue": "Occasional transient 502 with LiteLLM 'Budget has been exceeded! Current cost: 0.0, Max budget: 0.0'. Subsequent calls succeed. May be a key-budget quirk in litellm proxy — worth monitoring."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter4_features.py",
+    "/app/test_reports/pytest/iter4_results.xml"
+  ],
+  "action_items": [
+    "Optional: keep an eye on LiteLLM budget-exceeded warnings on /api/chat/message — first call after server reload occasionally 502s then recovers.",
+    "Optional: Expo Router's tabBarTestID prop does not propagate to web DOM (data-testid is missing on the tab links). It works on native. If web-preview tab testing is required, wrap with a custom tabBarButton that sets testID/data-testid. Not blocking."
+  ],
+  "critical_code_review_comments": [
+    "server.py is 1990 lines — large but cohesive; consider splitting into routes/ + services/ + html_templates/ for maintainability.",
+    "LlmChat per-request instantiation rebuilds history into the system prompt rather than letting the library manage memory; works but is a workaround. Comment in code is honest about this.",
+    "GET /community/stories returns user_stories first (newest first via sort), then seeds — good UX."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iter4_features.py (new)"
+  ],
+  "success_rate": {"backend": "100% (14/14)", "frontend": "100% on all observed flows (tabs, community, therapists, Hope chat, designing-plan)"},
+  "seed_data_creation": "Created one TEST_Pytest community story via /api/community/stories during testing; visible in Community feed. Created several TEST assessments via /api/assessment/submit.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Backend base URL is in frontend/.env as EXPO_PUBLIC_BACKEND_URL. Pytest must be invoked with that env var exported. Chat uses claude-sonnet-4-5-20250929 through emergentintegrations with EMERGENT_LLM_KEY. Tab-level testIDs don't appear in web DOM; use text/href for navigation in playwright (e.g. page.get_by_text('Community')). All other interactive elements have data-testid.",
+  "rca_of_issue": "No blocking issues. The single observed 502 on /api/chat/message was a transient LiteLLM proxy budget hiccup that auto-recovered on the next request and never reproduced in subsequent runs."
+}

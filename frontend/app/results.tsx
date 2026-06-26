@@ -32,7 +32,7 @@ export default function ResultsScreen() {
 
   const goPlan = () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    router.push({ pathname: "/rehab-plan", params: { id } });
+    router.push({ pathname: "/designing-plan", params: { id } });
   };
 
   if (loading) {

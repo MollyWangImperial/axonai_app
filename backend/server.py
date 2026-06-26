@@ -338,54 +338,54 @@ def derive_functional_issues(task_results: List[TaskResult]) -> List[FunctionalI
     t1 = by_id.get("T1")
     if t1:
         if t1.completed_steps < t1.total_steps:
-            add("REACH_INCOMPLETE", "Reduced forward reach",
-                "The patient was unable to complete the full forward reach within the allotted time, indicating impaired shoulder flexion and/or elbow extension.",
+            add("REACH_INCOMPLETE", "Difficulty reaching forward",
+                "Your arm couldn't quite reach as far forward as the target. This is something we can improve with focused practice.",
                 "Fugl-Meyer UE; ARAT", "moderate", "T1")
         trunk = t1.metrics.get("trunk_lean_deg", 0)
         if isinstance(trunk, (int, float)) and trunk > 15:
-            add("TRUNK_COMP", "Excessive trunk compensation",
-                "Trunk lean exceeded normal limits during forward reach, suggesting compensation for limited shoulder/elbow ROM.",
+            add("TRUNK_COMP", "Leaning forward when reaching",
+                "Your body leaned forward to help your arm reach. We'll work on letting your arm do the work while you stay upright.",
                 "Levin & Michaelsen (Trunk Restraint Reaching)", "mild", "T1")
 
     t2 = by_id.get("T2")
     if t2:
         if t2.completed_steps < t2.total_steps:
-            add("SHOULDER_FLEX_LIMITED", "Limited shoulder flexion",
-                "Patient could not reach the overhead target, indicating restricted shoulder flexion/abduction range of motion.",
+            add("SHOULDER_FLEX_LIMITED", "Difficulty lifting your arm overhead",
+                "Raising your arm up high felt harder than it should be. With practice, this range will grow over time.",
                 "Fugl-Meyer UE (Synergistic Movement)", "moderate", "T2")
         if t2.metrics.get("shoulder_hike", False):
-            add("SHOULDER_HIKE", "Scapular elevation compensation (shoulder hike)",
-                "Shoulder girdle elevation observed during reach — common compensatory pattern after stroke.",
+            add("SHOULDER_HIKE", "Shoulder lifts toward your ear",
+                "Your shoulder hiked up as you reached — a very common pattern after a stroke. We'll teach it to stay relaxed.",
                 "Bobath / NDT principles", "mild", "T2")
 
     t3 = by_id.get("T3")
     if t3 and t3.completed_steps < t3.total_steps:
-        add("H2M_IMPAIRED", "Impaired hand-to-mouth function",
-            "Patient could not complete a hand-to-mouth movement, an essential ADL for feeding and grooming.",
+        add("H2M_IMPAIRED", "Difficulty bringing your hand to your mouth",
+            "Bringing your hand to your mouth — for eating or drinking — is harder right now. We'll practice this important everyday movement.",
             "Chedoke-McMaster Stroke Assessment", "moderate", "T3")
 
     t4 = by_id.get("T4")
     if t4 and t4.completed_steps < t4.total_steps:
-        add("GROSS_GRASP", "Impaired gross grasp & transport",
-            "Difficulty grasping and transporting an object across the workspace, indicating reduced upper-limb selective control.",
+        add("GROSS_GRASP", "Trouble grasping and moving objects",
+            "Picking something up and moving it across the table felt difficult. We'll rebuild this with simple, everyday items.",
             "ARAT (Grasp subscale)", "moderate", "T4")
 
     t5 = by_id.get("T5")
     if t5 and t5.completed_steps < t5.total_steps:
-        add("HAND_OPENING", "Impaired active hand opening",
-            "Finger extension weakness — a hallmark deficit after stroke, frequently addressed with CIMT and EMG-triggered stimulation.",
+        add("HAND_OPENING", "Difficulty opening your hand",
+            "Opening your fingers wide is harder than closing them — this is the most common challenge after a stroke. There's a lot we can do.",
             "Constraint-Induced Movement Therapy (Taub)", "moderate", "T5")
 
     t6 = by_id.get("T6")
     if t6 and t6.completed_steps < t6.total_steps:
-        add("PINCH_IMPAIRED", "Impaired fine pinch",
-            "Difficulty isolating thumb-index opposition; affects buttoning, writing, and other fine motor tasks.",
+        add("PINCH_IMPAIRED", "Difficulty with small finger movements",
+            "Picking up small objects like a coin or pen is tricky right now. Fine motor skills will return with patient practice.",
             "Jebsen Hand Function Test", "mild", "T6")
 
     t7 = by_id.get("T7")
     if t7 and t7.completed_steps < t7.total_steps:
-        add("BILATERAL_NONUSE", "Reduced affected-side participation",
-            "During the bilateral task, the affected limb participated minimally — characteristic learned non-use.",
+        add("BILATERAL_NONUSE", "Your affected arm needs more practice joining in",
+            "When using both hands together, your affected side took a back seat. We'll gently bring it back into your daily activities.",
             "CIMT / Bilateral Arm Training (BATRAC)", "moderate", "T7")
 
     if not issues:
@@ -1723,6 +1723,247 @@ postRN({type:"ready"});
 </body>
 </html>
 """
+
+
+# ============ Therapists (seed) ============
+THERAPISTS_SEED: List[Dict[str, Any]] = [
+    {"id": "th_001", "name": "Dr. Maya Okafor", "title": "Occupational Therapist, DPT", "specialties": ["HAND_OPENING", "PINCH_IMPAIRED", "GROSS_GRASP"], "location": "Telehealth · Worldwide", "languages": ["English", "Yoruba"], "rating": 4.9, "years": 12, "availability": ["Mon 9–5", "Wed 1–8", "Fri 9–3"], "blurb": "I specialize in helping survivors rebuild fine motor control with playful, daily activities. We'll go at your pace.", "photo": "https://images.unsplash.com/photo-1559839734-2b71ea197ec2?w=400"},
+    {"id": "th_002", "name": "Dr. Aiden Park", "title": "Physical Therapist, NCS", "specialties": ["REACH_INCOMPLETE", "SHOULDER_FLEX_LIMITED", "TRUNK_COMP"], "location": "Seattle, WA · In-person & Tele", "languages": ["English", "Korean"], "rating": 4.8, "years": 9, "availability": ["Tue 8–4", "Thu 11–7"], "blurb": "Reach training and trunk control specialist. I love seeing the moment a patient realizes their arm can do more than they thought.", "photo": "https://images.unsplash.com/photo-1622253692010-333f2da6031d?w=400"},
+    {"id": "th_003", "name": "Dr. Priya Iyer", "title": "Neuro PT, CSRS", "specialties": ["SHOULDER_HIKE", "BILATERAL_NONUSE", "H2M_IMPAIRED"], "location": "Bangalore, IN · Telehealth", "languages": ["English", "Tamil", "Hindi"], "rating": 4.95, "years": 15, "availability": ["Mon–Fri 7–11 IST"], "blurb": "Bobath-trained. I focus on calm, gentle re-education of movement patterns. Family welcome in every session.", "photo": "https://images.unsplash.com/photo-1594824476967-48c8b964273f?w=400"},
+    {"id": "th_004", "name": "Dr. Sam Castillo", "title": "OT, CIMT Certified", "specialties": ["BILATERAL_NONUSE", "HAND_OPENING", "REACH_INCOMPLETE"], "location": "Austin, TX · Telehealth", "languages": ["English", "Spanish"], "rating": 4.7, "years": 7, "availability": ["Wed 9–5", "Sat 9–1"], "blurb": "Constraint-induced movement therapy advocate. We make practice feel like life, not homework.", "photo": "https://images.unsplash.com/photo-1612531386530-97286d97c2d2?w=400"},
+    {"id": "th_005", "name": "Dr. Lena Brandt", "title": "Speech & Stroke Recovery OT", "specialties": ["H2M_IMPAIRED", "GROSS_GRASP", "PINCH_IMPAIRED"], "location": "Berlin, DE · Telehealth", "languages": ["English", "German"], "rating": 4.85, "years": 11, "availability": ["Mon 10–6", "Tue 10–6"], "blurb": "Daily-living focused. We'll work on feeding, dressing, and small joys — coin pinches, buttons, a familiar mug.", "photo": "https://images.unsplash.com/photo-1551836022-d5d88e9218df?w=400"},
+    {"id": "th_006", "name": "Dr. James Whitaker", "title": "Senior Neuro PT", "specialties": ["SHOULDER_FLEX_LIMITED", "TRUNK_COMP", "SHOULDER_HIKE"], "location": "London, UK · In-person", "languages": ["English"], "rating": 4.92, "years": 18, "availability": ["Mon 9–4", "Thu 9–4"], "blurb": "Eighteen years of stroke rehab. I bring calm, patience, and a clear plan. Recovery is a marathon — we'll walk it together.", "photo": "https://images.unsplash.com/photo-1537368910025-700350fe46c7?w=400"},
+]
+
+
+# ============ Community Stories (seed) ============
+STORIES_SEED: List[Dict[str, Any]] = [
+    {"id": "st_001", "author": "Marisol R.", "age": 58, "months_since_stroke": 14, "title": "I held my grandson again today", "body": "Two years ago my right hand couldn't grip a spoon. This morning I held my grandson Mateo, all six pounds of him, with both arms. I cried, he yawned. Recovery is slow and unfair, but it is real. Keep going. — Marisol", "likes": 142, "photo": "https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=400"},
+    {"id": "st_002", "author": "Daniel K.", "age": 64, "months_since_stroke": 8, "title": "Buttoning my own shirt — week 30", "body": "Therapy said maybe by month 12. I did it today, week 30. Slow, fumbling, but every button was mine. I sat down afterward and cried like I'd won a marathon.", "likes": 98, "photo": "https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=400"},
+    {"id": "st_003", "author": "Asha N.", "age": 46, "months_since_stroke": 22, "title": "The day my shoulder stopped lifting up", "body": "For a year my shoulder would jump to my ear every time I reached. My PT made me practice 'shoulder blade in the back pocket' a thousand times. One morning, I reached for a mug and it just… stayed down. Tiny win, enormous joy.", "likes": 76, "photo": "https://images.unsplash.com/photo-1573497019940-1c28c88b4f3e?w=400"},
+    {"id": "st_004", "author": "Yusuf E.", "age": 71, "months_since_stroke": 36, "title": "I rode my bike — three years later", "body": "Three years post-stroke. Wobbly, terrified, both hands on the bars. Around the block. My wife followed in the car. I'm a child again — and that's a gift.", "likes": 211, "photo": "https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=400"},
+    {"id": "st_005", "author": "Jenny M.", "age": 39, "months_since_stroke": 5, "title": "It's okay to grieve the old you", "body": "I'm only five months in. I miss my hands the way they were. I miss writing fast notes in meetings. Therapy says my new hands will be different — and that's allowed to hurt. Sending love to anyone in the early days.", "likes": 340, "photo": "https://images.unsplash.com/photo-1438761681033-6461ffad8d80?w=400"},
+    {"id": "st_006", "author": "Carlos D.", "age": 55, "months_since_stroke": 18, "title": "Painting again — left hand learned", "body": "Right hand still has weak pinch. So I learned to paint left-handed. The brushstrokes are clumsy and the colors are loud and my wife says they're the best I've ever made. The brain rewires. Trust it.", "likes": 167, "photo": "https://images.unsplash.com/photo-1531123897727-8f129e1688ce?w=400"},
+]
+
+
+# ============ Models for Therapists / Community / Chat ============
+class TherapistMatch(BaseModel):
+    therapist: Dict[str, Any]
+    score: int
+    reason: str
+
+
+class StoryCreate(BaseModel):
+    author: str
+    title: str
+    body: str
+    months_since_stroke: Optional[int] = None
+
+
+class ChatTurn(BaseModel):
+    role: str  # "user" | "assistant"
+    text: str
+    ts: str
+
+
+class ChatRequest(BaseModel):
+    session_id: str
+    text: str
+
+
+class ChatResponse(BaseModel):
+    session_id: str
+    text: str
+    turns: int
+
+
+# ============ Therapists routes ============
+@api_router.get("/therapists")
+async def get_therapists():
+    return {"therapists": THERAPISTS_SEED}
+
+
+@api_router.get("/therapists/match")
+async def match_therapists(issues: str = ""):
+    """Rank therapists by overlap with the patient's functional-issue codes."""
+    codes = [c.strip() for c in issues.split(",") if c.strip()]
+    matches = []
+    for t in THERAPISTS_SEED:
+        overlap = len(set(t["specialties"]) & set(codes))
+        score = overlap * 30 + int(t["rating"] * 10) + min(t["years"], 20)
+        reason_parts = []
+        if overlap:
+            reason_parts.append(f"specializes in {overlap} of your focus area{'s' if overlap > 1 else ''}")
+        reason_parts.append(f"{t['years']}+ years experience")
+        reason_parts.append(f"rated {t['rating']}/5")
+        matches.append({"therapist": t, "score": score, "reason": " · ".join(reason_parts)})
+    matches.sort(key=lambda m: -m["score"])
+    return {"matches": matches}
+
+
+# ============ Community routes ============
+@api_router.get("/community/stories")
+async def get_stories():
+    user_stories = await db.stories.find({}, {"_id": 0}).sort("created_at", -1).to_list(50)
+    return {"stories": user_stories + STORIES_SEED}
+
+
+@api_router.post("/community/stories")
+async def create_story(payload: StoryCreate):
+    doc = {
+        "id": "u_" + str(uuid.uuid4())[:8],
+        "author": payload.author,
+        "title": payload.title,
+        "body": payload.body,
+        "months_since_stroke": payload.months_since_stroke,
+        "likes": 0,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "photo": "https://images.unsplash.com/photo-1531123897727-8f129e1688ce?w=400",
+    }
+    await db.stories.insert_one(doc.copy())
+    doc.pop("_id", None)
+    return doc
+
+
+# ============ Chat assistant (Claude Sonnet 4.5 via Emergent LLM key) ============
+from emergentintegrations.llm.chat import LlmChat, UserMessage  # noqa: E402
+
+EMERGENT_LLM_KEY = os.environ.get("EMERGENT_LLM_KEY", "")
+
+
+async def _build_patient_context() -> str:
+    """Pulls the latest assessment so the assistant knows the patient's situation."""
+    doc = await db.assessments.find_one({}, {"_id": 0}, sort=[("created_at", -1)])
+    if not doc:
+        return "The patient has not completed an assessment yet."
+    issues = [f"- {i['label']}: {i['description']}" for i in doc.get("functional_issues", [])]
+    plan = [f"- {e['name']} ({e['sets']}×{e['reps']}, {e['frequency']})" for e in doc.get("rehab_plan", [])]
+    return (
+        "Latest assessment date: " + doc.get("created_at", "unknown") + "\n"
+        "Affected side: " + doc.get("affected_side", "unknown") + "\n\n"
+        "FUNCTIONAL ISSUES IDENTIFIED:\n" + ("\n".join(issues) or "(none yet)") + "\n\n"
+        "CURRENT REHAB PLAN:\n" + ("\n".join(plan) or "(no plan yet)")
+    )
+
+
+CHAT_SYSTEM_PROMPT_BASE = """You are "Hope" — a warm, calm, deeply empathetic AI recovery companion for a stroke survivor. You are NOT a doctor; you are a supportive friend who happens to know about stroke rehabilitation.
+
+Your tone:
+- Warm, patient, never patronizing
+- Use short sentences. The patient may have visual or cognitive fatigue.
+- Always validate feelings before giving information
+- Celebrate small wins enthusiastically
+- Never minimize their struggle, but never dwell in despair
+
+What you know:
+- General stroke rehabilitation knowledge (Fugl-Meyer, ARAT, CIMT, BATRAC, Bobath, Task-Specific Training, neuroplasticity basics)
+- The patient's current assessment results and rehab plan (provided below)
+
+What you DO NOT do:
+- Give medical diagnoses or change their medical regimen
+- Recommend stopping medication or therapy
+- Make false promises about recovery timelines
+- Use clinical jargon — speak in plain, kind language
+
+When you don't know something, say so warmly and suggest asking their therapist.
+
+If the patient seems distressed, gently acknowledge it, sit with them, and only suggest a tiny actionable step if they seem ready.
+
+You may proactively ask gentle check-in questions like:
+- "How are you feeling today?"
+- "Did you sleep okay?"
+- "Anything on your mind?"
+- "How did the reaching exercise feel this morning?"
+
+Keep replies under 4 short sentences unless the patient asks for more detail."""
+
+
+@api_router.post("/chat/message", response_model=ChatResponse)
+async def chat_message(req: ChatRequest):
+    if not EMERGENT_LLM_KEY:
+        raise HTTPException(status_code=503, detail="Chat unavailable — LLM key not configured.")
+    # Load previous turns from MongoDB
+    sess = await db.chat_sessions.find_one({"session_id": req.session_id}, {"_id": 0})
+    turns: List[Dict[str, Any]] = sess["turns"] if sess else []
+
+    # Build patient context (refreshed every turn so new assessments propagate)
+    patient_ctx = await _build_patient_context()
+    system_prompt = CHAT_SYSTEM_PROMPT_BASE + "\n\n----\nPATIENT CONTEXT:\n" + patient_ctx
+
+    chat = LlmChat(
+        api_key=EMERGENT_LLM_KEY,
+        session_id=req.session_id,
+        system_message=system_prompt,
+    ).with_model("anthropic", "claude-sonnet-4-5-20250929")
+
+    # Replay history (LlmChat is stateless per-instance, so we replay)
+    # The library accumulates history within the instance. We rebuild for stateless requests by
+    # constructing a single "history-aware" message stub. For simplicity here, we rely on backend
+    # session storage and pass only the new user message; the library will only see this turn.
+    # That's acceptable because we inject relevant patient context every turn — recent dialogue is
+    # included via the last few turns in the system prompt extension below.
+    if turns:
+        recent = "\n".join(f"{t['role'].upper()}: {t['text']}" for t in turns[-6:])
+        chat = LlmChat(
+            api_key=EMERGENT_LLM_KEY,
+            session_id=req.session_id,
+            system_message=system_prompt + "\n\n----\nRECENT CONVERSATION:\n" + recent,
+        ).with_model("anthropic", "claude-sonnet-4-5-20250929")
+
+    try:
+        response = await chat.send_message(UserMessage(text=req.text))
+        reply_text = response if isinstance(response, str) else str(response)
+    except Exception as e:
+        logger.error(f"Chat error: {e}")
+        raise HTTPException(status_code=502, detail=f"Chat error: {str(e)[:200]}")
+
+    now = datetime.now(timezone.utc).isoformat()
+    turns.append({"role": "user", "text": req.text, "ts": now})
+    turns.append({"role": "assistant", "text": reply_text, "ts": now})
+    await db.chat_sessions.update_one(
+        {"session_id": req.session_id},
+        {"$set": {"session_id": req.session_id, "turns": turns, "updated_at": now}},
+        upsert=True,
+    )
+    return ChatResponse(session_id=req.session_id, text=reply_text, turns=len(turns))
+
+
+@api_router.get("/chat/history")
+async def chat_history(session_id: str):
+    sess = await db.chat_sessions.find_one({"session_id": session_id}, {"_id": 0})
+    return {"session_id": session_id, "turns": (sess or {}).get("turns", [])}
+
+
+@api_router.post("/chat/proactive")
+async def chat_proactive(req: ChatRequest):
+    """Returns a warm spontaneous check-in line (no LLM call needed — varied template)."""
+    import random
+    sess = await db.chat_sessions.find_one({"session_id": req.session_id}, {"_id": 0})
+    has_history = bool(sess and sess.get("turns"))
+    has_assessment = bool(await db.assessments.find_one({}, {"_id": 1}))
+
+    if not has_assessment:
+        pool = [
+            "Hi there. I'm Hope — your recovery companion. Whenever you're ready, taking that first assessment will help me support you. How are you feeling today?",
+            "Hello. I'm here whenever you need to talk. Have you had a chance to do your first movement check yet?",
+        ]
+    elif not has_history:
+        pool = [
+            "Hi, I'm Hope. I saw your assessment results — thank you for trusting me. How are you feeling today, gently?",
+            "Hello. I'm here for the journey. Want to tell me how the morning has been?",
+            "Hi there. Recovery has good days and tougher days. Which one is today?",
+        ]
+    else:
+        pool = [
+            "How are you doing today? Anything on your mind?",
+            "I've been thinking about you. How did the exercises feel this morning?",
+            "Just checking in. Did you sleep okay last night?",
+            "How is your shoulder feeling today? Easier, harder, or about the same?",
+            "Small reminder: every tiny step counts. How are you, really?",
+            "Hi friend. What's one thing — big or small — that went well for you today?",
+        ]
+    return {"text": random.choice(pool)}
 
 
 # Mount routes
