@@ -1,5 +1,7 @@
 const BASE = process.env.EXPO_PUBLIC_BACKEND_URL;
 
+import { authedFetch } from "@/src/auth";
+
 export type TaskStep = {
   id: string;
   voice: string;
@@ -51,7 +53,7 @@ export async function fetchTasks(): Promise<{ tasks: Task[]; voice_id: string }>
 }
 
 export async function fetchHistory(): Promise<Assessment[]> {
-  const res = await fetch(`${BASE}/api/assessment/history`);
+  const res = await authedFetch("/api/assessment/history");
   return res.json();
 }
 

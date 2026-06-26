@@ -9,6 +9,8 @@ import { colors, spacing, radius } from "@/src/theme";
 import { fetchHistory, Assessment } from "@/src/api";
 import { ensurePermission, loadSettings, rescheduleReminders } from "@/src/utils/notifications";
 import CreditsBadge from "@/src/components/CreditsBadge";
+import { storage } from "@/src/utils/storage";
+import { getCachedUser } from "@/src/auth";
 
 const HERO = "https://images.pexels.com/photos/8460412/pexels-photo-8460412.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940";
 const BASE = process.env.EXPO_PUBLIC_BACKEND_URL;
@@ -27,6 +29,7 @@ export default function HomeScreen() {
   const [history, setHistory] = useState<Assessment[]>([]);
   const [reminder, setReminder] = useState<ReminderStatus | null>(null);
   const [loading, setLoading] = useState(true);
+  const [greetName, setGreetName] = useState<string>("");
 
   const load = async () => {
     try {
@@ -36,6 +39,13 @@ export default function HomeScreen() {
       ]);
       setHistory(h || []);
       setReminder(r);
+      // greeting name preference: preferred_name from onboarding > cached user.name
+      const pref = await storage.getItem("preferred_name_v1");
+      if (pref) setGreetName(pref);
+      else {
+        const u = await getCachedUser();
+        if (u?.name) setGreetName(u.name.split(" ")[0]);
+      }
     } finally {
       setLoading(false);
     }
@@ -75,7 +85,7 @@ export default function HomeScreen() {
               <Text style={styles.heroBadge} testID="home-app-badge">NEUROMOTION</Text>
               <CreditsBadge />
             </View>
-            <Text style={styles.heroTitle}>Good day.{"\n"}Let's move forward, together.</Text>
+            <Text style={styles.heroTitle}>{greetName ? `Good day, ${greetName}.` : "Good day."}{"\n"}Let's move forward, together.</Text>
             <Text style={styles.heroSub}>
               A guided upper-limb movement assessment with personalized rehabilitation, grounded in clinical sources.
             </Text>

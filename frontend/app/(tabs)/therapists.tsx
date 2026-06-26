@@ -57,16 +57,16 @@ export default function TherapistsScreen() {
       <View style={styles.header}>
         <Text style={styles.headerTitle}>Find your therapist</Text>
         <Text style={styles.headerSub}>
-          Matched to your focus areas. Available 24/7 in early access.
+          Available 24/7, trained on real therapist expertise and experience.
         </Text>
       </View>
 
       <ScrollView contentContainerStyle={{ padding: spacing.lg, paddingBottom: 32 }} showsVerticalScrollIndicator={false}>
         <View style={styles.eaBanner} testID="ea-banner">
-          <Ionicons name="information-circle" size={18} color={colors.onBrandTertiary} />
+          <Ionicons name="ribbon" size={18} color={colors.onBrandTertiary} />
           <View style={{ flex: 1 }}>
-            <Text style={styles.eaTitle}>Early access — AI therapist companions</Text>
-            <Text style={styles.eaBody}>While we onboard licensed clinicians, our AI therapist personas — grounded in CIMT, Fugl-Meyer, ARAT, and Bobath — are here for you anytime.</Text>
+            <Text style={styles.eaTitle}>Trained on real clinical practice</Text>
+            <Text style={styles.eaBody}>Our therapists are built from the methods, voice, and patience of licensed clinicians — grounded in CIMT, Fugl-Meyer, ARAT, and Bobath.</Text>
           </View>
         </View>
         {loading && <ActivityIndicator color={colors.brandPrimary} />}

@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useRef, useState, useEffect } from "react";
 import { View, Text, StyleSheet, Pressable, ActivityIndicator, Platform } from "react-native";
 import { WebView, WebViewMessageEvent } from "react-native-webview";
 import { Ionicons } from "@expo/vector-icons";
@@ -6,12 +6,21 @@ import { useRouter } from "expo-router";
 import * as Haptics from "expo-haptics";
 import { colors, spacing, radius } from "@/src/theme";
 import { POSE_RUNNER_URL } from "@/src/api";
+import { getUserId } from "@/src/auth";
 
 export default function AssessmentScreen() {
   const router = useRouter();
   const webRef = useRef<WebView>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [runnerUri, setRunnerUri] = useState<string | null>(null);
+
+  useEffect(() => {
+    (async () => {
+      const uid = await getUserId();
+      setRunnerUri(uid ? `${POSE_RUNNER_URL}?uid=${encodeURIComponent(uid)}` : POSE_RUNNER_URL);
+    })();
+  }, []);
 
   const onMessage = (e: WebViewMessageEvent) => {
     try {
@@ -44,10 +53,11 @@ export default function AssessmentScreen() {
 
   return (
     <View style={styles.container}>
+      {runnerUri ? (
       <WebView
         ref={webRef}
         testID="assessment-webview"
-        source={{ uri: POSE_RUNNER_URL }}
+        source={{ uri: runnerUri }}
         style={styles.web}
         originWhitelist={["*"]}
         javaScriptEnabled
@@ -65,6 +75,12 @@ export default function AssessmentScreen() {
         onError={(e) => setError(String(e.nativeEvent.description || e.nativeEvent))}
         injectedJavaScriptBeforeContentLoaded={injectedJS}
       />
+      ) : (
+        <View style={styles.overlay}>
+          <ActivityIndicator size="large" color={colors.brandSecondary} />
+          <Text style={styles.overlayText}>Loading…</Text>
+        </View>
+      )}
 
       {loading && (
         <View style={styles.overlay} pointerEvents="none">

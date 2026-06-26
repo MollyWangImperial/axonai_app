@@ -32,6 +32,8 @@ export async function signIn(email: string, name: string, role: "patient" | "the
 export async function signOut() {
   await storage.removeItem(USER_KEY);
   await storage.removeItem(USER_OBJ);
+  await storage.removeItem("onboarding_complete_v1");
+  await storage.removeItem("preferred_name_v1");
 }
 
 export async function authedFetch(path: string, init: RequestInit = {}): Promise<Response> {

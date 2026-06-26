@@ -575,8 +575,17 @@ async def submit_assessment(payload: AssessmentSubmit, request: Request):
 
 
 @api_router.get("/assessment/history", response_model=List[Assessment])
-async def get_assessment_history():
-    docs = await db.assessments.find({}, {"_id": 0}).sort("created_at", -1).to_list(50)
+async def get_assessment_history(request: Request):
+    """Return ONLY the signed-in user's assessments. Anonymous → empty list."""
+    user = await _user_from_header(dict(request.headers))
+    if not user:
+        return []
+    docs = (
+        await db.assessments
+        .find({"user_id": user["id"]}, {"_id": 0})
+        .sort("created_at", -1)
+        .to_list(50)
+    )
     return [Assessment(**d) for d in docs]
 
 
@@ -732,6 +741,7 @@ let currentStepIdx = 0;
 let taskResults = []; // accumulating
 let stepStartTime = 0;
 let inTargetSince = null;
+let lastInTargetTs = 0;
 let stepCompleted = false;
 let stepMetrics = {};
 let trunkLeanMax = 0;
@@ -744,6 +754,10 @@ let latestPoseLandmarks = null;        // result.landmarks[0] from PoseLandmarke
 let dynamicTargetPos = null;           // {x,y} captured once per step for WRIST_DYNAMIC
 let handOpenScore = 0;                 // 0..1 — finger extension confidence
 let pinchScore = 0;                    // 0..1 — pinch confidence (1 = very close)
+// Pull signed-in user id from URL (?uid=…) so /assessment/submit attributes the
+// new assessment to the correct user and credits get debited from their wallet.
+const URL_PARAMS = new URLSearchParams(window.location.search);
+const CURRENT_USER_ID = URL_PARAMS.get("uid") || "";
 
 function postRN(data){
   if(window.ReactNativeWebView){
@@ -837,6 +851,7 @@ async function startStep(){
   if(!step) return;
   stepStartTime = performance.now();
   inTargetSince = null;
+  lastInTargetTs = 0;
   stepCompleted = false;
   stepMetrics = {};
   trunkLeanMax = 0;
@@ -974,58 +989,84 @@ function computeHandMetrics(){
   pinchScore = pinchScore * 0.6 + pinch * 0.4;
 }
 
+// Returns the user's shoulder-width in normalized coords (a robust "size unit")
+function shoulderWidth(lm){
+  if(!lm) return 0.18;
+  const ls = lm[11], rs = lm[12];
+  if(!ls || !rs) return 0.18;
+  return Math.max(0.08, Math.min(0.40, Math.hypot(ls.x - rs.x, ls.y - rs.y)));
+}
+
+// Effective hit radius for a step — scales with the user's body so it's stable
+// regardless of how close they are to the camera. Min 14% of frame, max 26%.
+function effectiveRadius(step, lm){
+  const baseR = step.target.r || 0.12;
+  const sw = shoulderWidth(lm);
+  // Translate: a "1.0" radius unit ≈ one shoulder-width. baseR is the configured
+  // radius — but we lift it to AT LEAST shoulder_width * 0.9 so a wrist near the
+  // mouth/chest reliably qualifies. For MOUTH/CHEST we expand even more because
+  // the wrist's z-depth makes 2D screen distance unforgiving.
+  const which = step.target.landmark;
+  let r = Math.max(baseR, sw * 0.85);
+  if(which === "MOUTH" || which === "CHEST"){
+    r = Math.max(r, sw * 1.05);
+  }
+  return Math.min(r, 0.28);
+}
+
 function checkTarget(landmarks){
   const step = getCurrentStep();
   if(!step || !landmarks) return false;
   const target = step.target;
   const which = target.landmark;
   const targetXY = getEffectiveTargetXY(step);
+  const R = effectiveRadius(step, landmarks);
 
-  // For HAND_OPEN / PINCH we ALSO require the appropriate hand gesture
+  // Helper — distance from a wrist to the target, optionally checking BOTH wrists
+  // and returning the smaller. Returns Infinity if no wrist available.
+  const wristDist = () => {
+    const lW = mirrorX(landmarks[15]);
+    const rW = mirrorX(landmarks[16]);
+    const dL = lW ? Math.hypot(lW.x - targetXY.x, lW.y - targetXY.y) : Infinity;
+    const dR = rW ? Math.hypot(rW.x - targetXY.x, rW.y - targetXY.y) : Infinity;
+    return Math.min(dL, dR);
+  };
+
+  // For HAND_OPEN / PINCH we ALSO require the gesture, but if HandLandmarker
+  // is unavailable, fall back to spatial-only check so the step still completes.
   if(which === "HAND_OPEN"){
-    // Need wrist near the anchor AND hand to be open
-    const wrist = resolveLandmarkPoint("WRIST");
-    if(!wrist) return false;
-    const near = Math.hypot(wrist.x - targetXY.x, wrist.y - targetXY.y) < target.r;
-    return near && handOpenScore > 0.55;
+    const near = wristDist() < R;
+    const gestureOk = handLandmarker ? handOpenScore > 0.45 : true;
+    return near && gestureOk;
   }
   if(which === "PINCH"){
-    const wrist = resolveLandmarkPoint("WRIST");
-    if(!wrist) return false;
-    const near = Math.hypot(wrist.x - targetXY.x, wrist.y - targetXY.y) < target.r;
-    return near && pinchScore > 0.55;
+    const near = wristDist() < R;
+    const gestureOk = handLandmarker ? pinchScore > 0.45 : true;
+    return near && gestureOk;
   }
 
-  // For MOUTH / CHEST the wrist must come close to the body landmark
+  // MOUTH / CHEST: wrist needs to come close to the body landmark in screen
+  // space. We use an enlarged radius (~shoulder-width) so this is achievable.
   if(which === "MOUTH" || which === "CHEST"){
-    const wrist = resolveLandmarkPoint("WRIST");
-    if(!wrist) return false;
-    return Math.hypot(wrist.x - targetXY.x, wrist.y - targetXY.y) < target.r;
+    return wristDist() < R;
   }
 
-  // WRIST_DYNAMIC: the resting/start hand position — wrist returning to the locked spot
+  // WRIST_DYNAMIC: hand returning to a locked starting position
   if(which === "WRIST_DYNAMIC"){
-    const wrist = resolveLandmarkPoint("WRIST");
-    if(!wrist) return false;
-    return Math.hypot(wrist.x - targetXY.x, wrist.y - targetXY.y) < target.r;
+    return wristDist() < R;
   }
 
-  // WRISTS (both hands)
+  // WRISTS (both hands must be near the target)
   if(which === "WRISTS"){
     const lW = mirrorX(landmarks[15]);
     const rW = mirrorX(landmarks[16]);
-    const okL = Math.hypot(lW.x - targetXY.x, lW.y - targetXY.y) < target.r;
-    const okR = Math.hypot(rW.x - targetXY.x, rW.y - targetXY.y) < target.r;
+    const okL = lW && Math.hypot(lW.x - targetXY.x, lW.y - targetXY.y) < R;
+    const okR = rW && Math.hypot(rW.x - targetXY.x, rW.y - targetXY.y) < R;
     return okL && okR;
   }
 
-  // Default: WRIST — either wrist near the (possibly static) target
-  const lW = mirrorX(landmarks[15]);
-  const rW = mirrorX(landmarks[16]);
-  return (
-    Math.hypot(lW.x - targetXY.x, lW.y - targetXY.y) < target.r ||
-    Math.hypot(rW.x - targetXY.x, rW.y - targetXY.y) < target.r
-  );
+  // Default: WRIST — any wrist near target
+  return wristDist() < R;
 }
 
 // ---------- Drawing ----------
@@ -1043,7 +1084,9 @@ function drawOverlay(landmarks){
   const targetXY = getEffectiveTargetXY(step);
   const tx = targetXY.x * canvas.width;
   const ty = targetXY.y * canvas.height;
-  const tr = step.target.r * Math.min(canvas.width, canvas.height);
+  // Visual radius MATCHES the actual hit radius — so what the user sees == what triggers.
+  const effR = effectiveRadius(step, landmarks);
+  const tr = effR * Math.min(canvas.width, canvas.height);
   const pulse = 1 + 0.08*Math.sin(performance.now()/250);
   // outer pulsing ring
   ctx.beginPath();
@@ -1204,7 +1247,7 @@ async function finishAssessment(){
   voiceText.textContent = "Generating personalized plan…";
   try{
     const res = await fetch(`${API_BASE}/assessment/submit`,{
-      method:"POST", headers:{"Content-Type":"application/json"},
+      method:"POST", headers:{"Content-Type":"application/json", ...(CURRENT_USER_ID ? {"X-User-Id": CURRENT_USER_ID} : {})},
       body: JSON.stringify({task_results: taskResults, affected_side: "right"})
     });
     const data = await res.json();
@@ -1241,19 +1284,23 @@ function loop(){
 
   drawOverlay(landmarks);
 
-  // check target hit
+  // check target hit — with a small "grace period" so brief jitter doesn't reset the hold
   const inTarget = checkTarget(landmarks);
   const step = getCurrentStep();
   if(step){
     if(inTarget){
       if(inTargetSince == null) inTargetSince = now;
+      lastInTargetTs = now;
       if(!stepCompleted && (now - inTargetSince) >= step.hold_ms){
         stepCompleted = true;
         if(navigator.vibrate) navigator.vibrate(80);
         setTimeout(()=>nextStep(false), 350);
       }
     }else{
-      inTargetSince = null;
+      // Grace: allow up to 350ms outside the zone before resetting the hold.
+      if(inTargetSince != null && (now - lastInTargetTs) > 350){
+        inTargetSince = null;
+      }
     }
   }
   requestAnimationFrame(loop);
@@ -1969,12 +2016,30 @@ AI_PATIENTS: List[Dict[str, Any]] = [
 
 # ============ Community Stories (seed) ============
 STORIES_SEED: List[Dict[str, Any]] = [
-    {"id": "st_001", "author": "Marisol R.", "age": 58, "months_since_stroke": 14, "title": "I held my grandson again today", "body": "Two years ago my right hand couldn't grip a spoon. This morning I held my grandson Mateo, all six pounds of him, with both arms. I cried, he yawned. Recovery is slow and unfair, but it is real. Keep going. — Marisol", "likes": 142, "photo": "https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=400"},
-    {"id": "st_002", "author": "Daniel K.", "age": 64, "months_since_stroke": 8, "title": "Buttoning my own shirt — week 30", "body": "Therapy said maybe by month 12. I did it today, week 30. Slow, fumbling, but every button was mine. I sat down afterward and cried like I'd won a marathon.", "likes": 98, "photo": "https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=400"},
-    {"id": "st_003", "author": "Asha N.", "age": 46, "months_since_stroke": 22, "title": "The day my shoulder stopped lifting up", "body": "For a year my shoulder would jump to my ear every time I reached. My PT made me practice 'shoulder blade in the back pocket' a thousand times. One morning, I reached for a mug and it just… stayed down. Tiny win, enormous joy.", "likes": 76, "photo": "https://images.unsplash.com/photo-1573497019940-1c28c88b4f3e?w=400"},
-    {"id": "st_004", "author": "Yusuf E.", "age": 71, "months_since_stroke": 36, "title": "I rode my bike — three years later", "body": "Three years post-stroke. Wobbly, terrified, both hands on the bars. Around the block. My wife followed in the car. I'm a child again — and that's a gift.", "likes": 211, "photo": "https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=400"},
-    {"id": "st_005", "author": "Jenny M.", "age": 39, "months_since_stroke": 5, "title": "It's okay to grieve the old you", "body": "I'm only five months in. I miss my hands the way they were. I miss writing fast notes in meetings. Therapy says my new hands will be different — and that's allowed to hurt. Sending love to anyone in the early days.", "likes": 340, "photo": "https://images.unsplash.com/photo-1438761681033-6461ffad8d80?w=400"},
-    {"id": "st_006", "author": "Carlos D.", "age": 55, "months_since_stroke": 18, "title": "Painting again — left hand learned", "body": "Right hand still has weak pinch. So I learned to paint left-handed. The brushstrokes are clumsy and the colors are loud and my wife says they're the best I've ever made. The brain rewires. Trust it.", "likes": 167, "photo": "https://images.unsplash.com/photo-1531123897727-8f129e1688ce?w=400"},
+    {"id": "st_001", "author": "Marisol Reyes", "age": 58, "months_since_stroke": 14, "title": "I held my grandson again today",
+     "body": "Two years ago my right hand couldn't grip a spoon. This morning I held my grandson Mateo, all six pounds of him, with both arms. I cried. He yawned. Recovery is slow and so unfair — but it is real. I do my home exercises in the kitchen while the coffee brews. Twenty minutes, every morning. Keep going.",
+     "likes": 312, "photo": "https://images.unsplash.com/photo-1566616213894-2d4e1baee5d8?w=400&q=80"},
+    {"id": "st_002", "author": "Daniel Okafor", "age": 38, "months_since_stroke": 11, "title": "Young stroke, still rebuilding",
+     "body": "I was 37. I went to bed normal and woke up unable to feel my left side. They call it a 'young stroke' like it's some rare collectible. The first six months I refused to look in the mirror. Now I'm typing this with my left hand at half speed and that feels like a small revolution. If you're a younger survivor reading this — you're not alone, and your old self isn't gone, just rearranged.",
+     "likes": 487, "photo": "https://images.unsplash.com/photo-1533101585792-27f81a845550?w=400&q=80"},
+    {"id": "st_003", "author": "Asha Narayan", "age": 46, "months_since_stroke": 22, "title": "The day my shoulder stopped hiking",
+     "body": "For over a year, my shoulder would jump up to my ear every time I tried to reach for something. My PT made me practice 'shoulder blade in the back pocket' a thousand times. Last Tuesday, I reached for my chai and the shoulder just… stayed down. A tiny win. Enormous joy. I cried into the mug.",
+     "likes": 218, "photo": "https://images.unsplash.com/photo-1592621385612-4d7129426394?w=400&q=80"},
+    {"id": "st_004", "author": "Yusuf El-Amin", "age": 71, "months_since_stroke": 36, "title": "I rode my bike — three years later",
+     "body": "Three years post-stroke. Wobbly, terrified, both hands on the bars. Around the block. My wife followed in the car at five miles an hour. I felt eight years old again — and that is a gift, not an insult. Tomorrow I will go around twice.",
+     "likes": 401, "photo": "https://images.unsplash.com/photo-1608681299041-cc19878f79f1?w=400&q=80"},
+    {"id": "st_005", "author": "Jenny Marston", "age": 34, "months_since_stroke": 5, "title": "It is okay to grieve the old you",
+     "body": "I am only five months in. Some days I miss my hands the way they were. I miss typing fast in meetings, miss texting my sister with both thumbs. My therapist says my new hands will be different — and that's allowed to hurt. To anyone in the early days: the grief is part of it. Be tender with yourself.",
+     "likes": 612, "photo": "https://images.unsplash.com/photo-1438761681033-6461ffad8d80?w=400&q=80"},
+    {"id": "st_006", "author": "Carlos Domínguez", "age": 55, "months_since_stroke": 18, "title": "Painting again — left hand learned",
+     "body": "Right hand still has a weak pinch. So I learned to paint left-handed. The brushstrokes are clumsy and the colors are louder than before and my wife says they're the best I've ever made. The brain rewires. Trust it. Show up every day, even badly.",
+     "likes": 289, "photo": "https://images.unsplash.com/photo-1535643302794-19c3804b874b?w=400&q=80"},
+    {"id": "st_007", "author": "Helen Whitmore", "age": 67, "months_since_stroke": 28, "title": "Buttoning my own blouse — week 47",
+     "body": "Therapy team said maybe by month 12. It took me 47 weeks. I sat on the edge of my bed this morning and did up all seven buttons. My fingers fumbled twice. I sat there afterwards and cried like I'd just won an Olympic medal. Every button was mine.",
+     "likes": 178, "photo": "https://images.unsplash.com/photo-1663429122432-c2769373768f?w=400&q=80"},
+    {"id": "st_008", "author": "Rajesh Iyer", "age": 62, "months_since_stroke": 9, "title": "Walking my dog — both leashes in one hand",
+     "body": "Nine months post-stroke. I held both leashes in my affected hand for the entire walk around the block. My golden retriever didn't notice. My wife noticed and squeezed my good hand. That's all I needed.",
+     "likes": 256, "photo": "https://images.unsplash.com/photo-1626891330731-b918dff0aec0?w=400&q=80"},
 ]
 
 
@@ -2293,6 +2358,42 @@ async def login(payload: UserSignup):
     # MVP: email-only sign-in. If user exists, return; else create.
     user = await get_or_create_user(payload.email, payload.name or payload.email, payload.role)
     return user
+
+
+class PatientOnboarding(BaseModel):
+    preferred_name: Optional[str] = None
+    age_band: Optional[str] = None         # "<40" | "40-54" | "55-64" | "65-74" | "75+"
+    months_since_stroke: Optional[int] = None
+    side_affected: Optional[str] = None    # "left" | "right" | "both" | "unsure"
+    dominant_hand: Optional[str] = None    # "left" | "right" | "ambidextrous"
+    mobility_level: Optional[str] = None   # "wheelchair" | "walker" | "cane" | "independent"
+    primary_goal: Optional[str] = None     # free text
+    secondary_goals: Optional[List[str]] = None
+    has_caregiver: Optional[bool] = None
+    notes: Optional[str] = None
+
+
+@api_router.post("/users/onboarding")
+async def submit_patient_onboarding(payload: PatientOnboarding, request: Request):
+    user = await _user_from_header(dict(request.headers))
+    if not user:
+        raise HTTPException(status_code=401, detail="Sign in required")
+    update = {k: v for k, v in payload.dict().items() if v is not None}
+    update["onboarded_at"] = datetime.now(timezone.utc).isoformat()
+    update["onboarding_complete"] = True
+    await db.users.update_one({"id": user["id"]}, {"$set": {"profile": update, "onboarding_complete": True}})
+    return {"ok": True, "profile": update}
+
+
+@api_router.get("/users/onboarding")
+async def get_patient_onboarding(request: Request):
+    user = await _user_from_header(dict(request.headers))
+    if not user:
+        return {"onboarding_complete": False, "profile": None}
+    return {
+        "onboarding_complete": bool(user.get("onboarding_complete")),
+        "profile": user.get("profile"),
+    }
 
 
 @api_router.get("/users/me")

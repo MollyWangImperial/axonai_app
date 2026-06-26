@@ -1,0 +1,268 @@
+import { useState } from "react";
+import { View, Text, StyleSheet, Pressable, TextInput, ScrollView, ActivityIndicator, KeyboardAvoidingView, Platform } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { Ionicons } from "@expo/vector-icons";
+import { useRouter } from "expo-router";
+import * as Haptics from "expo-haptics";
+import { colors, spacing, radius } from "@/src/theme";
+import { authedFetch } from "@/src/auth";
+import { storage } from "@/src/utils/storage";
+
+type Step = {
+  key: string;
+  question: string;
+  helper?: string;
+  type: "text" | "number" | "single" | "multi";
+  options?: { value: string; label: string; emoji?: string }[];
+  optional?: boolean;
+};
+
+const STEPS: Step[] = [
+  { key: "preferred_name", question: "What should we call you?", helper: "We'll use this name in your exercises and check-ins.", type: "text" },
+  { key: "age_band", question: "Which age range are you in?", type: "single",
+    options: [
+      { value: "<40", label: "Under 40", emoji: "🌱" },
+      { value: "40-54", label: "40 – 54", emoji: "🌿" },
+      { value: "55-64", label: "55 – 64", emoji: "🍃" },
+      { value: "65-74", label: "65 – 74", emoji: "🌳" },
+      { value: "75+", label: "75 or older", emoji: "🌲" },
+    ] },
+  { key: "months_since_stroke", question: "Roughly how many months since your stroke?", helper: "An estimate is fine — this helps tune your plan to your recovery stage.", type: "number" },
+  { key: "side_affected", question: "Which side of your body was affected?", type: "single",
+    options: [
+      { value: "left", label: "Left side", emoji: "👈" },
+      { value: "right", label: "Right side", emoji: "👉" },
+      { value: "both", label: "Both sides", emoji: "🤲" },
+      { value: "unsure", label: "Not sure yet", emoji: "🤔" },
+    ] },
+  { key: "dominant_hand", question: "Which is your dominant hand (before stroke)?", type: "single",
+    options: [
+      { value: "right", label: "Right-handed", emoji: "✋" },
+      { value: "left", label: "Left-handed", emoji: "🤚" },
+      { value: "ambidextrous", label: "Both / Ambidextrous", emoji: "🙌" },
+    ] },
+  { key: "mobility_level", question: "How do you usually get around?", type: "single",
+    options: [
+      { value: "independent", label: "I walk independently", emoji: "🚶" },
+      { value: "cane", label: "With a cane", emoji: "🦯" },
+      { value: "walker", label: "With a walker / frame", emoji: "🚶‍♀️" },
+      { value: "wheelchair", label: "I use a wheelchair", emoji: "♿" },
+    ] },
+  { key: "primary_goal", question: "What's the one thing you'd love to do again?", helper: "Examples: hold my grandchild, eat with a fork, button my own shirt, paint, type at the computer.", type: "text" },
+  { key: "secondary_goals", question: "Any other goals? Tap all that apply.", type: "multi",
+    options: [
+      { value: "reach_overhead", label: "Reach overhead", emoji: "🙆" },
+      { value: "self_feed", label: "Self-feed", emoji: "🍽️" },
+      { value: "dress", label: "Dress independently", emoji: "👔" },
+      { value: "write", label: "Write / draw", emoji: "✍️" },
+      { value: "drive", label: "Drive again", emoji: "🚗" },
+      { value: "cook", label: "Cook", emoji: "🍳" },
+      { value: "play_music", label: "Play music", emoji: "🎸" },
+      { value: "exercise", label: "Exercise / sports", emoji: "🏃" },
+    ], optional: true },
+  { key: "has_caregiver", question: "Is someone helping you at home (family, caregiver)?", type: "single",
+    options: [
+      { value: "yes", label: "Yes — I have help", emoji: "🤝" },
+      { value: "no", label: "No, mostly on my own", emoji: "🌿" },
+    ] },
+];
+
+export default function OnboardingScreen() {
+  const insets = useSafeAreaInsets();
+  const router = useRouter();
+  const [idx, setIdx] = useState(0);
+  const [values, setValues] = useState<Record<string, any>>({});
+  const [textInput, setTextInput] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  const step = STEPS[idx];
+  const progress = ((idx + 1) / STEPS.length) * 100;
+
+  const setVal = (k: string, v: any) => setValues((prev) => ({ ...prev, [k]: v }));
+
+  const canContinue = () => {
+    if (step.optional) return true;
+    const v = values[step.key];
+    if (step.type === "text") return (textInput || v || "").toString().trim().length > 0;
+    if (step.type === "number") return !!textInput && !isNaN(parseInt(textInput, 10));
+    if (step.type === "multi") return Array.isArray(v) && v.length > 0;
+    return !!v;
+  };
+
+  const onContinue = async () => {
+    Haptics.selectionAsync();
+    let next = { ...values };
+    if (step.type === "text") next[step.key] = textInput.trim();
+    else if (step.type === "number") next[step.key] = parseInt(textInput, 10);
+    setValues(next);
+    setTextInput("");
+    if (idx < STEPS.length - 1) {
+      setIdx(idx + 1);
+    } else {
+      setSaving(true);
+      try {
+        const payload: any = { ...next };
+        // map yes/no → boolean
+        if (payload.has_caregiver === "yes") payload.has_caregiver = true;
+        else if (payload.has_caregiver === "no") payload.has_caregiver = false;
+        const r = await authedFetch("/api/users/onboarding", {
+          method: "POST",
+          body: JSON.stringify(payload),
+        });
+        if (r.ok) {
+          // Cache preferred_name locally for the proactive chat & greetings
+          if (payload.preferred_name) await storage.setItem("preferred_name_v1", payload.preferred_name);
+          await storage.setItem("onboarding_complete_v1", "1");
+          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+          router.replace("/");
+        } else {
+          setSaving(false);
+        }
+      } catch {
+        setSaving(false);
+      }
+    }
+  };
+
+  const onSkip = async () => {
+    if (idx < STEPS.length - 1) {
+      setIdx(idx + 1);
+      setTextInput("");
+      return;
+    }
+    // last step optional skip → finish anyway
+    await onContinue();
+  };
+
+  const renderInput = () => {
+    if (step.type === "text" || step.type === "number") {
+      return (
+        <TextInput
+          testID={`onb-input-${step.key}`}
+          value={textInput}
+          onChangeText={setTextInput}
+          placeholder={step.type === "number" ? "e.g. 6" : "Type here…"}
+          placeholderTextColor={colors.onSurfaceTertiary}
+          keyboardType={step.type === "number" ? "number-pad" : "default"}
+          autoFocus
+          style={styles.textInput}
+        />
+      );
+    }
+    if (step.type === "single") {
+      return (
+        <View style={styles.optionsCol}>
+          {step.options!.map((o) => {
+            const active = values[step.key] === o.value;
+            return (
+              <Pressable
+                key={o.value}
+                testID={`onb-opt-${step.key}-${o.value}`}
+                onPress={() => setVal(step.key, o.value)}
+                style={[styles.optionRow, active && styles.optionRowActive]}
+              >
+                {o.emoji && <Text style={styles.optionEmoji}>{o.emoji}</Text>}
+                <Text style={[styles.optionLabel, active && styles.optionLabelActive]}>{o.label}</Text>
+                {active && <Ionicons name="checkmark-circle" size={22} color={colors.brandPrimary} />}
+              </Pressable>
+            );
+          })}
+        </View>
+      );
+    }
+    if (step.type === "multi") {
+      const selected: string[] = values[step.key] || [];
+      return (
+        <View style={styles.optionsGrid}>
+          {step.options!.map((o) => {
+            const active = selected.includes(o.value);
+            return (
+              <Pressable
+                key={o.value}
+                testID={`onb-multi-${step.key}-${o.value}`}
+                onPress={() => {
+                  const next = active ? selected.filter((s) => s !== o.value) : [...selected, o.value];
+                  setVal(step.key, next);
+                }}
+                style={[styles.chip, active && styles.chipActive]}
+              >
+                {o.emoji && <Text style={styles.chipEmoji}>{o.emoji}</Text>}
+                <Text style={[styles.chipText, active && styles.chipTextActive]}>{o.label}</Text>
+              </Pressable>
+            );
+          })}
+        </View>
+      );
+    }
+    return null;
+  };
+
+  return (
+    <View style={[styles.container, { paddingTop: insets.top + spacing.sm }]}>
+      <View style={styles.topBar}>
+        <Pressable onPress={() => idx > 0 && setIdx(idx - 1)} disabled={idx === 0} hitSlop={12}>
+          <Ionicons name="chevron-back" size={26} color={idx === 0 ? colors.onSurfaceTertiary : colors.onSurface} />
+        </Pressable>
+        <Text style={styles.stepCounter}>{idx + 1} of {STEPS.length}</Text>
+        {step.optional ? (
+          <Pressable onPress={onSkip} testID="onb-skip" hitSlop={12}>
+            <Text style={styles.skip}>Skip</Text>
+          </Pressable>
+        ) : <View style={{ width: 40 }} />}
+      </View>
+      <View style={styles.progressBg}>
+        <View style={[styles.progressFill, { width: `${progress}%` }]} />
+      </View>
+
+      <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={{ flex: 1 }}>
+        <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
+          <Text style={styles.question} testID={`onb-q-${step.key}`}>{step.question}</Text>
+          {step.helper && <Text style={styles.helper}>{step.helper}</Text>}
+          <View style={{ height: spacing.lg }} />
+          {renderInput()}
+        </ScrollView>
+
+        <View style={[styles.footer, { paddingBottom: Math.max(insets.bottom, spacing.md) }]}>
+          <Pressable
+            testID="onb-continue"
+            disabled={!canContinue() || saving}
+            onPress={onContinue}
+            style={[styles.continueBtn, (!canContinue() || saving) && styles.continueBtnDisabled]}
+          >
+            {saving ? <ActivityIndicator color="#fff" /> :
+              <Text style={styles.continueText}>{idx === STEPS.length - 1 ? "Finish" : "Continue"}</Text>}
+          </Pressable>
+        </View>
+      </KeyboardAvoidingView>
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: { flex: 1, backgroundColor: colors.surface },
+  topBar: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", paddingHorizontal: spacing.md, paddingBottom: spacing.sm },
+  stepCounter: { color: colors.onSurfaceSecondary, fontSize: 14, fontWeight: "600" },
+  skip: { color: colors.brandPrimary, fontSize: 15, fontWeight: "700" },
+  progressBg: { height: 4, backgroundColor: colors.divider, marginHorizontal: spacing.lg, borderRadius: 2, overflow: "hidden" },
+  progressFill: { height: 4, backgroundColor: colors.brandPrimary, borderRadius: 2 },
+  scroll: { paddingHorizontal: spacing.lg, paddingTop: spacing.xl, paddingBottom: spacing.xl },
+  question: { fontSize: 26, fontWeight: "800", color: colors.onSurface, lineHeight: 32 },
+  helper: { fontSize: 15, color: colors.onSurfaceSecondary, lineHeight: 22, marginTop: spacing.sm },
+  textInput: { backgroundColor: colors.surfaceSecondary, borderRadius: radius.lg, padding: spacing.md, color: colors.onSurface, fontSize: 18, minHeight: 56 },
+  optionsCol: { gap: spacing.sm },
+  optionRow: { flexDirection: "row", alignItems: "center", gap: spacing.md, backgroundColor: colors.surfaceSecondary, padding: spacing.md, borderRadius: radius.lg, borderWidth: 2, borderColor: "transparent", minHeight: 60 },
+  optionRowActive: { borderColor: colors.brandPrimary, backgroundColor: colors.brandTertiary },
+  optionEmoji: { fontSize: 24 },
+  optionLabel: { flex: 1, fontSize: 16, fontWeight: "600", color: colors.onSurface },
+  optionLabelActive: { color: colors.onBrandTertiary, fontWeight: "700" },
+  optionsGrid: { flexDirection: "row", flexWrap: "wrap", gap: spacing.sm },
+  chip: { flexDirection: "row", alignItems: "center", gap: 6, backgroundColor: colors.surfaceSecondary, paddingHorizontal: spacing.md, paddingVertical: 10, borderRadius: radius.pill, borderWidth: 2, borderColor: "transparent" },
+  chipActive: { borderColor: colors.brandPrimary, backgroundColor: colors.brandTertiary },
+  chipEmoji: { fontSize: 16 },
+  chipText: { fontSize: 14, fontWeight: "600", color: colors.onSurface },
+  chipTextActive: { color: colors.onBrandTertiary, fontWeight: "700" },
+  footer: { padding: spacing.md, backgroundColor: colors.surface, borderTopWidth: 1, borderTopColor: colors.divider },
+  continueBtn: { backgroundColor: colors.brandPrimary, padding: 16, borderRadius: radius.lg, alignItems: "center", minHeight: 56, justifyContent: "center" },
+  continueBtnDisabled: { opacity: 0.4 },
+  continueText: { color: colors.onBrandPrimary, fontSize: 17, fontWeight: "800" },
+});

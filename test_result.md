@@ -143,18 +143,20 @@ frontend:
 
 metadata:
   created_by: "main_agent"
-  version: "8.0"
-  test_sequence: 8
+  version: "9.0"
+  test_sequence: 9
   run_ui: false
 
 test_plan:
   current_focus:
-    - "OpenAI TTS (nova) replaces ElevenLabs via Emergent LLM key"
-    - "Dynamic landmark targets in pose-runner WebView (WRIST_DYNAMIC, MOUTH, CHEST, HAND_OPEN, PINCH) + emoji icons"
+    - "Onboarding flow (8 items, 9 steps): /api/users/onboarding GET+POST"
+    - "Per-user assessment history filtering"
+    - "Community stories: 8 realistic seed entries"
+    - "Assessment hit-detection: dynamic radius scales with shoulder width + 350ms grace"
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
 
 agent_communication:
     - agent: "main"
-      message: "Iteration 8 fixes: (a) Swapped ElevenLabs → OpenAI TTS (nova) using emergentintegrations.llm.openai.text_to_speech.OpenAITextToSpeech with EMERGENT_LLM_KEY. Confirmed /api/tts/health ok=true and /api/tts/generate returns valid mp3 base64. (b) Rewrote the pose-runner JS to handle the new dynamic landmark target IDs and added MediaPipe HandLandmarker for HAND_OPEN/PINCH. Added emoji icons (☕🪵🧺🏐🪙) drawn with counter-flip on the mirrored canvas. Please backend-test: POST /api/tts/generate with sample text returns valid base64 mp3; GET /api/tts/health returns provider=openai voice=nova; GET /api/assessment/tasks returns 7 tasks with voice_id=nova and at least 5 icon-bearing steps; GET /api/pose/runner returns HTML containing HandLandmarker, WRIST_DYNAMIC, MOUTH, CHEST, HAND_OPEN, PINCH, ICON_EMOJI. The actual MediaPipe loop requires a camera-enabled browser and is hard to e2e via testing_agent — verify only that the HTML payload is well-formed."
+      message: "Phase A complete. (0) Assessment hit detection: replaced fixed-radius check with shoulder-width-scaled `effectiveRadius`, drawn-circle == hit-zone, plus a 350ms grace window so brief jitter doesn't reset the hold. T3 (mouth) now uses a larger ~1.05×shoulder-width target. (2) Therapists tab: removed 'Early access' copy → 'Available 24/7, trained on real therapist expertise and experience.' (3) STORIES_SEED replaced with 8 realistic full-name first-person stories with diverse Unsplash portraits. (5) New users get empty assessment/plan — `/api/assessment/history` now filters by `X-User-Id` (anonymous → []). (6) Added 9-step onboarding (preferred name, age band, months post-stroke, side, dominant hand, mobility, primary goal, secondary goals multi-select, caregiver). Wired into sign-in routing + AuthGate. Personalized home greeting now shows 'Good day, {preferred_name}.' Backend: POST/GET /api/users/onboarding (auth required). Manual screenshot e2e covered the full sign-up → 9-step onboarding → personalized home flow. Backend smoke tests cover onboarding, history filtering, and stories seed. WebView hit-detection improvement requires camera, can only be verified on real device — agent has no way to drive a real camera feed."

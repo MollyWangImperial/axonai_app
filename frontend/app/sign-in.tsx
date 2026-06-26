@@ -6,7 +6,8 @@ import { LinearGradient } from "expo-linear-gradient";
 import { useRouter } from "expo-router";
 import * as Haptics from "expo-haptics";
 import { colors, spacing, radius } from "@/src/theme";
-import { signIn } from "@/src/auth";
+import { signIn, authedFetch } from "@/src/auth";
+import { storage } from "@/src/utils/storage";
 
 export default function SignInScreen() {
   const insets = useSafeAreaInsets();
@@ -26,8 +27,25 @@ export default function SignInScreen() {
     try {
       const u = await signIn(email.trim(), name.trim(), role);
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      if (u.role === "therapist") router.replace("/therapist");
-      else router.replace("/");
+      if (u.role === "therapist") {
+        router.replace("/therapist");
+        return;
+      }
+      // Patient — check whether onboarding is complete
+      try {
+        const r = await authedFetch("/api/users/onboarding");
+        const j = await r.json();
+        if (j.onboarding_complete) {
+          await storage.setItem("onboarding_complete_v1", "1");
+          if (j.profile?.preferred_name) await storage.setItem("preferred_name_v1", j.profile.preferred_name);
+          router.replace("/");
+        } else {
+          router.replace("/onboarding");
+        }
+      } catch {
+        // Fail-safe: go to onboarding for any new account flow
+        router.replace("/onboarding");
+      }
     } catch (e) {
       setErr("Sign-in failed. Try again.");
     } finally { setLoading(false); }
