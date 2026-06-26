@@ -13,7 +13,7 @@ from typing import List, Dict, Any, Optional
 import uuid
 from datetime import datetime, timezone
 
-from elevenlabs.client import ElevenLabs
+from emergentintegrations.llm.openai.text_to_speech import OpenAITextToSpeech
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env")
@@ -23,10 +23,11 @@ mongo_url = os.environ["MONGO_URL"]
 client = AsyncIOMotorClient(mongo_url)
 db = client[os.environ["DB_NAME"]]
 
-# ElevenLabs
-ELEVEN_API_KEY = os.environ["ELEVENLABS_API_KEY"]
-ELEVEN_VOICE_ID = os.environ.get("ELEVENLABS_VOICE_ID", "EXAVITQu4vr4xnSDxMaC")
-eleven_client = ElevenLabs(api_key=ELEVEN_API_KEY)
+# OpenAI TTS via Emergent LLM key (universal key)
+EMERGENT_LLM_KEY = os.environ["EMERGENT_LLM_KEY"]
+TTS_VOICE = os.environ.get("TTS_VOICE", "nova")  # warm/encouraging default
+TTS_MODEL = os.environ.get("TTS_MODEL", "tts-1")
+tts_client = OpenAITextToSpeech(api_key=EMERGENT_LLM_KEY)
 
 app = FastAPI()
 api_router = APIRouter(prefix="/api")
@@ -244,7 +245,7 @@ TASKS_DATA: List[Dict[str, Any]] = [
             {
                 "id": "T5-S2",
                 "voice": "Open your hand wide. When fully open, hold for a moment. Then slowly close your hand around an imaginary ball.",
-                "target": {"x": 0.5, "y": 0.45, "r": 0.12, "landmark": "HAND_OPEN"},
+                "target": {"x": 0.5, "y": 0.45, "r": 0.12, "landmark": "HAND_OPEN", "icon": "ball"},
                 "hold_ms": 1800,
                 "caption": "Open and close hand around a ball",
                 "measure": ["hand_opening", "grasp_release"],
@@ -274,7 +275,7 @@ TASKS_DATA: List[Dict[str, Any]] = [
             {
                 "id": "T6-S2",
                 "voice": "Now, slowly touch the tip of your thumb to the tip of your index finger, as if you were pinching a small coin. Hold for a moment.",
-                "target": {"x": 0.5, "y": 0.40, "r": 0.12, "landmark": "PINCH"},
+                "target": {"x": 0.5, "y": 0.40, "r": 0.12, "landmark": "PINCH", "icon": "coin"},
                 "hold_ms": 1800,
                 "caption": "Pinch thumb and index finger",
                 "measure": ["pinch_grip"],
@@ -304,7 +305,7 @@ TASKS_DATA: List[Dict[str, Any]] = [
             {
                 "id": "T7-S2",
                 "voice": "Pretend to fold a towel. Move both hands together, bringing them inward to meet in front of you, then outward. Make sure both hands move equally.",
-                "target": {"x": 0.5, "y": 0.40, "r": 0.12, "landmark": "WRISTS"},
+                "target": {"x": 0.5, "y": 0.40, "r": 0.12, "landmark": "WRISTS", "icon": "towel"},
                 "hold_ms": 3500,
                 "caption": "Fold towel with both hands",
                 "measure": ["bilateral_symmetry", "affected_participation"],
@@ -497,54 +498,54 @@ async def get_status_checks():
 
 @api_router.get("/assessment/tasks")
 async def get_tasks():
-    return {"tasks": TASKS_DATA, "voice_id": ELEVEN_VOICE_ID}
+    return {"tasks": TASKS_DATA, "voice_id": TTS_VOICE}
 
 
 @api_router.post("/tts/generate", response_model=TTSResponse)
 async def generate_tts(req: TTSRequest):
-    voice_id = req.voice_id or ELEVEN_VOICE_ID
+    # Use OpenAI TTS (nova by default) via Emergent LLM key.
+    # `voice_id` from old clients is accepted but ignored unless it matches a valid OpenAI voice.
+    valid_voices = {"alloy", "ash", "coral", "echo", "fable", "nova", "onyx", "sage", "shimmer"}
+    voice = req.voice_id if (req.voice_id in valid_voices) else TTS_VOICE
     try:
-        audio_iter = eleven_client.text_to_speech.convert(
+        audio_b64 = await tts_client.generate_speech_base64(
             text=req.text,
-            voice_id=voice_id,
-            model_id="eleven_multilingual_v2",
-            output_format="mp3_44100_128",
+            model=TTS_MODEL,
+            voice=voice,
+            response_format="mp3",
         )
-        audio_bytes = b"".join(audio_iter)
-        return TTSResponse(audio_b64=base64.b64encode(audio_bytes).decode(), text=req.text)
+        return TTSResponse(audio_b64=audio_b64, text=req.text)
     except Exception as e:
         msg = str(e)
         logger.error(f"TTS error: {msg}")
-        if "missing_permissions" in msg or "401" in msg:
+        if "quota_exceeded" in msg or "402" in msg:
             raise HTTPException(
                 status_code=503,
-                detail="Voice service unavailable: ElevenLabs API key lacks text_to_speech permission. Enable it at https://elevenlabs.io/app/settings/api-keys.",
+                detail="Voice service unavailable: Emergent LLM key quota exceeded. Add balance at Profile → Universal Key.",
             )
         raise HTTPException(status_code=500, detail=f"TTS generation failed: {msg[:200]}")
 
 
 @api_router.get("/tts/health")
 async def tts_health():
-    """Diagnostic: check whether the configured ElevenLabs key can synthesize speech."""
+    """Diagnostic: check whether OpenAI TTS via Emergent LLM key works."""
     try:
-        audio_iter = eleven_client.text_to_speech.convert(
+        b = await tts_client.generate_speech(
             text="ok",
-            voice_id=ELEVEN_VOICE_ID,
-            model_id="eleven_multilingual_v2",
-            output_format="mp3_44100_128",
+            model=TTS_MODEL,
+            voice=TTS_VOICE,
+            response_format="mp3",
         )
-        b = b"".join(audio_iter)
-        return {"ok": True, "bytes": len(b)}
+        return {"ok": True, "bytes": len(b), "voice": TTS_VOICE, "model": TTS_MODEL, "provider": "openai"}
     except Exception as e:
         msg = str(e)
-        scope_missing = "missing_permissions" in msg or "401" in msg
+        quota = "quota_exceeded" in msg or "402" in msg
         return {
             "ok": False,
-            "scope_missing": scope_missing,
+            "quota_exceeded": quota,
             "hint": (
-                "Open https://elevenlabs.io/app/settings/api-keys, edit the key, "
-                "enable 'Text to Speech' permission, then save."
-                if scope_missing else "Check key validity / network."
+                "Top up your Emergent Universal Key balance at Profile → Universal Key → Add Balance."
+                if quota else "Check key validity / network."
             ),
             "error": msg[:300],
         }
@@ -681,7 +682,7 @@ POSE_RUNNER_HTML = r"""<!DOCTYPE html>
 </div>
 
 <script type="module">
-import { PoseLandmarker, FilesetResolver, DrawingUtils } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs";
+import { PoseLandmarker, HandLandmarker, FilesetResolver, DrawingUtils } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs";
 
 const API_BASE = window.location.origin + "/api";
 const video = document.getElementById("video");
@@ -722,9 +723,10 @@ const CELEBRATION_VOICES = [
 ];
 
 let landmarker = null;
+let handLandmarker = null;
 let drawingUtils = null;
 let tasks = [];
-let voiceId = "EXAVITQu4vr4xnSDxMaC";
+let voiceId = "nova";
 let currentTaskIdx = 0;
 let currentStepIdx = 0;
 let taskResults = []; // accumulating
@@ -737,6 +739,11 @@ let shoulderFlexionMax = 0;
 let shoulderHikeDetected = false;
 let running = false;
 let audioEl = new Audio();
+let latestHandLandmarks = null;        // result.landmarks[0] from HandLandmarker (21 points)
+let latestPoseLandmarks = null;        // result.landmarks[0] from PoseLandmarker (33 points)
+let dynamicTargetPos = null;           // {x,y} captured once per step for WRIST_DYNAMIC
+let handOpenScore = 0;                 // 0..1 — finger extension confidence
+let pinchScore = 0;                    // 0..1 — pinch confidence (1 = very close)
 
 function postRN(data){
   if(window.ReactNativeWebView){
@@ -786,6 +793,17 @@ async function setupPose(){
     runningMode: "VIDEO",
     numPoses: 1,
   });
+  try{
+    handLandmarker = await HandLandmarker.createFromOptions(filesetResolver, {
+      baseOptions:{ modelAssetPath: "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task" },
+      runningMode: "VIDEO",
+      numHands: 2,
+    });
+  }catch(e){
+    // hand detection optional — falls back to pose-based heuristics
+    handLandmarker = null;
+    postRN({type:"hand_landmarker_unavailable", message:String(e)});
+  }
   drawingUtils = new DrawingUtils(ctx);
 }
 
@@ -824,6 +842,7 @@ async function startStep(){
   trunkLeanMax = 0;
   shoulderFlexionMax = 0;
   shoulderHikeDetected = false;
+  dynamicTargetPos = null;
   stepTitle.textContent = `Task ${currentTaskIdx+1} of ${tasks.length} · ${task.title}`;
   captionEl.textContent = step.caption;
   renderDots();
@@ -862,28 +881,155 @@ function computeMetrics(landmarks){
   if(shoulderHipDist > 0.35) shoulderHikeDetected = true;
 }
 
+// ---------- Dynamic target resolution ----------
+// Returns the on-screen (mirrored, normalized) point at which to draw the target,
+// and the candidate body point(s) to test against the target zone.
+// Mirroring: user sees themselves mirrored — so on-screen X = (1 - landmark.x).
+function mirrorX(p){ return {x: 1 - p.x, y: p.y}; }
+
+function resolveLandmarkPoint(which){
+  const lm = latestPoseLandmarks;
+  if(!lm) return null;
+  if(which === "WRIST" || which === "WRIST_DYNAMIC"){
+    // pick the wrist that is lower (relaxed) as the "affected" reference,
+    // or the higher one if user is actively reaching.
+    return mirrorX(lm[15].y > lm[16].y ? lm[15] : lm[16]);
+  }
+  if(which === "WRISTS"){
+    return mirrorX({x:(lm[15].x+lm[16].x)/2, y:(lm[15].y+lm[16].y)/2});
+  }
+  if(which === "MOUTH"){
+    // MediaPipe Pose: 9 = mouth_left, 10 = mouth_right
+    const m = {x:(lm[9].x+lm[10].x)/2, y:(lm[9].y+lm[10].y)/2};
+    return mirrorX(m);
+  }
+  if(which === "CHEST"){
+    // mid-shoulder, drop slightly below for chest center
+    const ls = lm[11], rs = lm[12];
+    const mid = {x:(ls.x+rs.x)/2, y:(ls.y+rs.y)/2 + 0.06};
+    return mirrorX(mid);
+  }
+  if(which === "HAND_OPEN" || which === "PINCH"){
+    // Anchor on whichever wrist is most raised (active hand)
+    const active = lm[15].y < lm[16].y ? lm[15] : lm[16];
+    return mirrorX(active);
+  }
+  return null;
+}
+
+function getEffectiveTargetXY(step){
+  // For WRIST_DYNAMIC, MOUTH, CHEST, HAND_OPEN, PINCH the target follows the body.
+  // Otherwise use the static configured x/y.
+  const which = step.target.landmark;
+  if(which === "WRIST_DYNAMIC"){
+    // Capture the wrist position once at the start of the step and lock there.
+    if(!dynamicTargetPos){
+      const p = resolveLandmarkPoint("WRIST");
+      if(p) dynamicTargetPos = {x: p.x, y: p.y};
+    }
+    return dynamicTargetPos || {x: step.target.x, y: step.target.y};
+  }
+  if(which === "MOUTH" || which === "CHEST"){
+    const p = resolveLandmarkPoint(which);
+    return p ? {x: p.x, y: p.y} : {x: step.target.x, y: step.target.y};
+  }
+  if(which === "HAND_OPEN" || which === "PINCH"){
+    // Anchor on the raised hand so user can see the prompt next to their hand
+    const p = resolveLandmarkPoint(which);
+    return p ? {x: p.x, y: p.y} : {x: step.target.x, y: step.target.y};
+  }
+  return {x: step.target.x, y: step.target.y};
+}
+
+// ---------- Hand metrics (from HandLandmarker) ----------
+function computeHandMetrics(){
+  // Hand landmarks indices (MediaPipe Hands): 0=wrist, 4=thumb_tip, 5=index_mcp,
+  // 8=index_tip, 12=middle_tip, 16=ring_tip, 20=pinky_tip.
+  // Open hand: average fingertip distance from wrist is large relative to palm width.
+  // Pinch: thumb_tip <-> index_tip distance is small relative to palm width.
+  if(!latestHandLandmarks || latestHandLandmarks.length < 21){
+    // decay scores so old detections don't linger
+    handOpenScore = Math.max(0, handOpenScore - 0.15);
+    pinchScore = Math.max(0, pinchScore - 0.15);
+    return;
+  }
+  const h = latestHandLandmarks;
+  const dist = (a,b) => Math.hypot(a.x-b.x, a.y-b.y);
+  const palmWidth = Math.max(0.01, dist(h[5], h[17])); // index_mcp <-> pinky_mcp
+  const fingerSpread = (
+    dist(h[0], h[8])  +  // wrist to index_tip
+    dist(h[0], h[12]) +  // wrist to middle_tip
+    dist(h[0], h[16]) +  // wrist to ring_tip
+    dist(h[0], h[20])    // wrist to pinky_tip
+  ) / 4;
+  // Normalize by palm width — extended fingers ~3-4x palm width
+  const openRatio = fingerSpread / palmWidth;
+  // Map 1.8 (closed) -> 0 ; 3.0 (open) -> 1
+  const open = Math.max(0, Math.min(1, (openRatio - 1.8) / 1.2));
+  handOpenScore = handOpenScore * 0.6 + open * 0.4;
+
+  const pinchDist = dist(h[4], h[8]) / palmWidth;
+  // pinchDist < 0.5 means tips are touching; > 1.2 means apart
+  const pinch = Math.max(0, Math.min(1, (1.2 - pinchDist) / 0.7));
+  pinchScore = pinchScore * 0.6 + pinch * 0.4;
+}
+
 function checkTarget(landmarks){
   const step = getCurrentStep();
   if(!step || !landmarks) return false;
   const target = step.target;
-  // landmark already mirrored (we flipped canvas), but landmarks come from video.
-  // Since video is mirrored via CSS only, landmarks are still in original video coords.
-  // We mirror by computing 1-x for landmarks because user sees themselves mirrored.
   const which = target.landmark;
-  let pts = [];
-  if(which === "WRIST") pts = [landmarks[15], landmarks[16]];
-  else if(which === "WRISTS") pts = [landmarks[15], landmarks[16]];
-  else pts = [landmarks[15], landmarks[16]];
+  const targetXY = getEffectiveTargetXY(step);
 
-  if(which === "WRISTS"){
-    // both wrists must be near target
-    const ok = pts.every(p => p && Math.hypot((1-p.x)-target.x, p.y - target.y) < target.r);
-    return ok;
-  }else{
-    // any wrist near target
-    return pts.some(p => p && Math.hypot((1-p.x)-target.x, p.y - target.y) < target.r);
+  // For HAND_OPEN / PINCH we ALSO require the appropriate hand gesture
+  if(which === "HAND_OPEN"){
+    // Need wrist near the anchor AND hand to be open
+    const wrist = resolveLandmarkPoint("WRIST");
+    if(!wrist) return false;
+    const near = Math.hypot(wrist.x - targetXY.x, wrist.y - targetXY.y) < target.r;
+    return near && handOpenScore > 0.55;
   }
+  if(which === "PINCH"){
+    const wrist = resolveLandmarkPoint("WRIST");
+    if(!wrist) return false;
+    const near = Math.hypot(wrist.x - targetXY.x, wrist.y - targetXY.y) < target.r;
+    return near && pinchScore > 0.55;
+  }
+
+  // For MOUTH / CHEST the wrist must come close to the body landmark
+  if(which === "MOUTH" || which === "CHEST"){
+    const wrist = resolveLandmarkPoint("WRIST");
+    if(!wrist) return false;
+    return Math.hypot(wrist.x - targetXY.x, wrist.y - targetXY.y) < target.r;
+  }
+
+  // WRIST_DYNAMIC: the resting/start hand position — wrist returning to the locked spot
+  if(which === "WRIST_DYNAMIC"){
+    const wrist = resolveLandmarkPoint("WRIST");
+    if(!wrist) return false;
+    return Math.hypot(wrist.x - targetXY.x, wrist.y - targetXY.y) < target.r;
+  }
+
+  // WRISTS (both hands)
+  if(which === "WRISTS"){
+    const lW = mirrorX(landmarks[15]);
+    const rW = mirrorX(landmarks[16]);
+    const okL = Math.hypot(lW.x - targetXY.x, lW.y - targetXY.y) < target.r;
+    const okR = Math.hypot(rW.x - targetXY.x, rW.y - targetXY.y) < target.r;
+    return okL && okR;
+  }
+
+  // Default: WRIST — either wrist near the (possibly static) target
+  const lW = mirrorX(landmarks[15]);
+  const rW = mirrorX(landmarks[16]);
+  return (
+    Math.hypot(lW.x - targetXY.x, lW.y - targetXY.y) < target.r ||
+    Math.hypot(rW.x - targetXY.x, rW.y - targetXY.y) < target.r
+  );
 }
+
+// ---------- Drawing ----------
+const ICON_EMOJI = { cup: "☕", table: "🪵", towel: "🧺", ball: "🏐", coin: "🪙" };
 
 function drawOverlay(landmarks){
   ctx.clearRect(0,0,canvas.width,canvas.height);
@@ -892,32 +1038,64 @@ function drawOverlay(landmarks){
     drawingUtils.drawLandmarks(landmarks, {color:"#D9E5DC", radius:3});
     drawingUtils.drawConnectors(landmarks, PoseLandmarker.POSE_CONNECTIONS, {color:"#4A7856", lineWidth:4});
   }
-  // draw target — coords are in user-facing (mirrored) space, so flip x for the un-mirrored canvas (we apply scaleX(-1) via CSS, so drawing at target.x normal works visually)
   const step = getCurrentStep();
-  if(step){
-    const tx = step.target.x * canvas.width;
-    const ty = step.target.y * canvas.height;
-    const tr = step.target.r * Math.min(canvas.width, canvas.height);
-    const pulse = 1 + 0.08*Math.sin(performance.now()/250);
+  if(!step) return;
+  const targetXY = getEffectiveTargetXY(step);
+  const tx = targetXY.x * canvas.width;
+  const ty = targetXY.y * canvas.height;
+  const tr = step.target.r * Math.min(canvas.width, canvas.height);
+  const pulse = 1 + 0.08*Math.sin(performance.now()/250);
+  // outer pulsing ring
+  ctx.beginPath();
+  ctx.arc(tx, ty, tr*pulse, 0, Math.PI*2);
+  ctx.lineWidth = 6;
+  ctx.strokeStyle = "#E18E6D";
+  ctx.stroke();
+  // inner glow
+  ctx.beginPath();
+  ctx.arc(tx, ty, tr*0.55, 0, Math.PI*2);
+  ctx.fillStyle = "rgba(225,142,109,0.4)";
+  ctx.fill();
+
+  // icon emoji (cup / table / towel ...) — drawn unmirrored using counter-flip
+  const icon = step.target.icon;
+  if(icon && ICON_EMOJI[icon]){
+    ctx.save();
+    // canvas is CSS-mirrored via scaleX(-1); flip back so emoji reads correctly
+    ctx.translate(tx, ty);
+    ctx.scale(-1, 1);
+    ctx.font = `${Math.round(tr*1.1)}px serif`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillStyle = "#fff";
+    ctx.fillText(ICON_EMOJI[icon], 0, 0);
+    ctx.restore();
+  }
+
+  // hold progress ring
+  if(inTargetSince){
+    const elapsed = performance.now() - inTargetSince;
+    const progress = Math.min(1, elapsed / step.hold_ms);
     ctx.beginPath();
-    ctx.arc(tx, ty, tr*pulse, 0, Math.PI*2);
-    ctx.lineWidth = 6;
-    ctx.strokeStyle = "#E18E6D";
+    ctx.arc(tx, ty, tr*1.25, -Math.PI/2, -Math.PI/2 + progress*Math.PI*2);
+    ctx.strokeStyle = "#3C8255";
+    ctx.lineWidth = 8;
     ctx.stroke();
-    ctx.beginPath();
-    ctx.arc(tx, ty, tr*0.5, 0, Math.PI*2);
-    ctx.fillStyle = "rgba(225,142,109,0.4)";
-    ctx.fill();
-    // hold ring
-    if(inTargetSince){
-      const elapsed = performance.now() - inTargetSince;
-      const progress = Math.min(1, elapsed / step.hold_ms);
-      ctx.beginPath();
-      ctx.arc(tx, ty, tr*1.25, -Math.PI/2, -Math.PI/2 + progress*Math.PI*2);
-      ctx.strokeStyle = "#3C8255";
-      ctx.lineWidth = 8;
-      ctx.stroke();
-    }
+  }
+
+  // small status badge for hand gesture requirements
+  const which = step.target.landmark;
+  if(which === "HAND_OPEN" || which === "PINCH"){
+    const score = which === "HAND_OPEN" ? handOpenScore : pinchScore;
+    const label = which === "HAND_OPEN" ? "Open" : "Pinch";
+    ctx.save();
+    ctx.translate(tx, ty + tr + 32);
+    ctx.scale(-1, 1);
+    ctx.font = "bold 18px -apple-system,sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillStyle = score > 0.55 ? "#7FE5A3" : "rgba(255,255,255,0.85)";
+    ctx.fillText(`${label}: ${Math.round(score*100)}%`, 0, 0);
+    ctx.restore();
   }
 }
 
@@ -1045,7 +1223,22 @@ function loop(){
   }catch(e){}
   let landmarks = null;
   if(result && result.landmarks && result.landmarks[0]) landmarks = result.landmarks[0];
+  latestPoseLandmarks = landmarks;
   if(landmarks) computeMetrics(landmarks);
+
+  // Hand landmarks (optional)
+  if(handLandmarker){
+    try{
+      const hr = handLandmarker.detectForVideo(video, now);
+      if(hr && hr.landmarks && hr.landmarks[0]){
+        latestHandLandmarks = hr.landmarks[0];
+      }else{
+        latestHandLandmarks = null;
+      }
+    }catch(e){}
+  }
+  computeHandMetrics();
+
   drawOverlay(landmarks);
 
   // check target hit
@@ -1368,7 +1561,7 @@ REHAB_RUNNER_HTML_TEMPLATE = r"""<!DOCTYPE html>
 </div>
 
 <script type="module">
-import { PoseLandmarker, FilesetResolver, DrawingUtils } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs";
+import { PoseLandmarker, HandLandmarker, FilesetResolver, DrawingUtils } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs";
 
 const API_BASE = window.location.origin + "/api";
 const CFG = __CFG_JSON__;

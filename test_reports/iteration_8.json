@@ -1,0 +1,55 @@
+{
+  "summary": "Iteration 8 backend-only verification: TTS migration to OpenAI Nova via Emergent LLM key and updated MediaPipe pose-runner (HandLandmarker + dynamic landmarks WRIST_DYNAMIC / MOUTH / CHEST / HAND_OPEN / PINCH with cup/table/towel/ball/coin emoji icons). 10/10 pytest cases pass against the public EXPO_PUBLIC_BACKEND_URL.",
+  "tests_run": [
+    "GET /api/tts/health -> ok=true, provider=openai, voice=nova, model=tts-1, bytes>0",
+    "POST /api/tts/generate {text:'Hello, this is a test'} -> 200, valid base64 MP3 (ID3/frame-sync header verified)",
+    "POST /api/tts/generate {text:''} -> non-503 error (sensible 4xx/5xx, not quota-503)",
+    "GET /api/assessment/tasks -> 7 tasks, voice_id=='nova', 5+ steps carry icon incl. cup/table/ball/coin/towel",
+    "GET /api/pose/runner -> HTML contains HandLandmarker, WRIST_DYNAMIC, MOUTH, CHEST, HAND_OPEN, PINCH, ICON_EMOJI, computeHandMetrics, getEffectiveTargetXY",
+    "GET /api/pose/runner -> exactly one <script type=\"module\"> block, balanced <script>/</script> tags, even backtick count (template literals well-formed)",
+    "GET /api/credits/balance (no auth) -> 200 anonymous=true with costs map",
+    "GET /api/assessment/history -> 200, list",
+    "GET /api/status -> 200, list",
+    "POST /api/assessment/submit (sample payload) -> 200 Assessment with non-empty functional_issues + rehab_plan; id persisted in history"
+  ],
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "/api/tts/generate",
+        "issue": "logger.error is called inside generate_tts (line 520) before `logger = logging.getLogger(__name__)` is declared (line 2635). Works at runtime because the module is fully imported before any request executes, but it's brittle and triggers if anyone reorganizes the file. Recommend moving the logger init near the imports."
+      },
+      {
+        "endpoint": "/api/tts/generate",
+        "issue": "Empty-text request currently bubbles up as HTTP 500 from the OpenAI client. Functional (and not 503), but a Pydantic validator or explicit 400 with `text` min_length=1 would be cleaner."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter8_tts_openai.py",
+    "/app/test_reports/pytest/iter8_results.xml"
+  ],
+  "action_items": [
+    "(Optional/minor) Move `logger = logging.getLogger(__name__)` near the top of server.py so the early `logger.error` call in /api/tts/generate is safe under any future refactor.",
+    "(Optional/minor) Add Pydantic validation `text: constr(min_length=1)` on TTSRequest so empty text returns a clean 422 instead of a generic 500.",
+    "Update /app/memory/test_credentials.md — it still references ElevenLabs / Bella voice; the active TTS is now OpenAI Nova (tts-1) via EMERGENT_LLM_KEY."
+  ],
+  "critical_code_review_comments": [
+    "server.py is ~2641 lines — well past the 700-line guideline. Consider splitting into modules (tts.py, assessment.py, pose_runner.py, rehab_runner.py, credits.py, therapist.py) for maintainability.",
+    "Pose runner HTML is correctly served with all required new tokens; the <script type=\"module\"> block is well-formed (balanced tags, even backticks).",
+    "Backward-compat in /api/tts/generate: it accepts legacy `voice_id` from older clients and silently ignores ElevenLabs voice IDs by falling back to the configured OpenAI voice — good migration hygiene."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "100%", "frontend": "not tested (backend-only request)"},
+  "seed_data_creation": "Test inserts one TEST assessment via /api/assessment/submit; no cleanup. Volume is negligible (single doc per run).",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Iter 8 backend regression suite lives at /app/backend/tests/test_iter8_tts_openai.py and is reusable. EMERGENT_LLM_KEY OpenAI TTS is live (nova/tts-1). Pose runner HTML now contains the full dynamic-landmark surface (WRIST_DYNAMIC / MOUTH / CHEST / HAND_OPEN / PINCH / ICON_EMOJI / computeHandMetrics / getEffectiveTargetXY). Frontend/WebView e2e was NOT exercised — that needs a real camera-bearing device or a separate playwright run with camera-permission mocking.",
+  "rca_of_issue": "n/a — no regressions observed."
+}

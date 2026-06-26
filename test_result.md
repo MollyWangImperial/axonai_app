@@ -101,3 +101,60 @@
 #====================================================================================================
 # Testing Data - Main Agent and testing sub agent both should log testing data below this section
 #====================================================================================================
+
+user_problem_statement: "Stroke rehab Expo app. Recent issues: (1) ElevenLabs TTS quota exceeded — migrate to OpenAI TTS via Emergent LLM key, voice=nova. (2) Assessment WebView broken — the JS pose-runner only knew WRIST/WRISTS landmarks; new targets WRIST_DYNAMIC, MOUTH, CHEST, HAND_OPEN, PINCH and emoji icons (cup/table/towel/ball/coin) need full implementation."
+
+backend:
+  - task: "OpenAI TTS (nova) replaces ElevenLabs via Emergent LLM key"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+        - working: true
+          agent: "main"
+          comment: "Replaced ElevenLabs ImportError block + endpoints. /api/tts/health returns ok=true with provider=openai voice=nova; /api/tts/generate returns ~34KB mp3 audio_b64. Tasks endpoint now returns voice_id='nova'."
+  - task: "Dynamic landmark targets in pose-runner WebView (WRIST_DYNAMIC, MOUTH, CHEST, HAND_OPEN, PINCH) + emoji icons"
+    implemented: true
+    working: "NA"
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: "Added HandLandmarker integration, computeHandMetrics() for open/pinch scores, resolveLandmarkPoint() that mirrors body landmarks, getEffectiveTargetXY() that dynamically anchors targets, ICON_EMOJI map (cup/table/towel/ball/coin) drawn with counter-flip on the CSS-mirrored canvas. checkTarget now requires wrist proximity AND gesture for HAND_OPEN/PINCH. WRIST_DYNAMIC locks position on first valid wrist detection per step. Needs end-to-end browser test with camera (which testing_agent may not have access to). Backend-side: GET /api/pose/runner returns HTML with 25+ matches of new symbols."
+
+frontend:
+  - task: "Assessment WebView renders new dynamic targets/icons end-to-end"
+    implemented: true
+    working: "NA"
+    file: "/app/frontend/app/assessment.tsx"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: "No frontend code change needed — assessment.tsx already hosts WebView pointing to /api/pose/runner. Voice now plays via OpenAI Nova."
+
+metadata:
+  created_by: "main_agent"
+  version: "8.0"
+  test_sequence: 8
+  run_ui: false
+
+test_plan:
+  current_focus:
+    - "OpenAI TTS (nova) replaces ElevenLabs via Emergent LLM key"
+    - "Dynamic landmark targets in pose-runner WebView (WRIST_DYNAMIC, MOUTH, CHEST, HAND_OPEN, PINCH) + emoji icons"
+  stuck_tasks: []
+  test_all: false
+  test_priority: "high_first"
+
+agent_communication:
+    - agent: "main"
+      message: "Iteration 8 fixes: (a) Swapped ElevenLabs → OpenAI TTS (nova) using emergentintegrations.llm.openai.text_to_speech.OpenAITextToSpeech with EMERGENT_LLM_KEY. Confirmed /api/tts/health ok=true and /api/tts/generate returns valid mp3 base64. (b) Rewrote the pose-runner JS to handle the new dynamic landmark target IDs and added MediaPipe HandLandmarker for HAND_OPEN/PINCH. Added emoji icons (☕🪵🧺🏐🪙) drawn with counter-flip on the mirrored canvas. Please backend-test: POST /api/tts/generate with sample text returns valid base64 mp3; GET /api/tts/health returns provider=openai voice=nova; GET /api/assessment/tasks returns 7 tasks with voice_id=nova and at least 5 icon-bearing steps; GET /api/pose/runner returns HTML containing HandLandmarker, WRIST_DYNAMIC, MOUTH, CHEST, HAND_OPEN, PINCH, ICON_EMOJI. The actual MediaPipe loop requires a camera-enabled browser and is hard to e2e via testing_agent — verify only that the HTML payload is well-formed."
