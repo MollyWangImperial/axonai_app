@@ -98,6 +98,12 @@ export default function TherapistsScreen() {
                 </View>
               </View>
               <Text style={styles.reason}>✓ {m.reason}</Text>
+              {t.trained_on && (
+                <View style={styles.trainedRow}>
+                  <Ionicons name="school" size={14} color={colors.brandPrimary} />
+                  <Text style={styles.trainedText}>Trained on {t.trained_on}</Text>
+                </View>
+              )}
               <Text style={styles.blurb}>{t.blurb}</Text>
               <View style={styles.tags}>
                 {t.languages.map((l: string) => (
@@ -141,6 +147,8 @@ const styles = StyleSheet.create({
   aiBadgeText: { color: colors.onBrandSecondary, fontSize: 11, fontWeight: "800", letterSpacing: 1 },
   topMatch: { flexDirection: "row", alignItems: "center", gap: 4, backgroundColor: colors.brandPrimary, paddingHorizontal: 10, paddingVertical: 4, borderRadius: 12 },
   topMatchText: { color: colors.onBrandPrimary, fontSize: 11, fontWeight: "800", letterSpacing: 1 },
+  trainedRow: { flexDirection: "row", gap: 6, alignItems: "center", backgroundColor: colors.brandTertiary, padding: spacing.sm, borderRadius: radius.md },
+  trainedText: { color: colors.onBrandTertiary, fontSize: 12, fontWeight: "700", flex: 1 },
   cardHead: { flexDirection: "row", gap: spacing.md, alignItems: "center" },
   avatar: { width: 64, height: 64, borderRadius: 32, backgroundColor: colors.brandTertiary },
   name: { fontSize: 17, fontWeight: "800", color: colors.onSurface },

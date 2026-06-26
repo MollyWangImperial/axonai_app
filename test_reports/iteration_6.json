@@ -1,0 +1,41 @@
+{
+  "summary": "Iteration 6 partial — therapists `trained_on`, 5-message paywall for AI therapists, and Hope auto-voice import (expo-audio) — ALL VALIDATED. Backend pytest: 8/8 pass. Frontend smoke: Therapists tab renders 6 cards each with the correct 'Trained on …' line; Hope tab opens with opener bubble and no web crash from the expo-audio createAudioPlayer import (call is correctly guarded by Platform.OS !== 'web').",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": [
+      {"component": "react-native-web (lib)", "issue": "Console warning: `props.pointerEvents is deprecated. Use style.pointerEvents`. Coming from a dependency, not app code — non-blocking but worth tracking."},
+      {"component": "expo-notifications (web)", "issue": "Console warning: 'Listening to push token changes is not yet fully supported on web.' Expected on web preview; no action needed."}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter6_features.py",
+    "/app/test_reports/pytest/iter6_results.xml"
+  ],
+  "action_items": [
+    "Ship the planned auth + Stripe billing iteration so the paywall CTA (`cta_upgrade`, `cta_video`) is actually wired to checkout/booking flows. Backend currently only returns the paywall hint payload after 5 user turns; the frontend must consume it on POST /api/personas/chat responses (verify the persona-chat screen reads `paywall.limit_reached` and renders the upgrade sheet).",
+    "Bump expo, expo-font, expo-router to versions Expo CLI reports (54.0.35 / 14.0.12 / 6.0.24) — non-blocking but it logs on every restart."
+  ],
+  "critical_code_review_comments": [
+    "server.py is ~2174 lines. Recommend splitting into modules (therapists.py, personas.py, assessment.py, rehab_runner.py) — already flagged in prior iterations.",
+    "Persona chat response shape: when below the limit, `paywall` is returned as `null` (good — frontend should treat null OR missing as 'not yet'). Confirm persona-chat.tsx uses `data?.paywall?.limit_reached` truthiness check.",
+    "Paywall is purely advisory (server still calls the LLM and stores the turn). Once auth lands, enforce server-side: refuse the 6th+ user turn for non-premium users instead of just attaching a hint."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iter6_features.py (new)"
+  ],
+  "success_rate": {
+    "backend": "100% (8/8 pytest)",
+    "frontend": "100% smoke (Hope opener loads, Therapists tab shows 6 cards with trained_on, no red screen, no fatal console errors)"
+  },
+  "seed_data_creation": "Tests create transient chat sessions prefixed TEST_paywall_* / TEST_patient_nopay_* in db.chat_sessions. Not cleaned up — recommend a teardown sweep if storage growth becomes a concern.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Backend public URL: https://arm-rehab-ai.preview.emergentagent.com (from EXPO_PUBLIC_BACKEND_URL). When auth + Stripe ship, retest: (1) anonymous user hits paywall at 5 msgs, (2) premium user has no paywall, (3) booking video CTA opens Stripe Checkout, (4) auth-gated routes return 401 without token. Reuse /app/backend/tests/test_iter6_features.py as regression for therapists/trained_on/paywall.",
+  "rca_of_issue": "No bugs reproduced this iteration. Validated: GET /api/therapists returns 6 entries with ai=true, premium=true, trained_on string; GET /api/therapists/match propagates trained_on inside each match.therapist; POST /api/personas/chat with persona_id=th_001 returns paywall=null on user_turns 1-4 and paywall={limit_reached:true,title,body,cta_upgrade,cta_video} on user_turns >= 5; persona_id=pt_001 stays paywall=null through 6 turns; GET /api/personas/th_001/opener responds 200; Hope tab loads opener bubble without crash from expo-audio import (createAudioPlayer call gated behind Platform.OS !== 'web')."
+}

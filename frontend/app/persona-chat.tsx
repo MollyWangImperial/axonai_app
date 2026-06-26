@@ -10,7 +10,8 @@ import { storage } from "@/src/utils/storage";
 const BASE = process.env.EXPO_PUBLIC_BACKEND_URL;
 
 type Turn = { role: "user" | "assistant"; text: string; ts: string };
-type Persona = { id: string; name: string; photo?: string; title?: string; bio?: string; months_since_stroke?: number; ai?: boolean };
+type Persona = { id: string; name: string; photo?: string; title?: string; bio?: string; months_since_stroke?: number; ai?: boolean; trained_on?: string };
+type Paywall = { limit_reached: boolean; title: string; body: string; cta_upgrade: string; cta_video: string } | null;
 
 export default function PersonaChatScreen() {
   const insets = useSafeAreaInsets();
@@ -21,6 +22,7 @@ export default function PersonaChatScreen() {
   const [turns, setTurns] = useState<Turn[]>([]);
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
+  const [paywall, setPaywall] = useState<Paywall>(null);
   const listRef = useRef<FlatList<Turn>>(null);
 
   useEffect(() => {
@@ -66,6 +68,7 @@ export default function PersonaChatScreen() {
       if (!r.ok) throw new Error("chat fail");
       const d = await r.json();
       setTurns((t) => [...t, { role: "assistant", text: d.text, ts: new Date().toISOString() }]);
+      if (d.paywall && d.paywall.limit_reached) setPaywall(d.paywall);
     } catch {
       setTurns((t) => [...t, { role: "assistant", text: "Sorry, I can't respond right now. Please try again shortly.", ts: new Date().toISOString() }]);
     } finally {
@@ -117,6 +120,23 @@ export default function PersonaChatScreen() {
       />
 
       <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} keyboardVerticalOffset={Platform.OS === "ios" ? 80 : 0}>
+        {paywall && (
+          <View style={styles.paywall} testID="persona-paywall">
+            <View style={{ flexDirection: "row", gap: 6, alignItems: "center", marginBottom: 4 }}>
+              <Ionicons name="lock-closed" size={14} color={colors.onBrandSecondary} />
+              <Text style={styles.paywallTitle}>{paywall.title}</Text>
+            </View>
+            <Text style={styles.paywallBody}>{paywall.body}</Text>
+            <View style={{ flexDirection: "row", gap: 8, marginTop: 8 }}>
+              <Pressable style={[styles.paywallBtn, { backgroundColor: colors.brandPrimary }]} testID="paywall-upgrade">
+                <Text style={styles.paywallBtnText}>{paywall.cta_upgrade}</Text>
+              </Pressable>
+              <Pressable style={[styles.paywallBtn, { backgroundColor: colors.surfaceTertiary }]} testID="paywall-video">
+                <Text style={[styles.paywallBtnText, { color: colors.onSurface }]}>{paywall.cta_video}</Text>
+              </Pressable>
+            </View>
+          </View>
+        )}
         <View style={[styles.inputBar, { paddingBottom: Math.max(insets.bottom, spacing.sm) }]}>
           <TextInput
             value={input}
@@ -153,4 +173,9 @@ const styles = StyleSheet.create({
   inputBar: { flexDirection: "row", alignItems: "flex-end", gap: spacing.sm, padding: spacing.sm, borderTopWidth: 1, borderTopColor: colors.divider, backgroundColor: colors.surface },
   input: { flex: 1, fontSize: 15, color: colors.onSurface, maxHeight: 100, paddingHorizontal: spacing.sm, paddingVertical: 10, backgroundColor: colors.surfaceSecondary, borderRadius: radius.lg, minHeight: 44 },
   sendBtn: { width: 44, height: 44, borderRadius: 22, backgroundColor: colors.brandPrimary, alignItems: "center", justifyContent: "center" },
+  paywall: { backgroundColor: colors.brandSecondary, padding: spacing.md, marginHorizontal: spacing.sm, marginTop: spacing.sm, borderRadius: radius.lg },
+  paywallTitle: { color: colors.onBrandSecondary, fontSize: 14, fontWeight: "800" },
+  paywallBody: { color: colors.onBrandSecondary, fontSize: 13, lineHeight: 18 },
+  paywallBtn: { flex: 1, padding: 10, borderRadius: radius.md, alignItems: "center" },
+  paywallBtnText: { color: "#fff", fontSize: 12, fontWeight: "700", textAlign: "center" },
 });

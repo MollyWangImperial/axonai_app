@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { View, Text, StyleSheet, Pressable, FlatList, ActivityIndicator, KeyboardAvoidingView, Platform, TextInput } from "react-native";
+import { createAudioPlayer } from "expo-audio";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
@@ -24,7 +25,21 @@ export default function ChatScreen() {
   const [sending, setSending] = useState(false);
   const listRef = useRef<FlatList<Turn>>(null);
 
-  // Initialize session + proactive greeting
+  // Hope voice auto-play helper
+  const playHopeVoice = async (text: string) => {
+    try {
+      const r = await fetch(`${BASE}/api/tts/generate`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text }),
+      });
+      if (!r.ok) return;
+      const d = await r.json();
+      const player = createAudioPlayer({ uri: `data:audio/mpeg;base64,${d.audio_b64}` });
+      player.play();
+    } catch {/* */}
+  };
+
+  // Initialize session + proactive greeting (with voice)
   useEffect(() => {
     (async () => {
       let id = await storage.getItem(SESSION_KEY);
@@ -33,7 +48,6 @@ export default function ChatScreen() {
         await storage.setItem(SESSION_KEY, id);
       }
       setSessionId(id);
-      // Load past turns
       try {
         const r = await fetch(`${BASE}/api/chat/history?session_id=${encodeURIComponent(id)}`);
         const d = await r.json();
@@ -41,14 +55,14 @@ export default function ChatScreen() {
         if (existing.length > 0) {
           setTurns(existing);
         } else {
-          // Spontaneous opener
           const pr = await fetch(`${BASE}/api/chat/proactive`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
+            method: "POST", headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ session_id: id, text: "" }),
           });
           const pd = await pr.json();
           setTurns([{ role: "assistant", text: pd.text, ts: new Date().toISOString() }]);
+          // Auto-play the greeting via voice
+          if (Platform.OS !== "web") playHopeVoice(pd.text);
         }
       } catch {/* */}
     })();
