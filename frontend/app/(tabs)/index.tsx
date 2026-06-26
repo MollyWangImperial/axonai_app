@@ -1,33 +1,57 @@
 import { useEffect, useState } from "react";
-import { View, Text, StyleSheet, Pressable, ScrollView, ImageBackground, Dimensions } from "react-native";
+import { View, Text, StyleSheet, Pressable, ScrollView, ImageBackground, Dimensions, Platform } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import * as Haptics from "expo-haptics";
-import { colors, spacing, radius, font } from "@/src/theme";
+import { colors, spacing, radius } from "@/src/theme";
 import { fetchHistory, Assessment } from "@/src/api";
+import { ensurePermission, loadSettings, rescheduleReminders } from "@/src/utils/notifications";
 
 const HERO = "https://images.pexels.com/photos/8460412/pexels-photo-8460412.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940";
+const BASE = process.env.EXPO_PUBLIC_BACKEND_URL;
+
+type ReminderStatus = {
+  days_since_assessment: number | null;
+  exercise_overdue: boolean;
+  assessment_overdue: boolean;
+  daily_reminder_text: string;
+  weekly_reminder_text: string;
+};
 
 export default function HomeScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const [history, setHistory] = useState<Assessment[]>([]);
+  const [reminder, setReminder] = useState<ReminderStatus | null>(null);
   const [loading, setLoading] = useState(true);
 
   const load = async () => {
     try {
-      const h = await fetchHistory();
+      const [h, r] = await Promise.all([
+        fetchHistory().catch(() => []),
+        fetch(`${BASE}/api/reminders/status`).then((res) => res.json()).catch(() => null),
+      ]);
       setHistory(h || []);
-    } catch (e) {
-      setHistory([]);
+      setReminder(r);
     } finally {
       setLoading(false);
     }
   };
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => {
+    load();
+    // Schedule reminders on first launch (silent on web / Expo Go iOS limitations)
+    (async () => {
+      if (Platform.OS === "web") return;
+      const granted = await ensurePermission();
+      if (granted) {
+        const s = await loadSettings();
+        await rescheduleReminders(s);
+      }
+    })();
+  }, []);
 
   const latest = history[0];
 
@@ -53,6 +77,45 @@ export default function HomeScreen() {
             </Text>
           </View>
         </ImageBackground>
+
+        {/* Reminder cards */}
+        {reminder?.assessment_overdue ? (
+          <View style={styles.section}>
+            <Pressable
+              testID="weekly-reminder-card"
+              onPress={() => router.push("/task-intro")}
+              style={[styles.reminderCard, { backgroundColor: colors.brandSecondary }]}
+            >
+              <Ionicons name="calendar" size={24} color={colors.onBrandSecondary} />
+              <View style={{ flex: 1 }}>
+                <Text style={[styles.reminderTitle, { color: colors.onBrandSecondary }]}>Weekly movement check-in</Text>
+                <Text style={[styles.reminderBody, { color: colors.onBrandSecondary }]}>
+                  {reminder.days_since_assessment == null
+                    ? "Let's start your first assessment to see where you are."
+                    : `It has been ${reminder.days_since_assessment} days. A quick check-in helps us tune your plan.`}
+                </Text>
+              </View>
+              <Ionicons name="chevron-forward" size={20} color={colors.onBrandSecondary} />
+            </Pressable>
+          </View>
+        ) : reminder?.exercise_overdue ? (
+          <View style={styles.section}>
+            <Pressable
+              testID="daily-reminder-card"
+              onPress={() => latest && router.push({ pathname: "/rehab-plan", params: { id: latest.id } })}
+              style={[styles.reminderCard, { backgroundColor: colors.brandPrimary }]}
+            >
+              <Ionicons name="alarm" size={24} color={colors.onBrandPrimary} />
+              <View style={{ flex: 1 }}>
+                <Text style={[styles.reminderTitle, { color: colors.onBrandPrimary }]}>Today's exercise reminder</Text>
+                <Text style={[styles.reminderBody, { color: colors.onBrandPrimary }]} numberOfLines={2}>
+                  {reminder.daily_reminder_text}
+                </Text>
+              </View>
+              <Ionicons name="chevron-forward" size={20} color={colors.onBrandPrimary} />
+            </Pressable>
+          </View>
+        ) : null}
 
         {/* Today's plan */}
         <View style={styles.section}>
@@ -179,4 +242,7 @@ const styles = StyleSheet.create({
   cta: { position: "absolute", left: 0, right: 0, bottom: 0, padding: spacing.md, backgroundColor: colors.surface, borderTopWidth: 1, borderTopColor: colors.divider },
   ctaBtn: { flexDirection: "row", gap: spacing.sm, backgroundColor: colors.brandPrimary, borderRadius: radius.lg, padding: spacing.md, alignItems: "center", justifyContent: "center", minHeight: 56 },
   ctaText: { color: colors.onBrandPrimary, fontSize: 17, fontWeight: "700" },
+  reminderCard: { flexDirection: "row", alignItems: "center", gap: spacing.md, padding: spacing.md, borderRadius: radius.lg },
+  reminderTitle: { fontSize: 16, fontWeight: "800", marginBottom: 2 },
+  reminderBody: { fontSize: 13, lineHeight: 18 },
 });

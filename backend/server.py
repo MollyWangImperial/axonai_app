@@ -1725,14 +1725,45 @@ postRN({type:"ready"});
 """
 
 
-# ============ Therapists (seed) ============
+# ============ Therapists (seed — AI early-access personas) ============
+# Marked ai=True. In early access we use AI therapist personas grounded in clinical knowledge.
+# Real licensed therapists will join as we scale.
 THERAPISTS_SEED: List[Dict[str, Any]] = [
-    {"id": "th_001", "name": "Dr. Maya Okafor", "title": "Occupational Therapist, DPT", "specialties": ["HAND_OPENING", "PINCH_IMPAIRED", "GROSS_GRASP"], "location": "Telehealth · Worldwide", "languages": ["English", "Yoruba"], "rating": 4.9, "years": 12, "availability": ["Mon 9–5", "Wed 1–8", "Fri 9–3"], "blurb": "I specialize in helping survivors rebuild fine motor control with playful, daily activities. We'll go at your pace.", "photo": "https://images.unsplash.com/photo-1559839734-2b71ea197ec2?w=400"},
-    {"id": "th_002", "name": "Dr. Aiden Park", "title": "Physical Therapist, NCS", "specialties": ["REACH_INCOMPLETE", "SHOULDER_FLEX_LIMITED", "TRUNK_COMP"], "location": "Seattle, WA · In-person & Tele", "languages": ["English", "Korean"], "rating": 4.8, "years": 9, "availability": ["Tue 8–4", "Thu 11–7"], "blurb": "Reach training and trunk control specialist. I love seeing the moment a patient realizes their arm can do more than they thought.", "photo": "https://images.unsplash.com/photo-1622253692010-333f2da6031d?w=400"},
-    {"id": "th_003", "name": "Dr. Priya Iyer", "title": "Neuro PT, CSRS", "specialties": ["SHOULDER_HIKE", "BILATERAL_NONUSE", "H2M_IMPAIRED"], "location": "Bangalore, IN · Telehealth", "languages": ["English", "Tamil", "Hindi"], "rating": 4.95, "years": 15, "availability": ["Mon–Fri 7–11 IST"], "blurb": "Bobath-trained. I focus on calm, gentle re-education of movement patterns. Family welcome in every session.", "photo": "https://images.unsplash.com/photo-1594824476967-48c8b964273f?w=400"},
-    {"id": "th_004", "name": "Dr. Sam Castillo", "title": "OT, CIMT Certified", "specialties": ["BILATERAL_NONUSE", "HAND_OPENING", "REACH_INCOMPLETE"], "location": "Austin, TX · Telehealth", "languages": ["English", "Spanish"], "rating": 4.7, "years": 7, "availability": ["Wed 9–5", "Sat 9–1"], "blurb": "Constraint-induced movement therapy advocate. We make practice feel like life, not homework.", "photo": "https://images.unsplash.com/photo-1612531386530-97286d97c2d2?w=400"},
-    {"id": "th_005", "name": "Dr. Lena Brandt", "title": "Speech & Stroke Recovery OT", "specialties": ["H2M_IMPAIRED", "GROSS_GRASP", "PINCH_IMPAIRED"], "location": "Berlin, DE · Telehealth", "languages": ["English", "German"], "rating": 4.85, "years": 11, "availability": ["Mon 10–6", "Tue 10–6"], "blurb": "Daily-living focused. We'll work on feeding, dressing, and small joys — coin pinches, buttons, a familiar mug.", "photo": "https://images.unsplash.com/photo-1551836022-d5d88e9218df?w=400"},
-    {"id": "th_006", "name": "Dr. James Whitaker", "title": "Senior Neuro PT", "specialties": ["SHOULDER_FLEX_LIMITED", "TRUNK_COMP", "SHOULDER_HIKE"], "location": "London, UK · In-person", "languages": ["English"], "rating": 4.92, "years": 18, "availability": ["Mon 9–4", "Thu 9–4"], "blurb": "Eighteen years of stroke rehab. I bring calm, patience, and a clear plan. Recovery is a marathon — we'll walk it together.", "photo": "https://images.unsplash.com/photo-1537368910025-700350fe46c7?w=400"},
+    {"id": "th_001", "ai": True, "name": "Maya (AI Therapist)", "title": "AI Occupational Therapist — Hand & Fine Motor", "specialties": ["HAND_OPENING", "PINCH_IMPAIRED", "GROSS_GRASP"], "location": "Always available · Worldwide", "languages": ["English", "Spanish"], "rating": 4.9, "years": 12, "availability": ["24/7 chat"], "blurb": "I specialize in helping survivors rebuild fine motor control with playful, daily activities. We'll go at your pace.", "photo": "https://images.unsplash.com/photo-1559839734-2b71ea197ec2?w=400",
+     "persona_prompt": "You are 'Maya', an AI occupational therapist persona focused on hand and fine-motor rehabilitation after stroke. Speak warmly and patiently. Reference real clinical sources when useful (CIMT, Jebsen, ARAT). Always remind the patient you're an AI early-access companion, not a licensed clinician for diagnosis."},
+    {"id": "th_002", "ai": True, "name": "Aiden (AI Therapist)", "title": "AI Physical Therapist — Reach & Shoulder", "specialties": ["REACH_INCOMPLETE", "SHOULDER_FLEX_LIMITED", "TRUNK_COMP"], "location": "Always available · Worldwide", "languages": ["English", "Korean"], "rating": 4.8, "years": 9, "availability": ["24/7 chat"], "blurb": "Reach training and trunk control specialist. I love seeing the moment a patient realizes their arm can do more than they thought.", "photo": "https://images.unsplash.com/photo-1622253692010-333f2da6031d?w=400",
+     "persona_prompt": "You are 'Aiden', an AI physical-therapy persona focused on reaching, shoulder flexion, and trunk control. Calm, encouraging, evidence-based (Levin & Michaelsen trunk restraint, Fugl-Meyer, task-specific training). You're an AI early-access companion."},
+    {"id": "th_003", "ai": True, "name": "Priya (AI Therapist)", "title": "AI Neuro-PT — Bilateral & Hand-to-Mouth ADL", "specialties": ["SHOULDER_HIKE", "BILATERAL_NONUSE", "H2M_IMPAIRED"], "location": "Always available · Worldwide", "languages": ["English", "Tamil", "Hindi"], "rating": 4.95, "years": 15, "availability": ["24/7 chat"], "blurb": "Bobath-trained mindset. I focus on calm, gentle re-education of movement patterns. Family welcome in every session.", "photo": "https://images.unsplash.com/photo-1594824476967-48c8b964273f?w=400",
+     "persona_prompt": "You are 'Priya', an AI neuro-PT persona with a Bobath/NDT-informed mindset, focused on bilateral coordination and hand-to-mouth ADLs. Gentle, never patronizing. AI early-access companion."},
+    {"id": "th_004", "ai": True, "name": "Sam (AI Therapist)", "title": "AI OT — CIMT & Constraint-Induced Practice", "specialties": ["BILATERAL_NONUSE", "HAND_OPENING", "REACH_INCOMPLETE"], "location": "Always available · Worldwide", "languages": ["English", "Spanish"], "rating": 4.7, "years": 7, "availability": ["24/7 chat"], "blurb": "Constraint-induced movement therapy advocate. We make practice feel like life, not homework.", "photo": "https://images.unsplash.com/photo-1612531386530-97286d97c2d2?w=400",
+     "persona_prompt": "You are 'Sam', an AI OT persona who champions CIMT (Constraint-Induced Movement Therapy, Taub) and turns daily life into therapy. Practical, fun, encouraging. AI early-access companion."},
+    {"id": "th_005", "ai": True, "name": "Lena (AI Therapist)", "title": "AI OT — Daily Living & Self-Care", "specialties": ["H2M_IMPAIRED", "GROSS_GRASP", "PINCH_IMPAIRED"], "location": "Always available · Worldwide", "languages": ["English", "German"], "rating": 4.85, "years": 11, "availability": ["24/7 chat"], "blurb": "Daily-living focused. We'll work on feeding, dressing, and small joys — coin pinches, buttons, a familiar mug.", "photo": "https://images.unsplash.com/photo-1551836022-d5d88e9218df?w=400",
+     "persona_prompt": "You are 'Lena', an AI OT persona focused on ADL retraining — feeding, dressing, buttons, mugs. Detail-oriented and warm. AI early-access companion."},
+    {"id": "th_006", "ai": True, "name": "James (AI Therapist)", "title": "AI Neuro-PT — Senior Recovery Strategy", "specialties": ["SHOULDER_FLEX_LIMITED", "TRUNK_COMP", "SHOULDER_HIKE"], "location": "Always available · Worldwide", "languages": ["English"], "rating": 4.92, "years": 18, "availability": ["24/7 chat"], "blurb": "Eighteen years of stroke-rehab thinking. I bring calm, patience, and a clear plan. Recovery is a marathon — we'll walk it together.", "photo": "https://images.unsplash.com/photo-1537368910025-700350fe46c7?w=400",
+     "persona_prompt": "You are 'James', an AI neuro-PT persona representing a calm senior clinician. You bring perspective and pacing. Talk like a veteran clinician without jargon. AI early-access companion."},
+]
+
+
+# ============ AI Stroke-survivor personas for Community ============
+AI_PATIENTS: List[Dict[str, Any]] = [
+    {"id": "pt_001", "ai": True, "name": "Marisol R.", "age": 58, "months_since_stroke": 14, "side": "right", "stage": "moderate", "photo": "https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=400",
+     "bio": "Grandmother of three. Right-hand affected. Recently held her grandson with both arms after 14 months of work.",
+     "persona_prompt": "You are 'Marisol', an AI persona of a 58-year-old stroke survivor, 14 months in. Right side affected. You speak with deep warmth, faith, hope, and the perspective of someone further along the road. Spanish-American background, occasionally uses 'mija'/'mijo' affectionately. You share your own struggle openly. Always remind the person you're an AI companion based on real survivor patterns, not a licensed clinician."},
+    {"id": "pt_002", "ai": True, "name": "Daniel K.", "age": 64, "months_since_stroke": 8, "side": "left", "stage": "moderate", "photo": "https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=400",
+     "bio": "Retired engineer, 8 months post-stroke. Buttoning his own shirt was last month's victory.",
+     "persona_prompt": "You are 'Daniel', an AI persona of a 64-year-old former engineer, 8 months post-stroke. Left side affected. You talk like an engineer who finally accepted slow progress. Dry humor. You celebrate tiny wins with great pride. AI companion."},
+    {"id": "pt_003", "ai": True, "name": "Asha N.", "age": 46, "months_since_stroke": 22, "side": "right", "stage": "advanced", "photo": "https://images.unsplash.com/photo-1573497019940-1c28c88b4f3e?w=400",
+     "bio": "Yoga teacher pre-stroke, now an advocate for slow recovery. 22 months in.",
+     "persona_prompt": "You are 'Asha', an AI persona of a 46-year-old former yoga teacher, 22 months post-stroke. Right side affected. Reflective, breath-aware, gentle. You translate movement struggles into mindfulness language. AI companion."},
+    {"id": "pt_004", "ai": True, "name": "Yusuf E.", "age": 71, "months_since_stroke": 36, "side": "left", "stage": "advanced", "photo": "https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=400",
+     "bio": "Cycled around the block for the first time three years after his stroke. Cried like a child.",
+     "persona_prompt": "You are 'Yusuf', an AI persona of a 71-year-old long-haul survivor, 3 years post-stroke. Left side affected. You talk like a wise grandfather — short, vivid sentences. You believe in the long road. AI companion."},
+    {"id": "pt_005", "ai": True, "name": "Jenny M.", "age": 39, "months_since_stroke": 5, "side": "right", "stage": "early", "photo": "https://images.unsplash.com/photo-1438761681033-6461ffad8d80?w=400",
+     "bio": "Young mom, only 5 months in. Still grieving the old version of herself.",
+     "persona_prompt": "You are 'Jenny', an AI persona of a 39-year-old young mom only 5 months post-stroke. Right side affected. You're still in the grief stage — honest about the hard days, but you don't want anyone to feel alone. AI companion."},
+    {"id": "pt_006", "ai": True, "name": "Carlos D.", "age": 55, "months_since_stroke": 18, "side": "right", "stage": "moderate", "photo": "https://images.unsplash.com/photo-1531123897727-8f129e1688ce?w=400",
+     "bio": "Painter who learned to paint left-handed after his right hand was affected.",
+     "persona_prompt": "You are 'Carlos', an AI persona of a 55-year-old painter who switched hands after stroke. Right side affected. Artistic, philosophical, talks about color and brushstrokes as metaphors. AI companion."},
 ]
 
 
@@ -1781,12 +1812,12 @@ class ChatResponse(BaseModel):
 # ============ Therapists routes ============
 @api_router.get("/therapists")
 async def get_therapists():
-    return {"therapists": THERAPISTS_SEED}
+    # Strip persona_prompt (internal only) from list
+    return {"therapists": [{k: v for k, v in t.items() if k != "persona_prompt"} for t in THERAPISTS_SEED]}
 
 
 @api_router.get("/therapists/match")
 async def match_therapists(issues: str = ""):
-    """Rank therapists by overlap with the patient's functional-issue codes."""
     codes = [c.strip() for c in issues.split(",") if c.strip()]
     matches = []
     for t in THERAPISTS_SEED:
@@ -1797,9 +1828,150 @@ async def match_therapists(issues: str = ""):
             reason_parts.append(f"specializes in {overlap} of your focus area{'s' if overlap > 1 else ''}")
         reason_parts.append(f"{t['years']}+ years experience")
         reason_parts.append(f"rated {t['rating']}/5")
-        matches.append({"therapist": t, "score": score, "reason": " · ".join(reason_parts)})
+        public_t = {k: v for k, v in t.items() if k != "persona_prompt"}
+        matches.append({"therapist": public_t, "score": score, "reason": " · ".join(reason_parts)})
     matches.sort(key=lambda m: -m["score"])
     return {"matches": matches}
+
+
+# ============ AI Stroke survivor personas (Community) ============
+@api_router.get("/community/ai_patients")
+async def get_ai_patients():
+    return {"patients": [{k: v for k, v in p.items() if k != "persona_prompt"} for p in AI_PATIENTS]}
+
+
+# ============ Persona chat (talk to AI therapists & AI survivors) ============
+def _find_persona(persona_id: str) -> Optional[Dict[str, Any]]:
+    for p in THERAPISTS_SEED + AI_PATIENTS:
+        if p["id"] == persona_id:
+            return p
+    return None
+
+
+class PersonaChatRequest(BaseModel):
+    persona_id: str
+    session_id: str
+    text: str
+
+
+@api_router.post("/personas/chat")
+async def persona_chat(req: PersonaChatRequest):
+    if not EMERGENT_LLM_KEY:
+        raise HTTPException(status_code=503, detail="Chat unavailable — LLM key not configured.")
+    persona = _find_persona(req.persona_id)
+    if not persona:
+        raise HTTPException(status_code=404, detail="Persona not found")
+
+    storage_session = f"persona:{req.persona_id}:{req.session_id}"
+    sess = await db.chat_sessions.find_one({"session_id": storage_session}, {"_id": 0})
+    turns: List[Dict[str, Any]] = sess["turns"] if sess else []
+
+    # Refresh patient context every turn so the persona "knows" the user
+    patient_ctx = await _build_patient_context()
+    system_prompt = (
+        persona["persona_prompt"] +
+        "\n\nIMPORTANT: You are an AI early-access persona. If asked directly, gently disclose that, "
+        "and recommend a licensed clinician for any medical advice or diagnosis.\n\n"
+        "USER (the stroke survivor talking to you) — their latest assessment:\n" + patient_ctx
+    )
+    if turns:
+        recent = "\n".join(f"{t['role'].upper()}: {t['text']}" for t in turns[-6:])
+        system_prompt += "\n\nRECENT CONVERSATION:\n" + recent
+
+    chat = LlmChat(
+        api_key=EMERGENT_LLM_KEY,
+        session_id=storage_session,
+        system_message=system_prompt,
+    ).with_model("anthropic", "claude-sonnet-4-5-20250929")
+
+    try:
+        response = await chat.send_message(UserMessage(text=req.text))
+        reply_text = response if isinstance(response, str) else str(response)
+    except Exception as e:
+        logger.error(f"Persona chat error: {e}")
+        raise HTTPException(status_code=502, detail=f"Persona chat error: {str(e)[:200]}")
+
+    now = datetime.now(timezone.utc).isoformat()
+    turns.append({"role": "user", "text": req.text, "ts": now})
+    turns.append({"role": "assistant", "text": reply_text, "ts": now})
+    await db.chat_sessions.update_one(
+        {"session_id": storage_session},
+        {"$set": {"session_id": storage_session, "turns": turns, "updated_at": now}},
+        upsert=True,
+    )
+    return {"session_id": storage_session, "persona_id": req.persona_id, "text": reply_text, "turns": len(turns), "persona": {k: v for k, v in persona.items() if k != "persona_prompt"}}
+
+
+@api_router.get("/personas/chat/history")
+async def persona_chat_history(persona_id: str, session_id: str):
+    storage_session = f"persona:{persona_id}:{session_id}"
+    sess = await db.chat_sessions.find_one({"session_id": storage_session}, {"_id": 0})
+    persona = _find_persona(persona_id)
+    return {
+        "session_id": storage_session,
+        "turns": (sess or {}).get("turns", []),
+        "persona": {k: v for k, v in (persona or {}).items() if k != "persona_prompt"} if persona else None,
+    }
+
+
+@api_router.get("/personas/{persona_id}/opener")
+async def persona_opener(persona_id: str):
+    import random
+    persona = _find_persona(persona_id)
+    if not persona:
+        raise HTTPException(status_code=404, detail="Persona not found")
+    if persona.get("id", "").startswith("th_"):
+        pool = [
+            f"Hi, I'm {persona['name'].split('(')[0].strip()}. I read your latest assessment. Where would you like to start today?",
+            f"Hello. I'm {persona['name'].split('(')[0].strip()}. How is your shoulder feeling this morning?",
+            f"Welcome. I'm here to support you. Is there one movement that feels hardest right now?",
+        ]
+    else:
+        pool = [
+            f"Hi friend, I'm {persona['name'].split()[0]}. I'm a survivor too — {persona['months_since_stroke']} months in. How are you doing today?",
+            f"Hey. I'm {persona['name'].split()[0]}. I see we're on the same road. Want to talk?",
+            f"Hi, I'm {persona['name'].split()[0]}. Just checking in — what's on your heart today?",
+        ]
+    return {"text": random.choice(pool)}
+
+
+# ============ Reminders status ============
+class ReminderSettings(BaseModel):
+    daily_hour: int = 9
+    daily_minute: int = 0
+    weekly_day: int = 1  # 1=Monday … 7=Sunday
+    enabled: bool = True
+
+
+@api_router.get("/reminders/status")
+async def reminders_status():
+    """Computes whether the patient is overdue on daily exercise or weekly assessment."""
+    latest_assessment = await db.assessments.find_one({}, {"_id": 0}, sort=[("created_at", -1)])
+    latest_session = await db.chat_sessions.find_one({"session_id": {"$regex": "^persona:"}, "turns.0": {"$exists": True}}, sort=[("updated_at", -1)])
+
+    now = datetime.now(timezone.utc)
+    days_since_assessment = None
+    if latest_assessment:
+        try:
+            then = datetime.fromisoformat(latest_assessment["created_at"].replace("Z", "+00:00"))
+            days_since_assessment = (now - then).days
+        except Exception:
+            days_since_assessment = None
+
+    exercise_overdue = (days_since_assessment is None) or (days_since_assessment >= 1)
+    assessment_overdue = (days_since_assessment is None) or (days_since_assessment >= 7)
+
+    return {
+        "now": now.isoformat(),
+        "days_since_assessment": days_since_assessment,
+        "exercise_overdue": exercise_overdue,
+        "assessment_overdue": assessment_overdue,
+        "daily_reminder_text": "Hi friend, just a gentle nudge — your rehab exercises are waiting. Even 5 minutes today is a win. 💚",
+        "weekly_reminder_text": "Hello! It has been a week. Let's do a quick movement check-in so we can see your progress and adjust your plan.",
+    }
+
+
+# ============ Therapists routes (continued — already mounted earlier in original file) ============
 
 
 # ============ Community routes ============
