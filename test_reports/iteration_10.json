@@ -1,0 +1,80 @@
+{
+  "summary": "Phase C backend verification — 18/20 passed, 1 failed, 1 skipped (95% success). All NEW Phase C endpoints are wired and behave per spec: /api/credits/balance returns the exact expected costs map + subscription_active flag; /api/progress/summary returns proper empty defaults for anon/new users and includes submitted assessments in the time-series; /api/billing/subscribe and /api/billing/buy-credits are wired and return structured 500 with 'Invalid API Key' (expected given STRIPE_API_KEY=sk_test_emergent sentinel); /api/billing/verify-session?session_id=fake → 404 'Unknown session'; /api/billing/webhook accepts checkout.session.completed without signature when STRIPE_WEBHOOK_SECRET is unset; /api/auth/google/session correctly returns 400 without session_id and 401 with a bogus one. Subscription bypass for the assessment endpoint also verified — a subscribed user's credits do NOT decrement after POST /api/assessment/submit. All pre-existing endpoints (tts/health, assessment/tasks, pose/runner, rehab/runner, onboarding round-trip) still pass. CRITICAL ISSUE FOUND: the AI therapist persona-chat does NOT consume premium_chat_message credits (10) — the spec endpoint /api/chat/persona/message returns 404 (does not exist), and the actual /api/personas/chat handler in server.py (line 2219) never calls consume_credits().",
+  "tests_run": [
+    "GET /api/credits/balance (anon) → 200, anonymous=true, credits=0, subscription_active=false, costs={assessment:40, rehab_plan:30, guided_exercise:30, premium_chat_message:10, video_call:50, in_person_session:80}",
+    "POST /api/users/signup → new user has credits=100",
+    "GET /api/credits/balance (signed in) → credits=100, subscription_active=false, costs map matches spec, user_id echoed",
+    "GET /api/progress/summary (anon) → assessments=[], first_seen=null",
+    "GET /api/progress/summary (new user, X-User-Id) → assessments=[], first_seen=null, count=0",
+    "POST /api/assessment/submit then GET /api/progress/summary → series includes the submitted assessment id, first_seen=ISO date",
+    "POST /api/billing/subscribe (no header) → 401",
+    "POST /api/billing/subscribe (signed in) → 500 with detail containing 'Invalid API Key' (endpoint wired)",
+    "POST /api/billing/buy-credits (signed in) → 500 with detail containing 'api key' (endpoint wired)",
+    "GET /api/billing/verify-session?session_id=fake (signed in) → 404 'Unknown session'",
+    "POST /api/billing/webhook {type:'checkout.session.completed', data:{object:{id:'cs_test_phasec_nonexistent', payment_status:'paid'}}} → 200 {ok:true}",
+    "POST /api/auth/google/session (empty body) → 400 'session_id required'",
+    "POST /api/auth/google/session {session_id:'bogus...'} → 401",
+    "Subscription bypass: set subscription_active=true in DB → POST /api/assessment/submit → balance still 100 (no decrement)",
+    "POST /api/chat/persona/message (spec endpoint) → 404 Not Found (endpoint missing) — SKIPPED",
+    "POST /api/personas/chat th_001 (actual endpoint, signed in) → 200 but balance unchanged (100) — FAIL (spec expects 90)",
+    "GET /api/tts/health → 200 ok=true provider=openai voice=nova model=tts-1",
+    "GET /api/assessment/tasks → 200, 7 tasks, voice_id=nova",
+    "GET /api/pose/runner → 200, HTML",
+    "GET /api/rehab/runner?exercise_id=ex_maintenance → 200, HTML",
+    "POST + GET /api/users/onboarding → onboarding_complete=true, preferred_name='Phase', primary_goal='open jar' persisted"
+  ],
+  "backend_issues": {
+    "critical": [
+      {
+        "endpoint": "POST /api/personas/chat (and missing /api/chat/persona/message)",
+        "issue": "AI therapist persona-chat does NOT consume premium_chat_message credits (10). Two problems: (a) the spec-stated endpoint /api/chat/persona/message returns 404 (does not exist on the server). (b) the actual route handler `persona_chat` at server.py:2219-2276 never calls `consume_credits(user_id, 'premium_chat_message')`. As a result, a signed-in user can chat with any AI therapist persona forever with zero credit decrement, breaking the revenue model spec ('AI therapist persona-chat still burns credits even for subscribers'). It also currently has no `Request` injection and does not call `_user_from_header`, so it doesn't even know who the caller is.",
+        "priority": "CRITICAL"
+      }
+    ],
+    "minor": [
+      {
+        "endpoint": "POST /api/billing/subscribe & /api/billing/buy-credits",
+        "issue": "Both correctly bubble Stripe's 'Invalid API Key' as a structured 500 in dev (expected for sentinel key). However, returning 500 on a client-config issue is slightly misleading — consider mapping Stripe AuthenticationError to 503 'Stripe not configured' (matches the existing `if not _stripe.api_key` branch) so monitoring won't flag these in prod if the live key is ever revoked. Not blocking."
+      },
+      {
+        "endpoint": "POST /api/billing/webhook",
+        "issue": "When STRIPE_WEBHOOK_SECRET is unset, the endpoint trusts any caller's JSON body and applies grants idempotently. This is documented as a dev-mode behavior, but it should be hardened before launch (e.g., require the secret in non-dev envs). Functional today."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_phase_c_features.py",
+    "/app/test_reports/pytest/iter10_phasec_results.xml"
+  ],
+  "action_items": [
+    "Wire AI therapist persona-chat to credits: in `persona_chat` (server.py:2219), accept `request: Request`, resolve user via `_user_from_header`, and call `await consume_credits(user['id'], 'premium_chat_message')` BEFORE invoking the LLM. Persist a `credit_log` entry as the existing helper already does. If no user → 401.",
+    "Decide on canonical endpoint name: either (a) keep /api/personas/chat and update the spec/docs/frontend, OR (b) add an alias route POST /api/chat/persona/message that proxies to the same handler so the spec name resolves.",
+    "(Optional) Map Stripe AuthenticationError to 503 'Stripe not configured' instead of 500 in /billing/subscribe + /billing/buy-credits for cleaner error surface in dev."
+  ],
+  "critical_code_review_comments": [
+    "server.py is 3178 lines — recommend splitting into modules (auth, billing, assessment, chat, rehab) before further growth (>700-line guideline already exceeded by 4×).",
+    "Stripe key handling in server.py:2898 reads both STRIPE_API_KEY and STRIPE_SECRET_KEY — good fallback. `_stripe.api_key=''` short-circuit at lines 2928/2967/3015 cleanly avoids accidental empty-key API calls.",
+    "consume_credits (server.py:2436) correctly distinguishes SUBSCRIPTION_UNLIMITED_ACTIONS (assessment, rehab_plan, guided_exercise) from premium_chat_message — design is sound. The bug is that the chat endpoints simply never call it.",
+    "progress/summary correctly defaults to empty arrays + null first_seen for both anon and new-user paths. Schema is clean and avoids leaking mongo _id (uses {_id:0} projection).",
+    "billing/verify-session is idempotent and gated by ownership check (rec.user_id == user.id) — good defense-in-depth.",
+    "auth/google/session does not catch json.JSONDecodeError on `await request.json()` — a malformed body will return a 500 from FastAPI rather than a 400. Minor."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_phase_c_features.py (new — Phase C suite)"
+  ],
+  "success_rate": {
+    "backend": "95% (18/19 executable cases pass; 1 critical fail = persona-chat credits)",
+    "frontend": "N/A (backend-only review per request)"
+  },
+  "seed_data_creation": "No persistent seed data created. Tests create fresh TEST_phasec_*@example.com users per case; cleanup is not strictly required since each run creates new uuid-suffixed emails.",
+  "retest_needed": true,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Next iteration should re-run /app/backend/tests/test_phase_c_features.py — specifically TestPersonaChatCredits — after the main agent (a) wires `consume_credits('premium_chat_message')` into /api/personas/chat (b) optionally adds /api/chat/persona/message alias. Once fixed, the 'spec endpoint' test will also need to be un-skipped (replace pytest.skip with same assertion).",
+  "rca_of_issue": "Bug: Persona chat does not burn credits.\nRoute /app/backend/server.py:2219 `async def persona_chat(req: PersonaChatRequest)` accepts only the Pydantic body — it does NOT take `request: Request`, does NOT call `_user_from_header`, and does NOT call `consume_credits`. The Phase C spec (and the CREDIT_COSTS map at line 2401) clearly defines premium_chat_message:10, and consume_credits at line 2436 has the correct logic that EXCLUDES premium_chat_message from SUBSCRIPTION_UNLIMITED_ACTIONS (line 2409) — so the helper is ready, but the chat endpoint never invokes it.\n\nReproduction:\n  1. POST /api/users/signup → user with credits=100\n  2. POST /api/personas/chat with persona_id='th_001', session_id='s1', text='hi', header X-User-Id:<uid>\n  3. GET /api/credits/balance → credits is STILL 100 (expected 90)\n\nMitigation (1-line fix sketch):\n```python\n@api_router.post(\"/personas/chat\")\nasync def persona_chat(req: PersonaChatRequest, request: Request):\n    user = await _user_from_header(dict(request.headers))\n    if not user:\n        raise HTTPException(status_code=401, detail=\"Sign in required\")\n    await consume_credits(user[\"id\"], \"premium_chat_message\")\n    # ... rest unchanged\n```\nAdditionally, add a route alias `@api_router.post('/chat/persona/message')` pointing to the same handler, OR update the spec to reference /api/personas/chat."
+}

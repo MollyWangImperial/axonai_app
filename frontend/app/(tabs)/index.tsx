@@ -192,12 +192,12 @@ export default function HomeScreen() {
           <View style={styles.row}>
             <Pressable
               testID="home-history-btn"
-              onPress={() => router.push("/history")}
+              onPress={() => router.push("/progress")}
               style={[styles.quickCard, { backgroundColor: colors.surfaceSecondary }]}
             >
-              <Ionicons name="time" size={26} color={colors.brandPrimary} />
+              <Ionicons name="trending-up" size={26} color={colors.brandPrimary} />
               <Text style={styles.quickTitle}>Progress</Text>
-              <Text style={styles.quickSub}>{history.length} past sessions</Text>
+              <Text style={styles.quickSub}>{history.length > 0 ? `${history.length} assessment${history.length === 1 ? "" : "s"}` : "No data yet"}</Text>
             </Pressable>
             <Pressable
               testID="home-plan-btn"

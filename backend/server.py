@@ -2395,13 +2395,18 @@ class User(BaseModel):
 
 
 CREDIT_COSTS = {
-    "assessment": 10,
-    "rehab_plan": 20,
-    "guided_exercise": 5,
-    "premium_chat_message": 2,
+    "assessment": 40,           # Phase C: 1 assessment + 1 plan + 1 exercise = 100 credits
+    "rehab_plan": 30,
+    "guided_exercise": 30,
+    "premium_chat_message": 10,  # AI therapist persona-chat — even subscribers pay
     "video_call": 50,
     "in_person_session": 80,
 }
+
+# Subscription unlocks UNLIMITED for these actions only. AI therapist persona
+# chats and paid sessions still consume credits — keeping the credit-pack
+# revenue stream working alongside subscription.
+SUBSCRIPTION_UNLIMITED_ACTIONS = {"assessment", "rehab_plan", "guided_exercise"}
 
 
 async def get_or_create_user(email: str, name: str, role: str = "patient") -> Dict[str, Any]:
@@ -2433,6 +2438,15 @@ async def consume_credits(user_id: str, kind: str) -> Dict[str, Any]:
     user = await db.users.find_one({"id": user_id}, {"_id": 0})
     if not user:
         raise HTTPException(status_code=401, detail="Sign in required")
+    # Subscription bypass for unlimited-tier actions
+    sub_active = bool(user.get("subscription_active"))
+    if sub_active and kind in SUBSCRIPTION_UNLIMITED_ACTIONS:
+        await db.credit_log.insert_one({
+            "user_id": user_id, "kind": kind, "cost": 0, "new_balance": user["credits"],
+            "subscription_covered": True,
+            "ts": datetime.now(timezone.utc).isoformat(),
+        })
+        return {"credits": user["credits"], "spent": 0, "subscription_covered": True}
     if user["credits"] < cost:
         raise HTTPException(status_code=402, detail=f"Not enough credits. Need {cost}, have {user['credits']}.")
     new_credits = user["credits"] - cost
@@ -2505,8 +2519,14 @@ async def me(request: Request):
 async def credits_balance(request: Request):
     user = await _user_from_header(dict(request.headers))
     if not user:
-        return {"credits": 0, "anonymous": True, "costs": CREDIT_COSTS}
-    return {"credits": user["credits"], "user_id": user["id"], "costs": CREDIT_COSTS}
+        return {"credits": 0, "anonymous": True, "costs": CREDIT_COSTS, "subscription_active": False}
+    return {
+        "credits": user["credits"],
+        "user_id": user["id"],
+        "costs": CREDIT_COSTS,
+        "subscription_active": bool(user.get("subscription_active")),
+        "subscription_period_end": user.get("subscription_period_end"),
+    }
 
 
 # ============ Therapist onboarding (questionnaire → AI persona) ============
@@ -2854,7 +2874,7 @@ async def chat_proactive_messages(request: Request, n: int = 3):
 
 
 # Mount routes
-app.include_router(api_router)
+# (deferred to end-of-file after Phase C routes)
 
 app.add_middleware(
     CORSMiddleware,
@@ -2871,6 +2891,287 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+# ============ Phase C — Billing (Stripe), Google Auth, Progress dashboard ============
+import stripe as _stripe
+import httpx as _httpx
+
+_stripe.api_key = os.environ.get("STRIPE_API_KEY") or os.environ.get("STRIPE_SECRET_KEY") or ""
+STRIPE_PRICE_SUBSCRIPTION_AMOUNT = 999  # $9.99 in cents
+STRIPE_PRICE_CREDIT_PACK_AMOUNT = 499   # $4.99 in cents
+CREDIT_PACK_SIZE = 200
+
+
+def _stripe_origin(request: Request) -> str:
+    """Build a return URL origin from the incoming request — works for both web
+    and mobile WebView Checkout returns."""
+    origin = request.headers.get("origin")
+    if origin:
+        return origin
+    referer = request.headers.get("referer", "")
+    if referer:
+        try:
+            from urllib.parse import urlparse
+            p = urlparse(referer)
+            return f"{p.scheme}://{p.netloc}"
+        except Exception:
+            pass
+    return "https://localhost"
+
+
+@api_router.post("/billing/subscribe")
+async def billing_subscribe(request: Request):
+    """Create a Stripe Checkout Session for the $9.99/mo subscription.
+    Uses inline `price_data` so we don't need pre-created Stripe prices."""
+    user = await _user_from_header(dict(request.headers))
+    if not user:
+        raise HTTPException(status_code=401, detail="Sign in required")
+    if not _stripe.api_key:
+        raise HTTPException(status_code=503, detail="Stripe not configured")
+    origin = _stripe_origin(request)
+    try:
+        session = _stripe.checkout.Session.create(
+            mode="subscription",
+            payment_method_types=["card"],
+            line_items=[{
+                "price_data": {
+                    "currency": "usd",
+                    "product_data": {"name": "NeuroMotion Unlimited (Monthly)"},
+                    "unit_amount": STRIPE_PRICE_SUBSCRIPTION_AMOUNT,
+                    "recurring": {"interval": "month"},
+                },
+                "quantity": 1,
+            }],
+            customer_email=user.get("email"),
+            client_reference_id=user["id"],
+            metadata={"action": "start_subscription", "app_user_id": user["id"]},
+            success_url=f"{origin}/billing-return?session_id={{CHECKOUT_SESSION_ID}}&kind=sub",
+            cancel_url=f"{origin}/?canceled=1",
+        )
+        # Track pending session so the return endpoint can finalize even without webhooks.
+        await db.billing_sessions.insert_one({
+            "session_id": session["id"], "user_id": user["id"], "kind": "subscription",
+            "status": "pending", "created_at": datetime.now(timezone.utc).isoformat(),
+        })
+        return {"url": session["url"], "session_id": session["id"]}
+    except Exception as e:
+        logger.error(f"Stripe subscribe error: {e}")
+        raise HTTPException(status_code=500, detail=str(e)[:300])
+
+
+@api_router.post("/billing/buy-credits")
+async def billing_buy_credits(request: Request):
+    """One-time $4.99 → 200 credits for AI therapist chat top-up."""
+    user = await _user_from_header(dict(request.headers))
+    if not user:
+        raise HTTPException(status_code=401, detail="Sign in required")
+    if not _stripe.api_key:
+        raise HTTPException(status_code=503, detail="Stripe not configured")
+    origin = _stripe_origin(request)
+    try:
+        session = _stripe.checkout.Session.create(
+            mode="payment",
+            payment_method_types=["card"],
+            line_items=[{
+                "price_data": {
+                    "currency": "usd",
+                    "product_data": {"name": f"NeuroMotion {CREDIT_PACK_SIZE} Credits Pack"},
+                    "unit_amount": STRIPE_PRICE_CREDIT_PACK_AMOUNT,
+                },
+                "quantity": 1,
+            }],
+            customer_email=user.get("email"),
+            client_reference_id=user["id"],
+            metadata={"action": "buy_credits", "app_user_id": user["id"], "credits": str(CREDIT_PACK_SIZE)},
+            success_url=f"{origin}/billing-return?session_id={{CHECKOUT_SESSION_ID}}&kind=credits",
+            cancel_url=f"{origin}/?canceled=1",
+        )
+        await db.billing_sessions.insert_one({
+            "session_id": session["id"], "user_id": user["id"], "kind": "credit_pack",
+            "credits": CREDIT_PACK_SIZE, "status": "pending",
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        })
+        return {"url": session["url"], "session_id": session["id"]}
+    except Exception as e:
+        logger.error(f"Stripe credit pack error: {e}")
+        raise HTTPException(status_code=500, detail=str(e)[:300])
+
+
+@api_router.get("/billing/verify-session")
+async def billing_verify_session(session_id: str, request: Request):
+    """Poll-based fallback to webhook: the frontend calls this after Checkout
+    returns. We fetch the Checkout Session from Stripe; if paid, we apply the
+    subscription or credit grant idempotently (using our local billing_sessions
+    record to avoid double-applying)."""
+    user = await _user_from_header(dict(request.headers))
+    if not user:
+        raise HTTPException(status_code=401, detail="Sign in required")
+    rec = await db.billing_sessions.find_one({"session_id": session_id}, {"_id": 0})
+    if not rec or rec.get("user_id") != user["id"]:
+        raise HTTPException(status_code=404, detail="Unknown session")
+    if rec.get("status") == "applied":
+        # Already applied — just return current user state.
+        u = await db.users.find_one({"id": user["id"]}, {"_id": 0})
+        return {"status": "applied", "credits": u["credits"], "subscription_active": bool(u.get("subscription_active"))}
+    if not _stripe.api_key:
+        raise HTTPException(status_code=503, detail="Stripe not configured")
+    try:
+        session = _stripe.checkout.Session.retrieve(session_id)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e)[:200])
+    paid = session.get("payment_status") in ("paid", "no_payment_required")
+    if not paid:
+        return {"status": "pending", "payment_status": session.get("payment_status")}
+    # Apply effect idempotently
+    if rec["kind"] == "subscription":
+        # Pull subscription period end if available
+        period_end_iso = None
+        sub_id = session.get("subscription")
+        if sub_id:
+            try:
+                sub = _stripe.Subscription.retrieve(sub_id)
+                cpe = sub.get("current_period_end")
+                if cpe:
+                    period_end_iso = datetime.fromtimestamp(cpe, tz=timezone.utc).isoformat()
+            except Exception:
+                pass
+        await db.users.update_one({"id": user["id"]}, {"$set": {
+            "subscription_active": True,
+            "subscription_id": sub_id,
+            "subscription_period_end": period_end_iso,
+        }})
+    elif rec["kind"] == "credit_pack":
+        credits = int(rec.get("credits", CREDIT_PACK_SIZE))
+        await db.users.update_one({"id": user["id"]}, {"$inc": {"credits": credits}})
+    await db.billing_sessions.update_one({"session_id": session_id}, {"$set": {"status": "applied"}})
+    u = await db.users.find_one({"id": user["id"]}, {"_id": 0})
+    return {"status": "applied", "credits": u["credits"], "subscription_active": bool(u.get("subscription_active"))}
+
+
+@api_router.post("/billing/webhook")
+async def billing_webhook(request: Request):
+    """Best-effort Stripe webhook. Verifies signature only if STRIPE_WEBHOOK_SECRET
+    is set; otherwise still processes events (useful in dev). Applies the same
+    idempotent grant logic as /billing/verify-session."""
+    payload = await request.body()
+    secret = os.environ.get("STRIPE_WEBHOOK_SECRET", "").strip()
+    sig = request.headers.get("stripe-signature", "")
+    event = None
+    if secret and sig:
+        try:
+            event = _stripe.Webhook.construct_event(payload, sig, secret)
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Bad webhook signature: {e}")
+    else:
+        import json as _json
+        try:
+            event = _json.loads(payload.decode("utf-8"))
+        except Exception:
+            raise HTTPException(status_code=400, detail="Bad payload")
+    etype = event.get("type")
+    obj = event.get("data", {}).get("object", {})
+    if etype == "checkout.session.completed":
+        sid = obj.get("id")
+        rec = await db.billing_sessions.find_one({"session_id": sid}, {"_id": 0}) if sid else None
+        if rec and rec.get("status") != "applied":
+            uid = rec["user_id"]
+            if rec["kind"] == "subscription":
+                period_end_iso = None
+                cpe = obj.get("subscription")
+                # Just mark active; period_end is best-effort.
+                await db.users.update_one({"id": uid}, {"$set": {
+                    "subscription_active": True,
+                    "subscription_id": cpe,
+                    "subscription_period_end": period_end_iso,
+                }})
+            elif rec["kind"] == "credit_pack":
+                credits = int(rec.get("credits", CREDIT_PACK_SIZE))
+                await db.users.update_one({"id": uid}, {"$inc": {"credits": credits}})
+            await db.billing_sessions.update_one({"session_id": sid}, {"$set": {"status": "applied"}})
+    elif etype == "customer.subscription.deleted":
+        sub_id = obj.get("id")
+        if sub_id:
+            await db.users.update_one({"subscription_id": sub_id}, {"$set": {"subscription_active": False}})
+    return {"ok": True}
+
+
+# ============ Google Auth (Emergent-managed) ============
+@api_router.post("/auth/google/session")
+async def auth_google_session(request: Request):
+    """Frontend posts the session_id it received in the redirect from
+    https://auth.emergentagent.com/. We exchange it for the user payload, then
+    create/lookup our user record."""
+    body = await request.json()
+    sid = body.get("session_id") or body.get("sessionId")
+    if not sid:
+        raise HTTPException(status_code=400, detail="session_id required")
+    async with _httpx.AsyncClient(timeout=10.0) as cx:
+        try:
+            r = await cx.get(
+                "https://demobackend.emergentagent.com/auth/v1/env/oauth/session-data",
+                headers={"X-Session-ID": sid},
+            )
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"Auth service unreachable: {e}")
+    if r.status_code != 200:
+        raise HTTPException(status_code=401, detail=f"Invalid session ({r.status_code})")
+    data = r.json()
+    email = (data.get("email") or "").lower()
+    name = data.get("name") or email.split("@")[0]
+    if not email:
+        raise HTTPException(status_code=400, detail="No email returned from Google")
+    user = await get_or_create_user(email, name, role="patient")
+    # Stash picture/google_id for the profile
+    extras = {k: data.get(k) for k in ("picture", "id") if data.get(k)}
+    if extras:
+        await db.users.update_one({"id": user["id"]}, {"$set": {"google": extras}})
+    return user
+
+
+# ============ Progress dashboard ============
+@api_router.get("/progress/summary")
+async def progress_summary(request: Request):
+    """Returns time-series functional metrics + exercise progress totals.
+    Empty arrays when the user has never assessed."""
+    user = await _user_from_header(dict(request.headers))
+    if not user:
+        return {"assessments": [], "exercises": [], "issues_history": [], "first_seen": None}
+    cursor = db.assessments.find(
+        {"user_id": user["id"]},
+        {"_id": 0, "id": 1, "created_at": 1, "metrics": 1, "issues_detected": 1, "rehab_plan": 1, "task_results": 1},
+    ).sort("created_at", 1)
+    assessments_raw = await cursor.to_list(200)
+    series = []
+    issues_count: Dict[str, int] = {}
+    for a in assessments_raw:
+        m = a.get("metrics") or {}
+        series.append({
+            "id": a.get("id"),
+            "date": a.get("created_at"),
+            # Headline functional metrics — None if not yet computed.
+            "shoulder_flexion_deg": m.get("shoulder_flexion_deg"),
+            "trunk_lean_deg": m.get("trunk_lean_deg"),
+            "reach_completion": m.get("reach_completion"),
+            "bilateral_symmetry": m.get("bilateral_symmetry"),
+            "pinch_grip": m.get("pinch_grip"),
+            "hand_opening": m.get("hand_opening"),
+            "issues_count": len(a.get("issues_detected") or []),
+            "exercises_count": len(a.get("rehab_plan") or []),
+        })
+        for iss in (a.get("issues_detected") or []):
+            issues_count[iss] = issues_count.get(iss, 0) + 1
+    return {
+        "assessments": series,
+        "issues_history": [{"issue": k, "count": v} for k, v in sorted(issues_count.items(), key=lambda x: -x[1])],
+        "first_seen": series[0]["date"] if series else None,
+        "count": len(series),
+    }
+
+
 @app.on_event("shutdown")
 async def shutdown_db_client():
     client.close()
+
+
+# Mount routes — MUST be last so all routes defined above (including Phase C)
+# are registered.
+app.include_router(api_router)

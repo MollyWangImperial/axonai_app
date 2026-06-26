@@ -7,6 +7,8 @@ import * as Haptics from "expo-haptics";
 import { colors, spacing, radius } from "@/src/theme";
 import { fetchAssessment, Assessment } from "@/src/api";
 import { storage } from "@/src/utils/storage";
+import { authedFetch } from "@/src/auth";
+import PaywallModal from "@/src/components/PaywallModal";
 
 type ExerciseProgress = {
   completed_reps: number;
@@ -25,6 +27,8 @@ export default function RehabPlanScreen() {
   const [data, setData] = useState<Assessment | null>(null);
   const [loading, setLoading] = useState(true);
   const [progress, setProgress] = useState<Record<string, ExerciseProgress>>({});
+  const [paywallOpen, setPaywallOpen] = useState(false);
+  const [paywallReason, setPaywallReason] = useState<string | undefined>();
 
   const planId = id || "default";
 
@@ -142,8 +146,19 @@ export default function RehabPlanScreen() {
               <Text style={styles.exSource}>📖 {ex.source}</Text>
               <View style={styles.exActions}>
                 <Pressable
-                  onPress={() => {
+                  onPress={async () => {
                     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+                    // Credit pre-flight: skip if subscription_active, else require >=30.
+                    try {
+                      const r = await authedFetch("/api/credits/balance");
+                      const b = await r.json();
+                      const needed = (b.costs?.guided_exercise ?? 30);
+                      if (!b.subscription_active && (b.credits ?? 0) < needed) {
+                        setPaywallReason("You're out of credits. Subscribe to unlock unlimited guided exercises.");
+                        setPaywallOpen(true);
+                        return;
+                      }
+                    } catch {/* offline — let backend gate later */}
                     router.push({ pathname: "/exercise", params: { exercise_id: ex.id, name: ex.name, plan_id: planId, sets: String(ex.sets), reps: String(ex.reps) } });
                   }}
                   style={styles.guidedBtn}
@@ -172,6 +187,13 @@ export default function RehabPlanScreen() {
           <Text style={styles.ctaText}>Finish Session</Text>
         </Pressable>
       </View>
+
+      <PaywallModal
+        visible={paywallOpen}
+        onClose={() => setPaywallOpen(false)}
+        onSubscribed={() => { /* balance auto-refreshes on next focus */ }}
+        reason={paywallReason}
+      />
     </View>
   );
 }

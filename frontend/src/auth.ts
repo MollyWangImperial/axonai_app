@@ -4,8 +4,8 @@ const BASE = process.env.EXPO_PUBLIC_BACKEND_URL;
 
 export type Me = { id: string; email: string; name: string; role: "patient" | "therapist"; credits: number };
 
-const USER_KEY = "active_user_id_v1";
-const USER_OBJ = "active_user_obj_v1";
+export const USER_KEY = "active_user_id_v1";
+export const USER_OBJ = "active_user_obj_v1";
 
 export async function getUserId(): Promise<string | null> {
   return await storage.getItem(USER_KEY);
