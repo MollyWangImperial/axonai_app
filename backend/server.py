@@ -116,9 +116,9 @@ TASKS_DATA: List[Dict[str, Any]] = [
         "steps": [
             {
                 "id": "T1-S1",
-                "voice": "Welcome. Let's begin with a seated forward reach. Please sit upright with your back away from the chair, and place your hand on your lap. Take a deep breath when you're ready.",
-                "target": {"x": 0.5, "y": 0.78, "r": 0.10, "landmark": "WRIST"},
-                "hold_ms": 1500,
+                "voice": "Welcome. Let's begin with a seated forward reach. Sit upright, with your arm relaxed. When you're ready, touch the circle that appears on your hand.",
+                "target": {"x": 0.5, "y": 0.78, "r": 0.12, "landmark": "WRIST_DYNAMIC"},
+                "hold_ms": 1200,
                 "caption": "Start position: hand on lap",
             },
             {
@@ -176,15 +176,15 @@ TASKS_DATA: List[Dict[str, Any]] = [
         "steps": [
             {
                 "id": "T3-S1",
-                "voice": "Let's try bringing your hand to your mouth. Place your hand on your lap to start. You're doing wonderfully.",
-                "target": {"x": 0.5, "y": 0.78, "r": 0.10, "landmark": "WRIST"},
-                "hold_ms": 1500,
-                "caption": "Start with hand on lap",
+                "voice": "Let's try bringing your hand to your mouth. When you're ready, touch the circle on your hand to begin.",
+                "target": {"x": 0.5, "y": 0.78, "r": 0.12, "landmark": "WRIST_DYNAMIC"},
+                "hold_ms": 1200,
+                "caption": "Touch the circle on your hand",
             },
             {
                 "id": "T3-S2",
-                "voice": "Now, slowly bring your hand up to your mouth, as if you were drinking from a cup. Keep your head still and stay upright.",
-                "target": {"x": 0.5, "y": 0.30, "r": 0.10, "landmark": "WRIST"},
+                "voice": "Now, slowly bring your hand up to your mouth, as if you were drinking from a cup. Keep your head still.",
+                "target": {"x": 0.5, "y": 0.30, "r": 0.10, "landmark": "MOUTH"},
                 "hold_ms": 1500,
                 "caption": "Hand to mouth",
                 "measure": ["elbow_flexion", "trunk_lean", "coordination"],
@@ -206,15 +206,15 @@ TASKS_DATA: List[Dict[str, Any]] = [
         "steps": [
             {
                 "id": "T4-S1",
-                "voice": "Imagine a cup is on the table in front of you. Reach with your affected hand toward the cup at this lower position.",
-                "target": {"x": 0.35, "y": 0.70, "r": 0.10, "landmark": "WRIST"},
-                "hold_ms": 1500,
+                "voice": "Imagine a cup is on the table in front of you. Reach with your affected hand toward the cup.",
+                "target": {"x": 0.30, "y": 0.65, "r": 0.10, "landmark": "WRIST", "icon": "cup"},
+                "hold_ms": 1200,
                 "caption": "Reach for the cup",
             },
             {
                 "id": "T4-S2",
-                "voice": "Pretend to close your fingers around the cup, then carefully move it sideways to the target on your other side.",
-                "target": {"x": 0.70, "y": 0.50, "r": 0.10, "landmark": "WRIST"},
+                "voice": "Pretend to close your fingers around the cup, then carefully move it to the table on your other side.",
+                "target": {"x": 0.70, "y": 0.65, "r": 0.12, "landmark": "WRIST", "icon": "table"},
                 "hold_ms": 1500,
                 "caption": "Move cup across to target",
                 "measure": ["endpoint_accuracy", "trunk_lean", "movement_smoothness"],
@@ -236,16 +236,16 @@ TASKS_DATA: List[Dict[str, Any]] = [
         "steps": [
             {
                 "id": "T5-S1",
-                "voice": "Hold your affected hand up in front of you, around chest height. Keep your wrist steady.",
-                "target": {"x": 0.5, "y": 0.45, "r": 0.10, "landmark": "WRIST"},
+                "voice": "Hold your affected hand up at your chest, palm open and steady.",
+                "target": {"x": 0.5, "y": 0.45, "r": 0.10, "landmark": "CHEST"},
                 "hold_ms": 1500,
-                "caption": "Raise hand to chest",
+                "caption": "Hand on chest",
             },
             {
                 "id": "T5-S2",
-                "voice": "Open your hand as wide as you can, then slowly close it as if you are grasping a soft ball. Repeat this opening and closing slowly.",
-                "target": {"x": 0.5, "y": 0.45, "r": 0.10, "landmark": "WRIST"},
-                "hold_ms": 3500,
+                "voice": "Open your hand wide. When fully open, hold for a moment. Then slowly close your hand around an imaginary ball.",
+                "target": {"x": 0.5, "y": 0.45, "r": 0.12, "landmark": "HAND_OPEN"},
+                "hold_ms": 1800,
                 "caption": "Open and close hand around a ball",
                 "measure": ["hand_opening", "grasp_release"],
             },
@@ -274,8 +274,8 @@ TASKS_DATA: List[Dict[str, Any]] = [
             {
                 "id": "T6-S2",
                 "voice": "Now, slowly touch the tip of your thumb to the tip of your index finger, as if you were pinching a small coin. Hold for a moment.",
-                "target": {"x": 0.5, "y": 0.40, "r": 0.10, "landmark": "WRIST"},
-                "hold_ms": 3000,
+                "target": {"x": 0.5, "y": 0.40, "r": 0.12, "landmark": "PINCH"},
+                "hold_ms": 1800,
                 "caption": "Pinch thumb and index finger",
                 "measure": ["pinch_grip"],
             },
