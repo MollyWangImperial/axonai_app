@@ -1,0 +1,181 @@
+{
+  "app_name": "NeuroMotion",
+  "personality": "1 iOS-Native Clean",
+  "personality_one_liner": "A clinical, calming, and highly accessible medical interface that guides patients with warmth, clear contrast, and intuitive focus.",
+  "color": {
+    "surface": "#FDFDFD",
+    "onSurface": "#1C201D",
+    "surfaceSecondary": "#F4F5F2",
+    "onSurfaceSecondary": "#2C312E",
+    "surfaceTertiary": "#E8EBE6",
+    "onSurfaceTertiary": "#454C47",
+    "surfaceInverse": "#1C201D",
+    "onSurfaceInverse": "#FDFDFD",
+    "brand": "#4A7856",
+    "brandPrimary": "#4A7856",
+    "onBrandPrimary": "#FFFFFF",
+    "brandSecondary": "#E18E6D",
+    "onBrandSecondary": "#1C201D",
+    "brandTertiary": "#D9E5DC",
+    "onBrandTertiary": "#253C2B",
+    "success": "#3C8255",
+    "onSuccess": "#FFFFFF",
+    "warning": "#D98A3C",
+    "onWarning": "#FFFFFF",
+    "error": "#B33939",
+    "onError": "#FFFFFF",
+    "info": "#4A7856",
+    "onInfo": "#FFFFFF",
+    "border": "#E3E6E1",
+    "borderStrong": "#BCC2BA",
+    "divider": "#EEF0ED"
+  },
+  "typography": {
+    "displayFontFamily": "Plus Jakarta Sans",
+    "textFontFamily": "Plus Jakarta Sans",
+    "scale": {
+      "sm": 14,
+      "base": 18,
+      "lg": 22,
+      "xl": 28,
+      "2xl": 34
+    }
+  },
+  "spacing": {
+    "rule": "Maintain generous breathing room for accessibility. Keep tap targets ≥ 44pt. Avoid dense clustering. Single-column layouts preferred.",
+    "xs": 8,
+    "sm": 12,
+    "md": 16,
+    "lg": 24,
+    "xl": 32,
+    "2xl": 48,
+    "3xl": 64
+  },
+  "radius_tokens": {
+    "sm": 8,
+    "md": 16,
+    "lg": 24,
+    "pill": 999
+  },
+  "shadow_tier": "1",
+  "navigation": "bottom_tabs",
+  "icon_set": "Ionicons",
+  "glassmorphism": {
+    "enabled": true,
+    "do's": [
+      "Use heavy-tinted blur (minimum 80% opacity) behind the bottom caption/voice bar in the live camera view to ensure text legibility over camera feed.",
+      "Use blur on bottom tabs if content scrolls behind."
+    ],
+    "dont's": [
+      "Never use blur on primary CTA buttons or list item rows.",
+      "Do not use light blurs over the live camera feed; high contrast is strictly required."
+    ]
+  },
+  "platform_libraries": {
+    "glass": {
+      "ios": "expo-glass-effect",
+      "android": "expo-blur",
+      "low_end_android_fallback": "solid surfaceSecondary"
+    },
+    "image": "expo-image",
+    "blur": "expo-blur",
+    "bottom_sheet": "@gorhom/bottom-sheet",
+    "animation": "react-native-reanimated",
+    "gesture": "react-native-gesture-handler"
+  },
+  "screens": [
+    {
+      "name": "Home",
+      "purpose": "A calm, welcoming dashboard to start the daily assessment and view current rehab plan focus.",
+      "states": {
+        "loading": "Centered brand primary spinner.",
+        "empty": "No past assessments yet. Show 'Start Your First Assessment' illustration and prompt.",
+        "error": "Error fetching data. 'Unable to load plan' with a Retry button."
+      },
+      "layout": "Large, fixed primary CTA 'Start Assessment' pinned at the bottom thumb zone. Above it, a hero greeting card with the patient's name and a soft background image overlaid with a top-to-bottom gradient scrim. Below hero, a 'Today's Plan' summary card."
+    },
+    {
+      "name": "TaskIntro",
+      "purpose": "Lists the 7 upper-limb movement tasks so the patient knows what to expect before the camera opens.",
+      "states": {
+        "loading": "Skeleton list of 7 items.",
+        "empty": "N/A - System defined.",
+        "error": "Failed to load task list. Retry button."
+      },
+      "layout": "Single-column scrollable list. Each list item has a leading task number (1-7) in a brandTertiary circle, the task title (e.g., 'Seated Forward Reach'), and a chevron. Sticky CTA 'Open Camera & Begin' at bottom."
+    },
+    {
+      "name": "LiveCameraAssessment",
+      "purpose": "The core live camera view with pose tracking overlays, encouraging voice guidance, and reachable targets.",
+      "states": {
+        "loading": "Camera initialization spinner over dark background.",
+        "empty": "N/A",
+        "error": "Camera permission denied or camera failed. Show high-contrast text prompt to enable permissions in settings."
+      },
+      "layout": "Full-screen camera feed. Top edge: Safe-area inset with 7 progress dots (current task highlighted). Center overlay: Subdued skeleton/pose outline to guide body placement, and a prominent 'brandSecondary' (terracotta) pulsing circular target where the hand must reach. Bottom edge: Sticky, heavily tinted glassmorphism bar (surfaceInverse based) containing the step-by-step text instruction and an animated voice-playing soundwave indicator. No complex menus here."
+    },
+    {
+      "name": "Results",
+      "purpose": "Displays identified functional issues from the camera assessment without overwhelming the patient.",
+      "states": {
+        "loading": "Analyzing movement data spinner.",
+        "empty": "N/A",
+        "error": "Failed to analyze movement. Provide a clear fallback to retake or save raw data."
+      },
+      "layout": "Summary dashboard layout. Large text for the primary outcome. Uses a sequence of 'surfaceSecondary' cards for each identified issue (e.g., 'Reduced shoulder flexion', 'Trunk compensation'). Each card has a supportive, easy-to-read explanation. Sticky CTA to 'Generate Rehab Plan'."
+    },
+    {
+      "name": "RehabPlan",
+      "purpose": "A personalized daily exercise plan derived from the assessment results, showing sets, reps, and steps.",
+      "states": {
+        "loading": "Skeleton exercise cards.",
+        "empty": "No active plan. 'Take an assessment to generate your plan.'",
+        "error": "Unable to fetch rehab plan. Retry button."
+      },
+      "layout": "Generous vertical spacing. Cards are full width minus padding. Each exercise card features a clear, large-font title, a prominent numeric display for sets/reps, and an icon/thumbnail. A sticky bottom CTA allows the user to 'Log Today's Exercises'."
+    },
+    {
+      "name": "ProgressHistory",
+      "purpose": "Tracks the patient's recovery journey over time with simple visual trends.",
+      "states": {
+        "loading": "Spinner centered on screen.",
+        "empty": "No history available. 'Complete your first week to see progress.'",
+        "error": "Unable to load history. Retry button."
+      },
+      "layout": "A large line graph at the top showing range-of-motion or completion score trends. Below the graph, a list of past assessments grouped by month, accessible via standard list rows. Avoid dense data tables."
+    }
+  ],
+  "images": {
+    "hero_home": {
+      "url": "https://images.pexels.com/photos/8460412/pexels-photo-8460412.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+      "dark": "https://images.pexels.com/photos/8460412/pexels-photo-8460412.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+      "alt": "Nurse in blue uniform gently assisting a smiling patient, depicting a warm healthcare environment."
+    },
+    "assessment_intro_bg": {
+      "url": "https://images.unsplash.com/photo-1764314138160-5f04f4a50dae?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NTY2Njl8MHwxfHNlYXJjaHwxfHxwaHlzaWNhbCUyMHRoZXJhcHklMjBjbGluaWMlMjBiYWNrZ3JvdW5kfGVufDB8fHx8MTc4MjQ4OTYzM3ww&ixlib=rb-4.1.0&q=85",
+      "dark": "https://images.unsplash.com/photo-1764314138160-5f04f4a50dae?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NTY2Njl8MHwxfHNlYXJjaHwxfHxwaHlzaWNhbCUyMHRoZXJhcHklMjBjbGluaWMlMjBiYWNrZ3JvdW5kfGVufDB8fHx8MTc4MjQ4OTYzM3ww&ixlib=rb-4.1.0&q=85",
+      "alt": "Clean, calm clinical room background for assessment context."
+    },
+    "rehab_plan_cover": {
+      "url": "https://images.pexels.com/photos/6926019/pexels-photo-6926019.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+      "dark": "https://images.pexels.com/photos/6926019/pexels-photo-6926019.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+      "alt": "Man performing a stretching exercise, representing the daily rehab plan."
+    }
+  },
+  "haptics": {
+    "primary_button_press": "impactMedium",
+    "assessment_target_touched": "notificationSuccess",
+    "task_completed": "notificationSuccess",
+    "tab_switch": "impactLight",
+    "error_state": "notificationError"
+  },
+  "instructions_to_main_agent": [
+    "Strictly follow accessibility guidelines: base font size should be at least 18pt for body text to aid stroke survivors with visual deficits. All touch targets must be heavily padded to ≥ 44x44pt.",
+    "Implement the 'gradient scrim' pattern strictly for the `hero_home` and any image with overlaid text (transparent to ≥ 70% surfaceInverse).",
+    "For the `LiveCameraAssessment` screen, overlay elements must not rely on thin lines. The pose-skeleton should use a thicker stroke (e.g., 3-4px) and the touch target should be a bold, pulsing circle in the `brandSecondary` (terracotta) color so it stands out against any background.",
+    "The camera caption/voice bar at the bottom must have a solid or heavily tinted blur background (`surfaceInverse`) to ensure the text instructions and the voice playing indicator are readable regardless of the camera feed beneath it.",
+    "Do not use complex navigation (sidebars, multiple tabs) inside the Assessment flow. It must be a linear, one-screen-one-action flow with 'Next' or 'Continue' buttons sticky at the bottom.",
+    "Keep language and UI tone clinical but warm. Use `success` and `brandTertiary` to celebrate task completion. Avoid loud alarm colors unless it is a critical error.",
+    "Ensure the ElevenLabs voice playback state maps to a clear visual indicator (animated soundwave) in the caption bar so hearing-impaired users know when audio is playing."
+  ]
+}
