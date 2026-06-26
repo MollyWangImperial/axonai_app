@@ -2599,7 +2599,7 @@ async def _build_patient_context() -> str:
     )
 
 
-CHAT_SYSTEM_PROMPT_BASE = """You are "Hope" — a warm, calm, deeply empathetic AI recovery companion for a stroke survivor. You are NOT a doctor; you are a supportive friend who happens to know about stroke rehabilitation.
+CHAT_SYSTEM_PROMPT_BASE = """You are "Aria" — a warm, calm, deeply empathetic AI recovery companion for a stroke survivor. You are NOT a doctor; you are a supportive friend who happens to know about stroke rehabilitation.
 
 Your tone:
 - Warm, patient, never patronizing
@@ -2607,6 +2607,7 @@ Your tone:
 - Always validate feelings before giving information
 - Celebrate small wins enthusiastically
 - Never minimize their struggle, but never dwell in despair
+- If a preferred name is provided below, use it naturally — not in every reply, but to feel seen
 
 What you know:
 - General stroke rehabilitation knowledge (Fugl-Meyer, ARAT, CIMT, BATRAC, Bobath, Task-Specific Training, neuroplasticity basics)
@@ -2622,17 +2623,11 @@ When you don't know something, say so warmly and suggest asking their therapist.
 
 If the patient seems distressed, gently acknowledge it, sit with them, and only suggest a tiny actionable step if they seem ready.
 
-You may proactively ask gentle check-in questions like:
-- "How are you feeling today?"
-- "Did you sleep okay?"
-- "Anything on your mind?"
-- "How did the reaching exercise feel this morning?"
-
 Keep replies under 4 short sentences unless the patient asks for more detail."""
 
 
 @api_router.post("/chat/message", response_model=ChatResponse)
-async def chat_message(req: ChatRequest):
+async def chat_message(req: ChatRequest, request: Request):
     if not EMERGENT_LLM_KEY:
         raise HTTPException(status_code=503, detail="Chat unavailable — LLM key not configured.")
     # Load previous turns from MongoDB
@@ -2641,7 +2636,14 @@ async def chat_message(req: ChatRequest):
 
     # Build patient context (refreshed every turn so new assessments propagate)
     patient_ctx = await _build_patient_context()
-    system_prompt = CHAT_SYSTEM_PROMPT_BASE + "\n\n----\nPATIENT CONTEXT:\n" + patient_ctx
+    # Inject preferred name from the signed-in user's onboarding profile, if available.
+    user = await _user_from_header(dict(request.headers))
+    name = ""
+    if user:
+        prof = user.get("profile") or {}
+        name = (prof.get("preferred_name") or user.get("name") or "").split(" ")[0].strip()
+    name_block = f"\nPATIENT PREFERRED NAME: {name}\n" if name else ""
+    system_prompt = CHAT_SYSTEM_PROMPT_BASE + name_block + "\n----\nPATIENT CONTEXT:\n" + patient_ctx
 
     chat = LlmChat(
         api_key=EMERGENT_LLM_KEY,
@@ -2688,34 +2690,70 @@ async def chat_history(session_id: str):
 
 
 @api_router.post("/chat/proactive")
-async def chat_proactive(req: ChatRequest):
-    """Returns a warm spontaneous check-in line (no LLM call needed — varied template)."""
+async def chat_proactive(req: ChatRequest, request: Request):
+    """Returns a warm spontaneous check-in line. Uses preferred_name if available."""
     import random
+    user = await _user_from_header(dict(request.headers))
+    name = ""
+    if user:
+        profile = user.get("profile") or {}
+        name = (profile.get("preferred_name") or user.get("name") or "").split(" ")[0].strip()
     sess = await db.chat_sessions.find_one({"session_id": req.session_id}, {"_id": 0})
     has_history = bool(sess and sess.get("turns"))
-    has_assessment = bool(await db.assessments.find_one({}, {"_id": 1}))
+    has_assessment = False
+    if user:
+        has_assessment = bool(await db.assessments.find_one({"user_id": user["id"]}, {"_id": 1}))
+    n = f", {name}" if name else ""
 
     if not has_assessment:
         pool = [
-            "Hi there. I'm Hope — your recovery companion. Whenever you're ready, taking that first assessment will help me support you. How are you feeling today?",
-            "Hello. I'm here whenever you need to talk. Have you had a chance to do your first movement check yet?",
+            f"Hi{n}. I'm Aria — your recovery companion. Whenever you're ready, taking that first assessment will help me support you. How are you feeling today?",
+            f"Hello{n}. I'm here whenever you need to talk. Have you had a chance to do your first movement check yet?",
+            f"Hi{n}, I'm Aria. How are you doing today?",
         ]
     elif not has_history:
         pool = [
-            "Hi, I'm Hope. I saw your assessment results — thank you for trusting me. How are you feeling today, gently?",
-            "Hello. I'm here for the journey. Want to tell me how the morning has been?",
-            "Hi there. Recovery has good days and tougher days. Which one is today?",
+            f"Hi{n}, I'm Aria. I saw your assessment results — thank you for trusting me. How are you feeling today, gently?",
+            f"Hello{n}. I'm here for the journey. Want to tell me how the morning has been?",
+            f"Hi{n}. Recovery has good days and tougher days. Which one is today?",
         ]
     else:
         pool = [
-            "How are you doing today? Anything on your mind?",
-            "I've been thinking about you. How did the exercises feel this morning?",
-            "Just checking in. Did you sleep okay last night?",
-            "How is your shoulder feeling today? Easier, harder, or about the same?",
-            "Small reminder: every tiny step counts. How are you, really?",
-            "Hi friend. What's one thing — big or small — that went well for you today?",
+            f"How are you doing today{n}? Anything on your mind?",
+            f"I've been thinking about you{n}. How did the exercises feel this morning?",
+            f"Just checking in{n}. Did you sleep okay last night?",
+            f"How is your shoulder feeling today{n}? Easier, harder, or about the same?",
+            f"Small reminder{n}: every tiny step counts. How are you, really?",
+            f"Hi{n}. What's one thing — big or small — that went well for you today?",
+            f"Hello{n}. I'm holding space for you. What would feel good to talk about right now?",
         ]
     return {"text": random.choice(pool)}
+
+
+@api_router.get("/chat/proactive/messages")
+async def chat_proactive_messages(request: Request, n: int = 3):
+    """Returns N varied caring proactive messages — for the floating Aria bubble on Home."""
+    import random
+    user = await _user_from_header(dict(request.headers))
+    name = ""
+    if user:
+        profile = user.get("profile") or {}
+        name = (profile.get("preferred_name") or user.get("name") or "").split(" ")[0].strip()
+    suffix = f", {name}" if name else ""
+    pool = [
+        f"How are you{suffix}?",
+        f"Hi{suffix} — just checking in. How is today going?",
+        f"Thinking of you{suffix}. Did you sleep well?",
+        f"How are your hands feeling today{suffix}?",
+        f"Anything on your mind{suffix}? I'm here.",
+        f"Want to share one small win from today{suffix}?",
+        f"Quick check-in{suffix}: feeling lighter, heavier, or the same?",
+        f"Hi{suffix}. Be gentle with yourself today.",
+        f"How was the morning{suffix}? I'd love to hear.",
+        f"Hey{suffix} — your body is healing in ways you can't see. How are you feeling?",
+    ]
+    random.shuffle(pool)
+    return {"messages": pool[:max(1, min(n, len(pool)))], "name": name}
 
 
 # Mount routes

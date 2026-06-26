@@ -6,6 +6,7 @@ import { useLocalSearchParams, useRouter } from "expo-router";
 import * as Haptics from "expo-haptics";
 import { colors, spacing, radius } from "@/src/theme";
 import { storage } from "@/src/utils/storage";
+import TypingIndicator from "@/src/components/TypingIndicator";
 
 const BASE = process.env.EXPO_PUBLIC_BACKEND_URL;
 
@@ -117,6 +118,8 @@ export default function PersonaChatScreen() {
           </View>
         )}
         ListEmptyComponent={<ActivityIndicator color={colors.brandPrimary} style={{ marginTop: 40 }} />}
+        ListFooterComponent={sending ? <TypingIndicator /> : null}
+        onContentSizeChange={() => listRef.current?.scrollToEnd({ animated: true })}
       />
 
       <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} keyboardVerticalOffset={Platform.OS === "ios" ? 80 : 0}>
@@ -148,8 +151,13 @@ export default function PersonaChatScreen() {
             maxLength={500}
             testID="persona-chat-input"
           />
-          <Pressable onPress={send} disabled={sending || !input.trim()} style={styles.sendBtn} testID="persona-chat-send">
-            {sending ? <ActivityIndicator color="#fff" /> : <Ionicons name="arrow-up" size={20} color="#fff" />}
+          <Pressable
+            onPress={send}
+            disabled={sending || !input.trim()}
+            style={[styles.sendBtn, (sending || !input.trim()) && styles.sendBtnDisabled]}
+            testID="persona-chat-send"
+          >
+            <Ionicons name="arrow-up" size={20} color="#fff" />
           </Pressable>
         </View>
       </KeyboardAvoidingView>
@@ -173,6 +181,7 @@ const styles = StyleSheet.create({
   inputBar: { flexDirection: "row", alignItems: "flex-end", gap: spacing.sm, padding: spacing.sm, borderTopWidth: 1, borderTopColor: colors.divider, backgroundColor: colors.surface },
   input: { flex: 1, fontSize: 15, color: colors.onSurface, maxHeight: 100, paddingHorizontal: spacing.sm, paddingVertical: 10, backgroundColor: colors.surfaceSecondary, borderRadius: radius.lg, minHeight: 44 },
   sendBtn: { width: 44, height: 44, borderRadius: 22, backgroundColor: colors.brandPrimary, alignItems: "center", justifyContent: "center" },
+  sendBtnDisabled: { opacity: 0.4 },
   paywall: { backgroundColor: colors.brandSecondary, padding: spacing.md, marginHorizontal: spacing.sm, marginTop: spacing.sm, borderRadius: radius.lg },
   paywallTitle: { color: colors.onBrandSecondary, fontSize: 14, fontWeight: "800" },
   paywallBody: { color: colors.onBrandSecondary, fontSize: 13, lineHeight: 18 },

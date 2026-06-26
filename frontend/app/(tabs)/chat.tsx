@@ -6,12 +6,13 @@ import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { colors, spacing, radius } from "@/src/theme";
 import { storage } from "@/src/utils/storage";
+import TypingIndicator from "@/src/components/TypingIndicator";
 
 const BASE = process.env.EXPO_PUBLIC_BACKEND_URL;
 
 type Turn = { role: "user" | "assistant"; text: string; ts: string };
 
-const SESSION_KEY = "hope_session_id";
+const SESSION_KEY = "aria_session_id";
 
 function genId() {
   return "s_" + Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
@@ -25,8 +26,8 @@ export default function ChatScreen() {
   const [sending, setSending] = useState(false);
   const listRef = useRef<FlatList<Turn>>(null);
 
-  // Hope voice auto-play helper
-  const playHopeVoice = async (text: string) => {
+  // Aria voice auto-play helper
+  const playAriaVoice = async (text: string) => {
     try {
       const r = await fetch(`${BASE}/api/tts/generate`, {
         method: "POST", headers: { "Content-Type": "application/json" },
@@ -62,7 +63,7 @@ export default function ChatScreen() {
           const pd = await pr.json();
           setTurns([{ role: "assistant", text: pd.text, ts: new Date().toISOString() }]);
           // Auto-play the greeting via voice
-          if (Platform.OS !== "web") playHopeVoice(pd.text);
+          if (Platform.OS !== "web") playAriaVoice(pd.text);
         }
       } catch {/* */}
     })();
@@ -98,7 +99,7 @@ export default function ChatScreen() {
       <View style={styles.header}>
         <View style={styles.avatar}><Ionicons name="heart" size={20} color="#fff" /></View>
         <View style={{ flex: 1 }}>
-          <Text style={styles.headerTitle}>Hope</Text>
+          <Text style={styles.headerTitle}>Aria</Text>
           <Text style={styles.headerSub}>Your recovery companion · always here</Text>
         </View>
       </View>
@@ -116,6 +117,8 @@ export default function ChatScreen() {
           </View>
         )}
         ListEmptyComponent={<ActivityIndicator color={colors.brandPrimary} style={{ marginTop: 40 }} />}
+        ListFooterComponent={sending ? <TypingIndicator /> : null}
+        onContentSizeChange={() => listRef.current?.scrollToEnd({ animated: true })}
       />
 
       <KeyboardAvoidingView
@@ -126,19 +129,20 @@ export default function ChatScreen() {
           <TextInput
             value={input}
             onChangeText={setInput}
-            placeholder="Tell Hope how you're feeling…"
+            placeholder="Tell Aria how you're feeling…"
             placeholderTextColor={colors.onSurfaceTertiary}
             style={styles.input}
             multiline
             maxLength={500}
             testID="chat-input"
           />
-          <Pressable onPress={send} disabled={sending || !input.trim()} style={styles.sendBtn} testID="chat-send">
-            {sending ? (
-              <ActivityIndicator color="#fff" />
-            ) : (
-              <Ionicons name="arrow-up" size={20} color="#fff" />
-            )}
+          <Pressable
+            onPress={send}
+            disabled={sending || !input.trim()}
+            style={[styles.sendBtn, (sending || !input.trim()) && styles.sendBtnDisabled]}
+            testID="chat-send"
+          >
+            <Ionicons name="arrow-up" size={20} color="#fff" />
           </Pressable>
         </View>
       </KeyboardAvoidingView>
@@ -159,4 +163,5 @@ const styles = StyleSheet.create({
   inputBar: { flexDirection: "row", alignItems: "flex-end", gap: spacing.sm, padding: spacing.sm, borderTopWidth: 1, borderTopColor: colors.divider, backgroundColor: colors.surface },
   input: { flex: 1, fontSize: 15, color: colors.onSurface, maxHeight: 100, paddingHorizontal: spacing.sm, paddingVertical: 10, backgroundColor: colors.surfaceSecondary, borderRadius: radius.lg, minHeight: 44 },
   sendBtn: { width: 44, height: 44, borderRadius: 22, backgroundColor: colors.brandPrimary, alignItems: "center", justifyContent: "center" },
+  sendBtnDisabled: { opacity: 0.4 },
 });

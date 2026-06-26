@@ -9,6 +9,7 @@ import { colors, spacing, radius } from "@/src/theme";
 import { fetchHistory, Assessment } from "@/src/api";
 import { ensurePermission, loadSettings, rescheduleReminders } from "@/src/utils/notifications";
 import CreditsBadge from "@/src/components/CreditsBadge";
+import AriaFloatingChat from "@/src/components/AriaFloatingChat";
 import { storage } from "@/src/utils/storage";
 import { getCachedUser } from "@/src/auth";
 
@@ -222,6 +223,9 @@ export default function HomeScreen() {
           <Text style={styles.ctaText}>Start Assessment</Text>
         </Pressable>
       </View>
+
+      {/* Aria — floating caring companion */}
+      <AriaFloatingChat bottomOffset={(insets.bottom || 0) + 84} />
     </View>
   );
 }

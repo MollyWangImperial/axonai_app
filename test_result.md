@@ -143,20 +143,19 @@ frontend:
 
 metadata:
   created_by: "main_agent"
-  version: "9.0"
-  test_sequence: 9
+  version: "10.0"
+  test_sequence: 10
   run_ui: false
 
 test_plan:
   current_focus:
-    - "Onboarding flow (8 items, 9 steps): /api/users/onboarding GET+POST"
-    - "Per-user assessment history filtering"
-    - "Community stories: 8 realistic seed entries"
-    - "Assessment hit-detection: dynamic radius scales with shoulder width + 350ms grace"
+    - "Aria chat tab rename (was Hope) + typing indicator"
+    - "Aria floating bubble on Home with personalized caring messages"
+    - "Persona chat typing indicator (community + therapist)"
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
 
 agent_communication:
     - agent: "main"
-      message: "Phase A complete. (0) Assessment hit detection: replaced fixed-radius check with shoulder-width-scaled `effectiveRadius`, drawn-circle == hit-zone, plus a 350ms grace window so brief jitter doesn't reset the hold. T3 (mouth) now uses a larger ~1.05×shoulder-width target. (2) Therapists tab: removed 'Early access' copy → 'Available 24/7, trained on real therapist expertise and experience.' (3) STORIES_SEED replaced with 8 realistic full-name first-person stories with diverse Unsplash portraits. (5) New users get empty assessment/plan — `/api/assessment/history` now filters by `X-User-Id` (anonymous → []). (6) Added 9-step onboarding (preferred name, age band, months post-stroke, side, dominant hand, mobility, primary goal, secondary goals multi-select, caregiver). Wired into sign-in routing + AuthGate. Personalized home greeting now shows 'Good day, {preferred_name}.' Backend: POST/GET /api/users/onboarding (auth required). Manual screenshot e2e covered the full sign-up → 9-step onboarding → personalized home flow. Backend smoke tests cover onboarding, history filtering, and stories seed. WebView hit-detection improvement requires camera, can only be verified on real device — agent has no way to drive a real camera feed."
+      message: "Phase B complete. (1+2) Replaced spinning ActivityIndicator on send button in both /chat tab and /persona-chat with a static arrow icon that just dims via `sendBtnDisabled` opacity; added animated three-dot TypingIndicator bubble as ListFooterComponent during `sending=true`. New shared component /app/frontend/src/components/TypingIndicator.tsx. (7) Renamed Hope→Aria across the codebase: tab label, chat header, placeholder, backend CHAT_SYSTEM_PROMPT_BASE persona name, and proactive opener templates. Backend now reads preferred_name from `users.profile` and injects it into both /chat/message system prompt and /chat/proactive templates. Added new GET /api/chat/proactive/messages?n=N endpoint that returns N personalized caring messages with the user's preferred name baked in. Built /app/frontend/src/components/AriaFloatingChat.tsx: a heart-shaped FAB in lower-right with a fade+scale-in speech bubble that pops up 2s after Home loads, plays the greeting via OpenAI Nova TTS (mobile only — web autoplay is blocked), cycles random caring messages every 25s, tappable bubble or FAB jumps to /chat. Verified e2e: typing indicator visible in screenshot during send delay; Aria FAB+bubble shows 'Anything on your mind, Sam? I'm here.' with the user's preferred name."
