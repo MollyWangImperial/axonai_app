@@ -1,0 +1,50 @@
+{
+  "summary": "Iteration 2 verification of TTS error-handling improvements. ALL 10 backend pytest cases PASS (100%). Two new behaviours confirmed via live curl + pytest: (1) GET /api/tts/health returns {ok:false, scope_missing:true, hint:'Open https://elevenlabs.io/app/settings/api-keys, edit the key, enable Text to Speech permission, then save.', error:'...'}. (2) POST /api/tts/generate now returns HTTP 503 (not 500) with detail 'Voice service unavailable: ElevenLabs API key lacks text_to_speech permission. Enable it at https://elevenlabs.io/app/settings/api-keys.'. No regression in any other endpoint — /api/assessment/tasks, /submit, /history, /{id}, /pose/runner all healthy. Frontend mobile flow Home → Task-intro → Assessment → History verified at 375x667 viewport with zero page errors.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "POST /api/tts/generate", "issue": "Still returns 503 because user's ElevenLabs key (sk_5de52...) lacks 'text_to_speech' scope. This is the intended new behaviour and an EXTERNAL credential issue confirmed via /v1/user direct curl — no code fix possible. User must enable scope at https://elevenlabs.io/app/settings/api-keys."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [
+      {"flow": "Assessment WebView (web preview only)", "issue": "react-native-webview has no web implementation; preview shows literal 'React Native WebView does not support this platform.' under the loading spinner. NOT a bug — native iOS/Android via Expo Go renders /api/pose/runner correctly. Documented in iter 1.", "affected_testIDs": ["assessment-webview"]}
+    ],
+    "design_issues": [],
+    "react_native_issues": [
+      {"component": "pointerEvents prop", "issue": "Console warning persists: 'props.pointerEvents is deprecated. Use style.pointerEvents'. Same as iter 1, non-blocking, likely from a 3rd-party dep."}
+    ]
+  },
+  "verified_flows": [
+    "GET /api/tts/health → 200 with {ok:false, scope_missing:true, hint:'...enable Text to Speech...', error:'...'} ✓",
+    "POST /api/tts/generate → 503 with detail containing 'Voice service unavailable' and link to ElevenLabs API keys page ✓",
+    "GET /api/assessment/tasks → 200, 7 tasks T1-T7 with steps/voice/target/hold_ms ✓",
+    "POST /api/assessment/submit → 200, derives functional_issues + rehab_plan, persists to Mongo ✓",
+    "GET /api/assessment/history → 200, list sorted desc, no _id leak ✓",
+    "GET /api/assessment/{id} → 200 / 404 correctly ✓",
+    "GET /api/pose/runner → 200 HTML with MediaPipe + getUserMedia + assessment-start testID ✓",
+    "Frontend Home renders hero + Today's plan + How it works + Start Assessment CTA ✓",
+    "Start Assessment → /task-intro shows 7 tasks ✓",
+    "Open Camera & Begin → /assessment mounts WebView (web placeholder expected) ✓",
+    "/history lists past assessments tappable to /results ✓"
+  ],
+  "test_report_links": ["/app/backend/tests/test_stroke_rehab.py", "/app/test_reports/pytest/results.xml"],
+  "action_items": [
+    "[USER-ACTION-REQUIRED, NOT CODE] User must log in to https://elevenlabs.io/app/settings/api-keys, edit their key, enable 'Text to Speech' (and ideally voices_read, user_read) scopes, save, and the voice feature will work without any code change. /api/tts/health will then return {ok:true}.",
+    "[OPTIONAL] Investigate the persistent 'pointerEvents' deprecation warning — likely from a transitive RN library."
+  ],
+  "critical_code_review_comments": [
+    "TTS 503 error string includes the exact remediation URL — excellent UX.",
+    "/api/tts/health is a great diagnostic surface; consider also exposing it in the frontend Settings screen so users can self-check.",
+    "logger is still defined AFTER routes (line 1001); the early TTS error path works because errors only fire at request time, but reorder to module top for cleanliness.",
+    "No regression — all MongoDB queries still project {_id:0}; all endpoints typed via Pydantic; all values via env vars."
+  ],
+  "updated_files": ["/app/backend/tests/test_stroke_rehab.py"],
+  "success_rate": {"backend": "100% (10/10 pytest pass)", "frontend": "100% of testable web flows (web preview)"},
+  "seed_data_creation": "Two additional /api/assessment/submit calls during pytest fixtures (visible in /history).",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Iter 2 verified the new TTS error-handling. /api/tts/health returns ok:false + scope_missing:true + actionable hint; /api/tts/generate returns 503 + Voice service unavailable message. ElevenLabs scope missing is an EXTERNAL credential problem the user must fix in their dashboard — no code change possible. All other endpoints and all frontend screens regression-free.",
+  "rca_of_issue": "Root cause of 'voice still unavailable' = ElevenLabs API key sk_5de52... has zero scopes enabled, confirmed via direct call to /v1/user returning missing_permissions for text_to_speech, voices_read, user_read. Reproduction: any POST to /api/tts/generate triggers ElevenLabs 401 missing_permissions which the new handler catches (line 518) and converts to FastAPI HTTPException(503, 'Voice service unavailable: ...'). Mitigation already in place: 503 status + actionable detail + /api/tts/health diagnostic. Final fix is user-side: enable Text to Speech scope at https://elevenlabs.io/app/settings/api-keys."
+}

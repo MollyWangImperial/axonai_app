@@ -513,8 +513,41 @@ async def generate_tts(req: TTSRequest):
         audio_bytes = b"".join(audio_iter)
         return TTSResponse(audio_b64=base64.b64encode(audio_bytes).decode(), text=req.text)
     except Exception as e:
-        logger.error(f"TTS error: {e}")
-        raise HTTPException(status_code=500, detail=f"TTS generation failed: {e}")
+        msg = str(e)
+        logger.error(f"TTS error: {msg}")
+        if "missing_permissions" in msg or "401" in msg:
+            raise HTTPException(
+                status_code=503,
+                detail="Voice service unavailable: ElevenLabs API key lacks text_to_speech permission. Enable it at https://elevenlabs.io/app/settings/api-keys.",
+            )
+        raise HTTPException(status_code=500, detail=f"TTS generation failed: {msg[:200]}")
+
+
+@api_router.get("/tts/health")
+async def tts_health():
+    """Diagnostic: check whether the configured ElevenLabs key can synthesize speech."""
+    try:
+        audio_iter = eleven_client.text_to_speech.convert(
+            text="ok",
+            voice_id=ELEVEN_VOICE_ID,
+            model_id="eleven_multilingual_v2",
+            output_format="mp3_44100_128",
+        )
+        b = b"".join(audio_iter)
+        return {"ok": True, "bytes": len(b)}
+    except Exception as e:
+        msg = str(e)
+        scope_missing = "missing_permissions" in msg or "401" in msg
+        return {
+            "ok": False,
+            "scope_missing": scope_missing,
+            "hint": (
+                "Open https://elevenlabs.io/app/settings/api-keys, edit the key, "
+                "enable 'Text to Speech' permission, then save."
+                if scope_missing else "Check key validity / network."
+            ),
+            "error": msg[:300],
+        }
 
 
 @api_router.post("/assessment/submit", response_model=Assessment)

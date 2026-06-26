@@ -7,6 +7,30 @@ BASE_URL = os.environ.get("EXPO_PUBLIC_BACKEND_URL", "https://arm-rehab-ai.previ
 API = f"{BASE_URL}/api"
 
 
+# ---- TTS health diagnostic (new in iter 2) ----
+def test_tts_health_reports_scope_missing():
+    r = requests.get(f"{API}/tts/health", timeout=30)
+    assert r.status_code == 200
+    j = r.json()
+    assert "ok" in j
+    # If key lacks scope, must explicitly say so with actionable hint
+    if not j["ok"]:
+        assert j.get("scope_missing") is True, f"expected scope_missing=True, got {j}"
+        assert "Text to Speech" in j.get("hint", ""), f"hint missing actionable text: {j}"
+        assert "elevenlabs.io" in j.get("hint", "")
+
+
+# ---- TTS generate now returns 503 (not 500) when scope missing ----
+def test_tts_generate_returns_503_when_scope_missing():
+    r = requests.post(f"{API}/tts/generate", json={"text": "hello"}, timeout=30)
+    # Acceptable: 200 if key works, 503 if scope missing
+    assert r.status_code in (200, 503), f"unexpected status {r.status_code}: {r.text[:300]}"
+    if r.status_code == 503:
+        detail = r.json().get("detail", "")
+        assert "Voice service unavailable" in detail, f"detail must mention Voice service unavailable: {detail}"
+        assert "text_to_speech" in detail or "ElevenLabs" in detail
+
+
 @pytest.fixture(scope="module")
 def s():
     return requests.Session()
@@ -39,13 +63,14 @@ def test_pose_runner_html(s):
     assert "getUserMedia" in html
 
 
-# ---- TTS endpoint (known: ElevenLabs missing permission -> 500) ----
-def test_tts_known_500(s):
+# ---- TTS endpoint (iter 2: 503 with actionable message when scope missing) ----
+def test_tts_generate_status(s):
     r = s.post(f"{API}/tts/generate", json={"text": "hello"}, timeout=30)
-    # Known issue: expecting 500 due to missing text_to_speech permission
-    assert r.status_code in (200, 500)
+    assert r.status_code in (200, 503), f"unexpected {r.status_code}: {r.text[:200]}"
     if r.status_code == 200:
         assert "audio_b64" in r.json()
+    else:
+        assert "Voice service unavailable" in r.json().get("detail", "")
 
 
 # ---- Submit assessment ----
@@ -60,7 +85,7 @@ def _sample_payload(complete=False):
             "total_steps": n,
             "duration_ms": 4500,
             "steps": [{"step_id": f"{tid}-S{i+1}", "completed": complete or i == 0, "duration_ms": 1500, "metrics": {}} for i in range(n)],
-            "metrics": {"trunk_lean_deg": 20} if tid == "T1" else {},
+            "metrics": {"trunk_lean_deg": 20} if (tid == "T1" and not complete) else {},
         })
     return {"task_results": results, "affected_side": "right"}
 
