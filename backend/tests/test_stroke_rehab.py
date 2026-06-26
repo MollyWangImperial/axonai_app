@@ -139,6 +139,59 @@ def test_history_returns_list_no_id_leak(s, created_assessment):
     assert any(a["id"] == created_assessment["id"] for a in arr)
 
 
+# ---- Rehab Runner (iter 3) ----
+def test_rehab_runner_body_mode_ex_reach(s):
+    r = s.get(f"{API}/rehab/runner", params={"exercise_id": "ex_reach"}, timeout=20)
+    assert r.status_code == 200
+    assert "text/html" in r.headers.get("content-type", "")
+    html = r.text
+    # CFG should be injected with name, reps, cycle, feedback_rules
+    assert "Graded Forward Reach" in html
+    assert '"reps": 5' in html or '"reps":5' in html
+    assert "feedback_rules" in html
+    assert '"pose_mode": "body"' in html or '"pose_mode":"body"' in html
+    assert "cycle" in html
+    # Speech recognition logic + key phrase
+    assert "SpeechRecognition" in html or "webkitSpeechRecognition" in html
+    assert "I understand my problem now" in html
+    # testIDs present
+    assert "rehab-start" in html
+    assert "rehab-exit" in html
+
+
+def test_rehab_runner_tap_mode_ex_handopen(s):
+    r = s.get(f"{API}/rehab/runner", params={"exercise_id": "ex_handopen"}, timeout=20)
+    assert r.status_code == 200
+    html = r.text
+    assert "Finger Extension with Rubber Band" in html
+    assert '"pose_mode": "tap"' in html or '"pose_mode":"tap"' in html
+    assert "rehab-tap-rep" in html
+    assert "I understand my problem now" in html
+
+
+def test_rehab_runner_unknown_falls_back_to_maintenance(s):
+    r = s.get(f"{API}/rehab/runner", params={"exercise_id": "bogus_nope_xyz"}, timeout=20)
+    assert r.status_code == 200, f"must not 500, got {r.status_code}: {r.text[:200]}"
+    html = r.text
+    # Falls back to ex_maintenance config
+    assert "Maintenance Conditioning" in html
+    assert "feedback_rules" in html
+
+
+def test_rehab_runner_default_is_maintenance(s):
+    r = s.get(f"{API}/rehab/runner", timeout=20)
+    assert r.status_code == 200
+    assert "Maintenance Conditioning" in r.text
+
+
+def test_rehab_runner_pinch_tap_mode(s):
+    r = s.get(f"{API}/rehab/runner", params={"exercise_id": "ex_pinch"}, timeout=20)
+    assert r.status_code == 200
+    html = r.text
+    assert "Pinch" in html
+    assert '"pose_mode": "tap"' in html or '"pose_mode":"tap"' in html
+
+
 def test_submit_all_complete_no_issues(s):
     r = s.post(f"{API}/assessment/submit", json=_sample_payload(complete=True), timeout=20)
     assert r.status_code == 200

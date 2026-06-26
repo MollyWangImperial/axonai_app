@@ -1,0 +1,55 @@
+{
+  "summary": "Iteration 3 — Rehab Guided Practice feature. ALL 15 backend pytest cases PASS (100%, +5 new). New endpoint /api/rehab/runner verified for body-mode (ex_reach: name 'Graded Forward Reach', reps=5, pose_mode=body, feedback_rules present, SpeechRecognition + 'I understand my problem now' phrase + rehab-start/rehab-exit testIDs in HTML), tap-mode (ex_handopen: pose_mode=tap, rehab-tap-rep testID), unknown id falls back to ex_maintenance (200, no 500), default param returns maintenance, ex_pinch tap-mode verified. No regression: /api/assessment/tasks, /submit, /history, /{id}, /pose/runner, /tts/* all healthy. NOTE: /api/tts/generate now returns 200 (ElevenLabs scope was enabled by user since iter 2). Frontend rehab-plan UI verified at 375x667: 8 exercises each render 'Guided practice' (testID exercise-guided-<id>) + 'Mark done' (testID exercise-mark-<id>) buttons; Mark done toggles progress (0→1 of 8); Guided practice navigates to /exercise?exercise_id=ex_reach&name=Graded%20Forward%20Reach. WebView shows native-only placeholder on web preview as expected.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [
+      {"flow": "Exercise WebView (web preview only)", "issue": "react-native-webview renders 'React Native WebView does not support this platform.' on web — same expected limitation as /assessment. Native Expo Go renders /api/rehab/runner correctly. Not a bug.", "affected_testIDs": ["exercise-webview"]}
+    ],
+    "design_issues": [],
+    "react_native_issues": [
+      {"component": "pointerEvents prop", "issue": "Persistent console warning: 'props.pointerEvents is deprecated. Use style.pointerEvents'. Same as iter 1 & 2, from a transitive dep, non-blocking. Reference: rehab-plan.tsx renders cleanly; warning likely from react-native-webview or expo-router internals."}
+    ]
+  },
+  "verified_flows": [
+    "GET /api/rehab/runner?exercise_id=ex_reach → 200 HTML with CFG (name, reps:5, pose_mode:body, cycle, feedback_rules), SpeechRecognition logic, 'I understand my problem now' phrase, rehab-start/rehab-exit testIDs ✓",
+    "GET /api/rehab/runner?exercise_id=ex_handopen → 200, pose_mode:tap, rehab-tap-rep testID, key phrase present ✓",
+    "GET /api/rehab/runner?exercise_id=bogus_nope_xyz → 200 (NOT 500), falls back to Maintenance Conditioning ✓",
+    "GET /api/rehab/runner (no param) → 200, default Maintenance Conditioning ✓",
+    "GET /api/rehab/runner?exercise_id=ex_pinch → 200, pose_mode:tap ✓",
+    "GET /api/assessment/tasks → 200, 7 tasks T1-T7 ✓",
+    "POST /api/assessment/submit → 200, derives functional_issues + rehab_plan ✓",
+    "GET /api/assessment/history → 200, no _id leak ✓",
+    "GET /api/assessment/{id} → 200/404 ✓",
+    "GET /api/pose/runner → 200 with MediaPipe + getUserMedia + assessment-start ✓",
+    "POST /api/tts/generate → 200 (scope now enabled) ✓",
+    "GET /api/tts/health → 200 ✓",
+    "Frontend /rehab-plan?id=<real> renders 8 exercise cards each with exercise-guided-<id> + exercise-mark-<id> testIDs ✓",
+    "Tap exercise-mark-ex_reach → progress 0 of 8 → 1 of 8 ✓",
+    "Tap exercise-guided-ex_reach → navigates to /exercise?exercise_id=ex_reach&name=Graded%20Forward%20Reach ✓",
+    "router.back() from /exercise returns to /rehab-plan with same id ✓"
+  ],
+  "test_report_links": ["/app/backend/tests/test_stroke_rehab.py", "/app/test_reports/pytest/results.xml"],
+  "action_items": [
+    "[OPTIONAL] Investigate persistent pointerEvents deprecation warning (transitive RN dep, non-blocking).",
+    "[INFO-ONLY] Full speech-recognition + camera + MediaPipe flow requires real device/Expo Go to test (Web Speech API blocked in browser automation due to no user gesture mic permission). Backend HTML serving is fully verified; runtime behavior must be smoke-tested on Android device per agent-to-agent note. iOS WKWebView lacks Web Speech API — the 'I'm ready (tap)' fallback button is the only confirmation path on iOS (already implemented in REHAB_RUNNER_HTML_TEMPLATE)."
+  ],
+  "critical_code_review_comments": [
+    "_rehab_runner_html falls back to REHAB_RUNNER_CONFIG['ex_maintenance'] for unknown ids — robust, never 500s. ✓",
+    "REHAB_RUNNER_HTML_TEMPLATE is large (~400 lines inside server.py); future iterations may want to split runner templates into separate files served via Jinja or static HTML to keep server.py < 700 lines (currently >1700 lines — violates code-review file-size guideline).",
+    "ex_handopen has 'reps': 8 but cycle only has 1 entry with target:None — correct for tap-mode; tap-mode skips pose checks per JS guard at line 1513/1658.",
+    "feedback_rules use string conditions evaluated client-side (e.g. 'trunk_lean_deg > 18'). Safe because evaluated on per-rep metrics object, but consider parsing instead of eval'ing if ever extended.",
+    "MongoDB queries still project {_id:0}; no leakage. Env vars used throughout. All endpoints typed via Pydantic.",
+    "exercise.tsx correctly forwards exercise_id query param; uses process.env.EXPO_PUBLIC_BACKEND_URL (no hardcoded URL). ✓",
+    "rehab-plan.tsx: Pressable + testID on every interactive button, Haptics on toggle + navigation, accessibility-friendly. ✓"
+  ],
+  "updated_files": ["/app/backend/tests/test_stroke_rehab.py"],
+  "success_rate": {"backend": "100% (15/15 pytest pass)", "frontend": "100% of testable web flows (camera/speech requires native device)"},
+  "seed_data_creation": "One additional /api/assessment/submit during the browser test (assessment id f233054b... visible in /history).",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Iter 3 verified new rehab-guided practice. /api/rehab/runner serves per-exercise HTML with CFG injected; body-mode uses MediaPipe pose, tap-mode uses 'I did one repetition' button; both have post-rep feedback overlay listening for 'yes' AND 'I understand my problem now' via Web Speech API with 'I'm ready (tap)' fallback. Frontend rehab-plan now has dual buttons per card; navigation to /exercise works. Camera+speech runtime flow MUST be tested on a real Android device — not possible in browser automation. Also note: ElevenLabs TTS scope is now enabled (200 responses), so iter 2's 503 path is no longer triggered (test still tolerates both 200 and 503)."
+}

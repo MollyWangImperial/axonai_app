@@ -1093,6 +1093,638 @@ async def pose_runner():
     return HTMLResponse(content=POSE_RUNNER_HTML)
 
 
+# ============ Rehab Runner: per-exercise pose-guided reps with form feedback ============
+# Each exercise defines:
+#  - reps: total number of repetitions
+#  - setup_voice: warm intro played once
+#  - cycle: ordered list of pose targets the wrist must hit, defining ONE rep
+#  - feedback_rules: ordered rules; first matching wins. Each rule: condition over per-rep metrics
+#  - pose_mode: "body" (uses pose landmarks) or "tap" (fine-motor — patient taps complete)
+REHAB_RUNNER_CONFIG: Dict[str, Dict[str, Any]] = {
+    "ex_reach": {
+        "name": "Graded Forward Reach",
+        "reps": 5,
+        "pose_mode": "body",
+        "setup_voice": "Welcome. We are going to practice the graded forward reach. Sit upright, with your back away from the chair. Place your affected hand on your lap. I'll guide you through each repetition.",
+        "cycle": [
+            {"caption": "Reach forward to the target", "voice": "Slowly reach your hand forward, as far as you comfortably can.", "target": {"x": 0.5, "y": 0.40, "r": 0.10}, "hold_ms": 1200},
+            {"caption": "Return to lap", "voice": "Now gently return your hand to your lap.", "target": {"x": 0.5, "y": 0.78, "r": 0.10}, "hold_ms": 1200},
+        ],
+        "feedback_rules": [
+            {"if": "trunk_lean_deg > 18", "say": "I noticed your back leaned forward. On the next repetition, try keeping your spine tall and let your arm do the work."},
+            {"if": "shoulder_hike", "say": "Your shoulder lifted up toward your ear. Try keeping your shoulder relaxed and dropped down on the next try."},
+            {"if": "reach_completion < 0.7", "say": "You almost reached the target. On the next try, push gently from your shoulder to extend a little further."},
+            {"default": "Beautiful repetition. On the next one, focus on a smooth, steady motion from start to finish."},
+        ],
+    },
+    "ex_trunk": {
+        "name": "Trunk-Restrained Reaching",
+        "reps": 5,
+        "pose_mode": "body",
+        "setup_voice": "We will practice trunk-restrained reaching. Sit tall, with your back firmly against the chair. Try to keep your back touching the chair the whole time. Let's begin.",
+        "cycle": [
+            {"caption": "Reach forward (back against chair)", "voice": "Reach forward to the target — keep your back pressed into the chair.", "target": {"x": 0.5, "y": 0.40, "r": 0.10}, "hold_ms": 1200},
+            {"caption": "Return slowly", "voice": "Slowly return your hand to your lap.", "target": {"x": 0.5, "y": 0.78, "r": 0.10}, "hold_ms": 1200},
+        ],
+        "feedback_rules": [
+            {"if": "trunk_lean_deg > 10", "say": "Your back came away from the chair. On the next repetition, focus on pressing your back firmly into the chair before reaching."},
+            {"if": "reach_completion < 0.7", "say": "With your back restrained, that's a great effort. On the next try, reach just a little further if you can."},
+            {"default": "Excellent control of your trunk. Try to keep that same posture on the next repetition."},
+        ],
+    },
+    "ex_wallslide": {
+        "name": "Wall Slides + Active Shoulder Flexion",
+        "reps": 5,
+        "pose_mode": "body",
+        "setup_voice": "We will work on shoulder elevation. Stand or sit tall with your arms at your sides. Slowly raise your affected arm forward and up toward the target above. Let's begin.",
+        "cycle": [
+            {"caption": "Raise arm overhead", "voice": "Slowly raise your arm upward toward the target.", "target": {"x": 0.5, "y": 0.18, "r": 0.10}, "hold_ms": 1500},
+            {"caption": "Lower arm slowly", "voice": "Now lower your arm to your side, slowly and controlled.", "target": {"x": 0.5, "y": 0.85, "r": 0.10}, "hold_ms": 1500},
+        ],
+        "feedback_rules": [
+            {"if": "shoulder_hike", "say": "Your shoulder lifted toward your ear. Try keeping your shoulder relaxed and pressed down as you raise your arm."},
+            {"if": "trunk_lean_deg > 15", "say": "I noticed you leaned to one side. On the next repetition, try to stay tall and centered."},
+            {"if": "reach_completion < 0.7", "say": "Almost reached the top. On the next try, exhale gently and try to go a little higher."},
+            {"default": "Wonderful shoulder elevation. Keep that same control on the next repetition."},
+        ],
+    },
+    "ex_scapdepress": {
+        "name": "Scapular Depression Practice",
+        "reps": 5,
+        "pose_mode": "body",
+        "setup_voice": "We will practice keeping your shoulder down while reaching. Sit tall and gently pull your shoulder blades down and back, like sliding them into your back pockets. Then reach forward.",
+        "cycle": [
+            {"caption": "Reach forward (shoulders down)", "voice": "Reach forward — keep your shoulder pulled down and away from your ear.", "target": {"x": 0.5, "y": 0.40, "r": 0.10}, "hold_ms": 1200},
+            {"caption": "Return", "voice": "Bring your hand back to your lap, shoulders still relaxed.", "target": {"x": 0.5, "y": 0.78, "r": 0.10}, "hold_ms": 1200},
+        ],
+        "feedback_rules": [
+            {"if": "shoulder_hike", "say": "Your shoulder lifted again. On the next try, gently pull it down and back before you reach."},
+            {"if": "trunk_lean_deg > 15", "say": "You leaned forward. Stay tall and let the shoulder blade do the work."},
+            {"default": "Lovely scapular control. Keep that pattern on the next repetition."},
+        ],
+    },
+    "ex_h2m": {
+        "name": "Hand-to-Mouth ADL Practice",
+        "reps": 5,
+        "pose_mode": "body",
+        "setup_voice": "We will practice hand-to-mouth, an essential daily activity. Start with your hand on your lap, then slowly bring it up to your mouth.",
+        "cycle": [
+            {"caption": "Hand to mouth", "voice": "Bring your hand up to your mouth, slowly and smoothly.", "target": {"x": 0.5, "y": 0.30, "r": 0.10}, "hold_ms": 1500},
+            {"caption": "Lower to lap", "voice": "Now gently lower your hand back to your lap.", "target": {"x": 0.5, "y": 0.78, "r": 0.10}, "hold_ms": 1500},
+        ],
+        "feedback_rules": [
+            {"if": "trunk_lean_deg > 15", "say": "Your trunk leaned to meet your hand. On the next try, keep your back tall and bring your hand to your mouth instead."},
+            {"if": "reach_completion < 0.6", "say": "Almost there. On the next try, bend your elbow a bit more to bring your hand closer to your mouth."},
+            {"default": "Smooth hand-to-mouth. Keep that quality on the next repetition."},
+        ],
+    },
+    "ex_grasp": {
+        "name": "Cylindrical Grasp & Transport",
+        "reps": 5,
+        "pose_mode": "body",
+        "setup_voice": "We will practice grasping and transporting a cup. Imagine a cup on the table to your side. Reach, grasp it, move it across your body, and release.",
+        "cycle": [
+            {"caption": "Reach and grasp", "voice": "Reach to the cup on your side and pretend to grasp it.", "target": {"x": 0.30, "y": 0.55, "r": 0.10}, "hold_ms": 1200},
+            {"caption": "Transport across", "voice": "Now move the cup across to the other side, controlled and steady.", "target": {"x": 0.70, "y": 0.55, "r": 0.10}, "hold_ms": 1500},
+            {"caption": "Release and return", "voice": "Release the cup and bring your hand back to your lap.", "target": {"x": 0.5, "y": 0.78, "r": 0.10}, "hold_ms": 1200},
+        ],
+        "feedback_rules": [
+            {"if": "trunk_lean_deg > 18", "say": "I noticed your trunk twisted with the cup. On the next repetition, try keeping your shoulders square and let your arm cross the midline."},
+            {"if": "reach_completion < 0.6", "say": "Almost reached the far target. On the next try, extend a little further across your body."},
+            {"default": "Beautiful transport. On the next repetition, focus on a smooth release at the end."},
+        ],
+    },
+    "ex_handopen": {
+        "name": "Finger Extension with Rubber Band",
+        "reps": 8,
+        "pose_mode": "tap",
+        "setup_voice": "We will work on opening your hand. Place a soft rubber band around your fingers and thumb. Slowly open your hand against the resistance, then relax. Tap I did one repetition each time you complete one.",
+        "cycle": [
+            {"caption": "Open hand wide, then relax", "voice": "Slowly open your hand against the band, hold, then relax. Tap the button when you finish one repetition.", "target": None, "hold_ms": 0},
+        ],
+        "feedback_rules": [
+            {"default": "Wonderful finger extension. On the next repetition, try to open your hand a little wider and hold for a full second before relaxing."},
+        ],
+    },
+    "ex_pinch": {
+        "name": "Pinch & Peg Placement",
+        "reps": 8,
+        "pose_mode": "tap",
+        "setup_voice": "We will practice pinch. Gather a few small objects — coins, beads, or pegs. Pinch one between your thumb and index finger and place it into a container. Tap I did one repetition each time you place one.",
+        "cycle": [
+            {"caption": "Pinch and place one object", "voice": "Pinch one object with your thumb and index finger, place it in the container, then tap when done.", "target": None, "hold_ms": 0},
+        ],
+        "feedback_rules": [
+            {"default": "Lovely pinch control. On the next repetition, try a slightly smaller object or pinch with your thumb and middle finger for variety."},
+        ],
+    },
+    "ex_bilateral": {
+        "name": "Bilateral Arm Training",
+        "reps": 5,
+        "pose_mode": "body",
+        "setup_voice": "We will use both arms together. Imagine folding a towel between both hands. Move both arms inward to meet, then outward — equally on both sides.",
+        "cycle": [
+            {"caption": "Bring both hands together", "voice": "Bring both hands inward to meet in front of you, equally.", "target": {"x": 0.5, "y": 0.45, "r": 0.12}, "hold_ms": 1500},
+            {"caption": "Open both arms outward", "voice": "Now open both hands outward, also equally.", "target": {"x": 0.5, "y": 0.45, "r": 0.30}, "hold_ms": 800},
+        ],
+        "feedback_rules": [
+            {"if": "trunk_lean_deg > 15", "say": "I noticed you leaned to one side. On the next repetition, try to stay centered and move both arms equally."},
+            {"default": "Beautiful bilateral coordination. On the next repetition, try to make both arms perfectly mirror each other."},
+        ],
+    },
+    "ex_maintenance": {
+        "name": "Maintenance Conditioning",
+        "reps": 4,
+        "pose_mode": "body",
+        "setup_voice": "We will do gentle full-range maintenance work. Reach the target, then return — focusing on smooth, full motion.",
+        "cycle": [
+            {"caption": "Reach the target", "voice": "Reach to the target with smooth motion.", "target": {"x": 0.5, "y": 0.30, "r": 0.12}, "hold_ms": 1200},
+            {"caption": "Return", "voice": "Return to your starting position.", "target": {"x": 0.5, "y": 0.78, "r": 0.12}, "hold_ms": 1200},
+        ],
+        "feedback_rules": [
+            {"default": "Excellent. Maintain the same quality on the next repetition."},
+        ],
+    },
+}
+
+
+def _rehab_runner_html(exercise_id: str) -> str:
+    import json as _json
+    cfg = REHAB_RUNNER_CONFIG.get(exercise_id) or REHAB_RUNNER_CONFIG["ex_maintenance"]
+    cfg_json = _json.dumps(cfg)
+    return REHAB_RUNNER_HTML_TEMPLATE.replace("__CFG_JSON__", cfg_json)
+
+
+@api_router.get("/rehab/runner", response_class=HTMLResponse)
+async def rehab_runner(exercise_id: str = "ex_maintenance"):
+    return HTMLResponse(content=_rehab_runner_html(exercise_id))
+
+
+REHAB_RUNNER_HTML_TEMPLATE = r"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+<title>Rehab Exercise</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{width:100%;height:100%;background:#0c100e;color:#fdfdfd;font-family:-apple-system,BlinkMacSystemFont,"Plus Jakarta Sans",sans-serif;overflow:hidden}
+  #stage{position:relative;width:100vw;height:100vh;background:#000}
+  video{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;transform:scaleX(-1)}
+  canvas{position:absolute;inset:0;width:100%;height:100%;transform:scaleX(-1)}
+  #ui{position:absolute;inset:0;pointer-events:none;display:flex;flex-direction:column;justify-content:space-between;padding:env(safe-area-inset-top,24px) 16px env(safe-area-inset-bottom,24px) 16px}
+  #top{display:flex;align-items:center;gap:8px;background:rgba(28,32,29,0.65);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);border-radius:24px;padding:12px 16px;pointer-events:auto}
+  #top .meta{flex:1;display:flex;flex-direction:column}
+  #top .name{font-size:14px;font-weight:700}
+  #top .rep{font-size:12px;color:#D9E5DC}
+  #exitBtn{background:rgba(255,255,255,0.18);border:none;color:#fff;padding:8px 12px;border-radius:16px;font-weight:600;font-size:13px;pointer-events:auto;cursor:pointer}
+  #bottom{background:rgba(28,32,29,0.85);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);border-radius:24px;padding:16px 18px;pointer-events:auto}
+  #caption{font-size:18px;font-weight:600;line-height:1.35;min-height:48px}
+  #voiceRow{display:flex;align-items:center;gap:10px;margin-top:10px;opacity:0.85}
+  #voiceWave{display:flex;gap:3px;align-items:end;height:14px}
+  #voiceWave span{display:block;width:3px;background:#E18E6D;border-radius:2px;animation:wave 1s ease-in-out infinite}
+  #voiceWave span:nth-child(1){animation-delay:.0s;height:6px}
+  #voiceWave span:nth-child(2){animation-delay:.15s;height:14px}
+  #voiceWave span:nth-child(3){animation-delay:.3s;height:8px}
+  #voiceWave span:nth-child(4){animation-delay:.45s;height:12px}
+  @keyframes wave{0%,100%{transform:scaleY(0.5)}50%{transform:scaleY(1.2)}}
+  #voiceText{font-size:13px;color:#D9E5DC}
+  #tapBtn{margin-top:12px;background:#4A7856;color:#fff;border:none;width:100%;padding:14px;border-radius:16px;font-weight:700;font-size:16px;cursor:pointer}
+  #overlay{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:#0c100eee;text-align:center;padding:24px;flex-direction:column;gap:16px;pointer-events:auto;z-index:10}
+  #overlay h1{font-size:22px;font-weight:700}
+  #overlay p{font-size:15px;color:#bcc2ba;line-height:1.5}
+  #overlay button{background:#4A7856;color:#fff;border:none;padding:14px 28px;border-radius:16px;font-weight:700;font-size:16px}
+  .hidden{display:none !important}
+  /* Feedback / confirmation overlay */
+  #fb{position:absolute;inset:0;background:linear-gradient(180deg, rgba(74,120,86,0.92), rgba(28,32,29,0.95));padding:24px;display:flex;flex-direction:column;justify-content:center;gap:16px;text-align:center;pointer-events:auto;z-index:9;opacity:0;transition:opacity .35s}
+  #fb.show{opacity:1}
+  #fb .step{font-size:13px;color:#D9E5DC;letter-spacing:1px;text-transform:uppercase;font-weight:700}
+  #fb .title{font-size:22px;font-weight:800;color:#fff;line-height:1.3}
+  #fb .body{font-size:16px;color:#FDFDFD;line-height:1.5;background:rgba(255,255,255,0.08);padding:14px;border-radius:14px}
+  #fb .prompt{font-size:15px;color:#D9E5DC;font-style:italic}
+  #fb .mic{display:flex;align-items:center;justify-content:center;gap:10px;background:rgba(225,142,109,0.18);padding:10px;border-radius:14px;border:1px solid rgba(225,142,109,0.4)}
+  #fb .mic .dot{width:12px;height:12px;border-radius:50%;background:#E18E6D;animation:pulse 1.1s ease-in-out infinite}
+  @keyframes pulse{0%,100%{transform:scale(.7);opacity:.6}50%{transform:scale(1.2);opacity:1}}
+  #fb .heard{font-size:13px;color:#fff;opacity:.85;min-height:18px}
+  #fb .row{display:flex;gap:10px;justify-content:center;margin-top:8px}
+  #fb button{background:rgba(255,255,255,0.18);color:#fff;border:none;padding:12px 18px;border-radius:14px;font-weight:700;font-size:14px;cursor:pointer}
+  #fb button.primary{background:#4A7856}
+  #fb .check{font-size:14px;color:#D9E5DC;display:flex;gap:8px;align-items:center;justify-content:center}
+  #fb .check span.ok{color:#7FE5A3}
+</style>
+</head>
+<body>
+<div id="stage">
+  <video id="video" playsinline autoplay muted></video>
+  <canvas id="canvas"></canvas>
+  <div id="ui">
+    <div id="top">
+      <button id="exitBtn" data-testid="rehab-exit">Exit</button>
+      <div class="meta">
+        <div class="name" id="exName">Exercise</div>
+        <div class="rep" id="repLabel">Rep 1 of 5</div>
+      </div>
+    </div>
+    <div id="bottom">
+      <div id="caption">Preparing…</div>
+      <div id="voiceRow">
+        <div id="voiceWave"><span></span><span></span><span></span><span></span></div>
+        <div id="voiceText">Listening to instructions…</div>
+      </div>
+      <button id="tapBtn" class="hidden" data-testid="rehab-tap-rep">I did one repetition</button>
+    </div>
+  </div>
+  <div id="overlay">
+    <h1 id="overlayTitle">Ready?</h1>
+    <p id="overlayBody">We will guide you through each repetition with your camera and voice. After every rep I will share what to improve. Move into the camera view.</p>
+    <button id="startBtn" data-testid="rehab-start">Start Exercise</button>
+  </div>
+  <div id="fb" class="hidden">
+    <div class="step" id="fbStep">Rep 1 complete</div>
+    <div class="title" id="fbTitle">Here's what I noticed</div>
+    <div class="body" id="fbBody">…</div>
+    <div class="prompt" id="fbPrompt">When you're ready, please say <b>"Yes"</b>.</div>
+    <div class="mic" id="fbMic">
+      <div class="dot"></div>
+      <div id="fbHeard" class="heard">Listening…</div>
+    </div>
+    <div class="check" id="fbChecks">
+      <span id="checkYes">○ Yes</span>
+      <span style="opacity:.4">·</span>
+      <span id="checkUnderstand">○ "I understand my problem now"</span>
+    </div>
+    <div class="row">
+      <button id="fbReplay">Replay</button>
+      <button id="fbConfirmBtn" class="primary">I'm ready (tap)</button>
+    </div>
+  </div>
+</div>
+
+<script type="module">
+import { PoseLandmarker, FilesetResolver, DrawingUtils } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs";
+
+const API_BASE = window.location.origin + "/api";
+const CFG = __CFG_JSON__;
+
+const video = document.getElementById("video");
+const canvas = document.getElementById("canvas");
+const ctx = canvas.getContext("2d");
+const exName = document.getElementById("exName");
+const repLabel = document.getElementById("repLabel");
+const captionEl = document.getElementById("caption");
+const voiceText = document.getElementById("voiceText");
+const overlay = document.getElementById("overlay");
+const overlayTitle = document.getElementById("overlayTitle");
+const overlayBody = document.getElementById("overlayBody");
+const startBtn = document.getElementById("startBtn");
+const exitBtn = document.getElementById("exitBtn");
+const tapBtn = document.getElementById("tapBtn");
+const fbEl = document.getElementById("fb");
+const fbStep = document.getElementById("fbStep");
+const fbTitle = document.getElementById("fbTitle");
+const fbBody = document.getElementById("fbBody");
+const fbHeard = document.getElementById("fbHeard");
+const fbConfirmBtn = document.getElementById("fbConfirmBtn");
+const fbReplay = document.getElementById("fbReplay");
+const checkYes = document.getElementById("checkYes");
+const checkUnderstand = document.getElementById("checkUnderstand");
+
+let landmarker = null, drawingUtils = null;
+let currentRep = 0;
+let currentSubStep = 0;
+let stepStartTime = 0;
+let inTargetSince = null;
+let stepCompleted = false;
+let running = false;
+let audioEl = new Audio();
+
+// Per-rep accumulated metrics
+let trunkLeanMax = 0;
+let shoulderHikeDetected = false;
+let reachMax = 0;
+
+exName.textContent = CFG.name;
+overlayTitle.textContent = CFG.name;
+overlayBody.textContent = CFG.setup_voice;
+
+function postRN(d){ if(window.ReactNativeWebView) window.ReactNativeWebView.postMessage(JSON.stringify(d)); }
+
+async function playVoice(text){
+  if(!text) return;
+  try{
+    voiceText.textContent = "Playing instruction…";
+    const res = await fetch(`${API_BASE}/tts/generate`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({text})});
+    if(!res.ok) throw new Error("tts fail");
+    const data = await res.json();
+    audioEl.src = "data:audio/mpeg;base64," + data.audio_b64;
+    await audioEl.play().catch(()=>{});
+    return new Promise(r => { audioEl.onended = () => { voiceText.textContent = "—"; r(); }; });
+  }catch(e){
+    voiceText.textContent = "Voice unavailable — follow on-screen text";
+  }
+}
+
+async function setupCamera(){
+  try{
+    const stream = await navigator.mediaDevices.getUserMedia({video:{facingMode:"user",width:{ideal:1280},height:{ideal:720}},audio:false});
+    video.srcObject = stream;
+    await new Promise(r => video.onloadedmetadata = r);
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    return true;
+  }catch(e){
+    captionEl.textContent = "Camera permission denied.";
+    postRN({type:"camera_error", message: String(e)});
+    return false;
+  }
+}
+
+async function setupPose(){
+  const fr = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm");
+  landmarker = await PoseLandmarker.createFromOptions(fr,{
+    baseOptions:{modelAssetPath:"https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task"},
+    runningMode:"VIDEO", numPoses:1
+  });
+  drawingUtils = new DrawingUtils(ctx);
+}
+
+function rad2deg(r){ return r*180/Math.PI; }
+
+function updateMetrics(lm){
+  if(!lm) return;
+  const Ls=lm[11], Rs=lm[12], Lh=lm[23], Rh=lm[24], Lw=lm[15], Rw=lm[16];
+  const midSh={x:(Ls.x+Rs.x)/2, y:(Ls.y+Rs.y)/2};
+  const midHip={x:(Lh.x+Rh.x)/2, y:(Lh.y+Rh.y)/2};
+  const trunk = Math.abs(rad2deg(Math.atan2(midSh.x-midHip.x, -(midSh.y-midHip.y))));
+  trunkLeanMax = Math.max(trunkLeanMax, trunk);
+  if((midHip.y - midSh.y) > 0.40) shoulderHikeDetected = true;
+  // reach completion proxy: closest wrist distance to current target
+  const sub = CFG.cycle[currentSubStep];
+  if(sub && sub.target){
+    const t = sub.target;
+    const best = Math.min(
+      Math.hypot((1-Lw.x)-t.x, Lw.y-t.y),
+      Math.hypot((1-Rw.x)-t.x, Rw.y-t.y),
+    );
+    // 0 = at target, 1 = far. compute completion = 1 - clamp(best / (t.r*3))
+    const comp = 1 - Math.min(1, best / (t.r * 3));
+    reachMax = Math.max(reachMax, comp);
+  }
+}
+
+function checkTarget(lm){
+  const sub = CFG.cycle[currentSubStep];
+  if(!sub || !sub.target || !lm) return false;
+  const t = sub.target;
+  const Lw=lm[15], Rw=lm[16];
+  const ok = (p) => p && Math.hypot((1-p.x)-t.x, p.y-t.y) < t.r;
+  return ok(Lw) || ok(Rw);
+}
+
+function drawOverlay(lm){
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+  if(lm){
+    drawingUtils.drawLandmarks(lm,{color:"#D9E5DC", radius:3});
+    drawingUtils.drawConnectors(lm, PoseLandmarker.POSE_CONNECTIONS,{color:"#4A7856",lineWidth:4});
+  }
+  const sub = CFG.cycle[currentSubStep];
+  if(sub && sub.target){
+    const tx = sub.target.x*canvas.width;
+    const ty = sub.target.y*canvas.height;
+    const tr = sub.target.r*Math.min(canvas.width,canvas.height);
+    const pulse = 1 + 0.08*Math.sin(performance.now()/250);
+    ctx.beginPath(); ctx.arc(tx,ty,tr*pulse,0,Math.PI*2);
+    ctx.lineWidth = 6; ctx.strokeStyle = "#E18E6D"; ctx.stroke();
+    ctx.beginPath(); ctx.arc(tx,ty,tr*0.5,0,Math.PI*2);
+    ctx.fillStyle = "rgba(225,142,109,0.4)"; ctx.fill();
+    if(inTargetSince){
+      const elapsed = performance.now() - inTargetSince;
+      const progress = Math.min(1, elapsed / sub.hold_ms);
+      ctx.beginPath(); ctx.arc(tx,ty,tr*1.25, -Math.PI/2, -Math.PI/2 + progress*Math.PI*2);
+      ctx.strokeStyle = "#3C8255"; ctx.lineWidth = 8; ctx.stroke();
+    }
+  }
+}
+
+async function startRep(){
+  currentSubStep = 0;
+  trunkLeanMax = 0; shoulderHikeDetected = false; reachMax = 0;
+  repLabel.textContent = `Repetition ${currentRep+1} of ${CFG.reps}`;
+  if(CFG.pose_mode === "tap"){
+    tapBtn.classList.remove("hidden");
+  }else{
+    tapBtn.classList.add("hidden");
+  }
+  await startSubStep();
+}
+
+async function startSubStep(){
+  const sub = CFG.cycle[currentSubStep];
+  captionEl.textContent = sub.caption;
+  stepStartTime = performance.now();
+  inTargetSince = null; stepCompleted = false;
+  await playVoice(sub.voice);
+}
+
+function pickFeedback(){
+  // Evaluate rules; first match wins. Use a minimal mini-expression evaluator.
+  const ctx = {
+    trunk_lean_deg: Math.round(trunkLeanMax),
+    shoulder_hike: shoulderHikeDetected,
+    reach_completion: +reachMax.toFixed(2),
+  };
+  for(const rule of CFG.feedback_rules){
+    if(rule.default) return rule.say || rule.default;
+    if(!rule.if) continue;
+    try{
+      // SAFE: rules are author-controlled in backend config, not user input.
+      const fn = new Function("trunk_lean_deg","shoulder_hike","reach_completion", `return (${rule.if});`);
+      if(fn(ctx.trunk_lean_deg, ctx.shoulder_hike, ctx.reach_completion)){
+        return rule.say;
+      }
+    }catch(e){ /* skip */ }
+  }
+  return "Beautiful repetition.";
+}
+
+// ===== Speech Recognition for voice confirmation =====
+let recognition = null;
+let yesHeard = false, understandHeard = false;
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+function startListening(){
+  yesHeard = false; understandHeard = false;
+  checkYes.textContent = "○ Yes";
+  checkUnderstand.textContent = '○ "I understand my problem now"';
+  fbHeard.textContent = SR ? "Listening…" : "Voice input unavailable on this device — tap the button when ready.";
+  if(!SR) return;
+  try{
+    recognition = new SR();
+    recognition.continuous = true;
+    recognition.interimResults = true;
+    recognition.lang = "en-US";
+    recognition.onresult = (e) => {
+      let txt = "";
+      for(let i = e.resultIndex; i < e.results.length; i++){
+        txt += e.results[i][0].transcript.toLowerCase();
+      }
+      fbHeard.textContent = '"' + txt.slice(-60).trim() + '"';
+      if(!yesHeard && /\byes\b/.test(txt)){
+        yesHeard = true;
+        checkYes.textContent = "✓ Yes";
+        checkYes.classList.add("ok");
+      }
+      if(!understandHeard && /(i understand my problem now)|(understand my problem)/i.test(txt)){
+        understandHeard = true;
+        checkUnderstand.textContent = '✓ "I understand my problem now"';
+        checkUnderstand.classList.add("ok");
+      }
+      if(yesHeard && understandHeard){
+        stopListening();
+        confirmAndContinue();
+      }
+    };
+    recognition.onerror = (ev) => {
+      fbHeard.textContent = "Voice input error — tap the button when ready.";
+    };
+    recognition.onend = () => {
+      if(running && !(yesHeard && understandHeard)){
+        try{ recognition.start(); }catch(e){}
+      }
+    };
+    recognition.start();
+  }catch(e){
+    fbHeard.textContent = "Voice input unavailable — tap the button when ready.";
+  }
+}
+function stopListening(){
+  if(recognition){
+    try{ recognition.onend = null; recognition.stop(); }catch(e){}
+    recognition = null;
+  }
+}
+
+let lastFeedbackText = "";
+
+async function showFeedback(){
+  const feedback = pickFeedback();
+  lastFeedbackText = feedback;
+  fbStep.textContent = `Repetition ${currentRep+1} of ${CFG.reps} complete`;
+  fbTitle.textContent = "Here's what I noticed";
+  fbBody.textContent = feedback;
+  if(navigator.vibrate) navigator.vibrate([50, 30, 80]);
+  fbEl.classList.remove("hidden");
+  requestAnimationFrame(() => fbEl.classList.add("show"));
+  postRN({type:"rep_complete", rep: currentRep+1, total: CFG.reps, feedback});
+
+  // Voice: feedback + ask for "yes"
+  await playVoice(feedback + " When you're ready for the next repetition, please say yes. Then say: I understand my problem now.");
+  startListening();
+}
+
+async function confirmAndContinue(){
+  stopListening();
+  fbEl.classList.remove("show");
+  setTimeout(()=> fbEl.classList.add("hidden"), 350);
+  currentRep += 1;
+  if(currentRep >= CFG.reps){
+    finishExercise();
+    return;
+  }
+  await playVoice("Wonderful. Here we go.");
+  await startRep();
+}
+
+async function finishExercise(){
+  running = false;
+  fbEl.classList.add("hidden");
+  captionEl.textContent = "Exercise complete!";
+  await playVoice("Magnificent work. You have finished this exercise. I'm so proud of you.");
+  postRN({type:"exercise_complete", exercise_id: location.search});
+}
+
+function advanceSubStep(){
+  currentSubStep += 1;
+  if(currentSubStep >= CFG.cycle.length){
+    // Rep complete → feedback
+    showFeedback();
+    return;
+  }
+  startSubStep();
+}
+
+// Tap-based rep handler (for fine-motor exercises)
+tapBtn.addEventListener("click", () => {
+  if(!running) return;
+  if(CFG.pose_mode !== "tap") return;
+  showFeedback();
+});
+
+fbConfirmBtn.addEventListener("click", () => {
+  // Manual confirm bypass: only if both yes+understand heard, OR user explicitly taps after replaying
+  // We honor the user contract: tap is the explicit accessibility fallback.
+  confirmAndContinue();
+});
+
+fbReplay.addEventListener("click", async () => {
+  if(!lastFeedbackText) return;
+  await playVoice(lastFeedbackText + " When you're ready, please say yes, then I understand my problem now.");
+});
+
+function loop(){
+  if(!running) return;
+  const now = performance.now();
+  let lm = null;
+  try{
+    const r = landmarker.detectForVideo(video, now);
+    if(r && r.landmarks && r.landmarks[0]) lm = r.landmarks[0];
+  }catch(e){}
+  if(lm) updateMetrics(lm);
+  drawOverlay(lm);
+
+  // Sub-step target detection (only while NOT showing feedback)
+  if(CFG.pose_mode === "body" && !fbEl.classList.contains("show")){
+    const sub = CFG.cycle[currentSubStep];
+    if(sub && sub.target){
+      const ok = checkTarget(lm);
+      if(ok){
+        if(inTargetSince == null) inTargetSince = now;
+        if(!stepCompleted && (now - inTargetSince) >= sub.hold_ms){
+          stepCompleted = true;
+          if(navigator.vibrate) navigator.vibrate(60);
+          setTimeout(() => advanceSubStep(), 250);
+        }
+      }else{
+        inTargetSince = null;
+      }
+    }
+  }
+  requestAnimationFrame(loop);
+}
+
+startBtn.addEventListener("click", async () => {
+  overlay.classList.add("hidden");
+  startBtn.disabled = true;
+  const camOk = await setupCamera();
+  if(!camOk){ overlay.classList.remove("hidden"); return; }
+  await setupPose();
+  running = true;
+  await playVoice(CFG.setup_voice);
+  await startRep();
+  requestAnimationFrame(loop);
+});
+
+exitBtn.addEventListener("click", () => {
+  stopListening();
+  postRN({type:"exit"});
+});
+
+postRN({type:"ready"});
+</script>
+</body>
+</html>
+"""
+
+
 # Mount routes
 app.include_router(api_router)
 

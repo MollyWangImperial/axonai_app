@@ -72,9 +72,8 @@ export default function RehabPlanScreen() {
         {data.rehab_plan.map((ex, i) => {
           const isDone = !!done[ex.id];
           return (
-            <Pressable
+            <View
               key={ex.id}
-              onPress={() => toggle(ex.id)}
               style={[styles.exCard, isDone && styles.exCardDone]}
               testID={`exercise-${ex.id}`}
             >
@@ -93,7 +92,28 @@ export default function RehabPlanScreen() {
               </View>
               <Text style={styles.exDesc}>{ex.description}</Text>
               <Text style={styles.exSource}>📖 {ex.source}</Text>
-            </Pressable>
+              <View style={styles.exActions}>
+                <Pressable
+                  onPress={() => {
+                    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+                    router.push({ pathname: "/exercise", params: { exercise_id: ex.id, name: ex.name } });
+                  }}
+                  style={styles.guidedBtn}
+                  testID={`exercise-guided-${ex.id}`}
+                >
+                  <Ionicons name="videocam" size={18} color="#fff" />
+                  <Text style={styles.guidedBtnText}>Guided practice</Text>
+                </Pressable>
+                <Pressable
+                  onPress={() => toggle(ex.id)}
+                  style={styles.markBtn}
+                  testID={`exercise-mark-${ex.id}`}
+                >
+                  <Ionicons name={isDone ? "checkmark-circle" : "ellipse-outline"} size={18} color={isDone ? colors.success : colors.onSurfaceSecondary} />
+                  <Text style={[styles.markBtnText, isDone && { color: colors.success }]}>{isDone ? "Done" : "Mark done"}</Text>
+                </Pressable>
+              </View>
+            </View>
           );
         })}
 
@@ -137,6 +157,11 @@ const styles = StyleSheet.create({
   exMeta: { fontSize: 13, color: colors.brandPrimary, fontWeight: "600" },
   exDesc: { fontSize: 14, color: colors.onSurfaceSecondary, lineHeight: 20 },
   exSource: { fontSize: 12, color: colors.onSurfaceTertiary, fontStyle: "italic" },
+  exActions: { flexDirection: "row", gap: spacing.sm, marginTop: spacing.sm },
+  guidedBtn: { flex: 1, flexDirection: "row", gap: 6, backgroundColor: colors.brandPrimary, paddingVertical: 12, borderRadius: radius.md, alignItems: "center", justifyContent: "center" },
+  guidedBtnText: { color: "#fff", fontWeight: "700", fontSize: 14 },
+  markBtn: { flexDirection: "row", gap: 6, backgroundColor: colors.surfaceTertiary, paddingVertical: 12, paddingHorizontal: spacing.md, borderRadius: radius.md, alignItems: "center", justifyContent: "center" },
+  markBtnText: { color: colors.onSurfaceSecondary, fontWeight: "700", fontSize: 14 },
   disclaimer: { fontSize: 12, color: colors.onSurfaceTertiary, fontStyle: "italic", marginTop: spacing.lg, lineHeight: 18 },
   ctaBar: { position: "absolute", left: 0, right: 0, bottom: 0, padding: spacing.md, backgroundColor: colors.surface, borderTopWidth: 1, borderTopColor: colors.divider },
   cta: { flexDirection: "row", gap: spacing.sm, backgroundColor: colors.brandPrimary, borderRadius: radius.lg, padding: spacing.md, alignItems: "center", justifyContent: "center", minHeight: 56 },
