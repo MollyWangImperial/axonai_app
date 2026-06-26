@@ -624,6 +624,19 @@ POSE_RUNNER_HTML = r"""<!DOCTYPE html>
   #overlay p{font-size:15px;color:#bcc2ba;line-height:1.5}
   #overlay button{background:#4A7856;color:#fff;border:none;padding:14px 28px;border-radius:16px;font-weight:700;font-size:16px}
   .hidden{display:none !important}
+  /* Celebration overlay */
+  #celebrate{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:linear-gradient(180deg, rgba(74,120,86,0.92), rgba(28,32,29,0.92));text-align:center;padding:24px;flex-direction:column;gap:14px;pointer-events:auto;z-index:9;opacity:0;transition:opacity .35s ease-out}
+  #celebrate.show{opacity:1}
+  #celebrate .star{font-size:80px;animation:pop .6s ease-out}
+  #celebrate h2{font-size:26px;font-weight:800;color:#fff}
+  #celebrate .next{font-size:14px;color:#D9E5DC;font-weight:600;letter-spacing:1px;text-transform:uppercase}
+  #celebrate .msg{font-size:17px;color:#FDFDFD;line-height:1.45;max-width:320px}
+  #celebrate .dotsMini{display:flex;gap:6px;margin-top:8px}
+  #celebrate .dotsMini span{width:8px;height:8px;border-radius:50%;background:rgba(255,255,255,0.3)}
+  #celebrate .dotsMini span.done{background:#fff}
+  @keyframes pop{0%{transform:scale(0.3) rotate(-12deg);opacity:0}60%{transform:scale(1.2) rotate(8deg);opacity:1}100%{transform:scale(1) rotate(0);opacity:1}}
+  .confetti{position:absolute;width:10px;height:14px;border-radius:2px;animation:fall 1.4s ease-out forwards;opacity:.9}
+  @keyframes fall{0%{transform:translateY(-30vh) rotate(0deg);opacity:0}10%{opacity:1}100%{transform:translateY(120vh) rotate(720deg);opacity:0}}
 </style>
 </head>
 <body>
@@ -651,6 +664,13 @@ POSE_RUNNER_HTML = r"""<!DOCTYPE html>
     <p>We will guide you through 7 short movement tasks using your camera. Move into the camera view, then tap Start.</p>
     <button id="startBtn" data-testid="assessment-start">Start Assessment</button>
   </div>
+  <div id="celebrate" class="hidden">
+    <div class="star">⭐</div>
+    <div class="next" id="celebrateLabel">Task 1 complete</div>
+    <h2 id="celebrateTitle">Wonderful work!</h2>
+    <p class="msg" id="celebrateMsg">You did beautifully. Take a breath — the next task is on its way.</p>
+    <div class="dotsMini" id="celebrateDots"></div>
+  </div>
 </div>
 
 <script type="module">
@@ -669,6 +689,30 @@ const overlay = document.getElementById("overlay");
 const startBtn = document.getElementById("startBtn");
 const skipBtn = document.getElementById("skipBtn");
 const exitBtn = document.getElementById("exitBtn");
+const celebrateEl = document.getElementById("celebrate");
+const celebrateLabel = document.getElementById("celebrateLabel");
+const celebrateTitle = document.getElementById("celebrateTitle");
+const celebrateMsg = document.getElementById("celebrateMsg");
+const celebrateDots = document.getElementById("celebrateDots");
+
+// Pool of warm, encouraging task-completion lines (varied so they don't feel scripted)
+const CELEBRATION_LINES = [
+  { title: "Wonderful work!", msg: "You did beautifully. Take a breath — the next task is on its way." },
+  { title: "Amazing effort!", msg: "I'm so proud of you. Let's keep this momentum going." },
+  { title: "Brilliant!", msg: "That was excellent. You're making real progress." },
+  { title: "Magnificent!", msg: "Every movement counts. You're doing incredibly well." },
+  { title: "Bravo!", msg: "Beautiful control. Onward to the next." },
+  { title: "Excellent!", msg: "That's the spirit. One step closer to recovery." },
+  { title: "You've got this!", msg: "Strong, steady, and brave. Keep going." },
+];
+const CELEBRATION_VOICES = [
+  "Wonderful work! You did beautifully. Take a breath, the next task is on its way.",
+  "Amazing effort! I'm so proud of you. Let's keep this momentum going.",
+  "Brilliant! That was excellent. You're making real progress.",
+  "Magnificent! Every movement counts. You're doing incredibly well.",
+  "Bravo! Beautiful control. Onward to the next.",
+  "Excellent! That's the spirit. One step closer to recovery.",
+];
 
 let landmarker = null;
 let drawingUtils = null;
@@ -892,12 +936,78 @@ function nextStep(skipped=false){
 
   currentStepIdx += 1;
   if(currentStepIdx >= task.steps.length){
-    currentStepIdx = 0;
-    currentTaskIdx += 1;
-    if(currentTaskIdx >= tasks.length){
-      finishAssessment();
-      return;
-    }
+    // Task complete — celebrate before moving on
+    celebrateAndAdvance();
+    return;
+  }
+  startStep();
+}
+
+function spawnConfetti(count){
+  const colors = ["#E18E6D", "#D9E5DC", "#FDFDFD", "#4A7856", "#FFD58A"];
+  for(let i = 0; i < count; i++){
+    const c = document.createElement("div");
+    c.className = "confetti";
+    c.style.left = (Math.random() * 100) + "vw";
+    c.style.background = colors[i % colors.length];
+    c.style.animationDelay = (Math.random() * 0.3) + "s";
+    c.style.animationDuration = (1.0 + Math.random() * 0.9) + "s";
+    celebrateEl.appendChild(c);
+    setTimeout(() => c.remove(), 2200);
+  }
+}
+
+function renderCelebrateDots(){
+  celebrateDots.innerHTML = "";
+  tasks.forEach((_, i) => {
+    const d = document.createElement("span");
+    if(i <= currentTaskIdx) d.className = "done";
+    celebrateDots.appendChild(d);
+  });
+}
+
+async function celebrateAndAdvance(){
+  const finishedTask = tasks[currentTaskIdx];
+  const pick = CELEBRATION_LINES[currentTaskIdx % CELEBRATION_LINES.length];
+  const voicePick = CELEBRATION_VOICES[currentTaskIdx % CELEBRATION_VOICES.length];
+
+  // Show overlay
+  celebrateLabel.textContent = `Task ${currentTaskIdx + 1} of ${tasks.length} complete`;
+  celebrateTitle.textContent = pick.title;
+  celebrateMsg.textContent = pick.msg;
+  renderCelebrateDots();
+  celebrateEl.classList.remove("hidden");
+  // give browser a tick so the transition fires
+  requestAnimationFrame(() => celebrateEl.classList.add("show"));
+  spawnConfetti(28);
+  if(navigator.vibrate) navigator.vibrate([60, 40, 100]);
+
+  postRN({type:"task_complete", task_id: finishedTask.id, task_index: currentTaskIdx});
+
+  // Determine if there are more tasks
+  const hasNext = (currentTaskIdx + 1) < tasks.length;
+
+  // Play encouraging voice (only when not the final task — final has its own outro)
+  let voiceMs = 0;
+  const t0 = performance.now();
+  if(hasNext){
+    await playVoice(voicePick);
+    voiceMs = performance.now() - t0;
+  }
+
+  // Ensure overlay is visible for at least ~2.4s for tactile/emotional pacing
+  const minDisplayMs = 2400;
+  if(voiceMs < minDisplayMs) await new Promise(r => setTimeout(r, minDisplayMs - voiceMs));
+
+  // Hide overlay and advance
+  celebrateEl.classList.remove("show");
+  setTimeout(() => celebrateEl.classList.add("hidden"), 350);
+
+  currentStepIdx = 0;
+  currentTaskIdx += 1;
+  if(currentTaskIdx >= tasks.length){
+    finishAssessment();
+    return;
   }
   startStep();
 }

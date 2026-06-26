@@ -20,6 +20,8 @@ export default function AssessmentScreen() {
         setLoading(false);
       } else if (msg.type === "step_start") {
         Haptics.selectionAsync();
+      } else if (msg.type === "task_complete") {
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       } else if (msg.type === "camera_error") {
         setError("Camera unavailable. Please grant camera permission in settings and reload.");
       } else if (msg.type === "exit") {
