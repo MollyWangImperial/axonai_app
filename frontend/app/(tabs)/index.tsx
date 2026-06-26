@@ -8,6 +8,7 @@ import * as Haptics from "expo-haptics";
 import { colors, spacing, radius } from "@/src/theme";
 import { fetchHistory, Assessment } from "@/src/api";
 import { ensurePermission, loadSettings, rescheduleReminders } from "@/src/utils/notifications";
+import CreditsBadge from "@/src/components/CreditsBadge";
 
 const HERO = "https://images.pexels.com/photos/8460412/pexels-photo-8460412.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940";
 const BASE = process.env.EXPO_PUBLIC_BACKEND_URL;
@@ -70,7 +71,10 @@ export default function HomeScreen() {
             style={StyleSheet.absoluteFill}
           />
           <View style={styles.heroInner}>
-            <Text style={styles.heroBadge} testID="home-app-badge">NEUROMOTION</Text>
+            <View style={styles.heroTopRow}>
+              <Text style={styles.heroBadge} testID="home-app-badge">NEUROMOTION</Text>
+              <CreditsBadge />
+            </View>
             <Text style={styles.heroTitle}>Good day.{"\n"}Let's move forward, together.</Text>
             <Text style={styles.heroSub}>
               A guided upper-limb movement assessment with personalized rehabilitation, grounded in clinical sources.
@@ -217,7 +221,8 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.surface },
   hero: { width: "100%", paddingBottom: spacing.xl, minHeight: 260, justifyContent: "flex-end" },
   heroInner: { paddingHorizontal: spacing.lg, paddingBottom: spacing.lg },
-  heroBadge: { color: colors.brandTertiary, fontWeight: "700", letterSpacing: 2, fontSize: 12, marginBottom: spacing.sm },
+  heroTopRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: spacing.sm },
+  heroBadge: { color: colors.brandTertiary, fontWeight: "700", letterSpacing: 2, fontSize: 12 },
   heroTitle: { color: colors.onSurfaceInverse, fontSize: 26, fontWeight: "800", lineHeight: 32, marginBottom: spacing.sm },
   heroSub: { color: "#E8EBE6", fontSize: 15, lineHeight: 22 },
   section: { paddingHorizontal: spacing.lg, paddingTop: spacing.lg },

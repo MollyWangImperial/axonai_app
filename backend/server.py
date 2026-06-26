@@ -1,4 +1,4 @@
-from fastapi import FastAPI, APIRouter, HTTPException
+from fastapi import FastAPI, APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse, Response
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
@@ -551,7 +551,11 @@ async def tts_health():
 
 
 @api_router.post("/assessment/submit", response_model=Assessment)
-async def submit_assessment(payload: AssessmentSubmit):
+async def submit_assessment(payload: AssessmentSubmit, request: Request):
+    user = await _user_from_header(dict(request.headers))
+    if user:
+        await consume_credits(user["id"], "assessment")
+        await consume_credits(user["id"], "rehab_plan")
     issues = derive_functional_issues(payload.task_results)
     plan = build_rehab_plan(issues)
     assessment = Assessment(
@@ -562,7 +566,10 @@ async def submit_assessment(payload: AssessmentSubmit):
         functional_issues=issues,
         rehab_plan=plan,
     )
-    await db.assessments.insert_one(assessment.dict())
+    doc = assessment.dict()
+    if user:
+        doc["user_id"] = user["id"]
+    await db.assessments.insert_one(doc)
     return assessment
 
 
@@ -2014,6 +2021,273 @@ async def create_story(payload: StoryCreate):
 from emergentintegrations.llm.chat import LlmChat, UserMessage  # noqa: E402
 
 EMERGENT_LLM_KEY = os.environ.get("EMERGENT_LLM_KEY", "")
+
+
+# ============ Users & Credits ============
+class UserSignup(BaseModel):
+    email: str
+    name: str
+    role: str = "patient"  # "patient" | "therapist"
+
+
+class User(BaseModel):
+    id: str
+    email: str
+    name: str
+    role: str
+    credits: int = 100
+    created_at: str
+
+
+CREDIT_COSTS = {
+    "assessment": 10,
+    "rehab_plan": 20,
+    "guided_exercise": 5,
+    "premium_chat_message": 2,
+    "video_call": 50,
+    "in_person_session": 80,
+}
+
+
+async def get_or_create_user(email: str, name: str, role: str = "patient") -> Dict[str, Any]:
+    doc = await db.users.find_one({"email": email.lower()}, {"_id": 0})
+    if doc:
+        return doc
+    doc = {
+        "id": "u_" + str(uuid.uuid4())[:12],
+        "email": email.lower(),
+        "name": name,
+        "role": role,
+        "credits": 100,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.users.insert_one(doc.copy())
+    doc.pop("_id", None)
+    return doc
+
+
+async def _user_from_header(request_headers: Dict[str, str]) -> Optional[Dict[str, Any]]:
+    uid = request_headers.get("x-user-id") or request_headers.get("X-User-Id")
+    if not uid:
+        return None
+    return await db.users.find_one({"id": uid}, {"_id": 0})
+
+
+async def consume_credits(user_id: str, kind: str) -> Dict[str, Any]:
+    cost = CREDIT_COSTS.get(kind, 0)
+    user = await db.users.find_one({"id": user_id}, {"_id": 0})
+    if not user:
+        raise HTTPException(status_code=401, detail="Sign in required")
+    if user["credits"] < cost:
+        raise HTTPException(status_code=402, detail=f"Not enough credits. Need {cost}, have {user['credits']}.")
+    new_credits = user["credits"] - cost
+    await db.users.update_one({"id": user_id}, {"$set": {"credits": new_credits}})
+    await db.credit_log.insert_one({
+        "user_id": user_id, "kind": kind, "cost": cost, "new_balance": new_credits,
+        "ts": datetime.now(timezone.utc).isoformat(),
+    })
+    return {"credits": new_credits, "spent": cost}
+
+
+@api_router.post("/users/signup")
+async def signup(payload: UserSignup):
+    user = await get_or_create_user(payload.email, payload.name, payload.role)
+    return user
+
+
+@api_router.post("/users/login")
+async def login(payload: UserSignup):
+    # MVP: email-only sign-in. If user exists, return; else create.
+    user = await get_or_create_user(payload.email, payload.name or payload.email, payload.role)
+    return user
+
+
+@api_router.get("/users/me")
+async def me(request: Request):
+    user = await _user_from_header(dict(request.headers))
+    if not user:
+        raise HTTPException(status_code=401, detail="Sign in required")
+    return user
+
+
+@api_router.get("/credits/balance")
+async def credits_balance(request: Request):
+    user = await _user_from_header(dict(request.headers))
+    if not user:
+        return {"credits": 0, "anonymous": True, "costs": CREDIT_COSTS}
+    return {"credits": user["credits"], "user_id": user["id"], "costs": CREDIT_COSTS}
+
+
+# ============ Therapist onboarding (questionnaire → AI persona) ============
+THERAPIST_ONBOARDING_QUESTIONS = [
+    {"id": "q1", "question": "What is your title and how many years of stroke rehab experience do you have?", "purpose": "Establish credibility tier in persona", "type": "text"},
+    {"id": "q2", "question": "Which clinical frameworks do you draw from most? (e.g., Bobath/NDT, CIMT, Task-Specific Training, BATRAC, motor relearning)", "purpose": "Drive treatment-philosophy in persona prompt", "type": "text"},
+    {"id": "q3", "question": "Which upper-limb functional issues do you treat best? Pick: reduced reach, shoulder flexion, shoulder hike, hand opening, pinch, hand-to-mouth, gross grasp, bilateral coordination, trunk compensation.", "purpose": "Specialty matching", "type": "multi"},
+    {"id": "q4", "question": "Describe your communication style with patients in 1-2 sentences (e.g., 'calm, paced, uses metaphors').", "purpose": "Voice & tone of persona", "type": "text"},
+    {"id": "q5", "question": "Give 2 short examples of feedback you give patients during reach training when they lean their trunk forward.", "purpose": "Trains feedback patterns", "type": "text"},
+    {"id": "q6", "question": "How do you motivate a patient who feels stuck after a plateau? Include any phrases you commonly use.", "purpose": "Trains motivation/encouragement patterns", "type": "text"},
+    {"id": "q7", "question": "What is one boundary you keep in patient conversations (what you DON'T do, e.g., diagnose, change medication, etc.)?", "purpose": "Persona safety guardrails", "type": "text"},
+    {"id": "q8", "question": "What's a memorable patient win story (anonymized) that shaped how you approach rehab?", "purpose": "Adds authentic perspective to persona", "type": "text"},
+    {"id": "q9", "question": "Which languages do you treat in?", "purpose": "Language tags", "type": "text"},
+    {"id": "q10", "question": "What is your hourly rate (in £) for paid chat / video / in-person? (e.g., chat 30, video 60, in-person 90)", "purpose": "Billing/commissions", "type": "text"},
+]
+
+
+class TherapistOnboard(BaseModel):
+    therapist_user_id: str
+    answers: Dict[str, str]
+    specialties: List[str] = Field(default_factory=list)
+
+
+def _build_persona_prompt_from_answers(name: str, answers: Dict[str, str]) -> str:
+    return (
+        f"You are '{name}', an AI persona based on a real licensed therapist's input. "
+        f"Background: {answers.get('q1','')}\n"
+        f"Clinical frameworks you draw from: {answers.get('q2','')}\n"
+        f"Your communication style: {answers.get('q4','')}\n"
+        f"How you give feedback when a patient compensates trunk on reach: {answers.get('q5','')}\n"
+        f"How you motivate after a plateau: {answers.get('q6','')}\n"
+        f"Boundaries you maintain: {answers.get('q7','')}\n"
+        f"A formative patient win story you bring perspective from: {answers.get('q8','')}\n\n"
+        "IMPORTANT: You are an AI persona modeled on a real therapist's responses. Disclose that warmly if asked, "
+        "and never diagnose, prescribe, or recommend stopping any treatment. For anything beyond general guidance, "
+        "encourage the patient to book a video or in-person session with you."
+    )
+
+
+@api_router.get("/therapist/onboarding/questions")
+async def therapist_onboarding_questions():
+    return {"questions": THERAPIST_ONBOARDING_QUESTIONS}
+
+
+@api_router.post("/therapist/onboarding/submit")
+async def therapist_onboarding_submit(payload: TherapistOnboard):
+    user = await db.users.find_one({"id": payload.therapist_user_id}, {"_id": 0})
+    if not user or user.get("role") != "therapist":
+        raise HTTPException(status_code=400, detail="Therapist account required")
+    persona_prompt = _build_persona_prompt_from_answers(user["name"], payload.answers)
+    # Parse rates from q10 cheaply
+    rates_text = payload.answers.get("q10", "")
+    profile = {
+        "therapist_id": "rt_" + user["id"][2:],
+        "user_id": user["id"],
+        "name": user["name"],
+        "ai": False,  # Real therapist
+        "premium": True,
+        "specialties": payload.specialties,
+        "rating": 5.0,
+        "years": 0,
+        "blurb": payload.answers.get("q4", ""),
+        "languages": [s.strip() for s in payload.answers.get("q9", "English").split(",") if s.strip()],
+        "trained_on": "Self-reported clinical experience (real therapist)",
+        "availability": ["By appointment"],
+        "location": "Telehealth & in-person",
+        "rates_text": rates_text,
+        "rates": {"chat": 30, "video": 60, "in_person": 90},  # parsed defaults
+        "photo": "https://images.unsplash.com/photo-1559757148-5c350d0d3c56?w=400",
+        "persona_prompt": persona_prompt,
+        "commission_pct": 70,  # therapist gets 70% of paid revenue
+        "commissions_balance_pence": 0,
+        "answers": payload.answers,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.real_therapists.update_one({"user_id": user["id"]}, {"$set": profile}, upsert=True)
+    profile.pop("_id", None)
+    return profile
+
+
+@api_router.get("/therapist/me")
+async def therapist_me(request: Request):
+    user = await _user_from_header(dict(request.headers))
+    if not user:
+        raise HTTPException(status_code=401, detail="Sign in required")
+    if user.get("role") != "therapist":
+        raise HTTPException(status_code=400, detail="Not a therapist account")
+    profile = await db.real_therapists.find_one({"user_id": user["id"]}, {"_id": 0, "persona_prompt": 0})
+    bookings = await db.bookings.find({"therapist_user_id": user["id"]}, {"_id": 0}).to_list(50)
+    commissions = await db.commissions.find({"therapist_user_id": user["id"]}, {"_id": 0}).to_list(100)
+    total_pence = sum(c.get("amount_pence", 0) for c in commissions)
+    return {"user": user, "profile": profile, "bookings": bookings, "commissions": commissions, "commission_total_pence": total_pence}
+
+
+# ============ Bookings ============
+class BookingCreate(BaseModel):
+    patient_user_id: str
+    therapist_id: str  # the rt_xxx id
+    kind: str  # "chat" | "video" | "in_person"
+    slot_iso: str  # ISO datetime patient picked
+    notes: Optional[str] = None
+
+
+@api_router.get("/bookings/availability")
+async def availability(therapist_id: str):
+    """Returns 8 sample slots over next 7 days for a therapist."""
+    from datetime import timedelta
+    base = datetime.now(timezone.utc).replace(hour=10, minute=0, second=0, microsecond=0) + timedelta(days=1)
+    slots = []
+    for i in range(8):
+        slot = base + timedelta(days=i // 2, hours=(i % 2) * 4)
+        slots.append({"iso": slot.isoformat(), "label": slot.strftime("%a %b %d, %I:%M %p")})
+    return {"therapist_id": therapist_id, "slots": slots}
+
+
+@api_router.post("/bookings")
+async def create_booking(payload: BookingCreate):
+    rt = await db.real_therapists.find_one({"therapist_id": payload.therapist_id}, {"_id": 0})
+    if not rt:
+        raise HTTPException(status_code=404, detail="Therapist not found")
+    user = await db.users.find_one({"id": payload.patient_user_id}, {"_id": 0})
+    if not user:
+        raise HTTPException(status_code=401, detail="Sign in required")
+    rate_pence = {"chat": rt["rates"]["chat"] * 100, "video": rt["rates"]["video"] * 100, "in_person": rt["rates"]["in_person"] * 100}.get(payload.kind, 5000)
+    credits_kind = {"chat": "premium_chat_message", "video": "video_call", "in_person": "in_person_session"}[payload.kind]
+    # Consume credits
+    await consume_credits(payload.patient_user_id, credits_kind)
+    booking = {
+        "id": "bk_" + str(uuid.uuid4())[:10],
+        "patient_user_id": payload.patient_user_id,
+        "patient_name": user["name"],
+        "therapist_id": payload.therapist_id,
+        "therapist_user_id": rt["user_id"],
+        "kind": payload.kind,
+        "slot_iso": payload.slot_iso,
+        "notes": payload.notes or "",
+        "status": "confirmed",
+        "amount_pence": rate_pence,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.bookings.insert_one(booking.copy())
+    # Commission: therapist gets 70%
+    commission_pence = int(rate_pence * rt.get("commission_pct", 70) / 100)
+    await db.commissions.insert_one({
+        "therapist_user_id": rt["user_id"],
+        "therapist_id": payload.therapist_id,
+        "booking_id": booking["id"],
+        "amount_pence": commission_pence,
+        "kind": payload.kind,
+        "created_at": booking["created_at"],
+    })
+    booking.pop("_id", None)
+    return booking
+
+
+@api_router.get("/bookings/mine")
+async def my_bookings(request: Request):
+    user = await _user_from_header(dict(request.headers))
+    if not user:
+        raise HTTPException(status_code=401, detail="Sign in required")
+    if user["role"] == "therapist":
+        docs = await db.bookings.find({"therapist_user_id": user["id"]}, {"_id": 0}).sort("slot_iso", 1).to_list(100)
+    else:
+        docs = await db.bookings.find({"patient_user_id": user["id"]}, {"_id": 0}).sort("slot_iso", 1).to_list(100)
+    return {"bookings": docs}
+
+
+@api_router.get("/therapists/all")
+async def all_therapists():
+    """AI + real therapists combined; real therapists come first."""
+    real = await db.real_therapists.find({}, {"_id": 0, "persona_prompt": 0, "answers": 0}).to_list(100)
+    return {"ai": [{k: v for k, v in t.items() if k != "persona_prompt"} for t in THERAPISTS_SEED], "real": real}
 
 
 async def _build_patient_context() -> str:

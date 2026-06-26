@@ -1,0 +1,39 @@
+{
+  "summary": "Iteration 7 testing PASSED. Backend: 14/14 pytest cases green (users/login idempotent + 100 credits, credits/balance with header & anonymous, assessment deducts 30cr, anonymous assessment OK, 402 on insufficient credits, 10 onboarding questions, therapist profile creation with persona_prompt + commission_pct=70, therapist/me returns user+profile+bookings+commissions, 8 availability slots, video booking deducts 50cr & creates commission, chat deducts 2cr, /therapists/all returns 6 AI + real list). Frontend: /sign-in renders with role tabs + name/email inputs, patient sign-in redirects to / with CreditsBadge showing 100, therapist sign-in redirects to /therapist with onboarding form (10 questions + 9 specialty chips), /credits screen shows balance + costs table + sign-out, auth gate correctly redirects un-signed-in users to /sign-in for both / and /credits. No critical issues found.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_credits_and_therapist.py",
+    "/app/test_reports/pytest/iter7_results.xml"
+  ],
+  "action_items": [
+    "Optional: expo SDK packages slightly behind expected versions (expo@54.0.34 vs ~54.0.35, expo-font@14.0.11 vs ~14.0.12, expo-router@6.0.23 vs ~6.0.24) - not blocking but recommended to run `npx expo install --check` next time."
+  ],
+  "critical_code_review_comments": [
+    "MVP email-only auth is clearly disclaimed in UI ('Secure Google + password login coming soon') - acceptable for this iteration.",
+    "X-User-Id header is the auth mechanism (not a signed token); fine for MVP but should be replaced with JWT before production.",
+    "/api/credits/balance correctly returns anonymous payload when no header is present.",
+    "consume_credits uses non-atomic read-modify-write (find + update) - low risk for single-user mobile flow but vulnerable to race conditions under concurrent requests.",
+    "server.py is now 2448 lines — should be split into modules (auth, credits, therapist, bookings, assessments, runners) per the >700-line guideline."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_credits_and_therapist.py (new)"
+  ],
+  "success_rate": {
+    "backend": "100%",
+    "frontend": "100%"
+  },
+  "seed_data_creation": "Test users created with TEST_ email prefix (idempotent — re-running uses fresh UUID emails). No production data modified.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Backend endpoints for iteration 7 are fully covered by /app/backend/tests/test_credits_and_therapist.py. Frontend EXPO_PUBLIC_BACKEND_URL is the public URL (https://arm-rehab-ai.preview.emergentagent.com). Auth uses email-only sign-in storing user in AsyncStorage; X-User-Id header sent to backend. CreditsBadge has data-testid='credits-badge' on home; sign-in screen testIDs: role-patient, role-therapist, signin-name, signin-email, signin-submit.",
+  "rca_of_issue": "N/A — no bugs found."
+}
