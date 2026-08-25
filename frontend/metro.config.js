@@ -22,4 +22,19 @@ config.cacheStores = [
 // Reduce the number of workers to decrease resource usage
 config.maxWorkers = 2;
 
+// On web, replace react-native-webview (native-only) with an iframe-based shim
+// so the camera/pose runner screens work in the browser (see src/shims/webview-web.tsx).
+const defaultResolveRequest = config.resolver.resolveRequest;
+config.resolver.resolveRequest = (context, moduleName, platform) => {
+  if (platform === "web" && moduleName === "react-native-webview") {
+    return {
+      type: "sourceFile",
+      filePath: path.join(__dirname, "src", "shims", "webview-web.tsx"),
+    };
+  }
+  return defaultResolveRequest
+    ? defaultResolveRequest(context, moduleName, platform)
+    : context.resolveRequest(context, moduleName, platform);
+};
+
 module.exports = config;

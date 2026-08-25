@@ -1,6 +1,10 @@
 import { storage } from "@/src/utils/storage";
 
-const BASE = process.env.EXPO_PUBLIC_BACKEND_URL;
+const browserHost = typeof globalThis.location !== "undefined" ? globalThis.location.hostname : "";
+const localWebBase = ["localhost", "127.0.0.1"].includes(browserHost)
+  ? `${globalThis.location.protocol}//${browserHost}:8001`
+  : "";
+const BASE = localWebBase || process.env.EXPO_PUBLIC_BACKEND_URL || "";
 
 export type Me = { id: string; email: string; name: string; role: "patient" | "therapist"; credits: number };
 
@@ -8,11 +12,12 @@ export const USER_KEY = "active_user_id_v1";
 export const USER_OBJ = "active_user_obj_v1";
 
 export async function getUserId(): Promise<string | null> {
-  return await storage.getItem(USER_KEY);
+  const userId = await storage.getItem(USER_KEY, "");
+  return userId || null;
 }
 
 export async function getCachedUser(): Promise<Me | null> {
-  const raw = await storage.getItem(USER_OBJ);
+  const raw = await storage.getItem(USER_OBJ, "");
   if (!raw) return null;
   try { return JSON.parse(raw); } catch { return null; }
 }
