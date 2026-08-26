@@ -28,7 +28,9 @@ def test_home_launches_standardized_initial_assessment():
 def test_initial_assessment_has_no_package_or_task_choice():
     intro = read("frontend/app/task-intro.tsx")
     assert 'const packageId: AssessmentPackageId = "upper_limb"' in intro
-    assert "Tasks run automatically in this order" in intro
+    assert "launch your next guided task automatically" in intro
+    assert "tasks.map(" not in intro
+    assert "task-row-" not in intro
     assert "Choose assessment package" not in intro
     assert "setSelectedTaskId" not in intro
 
@@ -39,8 +41,11 @@ def test_onboarding_collects_pdf_feedback_fields():
     assert 'value: "under_20"' in onboarding
     assert 'key: "affected_areas"' in onboarding
     assert 'key: "medical_conditions"' in onboarding
+    assert 'testID="onb-other-condition-input"' in onboarding
+    assert 'testID="onb-other-condition-save"' in onboarding
     assert "affected_areas: Optional[List[str]]" in server
     assert "medical_conditions: Optional[List[str]]" in server
+    assert "medical_conditions_other: Optional[str]" in server
 
 
 def test_each_home_session_confirms_patient_or_carer():

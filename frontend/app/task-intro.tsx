@@ -5,7 +5,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 
-import { AssessmentPackageId, fetchTasks, Task } from "@/src/api";
+import { AssessmentPackageId, fetchTasks } from "@/src/api";
 import { authedFetch } from "@/src/auth";
 import { colors, radius, spacing } from "@/src/theme";
 import { storage } from "@/src/utils/storage";
@@ -34,7 +34,6 @@ export default function TaskIntro() {
   const params = useLocalSearchParams<{ mode?: string }>();
   const isInitial = params.mode !== "followup";
   const packageId: AssessmentPackageId = "upper_limb";
-  const [tasks, setTasks] = useState<Task[]>([]);
   const [completedTasks, setCompletedTasks] = useState<Record<string, boolean>>({});
   const [nextTaskId, setNextTaskId] = useState<string | null>(null);
   const [affectedSide, setAffectedSide] = useState<"left" | "right">("right");
@@ -56,7 +55,6 @@ export default function TaskIntro() {
         const profileSide = profileResponse?.profile?.side_affected;
         const resolvedSide = storedSide || profileSide;
         setAffectedSide(resolvedSide === "left" ? "left" : "right");
-        setTasks(taskResponse.tasks);
         setCompletedTasks(completed);
         setNextTaskId(nextTask?.id || null);
       } catch (e: any) {
@@ -102,34 +100,24 @@ export default function TaskIntro() {
           ))}
         </View>
 
-        <View style={styles.sectionHeader}>
-          <Text style={styles.sectionTitle}>What you will complete</Text>
-          <Text style={styles.taskCount}>{tasks.length || 7} tasks</Text>
-        </View>
-        <Text style={styles.readOnlyNote}>Tasks run automatically in this order, so there is nothing to choose.</Text>
-
         {loading && <ActivityIndicator color={colors.brandPrimary} style={{ marginVertical: spacing.lg }} />}
         {error && <Text style={styles.errorText}>Could not load the assessment. {error}</Text>}
 
-        {tasks.map((task, index) => {
-          const complete = !!completedTasks[task.id];
-          const isNext = task.id === nextTaskId;
-          return (
-            <View key={task.id} style={[styles.taskRow, isNext && styles.taskRowNext]} testID={`task-row-${task.id}`}>
-              <View style={[styles.taskNum, complete && styles.taskNumComplete]}>
-                {complete ? <Ionicons name="checkmark" size={20} color={colors.onBrandPrimary} /> : <Text style={styles.taskNumText}>{index + 1}</Text>}
-              </View>
-              <View style={{ flex: 1, minWidth: 0 }}>
-                <View style={styles.taskTitleRow}>
-                  <Text style={styles.taskTitle} numberOfLines={2}>{task.title}</Text>
-                  {complete && <Text style={styles.completeText}>Complete</Text>}
-                  {isNext && !complete && <Text style={styles.nextText}>Next</Text>}
-                </View>
-                <Text style={styles.taskFocus} numberOfLines={2}>{task.focus}</Text>
-              </View>
+        {!loading && !error && (
+          <View style={styles.sessionReady} testID="task-intro-session-ready">
+            <View style={styles.sessionReadyIcon}>
+              <Ionicons name="play" size={20} color={colors.onBrandPrimary} />
             </View>
-          );
-        })}
+            <View style={styles.sessionReadyCopy}>
+              <Text style={styles.sessionReadyTitle}>
+                {Object.keys(completedTasks).length > 0 ? "Continue where you left off" : "Your first guided task is ready"}
+              </Text>
+              <Text style={styles.sessionReadyText}>
+                Alira will launch your next guided task automatically and continue through the assessment in order.
+              </Text>
+            </View>
+          </View>
+        )}
       </ScrollView>
 
       <View style={[styles.cta, { paddingBottom: Math.max(insets.bottom, spacing.md) }]}>
@@ -155,20 +143,11 @@ const styles = StyleSheet.create({
   tipsHeader: { fontSize: 16, fontWeight: "800", color: colors.onBrandTertiary, marginBottom: spacing.sm },
   tipRow: { flexDirection: "row", alignItems: "center", gap: spacing.sm, paddingVertical: 4 },
   tipText: { flex: 1, color: colors.onBrandTertiary, fontSize: 14, lineHeight: 19 },
-  sectionHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
-  sectionTitle: { fontSize: 18, fontWeight: "800", color: colors.onSurface },
-  taskCount: { fontSize: 12, fontWeight: "800", color: colors.brandPrimary, backgroundColor: colors.brandTertiary, paddingHorizontal: spacing.sm, paddingVertical: 5, borderRadius: radius.pill },
-  readOnlyNote: { fontSize: 13, lineHeight: 18, color: colors.onSurfaceTertiary, marginTop: 4, marginBottom: spacing.md },
-  taskRow: { flexDirection: "row", alignItems: "center", gap: spacing.sm, padding: spacing.md, marginBottom: spacing.sm, borderWidth: 1, borderColor: colors.border, borderRadius: radius.md, backgroundColor: colors.surface },
-  taskRowNext: { borderColor: colors.brandPrimary, backgroundColor: colors.brandTertiary },
-  taskNum: { width: 40, height: 40, borderRadius: radius.sm, alignItems: "center", justifyContent: "center", backgroundColor: colors.brandSecondary },
-  taskNumComplete: { backgroundColor: colors.brandPrimary },
-  taskNumText: { color: colors.onBrandSecondary, fontWeight: "800", fontSize: 17 },
-  taskTitleRow: { flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: spacing.xs },
-  taskTitle: { flexShrink: 1, fontSize: 15, lineHeight: 20, fontWeight: "800", color: colors.onSurface },
-  taskFocus: { fontSize: 12, lineHeight: 17, color: colors.onSurfaceTertiary, marginTop: 2 },
-  completeText: { fontSize: 10, fontWeight: "800", color: colors.brandPrimary },
-  nextText: { fontSize: 10, fontWeight: "800", color: colors.onBrandPrimary, backgroundColor: colors.brandPrimary, paddingHorizontal: 7, paddingVertical: 3, borderRadius: radius.pill },
+  sessionReady: { flexDirection: "row", alignItems: "center", gap: spacing.md, padding: spacing.md, borderRadius: radius.md, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surfaceSecondary },
+  sessionReadyIcon: { width: 44, height: 44, borderRadius: 22, alignItems: "center", justifyContent: "center", backgroundColor: colors.brandPrimary },
+  sessionReadyCopy: { flex: 1, minWidth: 0 },
+  sessionReadyTitle: { color: colors.onSurface, fontSize: 16, lineHeight: 21, fontWeight: "800" },
+  sessionReadyText: { color: colors.onSurfaceSecondary, fontSize: 13, lineHeight: 19, marginTop: 3 },
   errorText: { color: colors.error, fontSize: 14, lineHeight: 20, marginVertical: spacing.md },
   cta: { position: "absolute", left: 0, right: 0, bottom: 0, padding: spacing.md, backgroundColor: colors.surface, borderTopWidth: 1, borderTopColor: colors.divider },
   ctaBtn: { width: "100%", maxWidth: 620, alignSelf: "center", minHeight: 56, borderRadius: radius.md, backgroundColor: colors.brandPrimary, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: spacing.sm },

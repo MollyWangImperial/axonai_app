@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { View, Text, StyleSheet, Pressable, TextInput, ScrollView, ActivityIndicator, KeyboardAvoidingView, Platform } from "react-native";
+import { View, Text, StyleSheet, Pressable, TextInput, ScrollView, ActivityIndicator, KeyboardAvoidingView, Modal, Platform } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
@@ -89,6 +89,8 @@ export default function OnboardingScreen() {
   const [idx, setIdx] = useState(0);
   const [values, setValues] = useState<Record<string, any>>({});
   const [textInput, setTextInput] = useState("");
+  const [otherConditionText, setOtherConditionText] = useState("");
+  const [showOtherCondition, setShowOtherCondition] = useState(false);
   const [saving, setSaving] = useState(false);
 
   const step = STEPS[idx];
@@ -204,8 +206,22 @@ export default function OnboardingScreen() {
                 key={o.value}
                 testID={`onb-multi-${step.key}-${o.value}`}
                 onPress={() => {
+                  if (step.key === "medical_conditions" && o.value === "other") {
+                    if (active) {
+                      setVal(step.key, selected.filter((s) => s !== "other"));
+                      setVal("medical_conditions_other", undefined);
+                      setOtherConditionText("");
+                    } else {
+                      setShowOtherCondition(true);
+                    }
+                    return;
+                  }
                   let next: string[];
-                  if (o.value === "none") next = active ? [] : ["none"];
+                  if (o.value === "none") {
+                    next = active ? [] : ["none"];
+                    setVal("medical_conditions_other", undefined);
+                    setOtherConditionText("");
+                  }
                   else next = active ? selected.filter((s) => s !== o.value) : [...selected.filter((s) => s !== "none"), o.value];
                   setVal(step.key, next);
                 }}
@@ -259,6 +275,60 @@ export default function OnboardingScreen() {
           </Pressable>
         </View>
       </KeyboardAvoidingView>
+
+      <Modal
+        visible={showOtherCondition}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowOtherCondition(false)}
+      >
+        <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={styles.modalBackdrop}>
+          <View style={styles.modalPanel}>
+            <Text style={styles.modalTitle}>Tell us about the other condition</Text>
+            <Text style={styles.modalHelper}>A short description of the condition or symptoms is enough.</Text>
+            <TextInput
+              testID="onb-other-condition-input"
+              value={otherConditionText}
+              onChangeText={setOtherConditionText}
+              placeholder="Type the condition or symptoms"
+              placeholderTextColor={colors.onSurfaceTertiary}
+              multiline
+              autoFocus
+              style={styles.modalInput}
+            />
+            <View style={styles.modalActions}>
+              <Pressable
+                testID="onb-other-condition-cancel"
+                onPress={() => {
+                  setShowOtherCondition(false);
+                  setOtherConditionText("");
+                }}
+                style={styles.modalCancel}
+              >
+                <Text style={styles.modalCancelText}>Cancel</Text>
+              </Pressable>
+              <Pressable
+                testID="onb-other-condition-save"
+                disabled={!otherConditionText.trim()}
+                onPress={() => {
+                  const description = otherConditionText.trim();
+                  if (!description) return;
+                  const selected: string[] = values.medical_conditions || [];
+                  setValues((prev) => ({
+                    ...prev,
+                    medical_conditions: [...selected.filter((item) => item !== "none" && item !== "other"), "other"],
+                    medical_conditions_other: description,
+                  }));
+                  setShowOtherCondition(false);
+                }}
+                style={[styles.modalSave, !otherConditionText.trim() && styles.modalSaveDisabled]}
+              >
+                <Text style={styles.modalSaveText}>Save</Text>
+              </Pressable>
+            </View>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
     </View>
   );
 }
@@ -290,4 +360,15 @@ const styles = StyleSheet.create({
   continueBtn: { backgroundColor: colors.brandPrimary, padding: 16, borderRadius: radius.lg, alignItems: "center", minHeight: 56, justifyContent: "center" },
   continueBtnDisabled: { opacity: 0.4 },
   continueText: { color: colors.onBrandPrimary, fontSize: 17, fontWeight: "800" },
+  modalBackdrop: { flex: 1, justifyContent: "center", padding: spacing.lg, backgroundColor: "rgba(0, 0, 0, 0.42)" },
+  modalPanel: { width: "100%", maxWidth: 460, alignSelf: "center", backgroundColor: colors.surface, borderRadius: radius.lg, padding: spacing.lg },
+  modalTitle: { color: colors.onSurface, fontSize: 20, lineHeight: 26, fontWeight: "800" },
+  modalHelper: { color: colors.onSurfaceSecondary, fontSize: 14, lineHeight: 20, marginTop: spacing.xs },
+  modalInput: { minHeight: 112, maxHeight: 180, marginTop: spacing.md, padding: spacing.md, borderRadius: radius.md, backgroundColor: colors.surfaceSecondary, color: colors.onSurface, fontSize: 16, lineHeight: 22, textAlignVertical: "top" },
+  modalActions: { flexDirection: "row", justifyContent: "flex-end", gap: spacing.sm, marginTop: spacing.md },
+  modalCancel: { minHeight: 46, minWidth: 92, alignItems: "center", justifyContent: "center", paddingHorizontal: spacing.md, borderRadius: radius.md, borderWidth: 1, borderColor: colors.border },
+  modalCancelText: { color: colors.onSurface, fontSize: 15, fontWeight: "700" },
+  modalSave: { minHeight: 46, minWidth: 92, alignItems: "center", justifyContent: "center", paddingHorizontal: spacing.md, borderRadius: radius.md, backgroundColor: colors.brandPrimary },
+  modalSaveDisabled: { opacity: 0.4 },
+  modalSaveText: { color: colors.onBrandPrimary, fontSize: 15, fontWeight: "800" },
 });
