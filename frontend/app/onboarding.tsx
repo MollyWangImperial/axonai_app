@@ -89,6 +89,8 @@ export default function OnboardingScreen() {
   const [idx, setIdx] = useState(0);
   const [values, setValues] = useState<Record<string, any>>({});
   const [textInput, setTextInput] = useState("");
+  const [otherAreaText, setOtherAreaText] = useState("");
+  const [showOtherArea, setShowOtherArea] = useState(false);
   const [otherConditionText, setOtherConditionText] = useState("");
   const [showOtherCondition, setShowOtherCondition] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -206,6 +208,16 @@ export default function OnboardingScreen() {
                 key={o.value}
                 testID={`onb-multi-${step.key}-${o.value}`}
                 onPress={() => {
+                  if (step.key === "affected_areas" && o.value === "other") {
+                    if (active) {
+                      setVal(step.key, selected.filter((s) => s !== "other"));
+                      setVal("affected_areas_other", undefined);
+                      setOtherAreaText("");
+                    } else {
+                      setShowOtherArea(true);
+                    }
+                    return;
+                  }
                   if (step.key === "medical_conditions" && o.value === "other") {
                     if (active) {
                       setVal(step.key, selected.filter((s) => s !== "other"));
@@ -275,6 +287,63 @@ export default function OnboardingScreen() {
           </Pressable>
         </View>
       </KeyboardAvoidingView>
+
+      <Modal
+        visible={showOtherArea}
+        transparent
+        animationType="fade"
+        onRequestClose={() => {
+          setShowOtherArea(false);
+          setOtherAreaText("");
+        }}
+      >
+        <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={styles.modalBackdrop}>
+          <View style={styles.modalPanel}>
+            <Text style={styles.modalTitle}>Tell us which other area was affected</Text>
+            <Text style={styles.modalHelper}>A short description is enough.</Text>
+            <TextInput
+              testID="onb-other-area-input"
+              value={otherAreaText}
+              onChangeText={setOtherAreaText}
+              placeholder="Type the affected body area"
+              placeholderTextColor={colors.onSurfaceTertiary}
+              multiline
+              autoFocus
+              style={styles.modalInput}
+            />
+            <View style={styles.modalActions}>
+              <Pressable
+                testID="onb-other-area-cancel"
+                onPress={() => {
+                  setShowOtherArea(false);
+                  setOtherAreaText("");
+                }}
+                style={styles.modalCancel}
+              >
+                <Text style={styles.modalCancelText}>Cancel</Text>
+              </Pressable>
+              <Pressable
+                testID="onb-other-area-save"
+                disabled={!otherAreaText.trim()}
+                onPress={() => {
+                  const description = otherAreaText.trim();
+                  if (!description) return;
+                  const selected: string[] = values.affected_areas || [];
+                  setValues((prev) => ({
+                    ...prev,
+                    affected_areas: [...selected.filter((item) => item !== "other"), "other"],
+                    affected_areas_other: description,
+                  }));
+                  setShowOtherArea(false);
+                }}
+                style={[styles.modalSave, !otherAreaText.trim() && styles.modalSaveDisabled]}
+              >
+                <Text style={styles.modalSaveText}>Save</Text>
+              </Pressable>
+            </View>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
 
       <Modal
         visible={showOtherCondition}

@@ -44,10 +44,13 @@ def test_onboarding_collects_pdf_feedback_fields():
     assert 'label: "Left lower limb (hip, leg or foot)"' in onboarding
     assert 'label: "Right upper limb (shoulder, arm or hand)"' in onboarding
     assert 'label: "Right lower limb (hip, leg or foot)"' in onboarding
+    assert 'testID="onb-other-area-input"' in onboarding
+    assert 'testID="onb-other-area-save"' in onboarding
     assert 'key: "medical_conditions"' in onboarding
     assert 'testID="onb-other-condition-input"' in onboarding
     assert 'testID="onb-other-condition-save"' in onboarding
     assert "affected_areas: Optional[List[str]]" in server
+    assert "affected_areas_other: Optional[str]" in server
     assert "medical_conditions: Optional[List[str]]" in server
     assert "medical_conditions_other: Optional[str]" in server
 

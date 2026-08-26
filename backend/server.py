@@ -1075,7 +1075,7 @@ def _assessment_patient_parameters(
     merged = dict(submitted or {})
     profile = user.get("profile") if isinstance(user, dict) and isinstance(user.get("profile"), dict) else {}
     if profile:
-        for key in ("age_band", "months_since_stroke", "side_affected", "affected_areas", "dominant_hand", "mobility_level", "medical_conditions", "medical_conditions_other", "has_caregiver"):
+        for key in ("age_band", "months_since_stroke", "side_affected", "affected_areas", "affected_areas_other", "dominant_hand", "mobility_level", "medical_conditions", "medical_conditions_other", "has_caregiver"):
             if profile.get(key) is not None:
                 merged.setdefault(key, profile[key])
         if not merged.get("patient_priorities"):
@@ -4133,6 +4133,7 @@ class PatientOnboarding(BaseModel):
     months_since_stroke: Optional[int] = None
     side_affected: Optional[str] = None    # "left" | "right" | "both" | "unsure"
     affected_areas: Optional[List[str]] = None
+    affected_areas_other: Optional[str] = None
     dominant_hand: Optional[str] = None    # "left" | "right" | "ambidextrous"
     mobility_level: Optional[str] = None   # "wheelchair" | "walker" | "cane" | "independent"
     primary_goal: Optional[str] = None     # free text
