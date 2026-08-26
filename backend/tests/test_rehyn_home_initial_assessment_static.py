@@ -15,6 +15,10 @@ def test_patient_tabs_are_home_journey_and_alira_only():
     assert 'title: "Alira"' in layout
     assert 'name="community"' in layout and "href: null" in layout
     assert 'name="therapists"' in layout and "href: null" in layout
+    assert 'const isWeb = Platform.OS === "web"' in layout
+    assert "height: isWeb ? 80" in layout
+    assert "paddingBottom: isWeb ? 14" in layout
+    assert "lineHeight: 16" in layout
 
 
 def test_home_launches_standardized_initial_assessment():

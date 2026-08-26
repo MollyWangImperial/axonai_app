@@ -4,6 +4,8 @@ import { Platform } from "react-native";
 import { colors } from "@/src/theme";
 
 export default function TabsLayout() {
+  const isWeb = Platform.OS === "web";
+
   return (
     <Tabs
       screenOptions={{
@@ -13,11 +15,17 @@ export default function TabsLayout() {
         tabBarStyle: {
           backgroundColor: colors.surface,
           borderTopColor: colors.divider,
-          height: Platform.OS === "ios" ? 88 : 64,
-          paddingBottom: Platform.OS === "ios" ? 28 : 8,
-          paddingTop: 8,
+          height: isWeb ? 80 : Platform.OS === "ios" ? 88 : 64,
+          paddingBottom: isWeb ? 14 : Platform.OS === "ios" ? 28 : 8,
+          paddingTop: isWeb ? 7 : 8,
         },
-        tabBarLabelStyle: { fontSize: 11, fontWeight: "600" },
+        tabBarItemStyle: { minHeight: 58 },
+        tabBarLabelStyle: {
+          fontSize: 11,
+          lineHeight: 16,
+          fontWeight: "600",
+          marginBottom: isWeb ? 2 : 0,
+        },
       }}
     >
       <Tabs.Screen
