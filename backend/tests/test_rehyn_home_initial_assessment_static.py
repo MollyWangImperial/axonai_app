@@ -25,18 +25,25 @@ def test_home_launches_standardized_initial_assessment():
     home = read("frontend/app/(tabs)/index.tsx")
     assert '"Initial Assessment"' in home
     assert 'target: "assessment", mode: "initial"' in home
-    assert "same seven guided upper-limb tasks" in home
+    assert "same seven guided arm, hand, and walking observations" in home
     assert 'pathname: "/session-check"' in home
 
 
 def test_initial_assessment_has_no_package_or_task_choice():
     intro = read("frontend/app/task-intro.tsx")
-    assert 'const packageId: AssessmentPackageId = "upper_limb"' in intro
+    assert 'const packageId: AssessmentPackageId = "initial"' in intro
     assert "launch your next guided task automatically" in intro
     assert "tasks.map(" not in intro
     assert "task-row-" not in intro
     assert "Choose assessment package" not in intro
     assert "setSelectedTaskId" not in intro
+
+
+def test_web_assessment_shim_has_a_defined_full_size_container():
+    shim = read("frontend/src/shims/webview-web.tsx")
+    assert "const styles = StyleSheet.create" in shim
+    assert 'width: "100%"' in shim
+    assert 'height: "100%"' in shim
 
 
 def test_onboarding_collects_pdf_feedback_fields():

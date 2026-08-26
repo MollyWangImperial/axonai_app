@@ -27,6 +27,13 @@ const ANOMALY_SHORT: Record<string, string> = {
   co_contraction: "Co-contraction",
 };
 
+const CONSISTENCY_LABELS: Record<string, string> = {
+  consistent: "Survey match",
+  discordant: "Review needed",
+  not_addressed: "Not addressed",
+  survey_only: "Survey reported",
+};
+
 function formatEvidence(metrics: Record<string, unknown>) {
   const parts = Object.entries(metrics)
     .filter(([, v]) => v !== null && v !== undefined)
@@ -113,6 +120,48 @@ export default function ResultsScreen() {
                 <Text style={styles.issueSource}>{domain.method} · Screening result</Text>
               </View>
             ))}
+          </>
+        )}
+
+        {!!data.survey_consistency?.findings.length && (
+          <>
+            <Text style={[styles.sectionTitle, { marginTop: spacing.lg }]}>Movement and survey check</Text>
+            <Text style={styles.formRule}>
+              We compare what the camera observed with what you told us. A difference is reviewed rather than automatically treated as a diagnosis.
+            </Text>
+            {data.survey_consistency.findings.map((finding, index) => (
+              <View key={`${finding.issue_code || finding.domain}-${index}`} style={styles.issueCard} testID={`survey-match-${finding.status}-${index}`}>
+                <View style={styles.issueHead}>
+                  <Ionicons
+                    name={finding.status === "consistent" ? "checkmark-circle" : finding.status === "discordant" ? "alert-circle" : "information-circle"}
+                    size={18}
+                    color={finding.status === "consistent" ? colors.success : finding.status === "discordant" ? colors.warning : colors.brandPrimary}
+                  />
+                  <Text style={styles.issueLabel}>{finding.issue_label}</Text>
+                  <Text style={styles.issueSeverity}>{CONSISTENCY_LABELS[finding.status] || finding.status}</Text>
+                </View>
+                <Text style={styles.issueDesc}>{finding.interpretation}</Text>
+              </View>
+            ))}
+          </>
+        )}
+
+        {!!data.analysis_pipeline?.stages.length && (
+          <>
+            <Text style={[styles.sectionTitle, { marginTop: spacing.lg }]}>Analysis quality</Text>
+            {data.analysis_pipeline.stages.map((stage) => (
+              <View key={stage.id} style={styles.metricRow} testID={`pipeline-${stage.id}`}>
+                <View style={styles.domainHead}>
+                  <Text style={styles.domainLabel}>{stage.label}</Text>
+                  <Text style={stage.status === "complete" ? styles.metricValue : styles.pendingValue}>
+                    {stage.status === "complete" ? "Complete" : stage.status === "screening_only" ? "Screening only" : "Not available"}
+                  </Text>
+                </View>
+                <Text style={styles.issueDesc}>{stage.method}</Text>
+                {!!(stage.limitation || stage.reason) && <Text style={styles.issueSource}>{stage.limitation || stage.reason}</Text>}
+              </View>
+            ))}
+            <Text style={styles.formRule}>{data.analysis_pipeline.reporting_rule}</Text>
           </>
         )}
 

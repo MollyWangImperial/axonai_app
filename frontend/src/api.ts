@@ -33,7 +33,7 @@ export type Task = {
   safety_note?: string;
 };
 
-export type AssessmentPackageId = "upper_limb" | "hand" | "lower_limb" | "balance";
+export type AssessmentPackageId = "initial" | "upper_limb" | "hand" | "lower_limb" | "balance";
 
 export type AssessmentPackage = {
   id: AssessmentPackageId;
@@ -71,6 +71,7 @@ export type Assessment = {
   id: string;
   created_at: string;
   affected_side: string;
+  assessment_package?: AssessmentPackageId;
   functional_issues: FunctionalIssue[];
   rehab_plan: RehabExercise[];
   domain_assessments: {
@@ -142,6 +143,8 @@ export type Assessment = {
     }[];
   };
   muscle_activation_diagnosis?: MuscleActivationDiagnosis;
+  survey_consistency?: SurveyConsistency;
+  analysis_pipeline?: AnalysisPipeline;
   rehabilitation_goals?: {
     version: string;
     method: string;
@@ -153,6 +156,45 @@ export type Assessment = {
     generation_rule: string;
     measurement_form_version?: string | null;
   };
+};
+
+export type SurveyConsistency = {
+  version: string;
+  method: string;
+  overall_status: string;
+  counts: Record<"consistent" | "discordant" | "not_addressed" | "survey_only", number>;
+  reported_domains: string[];
+  survey_evidence: string[];
+  findings: {
+    issue_code?: string | null;
+    issue_label: string;
+    domain: string;
+    domain_label: string;
+    status: "consistent" | "discordant" | "not_addressed" | "survey_only";
+    interpretation: string;
+    action: string;
+  }[];
+  reporting_rule: string;
+};
+
+export type AnalysisPipeline = {
+  version: string;
+  overall_status: string;
+  stages: {
+    id: string;
+    label: string;
+    status: "complete" | "insufficient_data" | "not_run" | "screening_only";
+    method: string;
+    evidence?: Record<string, unknown>;
+    limitation?: string;
+    reason?: string | null;
+  }[];
+  model_outputs: {
+    activation_available: boolean;
+    muscle_force_available: boolean;
+    confidence: string;
+  };
+  reporting_rule: string;
 };
 
 export type MuscleActivationFinding = {

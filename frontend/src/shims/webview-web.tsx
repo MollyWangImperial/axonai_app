@@ -108,3 +108,11 @@ export const WebView = forwardRef<any, Props>(function WebViewWeb(
 });
 
 export default WebView;
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    width: "100%",
+    height: "100%",
+  },
+});

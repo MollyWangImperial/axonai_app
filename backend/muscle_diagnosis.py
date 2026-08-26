@@ -193,7 +193,7 @@ LOWER_LIMB_RULES: List[Dict[str, Any]] = [
         "Sahrmann, quadriceps examination, PDF p.147; Winter 5e, knee-angle interpretation, PDF p.312",
     ),
     _rule(
-        "LL_TA_HYPO", "hypoactivation", "lower_limb", ["L2", "L4", "L5"],
+        "LL_TA_HYPO", "hypoactivation", "lower_limb", ["L2", "L4", "L5", "L6"],
         "Tibialis anterior", "C2",
         ["ankle_dorsiflexion_proxy", "toe_clearance_leg_ratio"],
         lambda m, f: (
@@ -207,7 +207,7 @@ LOWER_LIMB_RULES: List[Dict[str, Any]] = [
         "Perry and Burnfield, swing-phase ankle control, PDF p.126; abnormal ankle-muscle activity, PDF p.304",
     ),
     _rule(
-        "LL_HIPFLEX_HYPO", "hypoactivation", "lower_limb", ["L5"],
+        "LL_HIPFLEX_HYPO", "hypoactivation", "lower_limb", ["L5", "L6"],
         "Iliopsoas and rectus femoris during swing initiation", "C2",
         ["hip_flexion_deg", "knee_flexion_deg"],
         lambda m, f: (
@@ -221,7 +221,7 @@ LOWER_LIMB_RULES: List[Dict[str, Any]] = [
         "Perry and Burnfield, reduced swing-phase knee flexion and hip-flexor weakness, PDF pp.325-326",
     ),
     _rule(
-        "LL_CIRCUMDUCTION_HYPER", "hyperactivation", "lower_limb", ["L4", "L5"],
+        "LL_CIRCUMDUCTION_HYPER", "hyperactivation", "lower_limb", ["L4", "L5", "L6"],
         "Ipsilateral quadratus lumborum and hip abductors", "C3",
         ["circumduction_leg_ratio", "lateral_trunk_shift"],
         lambda m, f: (

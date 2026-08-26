@@ -23,8 +23,9 @@ function parseCompletedTasks(raw: string): Record<string, boolean> {
 
 const PREPARATION_TIPS = [
   "Wear short or fitted sleeves so your arms are visible",
-  "Use a stable seat and clear the space around you",
-  "Keep your phone propped up at chest height with good lighting",
+  "Use a stable seat and clear a short, safe walking path",
+  "Keep your phone propped up so your full body can be seen",
+  "Use your usual walking aid and do not attempt walking if it is not normally safe",
   "Have someone nearby for safety if you need support",
 ];
 
@@ -33,7 +34,7 @@ export default function TaskIntro() {
   const router = useRouter();
   const params = useLocalSearchParams<{ mode?: string }>();
   const isInitial = params.mode !== "followup";
-  const packageId: AssessmentPackageId = "upper_limb";
+  const packageId: AssessmentPackageId = "initial";
   const [completedTasks, setCompletedTasks] = useState<Record<string, boolean>>({});
   const [nextTaskId, setNextTaskId] = useState<string | null>(null);
   const [affectedSide, setAffectedSide] = useState<"left" | "right">("right");
@@ -86,7 +87,7 @@ export default function TaskIntro() {
         <Text style={styles.title}>{isInitial ? "Your Initial Assessment" : "Your next movement check-in"}</Text>
         <Text style={styles.sub}>
           {isInitial
-            ? "Every new patient completes the same seven upper-limb tasks. This gives us a broad, consistent starting point before personalizing future sessions."
+            ? "Every new patient completes the same seven guided arm, hand, and comfortable-walking observations. This gives us a broad, consistent starting point before personalizing future sessions."
             : "We have selected the next standardized movement session for you. Alira will guide each task in order."}
         </Text>
 

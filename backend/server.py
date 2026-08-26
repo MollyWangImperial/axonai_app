@@ -29,6 +29,7 @@ try:
         attach_hand_failure_phenotypes,
     )
     from backend.muscle_diagnosis import build_muscle_activation_diagnosis
+    from backend.assessment_fusion import build_analysis_pipeline, build_survey_consistency
 except ImportError:
     from rehab_assessment import (
         build_biomechanical_estimates,
@@ -44,6 +45,7 @@ except ImportError:
         attach_hand_failure_phenotypes,
     )
     from muscle_diagnosis import build_muscle_activation_diagnosis
+    from assessment_fusion import build_analysis_pipeline, build_survey_consistency
 
 try:
     from openai import OpenAI
@@ -122,8 +124,10 @@ class TaskResult(BaseModel):
 class AssessmentSubmit(BaseModel):
     task_results: List[TaskResult]
     affected_side: str = "right"  # "left" or "right"
+    assessment_package: str = "upper_limb"
     patient_parameters: Dict[str, Any] = Field(default_factory=dict)
     musculoskeletal_outputs: Dict[str, Any] = Field(default_factory=dict)
+    motion_data: Dict[str, Any] = Field(default_factory=dict)
 
 
 class FunctionalIssue(BaseModel):
@@ -155,6 +159,7 @@ class Assessment(BaseModel):
     id: str
     created_at: str
     affected_side: str
+    assessment_package: str = "upper_limb"
     task_results: List[TaskResult]
     functional_issues: List[FunctionalIssue]
     rehab_plan: List[RehabExercise]
@@ -164,6 +169,8 @@ class Assessment(BaseModel):
     measurement_form: Dict[str, Any] = Field(default_factory=dict)
     rehabilitation_goals: Dict[str, Any] = Field(default_factory=dict)
     muscle_activation_diagnosis: Dict[str, Any] = Field(default_factory=dict)
+    survey_consistency: Dict[str, Any] = Field(default_factory=dict)
+    analysis_pipeline: Dict[str, Any] = Field(default_factory=dict)
 
 
 # ============ 7 Tasks: Step-by-step with voice prompts & on-screen target zones ============
@@ -602,7 +609,31 @@ HAND_TASKS_DATA: List[Dict[str, Any]] = [
 attach_hand_failure_phenotypes(HAND_TASKS_DATA)
 
 
+def _tasks_by_id(tasks: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    return {task["id"]: task for task in tasks}
+
+
+_upper_by_id = _tasks_by_id(TASKS_DATA)
+_hand_by_id = _tasks_by_id(HAND_TASKS_DATA)
+_lower_by_id = _tasks_by_id(LOWER_LIMB_TASKS_DATA)
+INITIAL_ASSESSMENT_TASKS: List[Dict[str, Any]] = [
+    _upper_by_id["T1"],
+    _upper_by_id["T2"],
+    _upper_by_id["T3"],
+    _hand_by_id["H1"],
+    _hand_by_id["H3"],
+    _hand_by_id["H4"],
+    _lower_by_id["L6"],
+]
+
+
 ASSESSMENT_PACKAGES: Dict[str, Dict[str, Any]] = {
+    "initial": {
+        "id": "initial",
+        "title": "Initial Functional Assessment",
+        "subtitle": "Seven guided arm, hand, and comfortable-walking observations for every new patient",
+        "tasks": INITIAL_ASSESSMENT_TASKS,
+    },
     "upper_limb": {
         "id": "upper_limb",
         "title": "Upper Limb Function Package",
@@ -649,7 +680,7 @@ for _package in ASSESSMENT_PACKAGES.values():
                 "step_id": _step["id"],
                 "package_id": _package["id"],
             }
-            STEP_PHENOTYPES[_step["id"]] = _record
+            STEP_PHENOTYPES.setdefault(_step["id"], _record)
             if _package["id"] == "upper_limb":
                 UPPER_LIMB_STEP_PHENOTYPES[_step["id"]] = _record
             PHENOTYPE_REHAB_ALIASES[_phenotype["code"]] = _phenotype.get("rehab_code", _phenotype["code"])
@@ -1118,10 +1149,20 @@ async def submit_assessment(payload: AssessmentSubmit, request: Request):
     muscle_activation_diagnosis = build_muscle_activation_diagnosis(
         [t.dict() for t in payload.task_results],
     )
+    survey_consistency = build_survey_consistency(
+        issues,
+        patient_parameters,
+        payload.task_results,
+    )
+    analysis_pipeline = build_analysis_pipeline(
+        payload.motion_data,
+        payload.musculoskeletal_outputs,
+    )
     assessment = Assessment(
         id=str(uuid.uuid4()),
         created_at=datetime.now(timezone.utc).isoformat(),
         affected_side=payload.affected_side,
+        assessment_package=payload.assessment_package,
         task_results=payload.task_results,
         functional_issues=issues,
         rehab_plan=plan,
@@ -1131,8 +1172,12 @@ async def submit_assessment(payload: AssessmentSubmit, request: Request):
         measurement_form=measurement_form,
         rehabilitation_goals=rehabilitation_goals,
         muscle_activation_diagnosis=muscle_activation_diagnosis,
+        survey_consistency=survey_consistency,
+        analysis_pipeline=analysis_pipeline,
     )
     doc = assessment.dict()
+    if payload.motion_data:
+        doc["motion_data"] = payload.motion_data
     if user:
         doc["user_id"] = user["id"]
     try:
@@ -1469,6 +1514,11 @@ let unaffectedWristMoveMaxRatio = 0;
 let handToMouthMinRatio = Infinity;
 let bodyMetricSamples = [];
 let stepStartBodyState = null;
+let gaitPelvisTravelMaxRatio = 0;
+let gaitAffectedAnkleTravelMaxRatio = 0;
+let gaitUnaffectedAnkleTravelMaxRatio = 0;
+let gaitAlternationCount = 0;
+let lastGaitLead = 0;
 let running = false;
 let audioEl = new Audio();
 const voiceAudioCache = new Map();
@@ -1476,6 +1526,7 @@ const voiceAudioInflight = new Map();
 let latestHandLandmarks = null;        // result.landmarks[0] from HandLandmarker (21 points)
 let latestHandedness = "";             // "Left" / "Right" from MediaPipe, used for palm/back orientation
 let latestPoseLandmarks = null;        // result.landmarks[0] from PoseLandmarker (33 points)
+let latestPoseWorldLandmarks = null;   // estimated 3D world landmarks from PoseLandmarker
 let dynamicTargetPos = null;           // {x,y} captured once per step for WRIST_DYNAMIC
 let handOpenScore = 0;                 // 0..1 — finger extension confidence
 let fistClosureScore = 0;              // 0..1 — mass finger flexion confidence
@@ -1506,16 +1557,65 @@ let handObjectOverlapStartedAt = null;
 let handObjectOverlapMs = 0;
 let objectTransportSamples = [];
 let visionFilesetResolver = null;
+let motionFrames = [];
+let lastMotionSampleTs = 0;
+const MOTION_SAMPLE_INTERVAL_MS = 100;
+const MAX_MOTION_FRAMES = 2400;
 const URL_PARAMS = new URLSearchParams(window.location.search);
 const CURRENT_USER_ID = URL_PARAMS.get("uid") || "";
 const ASSESSMENT_PACKAGE = URL_PARAMS.get("package") || "upper_limb";
 const START_TASK_ID = URL_PARAMS.get("start_task") || "";
 const AFFECTED_SIDE = URL_PARAMS.get("affected_side") === "left" ? "left" : "right";
 
+function taskDomain(task=tasks[currentTaskIdx]){
+  const id = task && task.id ? task.id : "";
+  if(id.startsWith("H")) return "hand";
+  if(id.startsWith("L")) return "lower_limb";
+  if(id.startsWith("B")) return "balance";
+  return "upper_limb";
+}
+
+function isHandTask(){ return taskDomain() === "hand"; }
+function isLowerTask(){ return taskDomain() === "lower_limb"; }
+function isBalanceTask(){ return taskDomain() === "balance"; }
+
 function postRN(data){
   if(window.ReactNativeWebView){
     window.ReactNativeWebView.postMessage(JSON.stringify(data));
   }
+}
+
+function compactLandmarks(points){
+  if(!points || !points.length) return null;
+  return points.map(point => [
+    +Number(point.x || 0).toFixed(5),
+    +Number(point.y || 0).toFixed(5),
+    +Number(point.z || 0).toFixed(5),
+    +Number(point.visibility == null ? 1 : point.visibility).toFixed(4),
+  ]);
+}
+
+function captureMotionFrame(now){
+  if(!running || motionFrames.length >= MAX_MOTION_FRAMES) return;
+  if(now - lastMotionSampleTs < MOTION_SAMPLE_INTERVAL_MS) return;
+  const task = tasks[currentTaskIdx];
+  const step = getCurrentStep();
+  if(!task || !step) return;
+  const pose2d = compactLandmarks(latestPoseLandmarks);
+  const poseWorld3d = compactLandmarks(latestPoseWorldLandmarks);
+  const hand2d = compactLandmarks(latestHandLandmarks);
+  if(!pose2d && !hand2d) return;
+  lastMotionSampleTs = now;
+  motionFrames.push({
+    timestamp_ms: Math.round(now),
+    task_id: task.id,
+    step_id: step.id,
+    domain: taskDomain(task),
+    pose_2d: pose2d,
+    pose_world_3d: poseWorld3d,
+    hand_2d: hand2d,
+    hand_side: latestHandedness || null,
+  });
 }
 
 async function loadTasks(){
@@ -1544,7 +1644,7 @@ function renderDots(){
 
 async function setupCamera(){
   try{
-    const videoSettings = ASSESSMENT_PACKAGE === "hand"
+    const videoSettings = (ASSESSMENT_PACKAGE === "hand" || ASSESSMENT_PACKAGE === "initial")
       ? {facingMode:"user", width:{ideal:640}, height:{ideal:480}, frameRate:{ideal:30, max:30}}
       : {facingMode:"user", width:{ideal:480}, height:{ideal:360}, frameRate:{ideal:30, max:30}};
     const stream = await navigator.mediaDevices.getUserMedia({video:videoSettings, audio:false});
@@ -1741,7 +1841,7 @@ async function startStep(){
   stepStartTime = performance.now();
   stepStartedAt = stepStartTime;
   voiceFinishedAt = 0;
-  arrivedAfterMovement = ASSESSMENT_PACKAGE === "hand" || step.movement_required === false;
+  arrivedAfterMovement = isHandTask() || step.movement_required === false;
   stepStartWristXY = null;
   inTargetSince = null;
   lastInTargetTs = 0;
@@ -1768,6 +1868,11 @@ async function startStep(){
   unaffectedWristMoveMaxRatio = 0;
   handToMouthMinRatio = Infinity;
   bodyMetricSamples = [];
+  gaitPelvisTravelMaxRatio = 0;
+  gaitAffectedAnkleTravelMaxRatio = 0;
+  gaitUnaffectedAnkleTravelMaxRatio = 0;
+  gaitAlternationCount = 0;
+  lastGaitLead = 0;
   fingerTotalFlexionMaxDeg = 0;
   fingerAbductionMaxRatio = 0;
   thumbIndexMinDistanceRatio = Infinity;
@@ -1886,6 +1991,8 @@ function computeMetrics(landmarks){
   const toeLift = Math.max(0, stepStartBodyState.affected.toe.y - state.affected.toe.y) / state.legLength;
   const ankleMoveX = Math.abs(state.affected.ankle.x - stepStartBodyState.affected.ankle.x) / state.legLength;
   const ankleMove = distance(state.affected.ankle, stepStartBodyState.affected.ankle) / state.legLength;
+  const unaffectedAnkleMove = distance(state.unaffected.ankle, stepStartBodyState.unaffected.ankle) / state.legLength;
+  const pelvisTravel = Math.abs(state.midHip.x - stepStartBodyState.midHip.x) / state.legLength;
   const wristMove = distance(state.affected.wrist, stepStartBodyState.affected.wrist) / Math.max(0.05, state.shoulderWidth);
   const unaffectedWristMove = distance(state.unaffected.wrist, stepStartBodyState.unaffected.wrist) / Math.max(0.05, state.shoulderWidth);
   const mouthCenter = midpoint(landmarks[9], landmarks[10]);
@@ -1893,6 +2000,13 @@ function computeMetrics(landmarks){
   toeClearanceMaxRatio = Math.max(toeClearanceMaxRatio, toeLift);
   circumductionMaxRatio = Math.max(circumductionMaxRatio, ankleMoveX);
   affectedStepLengthMaxRatio = Math.max(affectedStepLengthMaxRatio, ankleMove);
+  gaitPelvisTravelMaxRatio = Math.max(gaitPelvisTravelMaxRatio, pelvisTravel);
+  gaitAffectedAnkleTravelMaxRatio = Math.max(gaitAffectedAnkleTravelMaxRatio, ankleMove);
+  gaitUnaffectedAnkleTravelMaxRatio = Math.max(gaitUnaffectedAnkleTravelMaxRatio, unaffectedAnkleMove);
+  const leadDelta = state.affected.ankle.x - state.unaffected.ankle.x;
+  const lead = Math.abs(leadDelta) > Math.max(0.025, state.legLength * 0.08) ? (leadDelta > 0 ? 1 : -1) : 0;
+  if(lead && lastGaitLead && lead !== lastGaitLead) gaitAlternationCount += 1;
+  if(lead) lastGaitLead = lead;
   affectedWristMoveMaxRatio = Math.max(affectedWristMoveMaxRatio, wristMove);
   unaffectedWristMoveMaxRatio = Math.max(unaffectedWristMoveMaxRatio, unaffectedWristMove);
   handToMouthMinRatio = Math.min(handToMouthMinRatio, handToMouth);
@@ -1929,7 +2043,7 @@ function activeHandPoint(){
 }
 
 function resolveLandmarkPoint(which){
-  if(ASSESSMENT_PACKAGE === "hand"){
+  if(isHandTask()){
     if(which === "WRIST" || which === "HAND_OPEN" || which === "PINCH" || which === "CHEST"){
       return activeHandPoint();
     }
@@ -1964,7 +2078,7 @@ function resolveLandmarkPoint(which){
 }
 
 function getEffectiveTargetXY(step){
-  if(ASSESSMENT_PACKAGE === "hand"){
+  if(isHandTask()){
     return {x: step.target.x, y: step.target.y};
   }
   // For WRIST_DYNAMIC, MOUTH, CHEST, HAND_OPEN, PINCH the target follows the body.
@@ -2079,7 +2193,7 @@ function computeHandMetrics(){
 }
 
 function needsHandLandmarks(){
-  if(ASSESSMENT_PACKAGE === "hand") return true;
+  if(isHandTask()) return true;
   const task = tasks[currentTaskIdx];
   const step = getCurrentStep();
   const landmark = step && step.target ? step.target.landmark : "";
@@ -2096,7 +2210,7 @@ function needsHandLandmarks(){
 }
 
 function isHandPerformanceBackoff(){
-  return ASSESSMENT_PACKAGE === "hand" && currentFps > 0 && currentFps < MIN_RUNTIME_FPS;
+  return isHandTask() && currentFps > 0 && currentFps < MIN_RUNTIME_FPS;
 }
 
 function handLandmarkFreshMs(){
@@ -2267,7 +2381,7 @@ function shoulderWidth(lm){
 // resting wrist doesn't accidentally trigger the next target.
 function effectiveRadius(step, lm){
   const baseR = step.target.r || 0.10;
-  if(ASSESSMENT_PACKAGE === "hand"){
+  if(isHandTask()){
     return Math.min(Math.max(baseR, 0.12), 0.28);
   }
   const sw = shoulderWidth(lm);
@@ -2293,7 +2407,7 @@ let fistClosingStarted = false;
 function distXY(a,b){ if(!a||!b) return Infinity; return Math.hypot(a.x-b.x, a.y-b.y); }
 
 function activeWrist(lm){
-  if(ASSESSMENT_PACKAGE === "hand"){
+  if(isHandTask()){
     return activeHandPoint();
   }
   if(!lm) return null;
@@ -2309,7 +2423,7 @@ function activeWrist(lm){
 
 function activeControlPoint(lm){
   if(!lm) return null;
-  if(ASSESSMENT_PACKAGE === "lower_limb"){
+  if(isLowerTask()){
     const step = getCurrentStep();
     const state = bodyState(lm);
     if(step && ["HIP_RISEN", "STAND_UPRIGHT", "HIP_SEATED"].includes(step.target.landmark)) return mirrorX(state.midHip);
@@ -2319,7 +2433,7 @@ function activeControlPoint(lm){
     }
     return mirrorX(state.affected.ankle);
   }
-  if(ASSESSMENT_PACKAGE === "balance"){
+  if(isBalanceTask()){
     return mirrorX(bodyState(lm).midHip);
   }
   return activeWrist(lm);
@@ -2335,7 +2449,7 @@ function updateMovementGate(lm){
   const w = activeControlPoint(lm);
   if(!w) return;
   // Required movement scales with shoulder-width to be size-invariant
-  const requiredMove = (ASSESSMENT_PACKAGE === "lower_limb" || ASSESSMENT_PACKAGE === "balance")
+  const requiredMove = (isLowerTask() || isBalanceTask())
     ? Math.max(0.035, shoulderWidth(lm) * 0.22)
     : Math.max(0.12, shoulderWidth(lm) * 0.75);
   if(distXY(w, stepStartWristXY) >= requiredMove) arrivedAfterMovement = true;
@@ -2402,6 +2516,10 @@ function lowerBalanceMetricSnapshot(lm, step=null, durationMs=0, skipped=false){
     knee_stability_deg: +kneeStability.toFixed(1),
     hold_duration_ms: skipped ? 0 : (step && step.movement_required === false ? step.hold_ms : 0),
     sit_to_stand_time_ms: step && measures.includes("sit_to_stand_time") && !skipped ? Math.round(durationMs) : null,
+    gait_pelvis_travel_leg_ratio: +gaitPelvisTravelMaxRatio.toFixed(3),
+    gait_affected_ankle_travel_leg_ratio: +gaitAffectedAnkleTravelMaxRatio.toFixed(3),
+    gait_unaffected_ankle_travel_leg_ratio: +gaitUnaffectedAnkleTravelMaxRatio.toFixed(3),
+    gait_step_alternation_count: gaitAlternationCount,
   };
 }
 
@@ -2445,7 +2563,20 @@ function checkLowerBalanceTarget(landmarks, step){
   if(which === "TRUNK_SHIFT_AFFECTED") return trunkTowardAffected > 0.025 && affectedFootMove < 0.04 && unaffectedFootMove < 0.04;
   if(which === "WEIGHT_SHIFT_AFFECTED") return pelvisTowardAffected > 0.02 && affectedFootMove < 0.04 && unaffectedFootMove < 0.04;
   if(which === "STEP_STANCE_STABLE") return standing && state.footSeparation > 0.06 && lateralTrunkShiftMax < 0.06;
+  if(which === "WALK_READY") return standing;
+  if(which === "WALK_ACROSS"){
+    return gaitPelvisTravelMaxRatio > 0.35
+      && gaitAffectedAnkleTravelMaxRatio > 0.16
+      && gaitUnaffectedAnkleTravelMaxRatio > 0.16
+      && gaitAlternationCount >= 2;
+  }
+  if(which === "WALK_STOPPED") return standing && pelvisSwayForStop() < 0.08;
   return false;
+}
+
+function pelvisSwayForStop(){
+  const values = bodyMetricSamples.slice(-20).map(sample => sample.midHipX);
+  return rangeOf(values);
 }
 
 function checkTarget(landmarks){
@@ -2457,7 +2588,7 @@ function checkTarget(landmarks){
   // accidentally triggering the step while Aria is still explaining it.
   if(voiceFinishedAt === 0) return false;
   if(performance.now() - voiceFinishedAt < 350) return false;
-  if(ASSESSMENT_PACKAGE === "hand"){
+  if(isHandTask()){
     const target = step.target;
     const which = target.landmark;
     const point = activeHandPoint();
@@ -2496,7 +2627,7 @@ function checkTarget(landmarks){
     }
     return near;
   }
-  if(ASSESSMENT_PACKAGE === "lower_limb" || ASSESSMENT_PACKAGE === "balance"){
+  if(isLowerTask() || isBalanceTask()){
     return checkLowerBalanceTarget(landmarks, step);
   }
   if(!landmarks) return false;
@@ -2824,7 +2955,22 @@ async function finishAssessment(){
   try{
     const res = await fetch(`${API_BASE}/assessment/submit`,{
       method:"POST", headers:{"Content-Type":"application/json", ...(CURRENT_USER_ID ? {"X-User-Id": CURRENT_USER_ID} : {})},
-      body: JSON.stringify({task_results: taskResults.filter(Boolean), affected_side: AFFECTED_SIDE})
+      body: JSON.stringify({
+        task_results: taskResults.filter(Boolean),
+        affected_side: AFFECTED_SIDE,
+        assessment_package: ASSESSMENT_PACKAGE,
+        motion_data: {
+          schema_version: "1.0",
+          coordinate_space: {
+            pose_2d: "camera_normalized_unmirrored",
+            pose_world_3d: "mediapipe_estimated_world_landmarks",
+            hand_2d: "camera_normalized_unmirrored",
+          },
+          sample_interval_ms: MOTION_SAMPLE_INTERVAL_MS,
+          truncated: motionFrames.length >= MAX_MOTION_FRAMES,
+          frames: motionFrames,
+        },
+      })
     });
     const data = await res.json();
     postRN({type:"assessment_complete", assessment: data});
@@ -2838,7 +2984,7 @@ function loop(){
   const now = performance.now();
   let landmarks = latestPoseLandmarks;
   const handBackoff = isHandPerformanceBackoff();
-  const poseScanInterval = ASSESSMENT_PACKAGE === "hand"
+  const poseScanInterval = isHandTask()
     ? (handBackoff ? HAND_BACKOFF_POSE_SCAN_INTERVAL_MS : HAND_PACKAGE_POSE_SCAN_INTERVAL_MS)
     : POSE_SCAN_INTERVAL_MS;
   if(landmarker && (now - lastPoseScanTs) >= poseScanInterval){
@@ -2850,10 +2996,14 @@ function loop(){
     if(result && result.landmarks && result.landmarks[0]){
       landmarks = result.landmarks[0];
       latestPoseLandmarks = landmarks;
+      latestPoseWorldLandmarks = result.worldLandmarks && result.worldLandmarks[0]
+        ? result.worldLandmarks[0]
+        : null;
       computeMetrics(landmarks);
       updateMovementGate(landmarks);
     }else{
       latestPoseLandmarks = null;
+      latestPoseWorldLandmarks = null;
       landmarks = null;
     }
   }
@@ -2881,6 +3031,7 @@ function loop(){
     latestHandedness = "";
   }
   computeHandMetrics();
+  captureMotionFrame(now);
   detectAxonAIMarker(now);
   updateRuntimeDiagnostics(now);
 

@@ -27,6 +27,7 @@ from backend.rehab_assessment import build_biomechanical_estimates
 from backend.clinical_measurement_form import build_clinical_measurement_form
 from backend.rehab_goal_evidence import retrieve_goal_evidence
 from backend.rehab_goals import build_rehab_goals
+from backend.assessment_fusion import build_analysis_pipeline, build_survey_consistency
 
 
 def _failed_result(package_id: str, task_id: str, step_id: str):
@@ -44,9 +45,11 @@ def _failed_result(package_id: str, task_id: str, step_id: str):
 
 
 def test_all_packages_expose_unique_step_level_failure_phenotypes():
-    assert set(server.ASSESSMENT_PACKAGES) == {"upper_limb", "hand", "lower_limb", "balance"}
+    assert set(server.ASSESSMENT_PACKAGES) == {"initial", "upper_limb", "hand", "lower_limb", "balance"}
     step_ids = []
-    for package in server.ASSESSMENT_PACKAGES.values():
+    for package_id, package in server.ASSESSMENT_PACKAGES.items():
+        if package_id == "initial":
+            continue
         for task in package["tasks"]:
             for step in task["steps"]:
                 step_ids.append(step["id"])
@@ -342,6 +345,91 @@ def test_routes_expose_packages_modeling_contract_and_multidomain_results():
         assert assessment["rehabilitation_goals"]["method"] == "retrieval_augmented_rule_engine"
 
 
+def test_initial_package_is_fixed_broad_and_guided_in_order():
+    expected = ["T1", "T2", "T3", "H1", "H3", "H4", "L6"]
+    assert [task["id"] for task in server.ASSESSMENT_PACKAGES["initial"]["tasks"]] == expected
+    with TestClient(server.app) as client:
+        response = client.get("/api/assessment/tasks?package=initial")
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["package_id"] == "initial"
+        assert [task["id"] for task in payload["tasks"]] == expected
+        assert all(step.get("voice") and step.get("target") for task in payload["tasks"] for step in task["steps"])
+
+
+def test_initial_runner_switches_models_by_task_and_captures_2d_and_3d_trajectories():
+    source = server.POSE_RUNNER_HTML
+    assert 'function taskDomain(task=tasks[currentTaskIdx])' in source
+    assert 'function isHandTask()' in source
+    assert 'if(needsHandLandmarks() && !handLandmarker)' in source
+    assert 'latestPoseWorldLandmarks = result.worldLandmarks' in source
+    assert 'pose_world_3d: poseWorld3d' in source
+    assert 'assessment_package: ASSESSMENT_PACKAGE' in source
+    assert 'coordinate_space' in source
+    assert 'if(which === "WALK_ACROSS")' in source
+
+
+def test_survey_and_camera_findings_are_reconciled_without_forcing_agreement():
+    issues = [
+        server.FunctionalIssue(
+            code="PINCH_IMPAIRED",
+            label="Difficulty forming a thumb-index pinch",
+            description="Pinch target was not completed.",
+            source="camera",
+            severity="moderate",
+            related_task="H3",
+        ),
+        server.FunctionalIssue(
+            code="GAIT_PROGRESSION_IMPAIRED",
+            label="Difficulty progressing during walking",
+            description="Walking sequence was not completed.",
+            source="camera",
+            severity="severe",
+            related_task="L6",
+        ),
+    ]
+    fused = build_survey_consistency(issues, {"affected_areas": ["right_upper"]})
+    by_code = {item["issue_code"]: item for item in fused["findings"] if item["issue_code"]}
+    assert by_code["PINCH_IMPAIRED"]["status"] == "consistent"
+    assert by_code["GAIT_PROGRESSION_IMPAIRED"]["status"] == "discordant"
+    assert fused["overall_status"] == "discordant_review_required"
+    assert "not forced to agree" in fused["reporting_rule"]
+
+
+def test_analysis_pipeline_does_not_claim_muscle_activation_without_solver_output():
+    motion = {
+        "frames": [
+            {"task_id": "T1", "pose_2d": [[0.1, 0.2, 0.0, 0.9]], "pose_world_3d": [[0.1, 0.2, -0.1, 0.9]]}
+            for _ in range(12)
+        ]
+    }
+    report = build_analysis_pipeline(motion, {})
+    stages = {item["id"]: item for item in report["stages"]}
+    assert stages["camera_2d"]["status"] == "complete"
+    assert stages["camera_3d"]["status"] == "complete"
+    assert stages["musculoskeletal_model"]["status"] == "not_run"
+    assert stages["muscle_activation"]["status"] == "screening_only"
+    assert report["model_outputs"]["activation_available"] is False
+
+
+def test_analysis_pipeline_accepts_only_quality_validated_solver_activation():
+    report = build_analysis_pipeline(
+        {},
+        {
+            "status": "completed",
+            "method": "OpenSim Moco",
+            "quality": {"kinematics_valid": True},
+            "muscle_activations": {"soleus": 0.42},
+            "muscle_forces_n": {"soleus": 620},
+            "confidence": "model_estimate",
+        },
+    )
+    stages = {item["id"]: item for item in report["stages"]}
+    assert stages["musculoskeletal_model"]["status"] == "complete"
+    assert stages["muscle_activation"]["status"] == "complete"
+    assert report["model_outputs"]["muscle_force_available"] is True
+
+
 def test_goal_generator_uses_patient_baseline_and_traceable_rules():
     result = _failed_result("lower_limb", "L3", "L3-S2")
     issues = server.derive_functional_issues([result])
@@ -397,8 +485,8 @@ def test_evidence_retrieval_is_deterministic_and_relevant():
 def test_runner_contains_lower_limb_balance_and_affected_side_logic():
     source = server.POSE_RUNNER_HTML
     assert 'const AFFECTED_SIDE = URL_PARAMS.get("affected_side")' in source
-    assert 'ASSESSMENT_PACKAGE === "lower_limb"' in source
-    assert 'ASSESSMENT_PACKAGE === "balance"' in source
+    assert "function isLowerTask()" in source
+    assert "function isBalanceTask()" in source
     assert 'which === "KNEE_EXTENDED"' in source
     assert 'which === "WEIGHT_SHIFT_AFFECTED"' in source
     assert "toe_clearance_leg_ratio" in source

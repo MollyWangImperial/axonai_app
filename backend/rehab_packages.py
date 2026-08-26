@@ -121,6 +121,43 @@ LOWER_LIMB_TASKS_DATA: List[Dict[str, Any]] = [
             {"id": "L5-S3", "voice": "Lift the other knee, then place the foot down. Keep your trunk centered.", "target": {"x": 0.5, "y": 0.68, "r": 0.16, "landmark": "UNAFFECTED_KNEE_LIFTED"}, "hold_ms": 1000, "caption": "Lift the other knee", "measure": ["affected_stance_tolerance", "lateral_trunk_shift"], "failure_phenotype": _phenotype("AFFECTED_STANCE_TOLERANCE_IMPAIRED", "affected_stance_tolerance", "Reduced support on the affected leg", "The patient could not maintain affected-limb support while lifting the other knee.", "severe", "Observational gait analysis", "WEIGHT_BEARING_ASYMMETRY")},
         ],
     },
+    {
+        "id": "L6",
+        "title": "Comfortable Walk",
+        "view": "Side view",
+        "focus": "Gait initiation, step progression, foot clearance, trunk control",
+        "safety_tier": "spotter_required",
+        "safety_note": "Only attempt this task if walking is already part of your usual routine. Use your normal walking aid and have another person nearby if you normally need support.",
+        "steps": [
+            {
+                "id": "L6-S1",
+                "voice": "For the walking task, place the phone where your whole body is visible from the side. Use your usual walking aid. Only continue if walking is normally safe for you, and have someone nearby if you usually need help. Stand near one side of the camera view when you are ready.",
+                "target": {"x": 0.22, "y": 0.78, "r": 0.16, "landmark": "WALK_READY"},
+                "hold_ms": 1500,
+                "movement_required": False,
+                "caption": "Stand safely at one side of the camera view",
+                "failure_phenotype": _phenotype("GAIT_SETUP_UNSAFE", "gait_setup", "Unable to establish a safe walking start", "A safe, fully visible standing position was not established before the walking observation.", "severe", "Observational gait analysis; task-specific safety screening", "SUPPORTED_STANDING_CONTROL"),
+            },
+            {
+                "id": "L6-S2",
+                "voice": "Now walk at your usual comfortable pace across the camera view. Take several natural steps. Do not walk faster or farther than feels safe.",
+                "target": {"x": 0.78, "y": 0.78, "r": 0.17, "landmark": "WALK_ACROSS"},
+                "hold_ms": 900,
+                "caption": "Walk several comfortable steps across the view",
+                "measure": ["gait_progression", "step_count_proxy", "toe_clearance_proxy", "circumduction_proxy", "trunk_compensation"],
+                "failure_phenotype": _phenotype("GAIT_PROGRESSION_IMPAIRED", "gait_progression", "Difficulty progressing during walking", "The patient did not complete several observable steps across the camera view at a comfortable pace.", "severe", "Observational gait analysis", "GAIT_INITIATION_IMPAIRED"),
+            },
+            {
+                "id": "L6-S3",
+                "voice": "Stop in a safe position and stand still with your usual support for a moment.",
+                "target": {"x": 0.78, "y": 0.78, "r": 0.17, "landmark": "WALK_STOPPED"},
+                "hold_ms": 1500,
+                "movement_required": False,
+                "caption": "Stop safely and stand steady",
+                "failure_phenotype": _phenotype("GAIT_STOP_CONTROL_IMPAIRED", "gait_termination", "Difficulty stopping safely after walking", "The patient did not establish a stable supported stop after the walking observation.", "severe", "Observational gait analysis; task-specific safety screening", "SUPPORTED_STANDING_CONTROL"),
+            },
+        ],
+    },
 ]
 
 

@@ -96,7 +96,7 @@ export default function HomeScreen() {
             <Text style={styles.sessionTitle}>{isInitialAssessment ? "Initial Assessment" : "Today's Rehabilitation"}</Text>
             <Text style={styles.sessionDescription}>
               {isInitialAssessment
-                ? "The same seven guided upper-limb tasks for every new patient, so we can understand your movement broadly."
+                ? "The same seven guided arm, hand, and walking observations for every new patient, so we can understand your movement broadly."
                 : `${latest.rehab_plan.length} guided exercise${latest.rehab_plan.length === 1 ? "" : "s"} selected from your assessment.`}
             </Text>
             <Pressable testID="home-start-next-session" onPress={startNextSession} style={styles.startButton}>

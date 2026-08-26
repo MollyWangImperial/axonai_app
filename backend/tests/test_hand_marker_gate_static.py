@@ -108,17 +108,9 @@ def test_advanced_marker_tasks_keep_seven_task_contract():
     assert '"recommended_objects": ["empty plastic cup", "soft ball", "foam cylinder", "small paper box"]' in html_source
 
 
-def test_intro_uses_existing_design_tokens_for_marker_badge():
+def test_initial_intro_stays_guided_without_package_choice():
     intro_source = TASK_INTRO.read_text(encoding="utf-8")
-    for token in [
-        "PACKAGE_OPTIONS",
-        "upper_limb",
-        "hand",
-        "task-package-card-${option.id}",
-        "advanced_marker_required",
-        "task-marker-badge",
-        "colors.brandTertiary",
-        "colors.onBrandTertiary",
-        "radius.sm",
-    ]:
-        assert token in intro_source
+    assert 'const packageId: AssessmentPackageId = "initial"' in intro_source
+    assert "launch your next guided task automatically" in intro_source
+    assert "PACKAGE_OPTIONS" not in intro_source
+    assert "task-package-card-${option.id}" not in intro_source
