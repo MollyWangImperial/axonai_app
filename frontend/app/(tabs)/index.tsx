@@ -9,13 +9,12 @@ import { colors, spacing, radius } from "@/src/theme";
 import { fetchHistory, Assessment } from "@/src/api";
 import { ensurePermission, loadSettings, rescheduleReminders } from "@/src/utils/notifications";
 import CreditsBadge from "@/src/components/CreditsBadge";
-import AriaFloatingChat from "@/src/components/AriaFloatingChat";
+import AliraFloatingChat from "@/src/components/AliraFloatingChat";
 import { storage } from "@/src/utils/storage";
 import { getCachedUser } from "@/src/auth";
+import { API_BASE as BASE } from "@/src/config";
 
 const HERO = "https://images.pexels.com/photos/8460412/pexels-photo-8460412.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940";
-const BASE = process.env.EXPO_PUBLIC_BACKEND_URL;
-
 type ReminderStatus = {
   days_since_assessment: number | null;
   exercise_overdue: boolean;
@@ -23,6 +22,36 @@ type ReminderStatus = {
   daily_reminder_text: string;
   weekly_reminder_text: string;
 };
+
+const EXAMPLE_GUIDED_EXERCISES = [
+  {
+    id: "ex_wallslide",
+    name: "Arm Raise Upward",
+    focus: "Shoulder elevation",
+    description: "Raise your affected arm upward toward the target with smooth control.",
+    sets: 1,
+    reps: 5,
+    icon: "radio-button-on",
+  },
+  {
+    id: "ex_h2m",
+    name: "Hand-to-Mouth Practice",
+    focus: "Daily activity",
+    description: "Bring your hand toward your mouth, then lower it back with guidance.",
+    sets: 1,
+    reps: 5,
+    icon: "restaurant",
+  },
+  {
+    id: "ex_handopen",
+    name: "Finger Opening Practice",
+    focus: "Hand opening",
+    description: "Open your fingers, relax, and mark each repetition when you finish.",
+    sets: 1,
+    reps: 8,
+    icon: "hand-left",
+  },
+];
 
 export default function HomeScreen() {
   const insets = useSafeAreaInsets();
@@ -41,11 +70,11 @@ export default function HomeScreen() {
       setHistory(h || []);
       setReminder(r);
       // greeting name preference: preferred_name from onboarding > cached user.name
-      const pref = await storage.getItem("preferred_name_v1");
+      const pref = await storage.getItem<string>("preferred_name_v1", "");
       if (pref) setGreetName(pref);
       else {
         const u = await getCachedUser();
-        if (u?.name) setGreetName(u.name.split(" ")[0]);
+        if (typeof u?.name === "string") setGreetName(u.name.split(" ")[0]);
       }
     } finally {
       setLoading(false);
@@ -70,6 +99,20 @@ export default function HomeScreen() {
   const onStart = () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     router.push("/task-intro");
+  };
+
+  const openExampleExercise = (ex: typeof EXAMPLE_GUIDED_EXERCISES[number]) => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    router.push({
+      pathname: "/exercise",
+      params: {
+        exercise_id: ex.id,
+        name: ex.name,
+        plan_id: "example_today_plan",
+        sets: String(ex.sets),
+        reps: String(ex.reps),
+      },
+    });
   };
 
   return (
@@ -162,9 +205,39 @@ export default function HomeScreen() {
           ) : (
             <View style={styles.card}>
               <Text style={styles.cardTitle}>No assessment yet</Text>
-              <Text style={styles.cardBody}>Start your first assessment to receive a personalized plan.</Text>
+              <Text style={styles.cardBody}>Start your first assessment to receive a personalized plan. You can also try a guided example below.</Text>
             </View>
           )}
+
+          <View style={styles.exampleHeader}>
+            <Text style={styles.exampleTitle}>Guided examples ready now</Text>
+            <Text style={styles.exampleSub}>These open the same step-by-step camera exercise flow.</Text>
+          </View>
+          <View style={styles.exampleList}>
+            {EXAMPLE_GUIDED_EXERCISES.map((ex) => (
+              <Pressable
+                key={ex.id}
+                testID={`home-example-exercise-${ex.id}`}
+                onPress={() => openExampleExercise(ex)}
+                style={styles.exampleCard}
+              >
+                <View style={styles.exampleIcon}>
+                  <Ionicons name={ex.icon as any} size={22} color={colors.brandPrimary} />
+                </View>
+                <View style={styles.exampleCopy}>
+                  <View style={styles.exampleTopLine}>
+                    <Text style={styles.exampleName} numberOfLines={2}>{ex.name}</Text>
+                    <View style={styles.exampleBadge}>
+                      <Text style={styles.exampleBadgeText}>{ex.reps} reps</Text>
+                    </View>
+                  </View>
+                  <Text style={styles.exampleFocus}>{ex.focus}</Text>
+                  <Text style={styles.exampleDesc} numberOfLines={2}>{ex.description}</Text>
+                </View>
+                <Ionicons name="play-circle" size={24} color={colors.brandPrimary} />
+              </Pressable>
+            ))}
+          </View>
         </View>
 
         {/* How it works */}
@@ -224,8 +297,8 @@ export default function HomeScreen() {
         </Pressable>
       </View>
 
-      {/* Aria — floating caring companion */}
-      <AriaFloatingChat bottomOffset={(insets.bottom || 0) + 84} />
+      {/* Alira - floating caring companion */}
+      <AliraFloatingChat bottomOffset={(insets.bottom || 0) + 84} />
     </View>
   );
 }
@@ -246,6 +319,35 @@ const styles = StyleSheet.create({
   cardTitle: { fontSize: 18, fontWeight: "700", color: colors.onSurface },
   cardBody: { fontSize: 15, color: colors.onSurfaceSecondary, lineHeight: 22 },
   cardLink: { color: colors.brandPrimary, fontWeight: "700", marginTop: spacing.xs },
+  exampleHeader: { marginTop: spacing.md, marginBottom: spacing.sm, gap: 2 },
+  exampleTitle: { fontSize: 16, fontWeight: "800", color: colors.onSurface },
+  exampleSub: { fontSize: 13, color: colors.onSurfaceSecondary, lineHeight: 18 },
+  exampleList: { gap: spacing.sm },
+  exampleCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.sm,
+    backgroundColor: colors.surfaceSecondary,
+    borderRadius: radius.lg,
+    padding: spacing.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  exampleIcon: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: colors.brandTertiary,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  exampleCopy: { flex: 1, minWidth: 0, gap: 2 },
+  exampleTopLine: { flexDirection: "row", alignItems: "flex-start", gap: spacing.xs },
+  exampleName: { flex: 1, minWidth: 0, fontSize: 16, lineHeight: 20, fontWeight: "800", color: colors.onSurface },
+  exampleBadge: { borderRadius: radius.pill, paddingHorizontal: spacing.sm, paddingVertical: 4, backgroundColor: colors.brandTertiary },
+  exampleBadgeText: { color: colors.onBrandTertiary, fontSize: 11, fontWeight: "800" },
+  exampleFocus: { color: colors.brandPrimary, fontSize: 13, fontWeight: "700" },
+  exampleDesc: { color: colors.onSurfaceSecondary, fontSize: 13, lineHeight: 18 },
   chips: { flexDirection: "row", flexWrap: "wrap", gap: spacing.xs, marginTop: spacing.xs },
   chip: { backgroundColor: colors.brandTertiary, borderRadius: radius.pill, paddingHorizontal: spacing.sm, paddingVertical: 6 },
   chipText: { color: colors.onBrandTertiary, fontSize: 12, fontWeight: "600", maxWidth: W * 0.55 },

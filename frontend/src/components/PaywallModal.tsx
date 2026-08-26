@@ -4,8 +4,7 @@ import { Ionicons } from "@expo/vector-icons";
 import * as WebBrowser from "expo-web-browser";
 import { colors, spacing, radius } from "@/src/theme";
 import { authedFetch } from "@/src/auth";
-
-const BASE = process.env.EXPO_PUBLIC_BACKEND_URL;
+import { API_BASE as BASE } from "@/src/config";
 
 type Props = {
   visible: boolean;
@@ -90,7 +89,7 @@ export default function PaywallModal({ visible, onClose, onSubscribed, reason }:
               "Unlimited assessments",
               "Unlimited personalized plans",
               "Unlimited guided exercises with form scoring",
-              "Aria companion chat included",
+              "Alira companion chat included",
               "Cancel anytime",
             ].map((b) => (
               <View key={b} style={styles.bulletRow}>

@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: rehyn
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /api/
+    envVars:
+      - key: MONGO_URL
+        sync: false
+      - key: DB_NAME
+        value: rehyn
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: TTS_VOICE
+        value: nova
+      - key: TTS_MODEL
+        value: tts-1

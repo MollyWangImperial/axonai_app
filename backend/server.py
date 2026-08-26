@@ -11,23 +11,71 @@ from pathlib import Path
 from pydantic import BaseModel, Field
 from typing import List, Dict, Any, Optional
 import uuid
+import re
 from datetime import datetime, timezone
 
-from emergentintegrations.llm.openai.text_to_speech import OpenAITextToSpeech
+try:
+    from backend.rehab_assessment import (
+        build_biomechanical_estimates,
+        build_clinician_measure_summary,
+        build_domain_assessments,
+        modeling_specification,
+    )
+    from backend.clinical_measurement_form import build_clinical_measurement_form
+    from backend.rehab_goals import build_rehab_goals
+    from backend.rehab_packages import (
+        BALANCE_TASKS_DATA,
+        LOWER_LIMB_TASKS_DATA,
+        attach_hand_failure_phenotypes,
+    )
+    from backend.muscle_diagnosis import build_muscle_activation_diagnosis
+except ImportError:
+    from rehab_assessment import (
+        build_biomechanical_estimates,
+        build_clinician_measure_summary,
+        build_domain_assessments,
+        modeling_specification,
+    )
+    from clinical_measurement_form import build_clinical_measurement_form
+    from rehab_goals import build_rehab_goals
+    from rehab_packages import (
+        BALANCE_TASKS_DATA,
+        LOWER_LIMB_TASKS_DATA,
+        attach_hand_failure_phenotypes,
+    )
+    from muscle_diagnosis import build_muscle_activation_diagnosis
+
+try:
+    from openai import OpenAI
+except Exception:
+    OpenAI = None
+
+try:
+    from emergentintegrations.llm.openai.text_to_speech import OpenAITextToSpeech
+except Exception:
+    OpenAITextToSpeech = None
 
 ROOT_DIR = Path(__file__).parent
-load_dotenv(ROOT_DIR / ".env")
+load_dotenv(ROOT_DIR / ".env", override=True)
+logger = logging.getLogger(__name__)
 
 # MongoDB
 mongo_url = os.environ["MONGO_URL"]
-client = AsyncIOMotorClient(mongo_url)
+client = AsyncIOMotorClient(mongo_url, serverSelectionTimeoutMS=1000, connectTimeoutMS=1000)
 db = client[os.environ["DB_NAME"]]
 
-# OpenAI TTS via Emergent LLM key (universal key)
-EMERGENT_LLM_KEY = os.environ["EMERGENT_LLM_KEY"]
+# Local development fallback: keeps Expo phone testing usable when Docker/Mongo
+# is not running. Mongo remains the source of truth whenever it is reachable.
+LOCAL_USERS: Dict[str, Dict[str, Any]] = {}
+LOCAL_ASSESSMENTS: List[Dict[str, Any]] = []
+
+# OpenAI TTS: prefer direct OPENAI_API_KEY for local/dev, keep Emergent key as fallback.
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "").strip()
+EMERGENT_LLM_KEY = os.environ.get("EMERGENT_LLM_KEY", "").strip()
 TTS_VOICE = os.environ.get("TTS_VOICE", "nova")  # warm/encouraging default
 TTS_MODEL = os.environ.get("TTS_MODEL", "tts-1")
-tts_client = OpenAITextToSpeech(api_key=EMERGENT_LLM_KEY)
+openai_tts_client = OpenAI(api_key=OPENAI_API_KEY) if (OpenAI and OPENAI_API_KEY) else None
+tts_client = OpenAITextToSpeech(api_key=EMERGENT_LLM_KEY) if (OpenAITextToSpeech and EMERGENT_LLM_KEY) else None
 
 app = FastAPI()
 api_router = APIRouter(prefix="/api")
@@ -57,6 +105,7 @@ class TTSResponse(BaseModel):
 class TaskStepResult(BaseModel):
     step_id: str
     completed: bool
+    failure_code: Optional[str] = None
     duration_ms: int = 0
     metrics: Dict[str, Any] = Field(default_factory=dict)  # e.g., trunk_lean_deg, reach_ratio
 
@@ -73,6 +122,8 @@ class TaskResult(BaseModel):
 class AssessmentSubmit(BaseModel):
     task_results: List[TaskResult]
     affected_side: str = "right"  # "left" or "right"
+    patient_parameters: Dict[str, Any] = Field(default_factory=dict)
+    musculoskeletal_outputs: Dict[str, Any] = Field(default_factory=dict)
 
 
 class FunctionalIssue(BaseModel):
@@ -82,6 +133,8 @@ class FunctionalIssue(BaseModel):
     source: str
     severity: str  # mild | moderate | severe
     related_task: str
+    related_step: Optional[str] = None
+    phenotype_domain: Optional[str] = None
 
 
 class RehabExercise(BaseModel):
@@ -93,6 +146,9 @@ class RehabExercise(BaseModel):
     frequency: str  # e.g. "Daily"
     targets_issue: str
     source: str
+    selection_reason: Optional[str] = None
+    safety_note: Optional[str] = None
+    requires_clinician_confirmation: bool = True
 
 
 class Assessment(BaseModel):
@@ -102,6 +158,12 @@ class Assessment(BaseModel):
     task_results: List[TaskResult]
     functional_issues: List[FunctionalIssue]
     rehab_plan: List[RehabExercise]
+    domain_assessments: List[Dict[str, Any]] = Field(default_factory=list)
+    clinician_measures: List[Dict[str, Any]] = Field(default_factory=list)
+    biomechanical_estimates: List[Dict[str, Any]] = Field(default_factory=list)
+    measurement_form: Dict[str, Any] = Field(default_factory=dict)
+    rehabilitation_goals: Dict[str, Any] = Field(default_factory=dict)
+    muscle_activation_diagnosis: Dict[str, Any] = Field(default_factory=dict)
 
 
 # ============ 7 Tasks: Step-by-step with voice prompts & on-screen target zones ============
@@ -117,10 +179,11 @@ TASKS_DATA: List[Dict[str, Any]] = [
         "steps": [
             {
                 "id": "T1-S1",
-                "voice": "Welcome. Let's begin with a seated forward reach. Sit upright, with your arm relaxed. When you're ready, touch the circle that appears on your hand.",
-                "target": {"x": 0.5, "y": 0.78, "r": 0.12, "landmark": "WRIST_DYNAMIC"},
-                "hold_ms": 1200,
-                "caption": "Start position: hand on lap",
+                "voice": "Welcome. Sit upright with your affected hand on your lap. Slowly lift that hand forward to the first circle.",
+                "target": {"x": 0.5, "y": 0.60, "r": 0.11, "landmark": "WRIST"},
+                "hold_ms": 900,
+                "caption": "Initiate the forward reach",
+                "failure_phenotype": {"code": "REACH_INITIATION_IMPAIRED", "domain": "reach_initiation", "label": "Difficulty initiating a forward reach", "description": "The affected arm did not complete the initial movement away from the lap toward the first reach position.", "severity": "moderate", "source": "Fugl-Meyer UE; task-specific movement observation", "rehab_code": "REACH_INCOMPLETE"},
             },
             {
                 "id": "T1-S2",
@@ -129,13 +192,24 @@ TASKS_DATA: List[Dict[str, Any]] = [
                 "hold_ms": 1500,
                 "caption": "Reach forward to the target",
                 "measure": ["reach_distance", "trunk_lean", "elbow_extension"],
+                "failure_phenotype": {"code": "REACH_INCOMPLETE", "domain": "forward_reach_range", "label": "Limited forward reach", "description": "The affected arm initiated the movement but did not reach the forward target.", "severity": "moderate", "source": "Fugl-Meyer UE; ARAT", "rehab_code": "REACH_INCOMPLETE"},
             },
             {
                 "id": "T1-S3",
-                "voice": "Wonderful effort. Slowly bring your hand back to your lap. You are doing great.",
+                "voice": "Hold your hand steadily at the forward target for a moment.",
+                "target": {"x": 0.5, "y": 0.40, "r": 0.10, "landmark": "WRIST"},
+                "hold_ms": 1500,
+                "movement_required": False,
+                "caption": "Hold the reach steadily",
+                "failure_phenotype": {"code": "REACH_ENDPOINT_UNSTABLE", "domain": "reach_endpoint_control", "label": "Unstable control at the reach target", "description": "The affected arm reached the forward area but did not remain stable at the endpoint.", "severity": "mild", "source": "Task-specific movement observation", "rehab_code": "REACH_INCOMPLETE"},
+            },
+            {
+                "id": "T1-S4",
+                "voice": "Wonderful effort. Slowly bring your affected hand back to your lap.",
                 "target": {"x": 0.5, "y": 0.78, "r": 0.10, "landmark": "WRIST"},
                 "hold_ms": 1500,
                 "caption": "Return to lap",
+                "failure_phenotype": {"code": "REACH_RETURN_CONTROL_IMPAIRED", "domain": "reach_return_control", "label": "Difficulty controlling the return from a reach", "description": "The affected arm did not complete the controlled return from the forward target to the lap.", "severity": "mild", "source": "Task-specific movement observation", "rehab_code": "REACH_INCOMPLETE"},
             },
         ],
     },
@@ -147,10 +221,11 @@ TASKS_DATA: List[Dict[str, Any]] = [
         "steps": [
             {
                 "id": "T2-S1",
-                "voice": "Next, we will raise your arm. Stand or sit tall, with your arms relaxed by your side. I'm here to guide you.",
-                "target": {"x": 0.5, "y": 0.85, "r": 0.10, "landmark": "WRIST"},
-                "hold_ms": 1500,
-                "caption": "Arm relaxed at your side",
+                "voice": "Next, raise your affected arm from your side toward the first circle at mid height.",
+                "target": {"x": 0.5, "y": 0.55, "r": 0.11, "landmark": "WRIST"},
+                "hold_ms": 1000,
+                "caption": "Initiate the arm raise",
+                "failure_phenotype": {"code": "SHOULDER_ELEVATION_INITIATION_IMPAIRED", "domain": "shoulder_elevation_initiation", "label": "Difficulty initiating an arm raise", "description": "The affected arm did not complete the initial antigravity raise from the side.", "severity": "moderate", "source": "Fugl-Meyer UE", "rehab_code": "SHOULDER_FLEX_LIMITED"},
             },
             {
                 "id": "T2-S2",
@@ -159,13 +234,24 @@ TASKS_DATA: List[Dict[str, Any]] = [
                 "hold_ms": 1500,
                 "caption": "Raise arm upward",
                 "measure": ["shoulder_flexion_rom", "shoulder_hike", "trunk_lean"],
+                "failure_phenotype": {"code": "SHOULDER_FLEX_LIMITED", "domain": "shoulder_elevation_range", "label": "Limited active arm elevation", "description": "The affected arm initiated the raise but did not reach the upper target.", "severity": "moderate", "source": "Fugl-Meyer UE", "rehab_code": "SHOULDER_FLEX_LIMITED"},
             },
             {
                 "id": "T2-S3",
-                "voice": "Beautiful. Now, gently lower your arm back to your side.",
+                "voice": "Hold your affected arm steadily at the upper target for a moment.",
+                "target": {"x": 0.5, "y": 0.18, "r": 0.10, "landmark": "WRIST"},
+                "hold_ms": 1500,
+                "movement_required": False,
+                "caption": "Hold the raised arm steadily",
+                "failure_phenotype": {"code": "SHOULDER_HOLD_UNSTABLE", "domain": "shoulder_hold_stability", "label": "Unstable control while holding the arm raised", "description": "The affected arm reached the upper area but did not remain stable there.", "severity": "mild", "source": "Task-specific movement observation", "rehab_code": "SHOULDER_FLEX_LIMITED"},
+            },
+            {
+                "id": "T2-S4",
+                "voice": "Beautiful. Now, gently lower your affected arm back to your side.",
                 "target": {"x": 0.5, "y": 0.85, "r": 0.10, "landmark": "WRIST"},
                 "hold_ms": 1500,
                 "caption": "Lower arm",
+                "failure_phenotype": {"code": "SHOULDER_LOWERING_IMPAIRED", "domain": "shoulder_lowering_control", "label": "Difficulty controlling arm lowering", "description": "The affected arm did not complete the controlled lowering movement back toward the side.", "severity": "mild", "source": "Task-specific movement observation", "rehab_code": "SHOULDER_FLEX_LIMITED"},
             },
         ],
     },
@@ -177,10 +263,11 @@ TASKS_DATA: List[Dict[str, Any]] = [
         "steps": [
             {
                 "id": "T3-S1",
-                "voice": "Let's try bringing your hand to your mouth. When you're ready, touch the circle on your hand to begin.",
-                "target": {"x": 0.5, "y": 0.78, "r": 0.12, "landmark": "WRIST_DYNAMIC"},
-                "hold_ms": 1200,
-                "caption": "Touch the circle on your hand",
+                "voice": "Let's bring your affected hand toward your mouth. First, lift it from your lap toward the circle at your chest.",
+                "target": {"x": 0.5, "y": 0.48, "r": 0.11, "landmark": "CHEST"},
+                "hold_ms": 1000,
+                "caption": "Lift hand from lap toward chest",
+                "failure_phenotype": {"code": "HAND_LIFT_INITIATION_IMPAIRED", "domain": "hand_to_mouth_initiation", "label": "Difficulty initiating the hand lift", "description": "The affected hand did not complete the initial lift from the lap toward the chest.", "severity": "moderate", "source": "MESUPES; task-specific movement observation", "rehab_code": "H2M_IMPAIRED"},
             },
             {
                 "id": "T3-S2",
@@ -189,13 +276,24 @@ TASKS_DATA: List[Dict[str, Any]] = [
                 "hold_ms": 1500,
                 "caption": "Hand to mouth",
                 "measure": ["elbow_flexion", "trunk_lean", "coordination"],
+                "failure_phenotype": {"code": "H2M_IMPAIRED", "domain": "hand_to_mouth_transport", "label": "Difficulty bringing the hand to the mouth", "description": "The affected hand lifted from the lap but did not reach the mouth target.", "severity": "moderate", "source": "Chedoke-McMaster Stroke Assessment; MESUPES", "rehab_code": "H2M_IMPAIRED"},
             },
             {
                 "id": "T3-S3",
-                "voice": "Great job. Lower your hand back to your lap.",
+                "voice": "Hold your affected hand steadily at your mouth for a moment.",
+                "target": {"x": 0.5, "y": 0.30, "r": 0.10, "landmark": "MOUTH"},
+                "hold_ms": 1500,
+                "movement_required": False,
+                "caption": "Hold hand steadily at mouth",
+                "failure_phenotype": {"code": "HAND_TO_MOUTH_UNSTABLE", "domain": "hand_to_mouth_endpoint_control", "label": "Unstable hand-to-mouth endpoint control", "description": "The affected hand reached the mouth area but did not remain stable there.", "severity": "mild", "source": "Task-specific movement observation", "rehab_code": "H2M_IMPAIRED"},
+            },
+            {
+                "id": "T3-S4",
+                "voice": "Great job. Lower your affected hand back to your lap.",
                 "target": {"x": 0.5, "y": 0.78, "r": 0.10, "landmark": "WRIST"},
                 "hold_ms": 1500,
                 "caption": "Return to lap",
+                "failure_phenotype": {"code": "HAND_TO_MOUTH_RETURN_IMPAIRED", "domain": "hand_to_mouth_return_control", "label": "Difficulty returning the hand from the mouth", "description": "The affected hand did not complete the controlled return from the mouth to the lap.", "severity": "mild", "source": "Task-specific movement observation", "rehab_code": "H2M_IMPAIRED"},
             },
         ],
     },
@@ -204,58 +302,126 @@ TASKS_DATA: List[Dict[str, Any]] = [
         "title": "Grasp Cup and Move to Target",
         "view": "Front view",
         "focus": "Grasp, release, movement quality, endpoint control, trunk compensation",
+        "advanced_marker_required": True,
+        "advanced_label": "Advanced grasp-release with AxonAI marker",
+        "recommended_objects": ["empty plastic cup", "soft ball", "foam cylinder", "small paper box"],
         "steps": [
             {
                 "id": "T4-S1",
-                "voice": "Imagine a cup is on the table in front of you. Reach with your affected hand toward the cup.",
+                "voice": "Reach with your affected hand toward the marked lightweight cup on the table.",
                 "target": {"x": 0.30, "y": 0.65, "r": 0.10, "landmark": "WRIST", "icon": "cup"},
                 "hold_ms": 1200,
                 "caption": "Reach for the cup",
+                "failure_phenotype": {"code": "OBJECT_REACH_IMPAIRED", "domain": "object_directed_reach", "label": "Difficulty reaching to an object", "description": "The affected hand did not reach the cup position.", "severity": "moderate", "source": "ARAT grasp subscale", "rehab_code": "GROSS_GRASP"},
             },
             {
                 "id": "T4-S2",
-                "voice": "Pretend to close your fingers around the cup, then carefully move it to the table on your other side.",
-                "target": {"x": 0.70, "y": 0.65, "r": 0.12, "landmark": "WRIST", "icon": "table"},
-                "hold_ms": 1500,
-                "caption": "Move cup across to target",
-                "measure": ["endpoint_accuracy", "trunk_lean", "movement_smoothness"],
+                "voice": "Open your hand around the cup, then close your fingers to form a secure grasp.",
+                "target": {"x": 0.30, "y": 0.65, "r": 0.11, "landmark": "HAND_CLOSED", "icon": "cup"},
+                "hold_ms": 1200,
+                "movement_required": False,
+                "caption": "Form a grasp around the cup",
+                "failure_phenotype": {"code": "GROSS_GRASP", "domain": "gross_grasp_acquisition", "label": "Difficulty forming a gross grasp", "description": "The affected hand reached the cup but did not form a secure grasp around it.", "severity": "moderate", "source": "ARAT grasp subscale", "rehab_code": "GROSS_GRASP"},
             },
             {
                 "id": "T4-S3",
-                "voice": "Excellent control. Now gently release the cup and bring your hand back.",
-                "target": {"x": 0.35, "y": 0.78, "r": 0.10, "landmark": "WRIST"},
+                "voice": "Lift the cup slightly and hold it steadily for a moment.",
+                "target": {"x": 0.42, "y": 0.55, "r": 0.12, "landmark": "OBJECT_COUPLED", "icon": "cup"},
                 "hold_ms": 1500,
-                "caption": "Release and return",
+                "caption": "Lift and hold the cup",
+                "failure_phenotype": {"code": "GRASP_HOLD_UNSTABLE", "domain": "grasp_hold_stability", "label": "Unstable grasp while holding an object", "description": "The cup was grasped but was not lifted and held steadily with the affected hand.", "severity": "moderate", "source": "ARAT grasp subscale", "rehab_code": "GROSS_GRASP"},
+            },
+            {
+                "id": "T4-S4",
+                "voice": "Keep holding the cup and carefully move it across to the target on the other side.",
+                "target": {"x": 0.70, "y": 0.65, "r": 0.12, "landmark": "OBJECT_COUPLED", "icon": "table"},
+                "hold_ms": 1500,
+                "caption": "Move cup across to target",
+                "measure": ["endpoint_accuracy", "trunk_lean", "movement_smoothness"],
+                "failure_phenotype": {"code": "OBJECT_TRANSPORT_IMPAIRED", "domain": "object_transport", "label": "Difficulty transporting a grasped object", "description": "The cup was grasped but was not transported to the opposite target while remaining coupled to the affected hand.", "severity": "moderate", "source": "ARAT grasp and grip subscales", "rehab_code": "GROSS_GRASP"},
+            },
+            {
+                "id": "T4-S5",
+                "voice": "Place the cup steadily inside the target area.",
+                "target": {"x": 0.70, "y": 0.65, "r": 0.12, "landmark": "OBJECT_AT_TARGET", "icon": "table"},
+                "hold_ms": 1000,
+                "movement_required": False,
+                "caption": "Place cup at the target",
+                "failure_phenotype": {"code": "OBJECT_PLACEMENT_IMPAIRED", "domain": "object_placement", "label": "Difficulty placing an object accurately", "description": "The transported cup was not placed steadily inside the target area.", "severity": "mild", "source": "ARAT; task-specific movement observation", "rehab_code": "GROSS_GRASP"},
+            },
+            {
+                "id": "T4-S6",
+                "voice": "Now open your fingers, release the cup, and move your empty hand away.",
+                "target": {"x": 0.70, "y": 0.65, "r": 0.12, "landmark": "OBJECT_RELEASED", "icon": "table"},
+                "hold_ms": 1200,
+                "movement_required": False,
+                "caption": "Release the cup at the target",
+                "failure_phenotype": {"code": "OBJECT_RELEASE_IMPAIRED", "domain": "object_release", "label": "Difficulty releasing an object", "description": "The cup reached the target but the affected hand did not open and separate from it.", "severity": "moderate", "source": "ARAT grasp subscale", "rehab_code": "GROSS_GRASP"},
             },
         ],
     },
     {
         "id": "T5",
-        "title": "Open Hand, Grasp Ball, Release",
+        "title": "Open Hand, Form Grasp, Release",
         "view": "Front view",
         "focus": "Hand opening, wrist control, grasp, release",
+        "advanced_marker_required": True,
+        "advanced_label": "Advanced grasp-release with AxonAI marker",
+        "recommended_objects": ["empty plastic cup", "soft ball", "foam cylinder", "small paper box"],
         "steps": [
             {
                 "id": "T5-S1",
-                "voice": "Hold your affected hand up at your chest, palm open and steady.",
+                "voice": "Raise your affected hand to chest height and hold it where the camera can see it clearly.",
                 "target": {"x": 0.5, "y": 0.45, "r": 0.10, "landmark": "CHEST"},
-                "hold_ms": 1500,
-                "caption": "Hand on chest",
+                "hold_ms": 1000,
+                "caption": "Position hand at chest height",
+                "failure_phenotype": {"code": "HAND_POSITIONING_IMPAIRED", "domain": "hand_task_positioning", "label": "Difficulty positioning the hand for a hand task", "description": "The affected hand did not reach the chest-height working position.", "severity": "moderate", "source": "Task-specific movement observation", "rehab_code": "HAND_OPENING"},
             },
             {
                 "id": "T5-S2",
-                "voice": "Open your hand wide. When fully open, hold for a moment. Then slowly close your hand around an imaginary ball.",
+                "voice": "Open your affected hand as wide as you comfortably can.",
                 "target": {"x": 0.5, "y": 0.45, "r": 0.12, "landmark": "HAND_OPEN", "icon": "ball"},
-                "hold_ms": 1800,
-                "caption": "Open and close hand around a ball",
-                "measure": ["hand_opening", "grasp_release"],
+                "hold_ms": 1200,
+                "movement_required": False,
+                "caption": "Open hand wide",
+                "measure": ["hand_opening"],
+                "failure_phenotype": {"code": "HAND_OPENING", "domain": "active_hand_opening", "label": "Difficulty opening the hand", "description": "The affected hand reached the working position but the fingers did not open sufficiently.", "severity": "moderate", "source": "Fugl-Meyer UE hand section", "rehab_code": "HAND_OPENING"},
             },
             {
                 "id": "T5-S3",
-                "voice": "Beautiful work. Lower your hand to rest.",
-                "target": {"x": 0.5, "y": 0.78, "r": 0.10, "landmark": "WRIST"},
+                "voice": "Keep your hand open and steady for a moment.",
+                "target": {"x": 0.5, "y": 0.45, "r": 0.12, "landmark": "HAND_OPEN", "icon": "ball"},
                 "hold_ms": 1500,
-                "caption": "Lower hand to rest",
+                "movement_required": False,
+                "caption": "Hold the hand open",
+                "failure_phenotype": {"code": "HAND_OPEN_HOLD_UNSTABLE", "domain": "hand_open_hold", "label": "Difficulty maintaining an open hand", "description": "The affected hand opened but did not remain open and steady.", "severity": "mild", "source": "Task-specific movement observation", "rehab_code": "HAND_OPENING"},
+            },
+            {
+                "id": "T5-S4",
+                "voice": "Now slowly close your fingers as if forming a secure grasp around a soft ball.",
+                "target": {"x": 0.5, "y": 0.45, "r": 0.12, "landmark": "HAND_CLOSED", "icon": "ball"},
+                "hold_ms": 1200,
+                "movement_required": False,
+                "caption": "Form a gross grasp",
+                "failure_phenotype": {"code": "GROSS_GRASP_FORMATION_IMPAIRED", "domain": "gross_grasp_formation", "label": "Difficulty forming a gross grasp", "description": "The affected hand opened but did not close into a functional gross-grasp shape.", "severity": "moderate", "source": "Fugl-Meyer UE hand section; ARAT", "rehab_code": "GROSS_GRASP"},
+            },
+            {
+                "id": "T5-S5",
+                "voice": "Hold the grasp steadily for a moment.",
+                "target": {"x": 0.5, "y": 0.45, "r": 0.12, "landmark": "HAND_CLOSED", "icon": "ball"},
+                "hold_ms": 1500,
+                "movement_required": False,
+                "caption": "Maintain the gross grasp",
+                "failure_phenotype": {"code": "GRASP_MAINTENANCE_IMPAIRED", "domain": "gross_grasp_maintenance", "label": "Difficulty maintaining a gross grasp", "description": "The affected hand formed a grasp but did not maintain it steadily.", "severity": "moderate", "source": "Task-specific movement observation", "rehab_code": "GROSS_GRASP"},
+            },
+            {
+                "id": "T5-S6",
+                "voice": "Open your fingers again to release the grasp.",
+                "target": {"x": 0.5, "y": 0.45, "r": 0.12, "landmark": "HAND_OPEN", "icon": "ball"},
+                "hold_ms": 1200,
+                "movement_required": False,
+                "caption": "Open hand to release",
+                "failure_phenotype": {"code": "HAND_RELEASE_IMPAIRED", "domain": "active_hand_release", "label": "Difficulty reopening the hand to release", "description": "The affected hand formed a grasp but did not actively reopen to release it.", "severity": "moderate", "source": "Fugl-Meyer UE hand section; ARAT", "rehab_code": "HAND_OPENING"},
             },
         ],
     },
@@ -271,130 +437,340 @@ TASKS_DATA: List[Dict[str, Any]] = [
                 "target": {"x": 0.5, "y": 0.40, "r": 0.10, "landmark": "WRIST"},
                 "hold_ms": 1500,
                 "caption": "Raise hand to chest",
+                "failure_phenotype": {"code": "PINCH_POSITIONING_IMPAIRED", "domain": "pinch_task_positioning", "label": "Difficulty positioning the hand for pinch", "description": "The affected hand did not reach the working position needed for the pinch task.", "severity": "moderate", "source": "Task-specific movement observation", "rehab_code": "PINCH_IMPAIRED"},
             },
             {
                 "id": "T6-S2",
-                "voice": "Now, slowly touch the tip of your thumb to the tip of your index finger, as if you were pinching a small coin. Hold for a moment.",
+                "voice": "Now, slowly touch the tip of your thumb to the tip of your index finger, as if picking up a small coin.",
                 "target": {"x": 0.5, "y": 0.40, "r": 0.12, "landmark": "PINCH", "icon": "coin"},
-                "hold_ms": 1800,
+                "hold_ms": 1000,
+                "movement_required": False,
                 "caption": "Pinch thumb and index finger",
                 "measure": ["pinch_grip"],
+                "failure_phenotype": {"code": "PINCH_IMPAIRED", "domain": "thumb_index_opposition", "label": "Difficulty forming a thumb-index pinch", "description": "The affected thumb and index finger did not form the requested pinch position.", "severity": "mild", "source": "ARAT pinch subscale; Fugl-Meyer UE hand section", "rehab_code": "PINCH_IMPAIRED"},
             },
             {
                 "id": "T6-S3",
-                "voice": "Lovely. Relax and lower your hand.",
-                "target": {"x": 0.5, "y": 0.78, "r": 0.10, "landmark": "WRIST"},
+                "voice": "Keep the thumb-index pinch steady for a moment.",
+                "target": {"x": 0.5, "y": 0.40, "r": 0.12, "landmark": "PINCH", "icon": "coin"},
                 "hold_ms": 1500,
-                "caption": "Lower hand to rest",
+                "movement_required": False,
+                "caption": "Hold the pinch steadily",
+                "failure_phenotype": {"code": "PINCH_HOLD_UNSTABLE", "domain": "pinch_stability", "label": "Unstable thumb-index pinch", "description": "The affected hand formed a pinch but did not maintain it steadily.", "severity": "mild", "source": "ARAT pinch subscale", "rehab_code": "PINCH_IMPAIRED"},
+            },
+            {
+                "id": "T6-S4",
+                "voice": "Separate your thumb and index finger to release the pinch.",
+                "target": {"x": 0.5, "y": 0.40, "r": 0.12, "landmark": "PINCH_RELEASED", "icon": "coin"},
+                "hold_ms": 1000,
+                "movement_required": False,
+                "caption": "Release the pinch",
+                "failure_phenotype": {"code": "PINCH_RELEASE_IMPAIRED", "domain": "pinch_release", "label": "Difficulty releasing a pinch", "description": "The affected thumb and index finger formed a pinch but did not separate to release it.", "severity": "mild", "source": "Task-specific movement observation", "rehab_code": "PINCH_IMPAIRED"},
             },
         ],
     },
     {
         "id": "T7",
-        "title": "Fold Towel / Open Bottle (Two-Handed)",
+        "title": "Fold Towel (Two-Handed)",
         "view": "Front view",
         "focus": "Affected-side participation, bilateral coordination",
         "steps": [
             {
                 "id": "T7-S1",
                 "voice": "Our last task uses both hands together. Bring both hands up in front of you, around chest height.",
-                "target": {"x": 0.5, "y": 0.40, "r": 0.12, "landmark": "WRISTS"},
+                "target": {"x": 0.5, "y": 0.40, "r": 0.12, "landmark": "WRISTS_APART"},
                 "hold_ms": 1500,
                 "caption": "Both hands up at chest",
+                "failure_phenotype": {"code": "BILATERAL_INITIATION_IMPAIRED", "domain": "bilateral_initiation", "label": "Difficulty initiating a two-handed movement", "description": "Both hands did not reach the chest-height working position together.", "severity": "moderate", "source": "Bilateral arm training task observation", "rehab_code": "BILATERAL_NONUSE"},
             },
             {
                 "id": "T7-S2",
-                "voice": "Pretend to fold a towel. Move both hands together, bringing them inward to meet in front of you, then outward. Make sure both hands move equally.",
+                "voice": "Pretend you are holding the two corners of a towel. Bring both hands inward together until the corners meet in front of you.",
                 "target": {"x": 0.5, "y": 0.40, "r": 0.12, "landmark": "WRISTS", "icon": "towel"},
-                "hold_ms": 3500,
-                "caption": "Fold towel with both hands",
+                "hold_ms": 1400,
+                "caption": "Bring both hands inward together",
                 "measure": ["bilateral_symmetry", "affected_participation"],
+                "failure_phenotype": {"code": "BILATERAL_NONUSE", "domain": "bilateral_inward_coordination", "label": "Limited affected-side participation in a two-handed movement", "description": "The two hands did not complete the inward towel-folding movement together.", "severity": "moderate", "source": "CIMT; bilateral arm training", "rehab_code": "BILATERAL_NONUSE"},
             },
             {
                 "id": "T7-S3",
-                "voice": "Magnificent work! You've finished the assessment. Lower your hands and relax.",
-                "target": {"x": 0.5, "y": 0.78, "r": 0.12, "landmark": "WRISTS"},
+                "voice": "Now move both hands outward again while keeping them at the same height.",
+                "target": {"x": 0.5, "y": 0.40, "r": 0.12, "landmark": "WRISTS_APART", "icon": "towel"},
                 "hold_ms": 1500,
-                "caption": "Lower hands - assessment complete",
+                "caption": "Move both hands outward together",
+                "failure_phenotype": {"code": "BILATERAL_OUTWARD_CONTROL_IMPAIRED", "domain": "bilateral_outward_coordination", "label": "Difficulty coordinating outward two-handed movement", "description": "The two hands moved inward but did not complete the outward movement together.", "severity": "moderate", "source": "Bilateral arm training task observation", "rehab_code": "BILATERAL_NONUSE"},
+            },
+            {
+                "id": "T7-S4",
+                "voice": "Magnificent work. Lower both hands together and relax.",
+                "target": {"x": 0.5, "y": 0.78, "r": 0.12, "landmark": "WRISTS_LOW"},
+                "hold_ms": 1500,
+                "caption": "Lower both hands together",
+                "failure_phenotype": {"code": "BILATERAL_LOWERING_IMPAIRED", "domain": "bilateral_lowering_control", "label": "Difficulty lowering both hands together", "description": "Both hands did not complete the lowering movement together.", "severity": "mild", "source": "Bilateral arm training task observation", "rehab_code": "BILATERAL_NONUSE"},
             },
         ],
     },
 ]
 
 
+HAND_TASKS_DATA: List[Dict[str, Any]] = [
+    {
+        "id": "H1",
+        "title": "Open Hand",
+        "view": "Front view",
+        "focus": "Finger extension, palm opening, thumb-index spread",
+        "steps": [
+            {"id": "H1-S1", "voice": "We will begin the hand function package. Bring your affected hand up in front of your chest, with your palm facing the camera. Keep your fingers relaxed for now. Please do not open your hand yet.", "target": {"x": 0.5, "y": 0.45, "r": 0.12, "landmark": "WRIST"}, "hold_ms": 1200, "caption": "Hand up, palm facing camera, fingers relaxed"},
+            {"id": "H1-S2", "voice": "Now slowly open your fingers as wide as you comfortably can. Take your time, then hold your palm open and steady.", "target": {"x": 0.5, "y": 0.45, "r": 0.12, "landmark": "HAND_OPEN"}, "hold_ms": 1300, "caption": "Slowly open hand wide", "measure": ["finger_extension", "palm_openness", "thumb_index_spread"]},
+            {"id": "H1-S3", "voice": "Good. Relax your hand and lower it to your lap.", "target": {"x": 0.5, "y": 0.82, "r": 0.20, "landmark": "WRIST"}, "hold_ms": 1200, "caption": "Lower hand to lap"},
+        ],
+    },
+    {
+        "id": "H2",
+        "title": "Make a Fist",
+        "view": "Front view",
+        "focus": "Mass finger flexion, fist closure completeness, closing control",
+        "steps": [
+            {"id": "H2-S1", "voice": "Hold your hand up again. Start with your hand open if you can.", "target": {"x": 0.5, "y": 0.45, "r": 0.10, "landmark": "WRIST"}, "hold_ms": 1200, "caption": "Hand ready"},
+            {"id": "H2-S2", "voice": "Slowly close your fingers into a fist. Take your time, then hold the fist for a moment.", "target": {"x": 0.5, "y": 0.45, "r": 0.12, "landmark": "WRIST"}, "hold_ms": 4500, "caption": "Slowly close into a fist", "measure": ["closure_completeness", "closing_speed"]},
+            {"id": "H2-S3", "voice": "Now relax your hand again.", "target": {"x": 0.5, "y": 0.78, "r": 0.10, "landmark": "WRIST"}, "hold_ms": 1200, "caption": "Relax hand"},
+        ],
+    },
+    {
+        "id": "H3",
+        "title": "Thumb-Index Pinch",
+        "view": "Front view",
+        "focus": "Thumb-index opposition, pinch accuracy, pinch stability",
+        "steps": [
+            {"id": "H3-S1", "voice": "Bring your hand up in front of your chest, palm facing you or the camera.", "target": {"x": 0.5, "y": 0.40, "r": 0.10, "landmark": "WRIST"}, "hold_ms": 1200, "caption": "Hand ready for pinch"},
+            {"id": "H3-S2", "voice": "Touch the tip of your thumb to the tip of your index finger, as if pinching a small coin. Hold it steady.", "target": {"x": 0.5, "y": 0.40, "r": 0.12, "landmark": "PINCH", "icon": "coin"}, "hold_ms": 1800, "caption": "Pinch thumb and index finger", "measure": ["pinch_distance", "pinch_accuracy", "pinch_stability"]},
+            {"id": "H3-S3", "voice": "Separate your fingers and relax.", "target": {"x": 0.5, "y": 0.78, "r": 0.10, "landmark": "WRIST"}, "hold_ms": 1200, "caption": "Relax hand"},
+        ],
+    },
+    {
+        "id": "H4",
+        "title": "Open and Close Hand",
+        "view": "Front view",
+        "focus": "Repeated opening, closing, timing, and control",
+        "steps": [
+            {"id": "H4-S1", "voice": "Open your hand wide and show your palm to the camera.", "target": {"x": 0.5, "y": 0.45, "r": 0.12, "landmark": "HAND_OPEN"}, "hold_ms": 1500, "caption": "Open hand", "measure": ["hand_opening"]},
+            {"id": "H4-S2", "voice": "Now close your hand gently, then open it again. Move slowly and smoothly.", "target": {"x": 0.5, "y": 0.45, "r": 0.12, "landmark": "WRIST"}, "hold_ms": 2500, "caption": "Close and open smoothly", "measure": ["open_close_timing", "movement_smoothness"]},
+            {"id": "H4-S3", "voice": "Well done. Lower your hand to rest.", "target": {"x": 0.5, "y": 0.78, "r": 0.10, "landmark": "WRIST"}, "hold_ms": 1200, "caption": "Lower hand"},
+        ],
+    },
+    {
+        "id": "H5",
+        "title": "Advanced Grasp: Pick Up a Light Object",
+        "view": "Front view",
+        "focus": "Gross grasp, hand-object coupling, hold stability",
+        "advanced_marker_required": True,
+        "advanced_label": "Advanced grasp-release with AxonAI marker",
+        "recommended_objects": ["empty plastic cup", "soft ball", "foam cylinder", "small paper box"],
+        "steps": [
+            {"id": "H5-S1", "voice": "This is an advanced grasp task. Reach toward your light object with the AxonAI marker facing the camera.", "target": {"x": 0.32, "y": 0.65, "r": 0.11, "landmark": "WRIST", "icon": "cup"}, "hold_ms": 1400, "caption": "Reach to the marked object"},
+            {"id": "H5-S2", "voice": "Close your hand around the object and lift it slightly. Keep it steady.", "target": {"x": 0.50, "y": 0.55, "r": 0.12, "landmark": "WRIST", "icon": "cup"}, "hold_ms": 2200, "caption": "Grasp and hold object", "measure": ["object_hand_coupling", "hold_stability", "marker_visibility"]},
+            {"id": "H5-S3", "voice": "Gently place the object back down.", "target": {"x": 0.32, "y": 0.65, "r": 0.11, "landmark": "WRIST", "icon": "table"}, "hold_ms": 1500, "caption": "Place object down"},
+        ],
+    },
+    {
+        "id": "H6",
+        "title": "Advanced Release: Let Go at Target",
+        "view": "Front view",
+        "focus": "Finger release, object-hand separation, placement accuracy",
+        "advanced_marker_required": True,
+        "advanced_label": "Advanced grasp-release with AxonAI marker",
+        "recommended_objects": ["empty plastic cup", "soft ball", "foam cylinder", "small paper box"],
+        "steps": [
+            {"id": "H6-S1", "voice": "Hold the marked object with your affected hand.", "target": {"x": 0.35, "y": 0.62, "r": 0.11, "landmark": "WRIST", "icon": "cup"}, "hold_ms": 1400, "caption": "Hold marked object"},
+            {"id": "H6-S2", "voice": "Move the object to the target area, then open your fingers and let go.", "target": {"x": 0.68, "y": 0.62, "r": 0.12, "landmark": "WRIST", "icon": "table"}, "hold_ms": 2400, "caption": "Release at target", "measure": ["release_delay", "object_hand_separation", "placement_endpoint_error"]},
+            {"id": "H6-S3", "voice": "Move your empty hand away from the object.", "target": {"x": 0.5, "y": 0.78, "r": 0.10, "landmark": "WRIST"}, "hold_ms": 1400, "caption": "Move hand away"},
+        ],
+    },
+    {
+        "id": "H7",
+        "title": "Wrist Lift and Stabilize",
+        "view": "Front view",
+        "focus": "Wrist control, unwanted finger flexion, hand stability",
+        "steps": [
+            {"id": "H7-S1", "voice": "Place your forearm comfortably, and bring your hand into view.", "target": {"x": 0.5, "y": 0.62, "r": 0.10, "landmark": "WRIST"}, "hold_ms": 1200, "caption": "Hand in view"},
+            {"id": "H7-S2", "voice": "Lift your wrist gently and hold it steady. Try to keep your fingers relaxed.", "target": {"x": 0.5, "y": 0.48, "r": 0.11, "landmark": "WRIST"}, "hold_ms": 2200, "caption": "Lift and hold wrist", "measure": ["wrist_stability", "unwanted_finger_flexion"]},
+            {"id": "H7-S3", "voice": "Relax your wrist and lower your hand.", "target": {"x": 0.5, "y": 0.78, "r": 0.10, "landmark": "WRIST"}, "hold_ms": 1200, "caption": "Relax wrist"},
+        ],
+    },
+]
+
+attach_hand_failure_phenotypes(HAND_TASKS_DATA)
+
+
+ASSESSMENT_PACKAGES: Dict[str, Dict[str, Any]] = {
+    "upper_limb": {
+        "id": "upper_limb",
+        "title": "Upper Limb Function Package",
+        "subtitle": "Shoulder, elbow, reach, hand-to-mouth, and bilateral upper-limb tasks",
+        "tasks": TASKS_DATA,
+    },
+    "hand": {
+        "id": "hand",
+        "title": "Hand Function Package",
+        "subtitle": "Finger opening, fist closure, pinch, wrist control, and advanced grasp-release tasks",
+        "tasks": HAND_TASKS_DATA,
+    },
+    "lower_limb": {
+        "id": "lower_limb",
+        "title": "Lower Limb Function Package",
+        "subtitle": "Seated selective control, transfers, supported stepping, and gait prerequisites",
+        "tasks": LOWER_LIMB_TASKS_DATA,
+    },
+    "balance": {
+        "id": "balance",
+        "title": "Balance Function Package",
+        "subtitle": "Sitting stability, supported standing, weight shift, and step-stance control",
+        "tasks": BALANCE_TASKS_DATA,
+    },
+}
+
+
 # ============ Functional Issue Rules ============
 # Sources: Fugl-Meyer Upper Extremity Assessment (Fugl-Meyer, 1975);
 # Action Research Arm Test (Lyle, 1981); Stroke Rehabilitation: A Function-Based Approach (Gillen);
 # Bobath / NDT principles; Task-Specific Training (Carr & Shepherd).
+STEP_PHENOTYPES: Dict[str, Dict[str, Any]] = {}
+UPPER_LIMB_STEP_PHENOTYPES: Dict[str, Dict[str, Any]] = {}
+PHENOTYPE_REHAB_ALIASES: Dict[str, str] = {}
+for _package in ASSESSMENT_PACKAGES.values():
+    for _task in _package["tasks"]:
+        for _step in _task.get("steps", []):
+            _phenotype = _step.get("failure_phenotype")
+            if not _phenotype:
+                continue
+            _record = {
+                **_phenotype,
+                "task_id": _task["id"],
+                "step_id": _step["id"],
+                "package_id": _package["id"],
+            }
+            STEP_PHENOTYPES[_step["id"]] = _record
+            if _package["id"] == "upper_limb":
+                UPPER_LIMB_STEP_PHENOTYPES[_step["id"]] = _record
+            PHENOTYPE_REHAB_ALIASES[_phenotype["code"]] = _phenotype.get("rehab_code", _phenotype["code"])
+
+
+LEGACY_TASK_FAILURES: Dict[str, Dict[str, str]] = {
+    "T1": {"code": "REACH_INCOMPLETE", "label": "Limited forward reach", "description": "The forward-reach task was not completed.", "source": "Fugl-Meyer UE; ARAT", "severity": "moderate", "domain": "forward_reach"},
+    "T2": {"code": "SHOULDER_FLEX_LIMITED", "label": "Limited active arm elevation", "description": "The arm-elevation task was not completed.", "source": "Fugl-Meyer UE", "severity": "moderate", "domain": "shoulder_elevation"},
+    "T3": {"code": "H2M_IMPAIRED", "label": "Difficulty bringing the hand to the mouth", "description": "The hand-to-mouth task was not completed.", "source": "Chedoke-McMaster Stroke Assessment; MESUPES", "severity": "moderate", "domain": "hand_to_mouth"},
+    "T4": {"code": "GROSS_GRASP", "label": "Difficulty grasping and moving an object", "description": "The cup-transfer task was not completed.", "source": "ARAT grasp subscale", "severity": "moderate", "domain": "grasp_transport_release"},
+    "T5": {"code": "HAND_OPENING", "label": "Difficulty opening the hand", "description": "The open-grasp-release hand task was not completed.", "source": "Fugl-Meyer UE hand section", "severity": "moderate", "domain": "hand_open_grasp_release"},
+    "T6": {"code": "PINCH_IMPAIRED", "label": "Difficulty forming a thumb-index pinch", "description": "The thumb-index pinch task was not completed.", "source": "ARAT pinch subscale", "severity": "mild", "domain": "pinch"},
+    "T7": {"code": "BILATERAL_NONUSE", "label": "Limited affected-side participation in a two-handed movement", "description": "The two-handed towel task was not completed.", "source": "CIMT; bilateral arm training", "severity": "moderate", "domain": "bilateral_coordination"},
+}
+
+for _package in ASSESSMENT_PACKAGES.values():
+    for _task in _package["tasks"]:
+        if _task["id"] in LEGACY_TASK_FAILURES:
+            continue
+        _fallback = next(
+            (step.get("failure_phenotype") for step in _task.get("steps", []) if step.get("failure_phenotype")),
+            None,
+        )
+        if _fallback:
+            LEGACY_TASK_FAILURES[_task["id"]] = {
+                "code": _fallback["code"],
+                "label": _fallback["label"],
+                "description": f"The {_task['title'].lower()} task was not completed.",
+                "source": _fallback["source"],
+                "severity": _fallback["severity"],
+                "domain": _fallback["domain"],
+            }
+
+
 def derive_functional_issues(task_results: List[TaskResult]) -> List[FunctionalIssue]:
     issues: List[FunctionalIssue] = []
-    by_id = {t.task_id: t for t in task_results}
+    seen_failures = set()
 
-    def add(code, label, description, source, severity, related):
+    def add(code, label, description, source, severity, related, related_step=None, domain=None):
+        key = (code, related_step)
+        if key in seen_failures:
+            return
+        seen_failures.add(key)
         issues.append(FunctionalIssue(
             code=code, label=label, description=description,
             source=source, severity=severity, related_task=related,
+            related_step=related_step, phenotype_domain=domain,
         ))
 
-    t1 = by_id.get("T1")
-    if t1:
-        if t1.completed_steps < t1.total_steps:
-            add("REACH_INCOMPLETE", "Difficulty reaching forward",
-                "Your arm couldn't quite reach as far forward as the target. This is something we can improve with focused practice.",
-                "Fugl-Meyer UE; ARAT", "moderate", "T1")
-        trunk = t1.metrics.get("trunk_lean_deg", 0)
-        if isinstance(trunk, (int, float)) and trunk > 15:
-            add("TRUNK_COMP", "Leaning forward when reaching",
-                "Your body leaned forward to help your arm reach. We'll work on letting your arm do the work while you stay upright.",
-                "Levin & Michaelsen (Trunk Restraint Reaching)", "mild", "T1")
+    # Failure localization is step-specific. A failed step contributes exactly
+    # the movement phenotype declared on that step; no cross-task inference is
+    # performed here. Old clients without step details retain a broad fallback.
+    for task_result in task_results:
+        failed_steps = [step for step in task_result.steps if not step.completed]
+        matched_step_failure = False
+        for step_result in failed_steps:
+            phenotype = STEP_PHENOTYPES.get(step_result.step_id)
+            if not phenotype or phenotype["task_id"] != task_result.task_id:
+                continue
+            matched_step_failure = True
+            add(
+                phenotype["code"],
+                phenotype["label"],
+                phenotype["description"],
+                phenotype["source"],
+                phenotype["severity"],
+                task_result.task_id,
+                step_result.step_id,
+                phenotype["domain"],
+            )
 
-    t2 = by_id.get("T2")
-    if t2:
-        if t2.completed_steps < t2.total_steps:
-            add("SHOULDER_FLEX_LIMITED", "Difficulty lifting your arm overhead",
-                "Raising your arm up high felt harder than it should be. With practice, this range will grow over time.",
-                "Fugl-Meyer UE (Synergistic Movement)", "moderate", "T2")
-        if t2.metrics.get("shoulder_hike", False):
-            add("SHOULDER_HIKE", "Shoulder lifts toward your ear",
-                "Your shoulder hiked up as you reached — a very common pattern after a stroke. We'll teach it to stay relaxed.",
-                "Bobath / NDT principles", "mild", "T2")
+        if task_result.completed_steps < task_result.total_steps and not matched_step_failure:
+            legacy = LEGACY_TASK_FAILURES.get(task_result.task_id)
+            if legacy:
+                add(
+                    legacy["code"], legacy["label"], legacy["description"],
+                    legacy["source"], legacy["severity"], task_result.task_id,
+                    None, legacy["domain"],
+                )
 
-    t3 = by_id.get("T3")
-    if t3 and t3.completed_steps < t3.total_steps:
-        add("H2M_IMPAIRED", "Difficulty bringing your hand to your mouth",
-            "Bringing your hand to your mouth — for eating or drinking — is harder right now. We'll practice this important everyday movement.",
-            "Chedoke-McMaster Stroke Assessment", "moderate", "T3")
-
-    t4 = by_id.get("T4")
-    if t4 and t4.completed_steps < t4.total_steps:
-        add("GROSS_GRASP", "Trouble grasping and moving objects",
-            "Picking something up and moving it across the table felt difficult. We'll rebuild this with simple, everyday items.",
-            "ARAT (Grasp subscale)", "moderate", "T4")
-
-    t5 = by_id.get("T5")
-    if t5 and t5.completed_steps < t5.total_steps:
-        add("HAND_OPENING", "Difficulty opening your hand",
-            "Opening your fingers wide is harder than closing them — this is the most common challenge after a stroke. There's a lot we can do.",
-            "Constraint-Induced Movement Therapy (Taub)", "moderate", "T5")
-
-    t6 = by_id.get("T6")
-    if t6 and t6.completed_steps < t6.total_steps:
-        add("PINCH_IMPAIRED", "Difficulty with small finger movements",
-            "Picking up small objects like a coin or pen is tricky right now. Fine motor skills will return with patient practice.",
-            "Jebsen Hand Function Test", "mild", "T6")
-
-    t7 = by_id.get("T7")
-    if t7 and t7.completed_steps < t7.total_steps:
-        add("BILATERAL_NONUSE", "Your affected arm needs more practice joining in",
-            "When using both hands together, your affected side took a back seat. We'll gently bring it back into your daily activities.",
-            "CIMT / Bilateral Arm Training (BATRAC)", "moderate", "T7")
+    # Completion and movement quality are separate findings. A patient may
+    # reach the target by leaning the trunk or hiking the shoulder.
+    for task_result in task_results:
+        if not task_result.task_id.startswith("T"):
+            continue
+        metric_records = [task_result.metrics, *(step.metrics for step in task_result.steps)]
+        trunk_values = [
+            float(metrics.get("trunk_lean_deg"))
+            for metrics in metric_records
+            if isinstance(metrics.get("trunk_lean_deg"), (int, float))
+        ]
+        peak_trunk_lean = max(trunk_values, default=0.0)
+        if peak_trunk_lean > 18:
+            add(
+                "TRUNK_COMP",
+                "Excess trunk compensation during upper-limb movement",
+                f"The target was approached with a peak 2D trunk lean of {peak_trunk_lean:.0f} degrees.",
+                "Camera-derived 2D movement-quality screen; therapist confirmation required",
+                "moderate" if peak_trunk_lean > 30 else "mild",
+                task_result.task_id,
+                None,
+                "trunk_compensation",
+            )
+        if any(bool(metrics.get("shoulder_hike")) for metrics in metric_records):
+            add(
+                "SHOULDER_HIKE",
+                "Shoulder elevation compensation",
+                "The affected shoulder elevated during the upper-limb task.",
+                "Camera-derived shoulder-line screen; therapist confirmation required",
+                "mild",
+                task_result.task_id,
+                None,
+                "shoulder_compensation",
+            )
 
     if not issues:
         issues.append(FunctionalIssue(
             code="NO_ISSUES",
-            label="No major functional limitations detected",
-            description="The patient completed all tasks. Continue maintenance exercises and progressive challenges.",
-            source="Clinical observation",
+            label="No failed movement steps identified",
+            description="The patient completed every observed movement step in this assessment.",
+            source="Step-level movement observation",
             severity="mild",
             related_task="ALL",
         ))
@@ -416,16 +792,16 @@ EXERCISE_LIBRARY: Dict[str, RehabExercise] = {
         targets_issue="TRUNK_COMP", source="Levin & Michaelsen (2008)",
     ),
     "SHOULDER_FLEX_LIMITED": RehabExercise(
-        id="ex_wallslide", name="Wall Slides + Active Shoulder Flexion",
-        description="Stand facing a wall. Slide forearms up the wall as high as possible, keeping shoulders relaxed.",
+        id="ex_wallslide", name="Supported Arm Elevation Practice",
+        description="Begin seated with the forearm supported on a table or towel. Slide toward a meaningful target within a comfortable, pain-free range. Progress to a wall slide only after a therapist confirms shoulder safety and standing balance.",
         sets=3, reps=10, frequency="Twice daily",
-        targets_issue="SHOULDER_FLEX_LIMITED", source="Fugl-Meyer UE; Bobath",
+        targets_issue="SHOULDER_FLEX_LIMITED", source="NICE NG236 repetitive task training; task-specific upper-limb practice",
     ),
     "SHOULDER_HIKE": RehabExercise(
         id="ex_scapdepress", name="Scapular Depression Practice",
-        description="Sit tall. Gently depress shoulders downward and away from ears, then reach without elevating shoulder.",
+        description="Sit with the affected forearm supported. Settle the shoulder away from the ear, then practise a short pain-free reach while keeping the trunk upright.",
         sets=3, reps=10, frequency="Daily",
-        targets_issue="SHOULDER_HIKE", source="Bobath / NDT principles",
+        targets_issue="SHOULDER_HIKE", source="Task-specific motor practice and movement-quality feedback",
     ),
     "H2M_IMPAIRED": RehabExercise(
         id="ex_h2m", name="Hand-to-Mouth ADL Practice",
@@ -440,10 +816,10 @@ EXERCISE_LIBRARY: Dict[str, RehabExercise] = {
         targets_issue="GROSS_GRASP", source="ARAT-based functional retraining",
     ),
     "HAND_OPENING": RehabExercise(
-        id="ex_handopen", name="Finger Extension with Rubber Band",
-        description="Place a rubber band around fingers. Open hand against light resistance. Slow, controlled extension.",
-        sets=3, reps=15, frequency="Twice daily",
-        targets_issue="HAND_OPENING", source="CIMT protocol (Taub et al.)",
+        id="ex_handopen", name="Active Hand Opening and Release",
+        description="Support the forearm on a table. Practise opening the hand around a large light object, releasing it, and relaxing. Use assistance rather than resistance when active finger extension is limited.",
+        sets=3, reps=10, frequency="Twice daily",
+        targets_issue="HAND_OPENING", source="NICE NG236 repetitive task training; Fugl-Meyer UE hand task concepts",
     ),
     "PINCH_IMPAIRED": RehabExercise(
         id="ex_pinch", name="Pinch & Peg Placement",
@@ -457,6 +833,54 @@ EXERCISE_LIBRARY: Dict[str, RehabExercise] = {
         sets=3, reps=10, frequency="Daily",
         targets_issue="BILATERAL_NONUSE", source="BATRAC (Whitall et al.)",
     ),
+    "LOWER_LIMB_SELECTIVE_CONTROL": RehabExercise(
+        id="ex_lower_selective", name="Supported Selective Lower-Limb Control",
+        description="In supported sitting, practice slow knee extension and return within a comfortable range. Stop if pain, marked fatigue, or loss of sitting balance occurs.",
+        sets=2, reps=8, frequency="Daily with therapist-approved assistance",
+        targets_issue="LOWER_LIMB_SELECTIVE_CONTROL", source="Fugl-Meyer LE; task-specific stroke rehabilitation",
+    ),
+    "ANKLE_DORSIFLEXION_CONTROL": RehabExercise(
+        id="ex_ankle_dorsiflexion", name="Seated Toe-Lift Practice",
+        description="With the heel supported, lift the forefoot and toes, hold briefly, and lower slowly. Keep the knee aligned.",
+        sets=2, reps=10, frequency="Daily",
+        targets_issue="ANKLE_DORSIFLEXION_CONTROL", source="Task-specific lower-limb training",
+    ),
+    "SIT_TO_STAND_IMPAIRED": RehabExercise(
+        id="ex_sit_to_stand", name="Assisted Sit-to-Stand Practice",
+        description="Practice foot placement, forward trunk translation, seat-off, and controlled sitting with a therapist or capable caregiver and a fixed support.",
+        sets=2, reps=5, frequency="Therapist-supervised",
+        targets_issue="SIT_TO_STAND_IMPAIRED", source="Task-specific mobility training; Five Times Sit-to-Stand task analysis",
+    ),
+    "SUPPORTED_STANDING_CONTROL": RehabExercise(
+        id="ex_supported_stand", name="Supported Standing Alignment",
+        description="With close guarding and a fixed support, practice aligned standing with both knees stable. Do not attempt independently when fall risk is present.",
+        sets=3, reps=3, frequency="Therapist-supervised",
+        targets_issue="SUPPORTED_STANDING_CONTROL", source="PASS; Berg Balance Scale task concepts",
+    ),
+    "GAIT_INITIATION_IMPAIRED": RehabExercise(
+        id="ex_supported_step", name="Guarded Step Initiation",
+        description="With close guarding and a fixed support, practice weight shift, short affected-foot advancement, toe clearance, placement, and return.",
+        sets=2, reps=5, frequency="Therapist-supervised",
+        targets_issue="GAIT_INITIATION_IMPAIRED", source="Task-specific gait training; observational gait analysis",
+    ),
+    "WEIGHT_BEARING_ASYMMETRY": RehabExercise(
+        id="ex_weight_shift", name="Supported Affected-Side Weight Shift",
+        description="With close guarding, shift the pelvis gradually toward the affected foot while keeping both feet down and minimizing trunk substitution.",
+        sets=3, reps=6, frequency="Therapist-supervised",
+        targets_issue="WEIGHT_BEARING_ASYMMETRY", source="PASS; task-specific balance training",
+    ),
+    "SITTING_BALANCE_IMPAIRED": RehabExercise(
+        id="ex_sitting_balance", name="Guarded Sitting Midline and Reach",
+        description="Practice upright sitting, small controlled reaches, and return to midline with feet supported and a caregiver guarding the affected side.",
+        sets=3, reps=5, frequency="Daily with approved assistance",
+        targets_issue="SITTING_BALANCE_IMPAIRED", source="PASS; task-specific balance training",
+    ),
+    "DYNAMIC_BALANCE_IMPAIRED": RehabExercise(
+        id="ex_step_stance", name="Supported Step-Stance Control",
+        description="After supported standing is safe, practice a short step stance and controlled return using fixed support and close guarding.",
+        sets=2, reps=4, frequency="Therapist-supervised",
+        targets_issue="DYNAMIC_BALANCE_IMPAIRED", source="Berg Balance Scale task concepts; task-specific balance training",
+    ),
     "NO_ISSUES": RehabExercise(
         id="ex_maintenance", name="Maintenance Conditioning",
         description="Continue full-ROM stretches, light resistance work, and functional ADL practice.",
@@ -466,13 +890,61 @@ EXERCISE_LIBRARY: Dict[str, RehabExercise] = {
 }
 
 
-def build_rehab_plan(issues: List[FunctionalIssue]) -> List[RehabExercise]:
+def _clinical_grade(patient_parameters: Optional[Dict[str, Any]], *keys: str) -> Optional[int]:
+    measures = (patient_parameters or {}).get("clinician_measures") or {}
+    lookup = {str(key).upper(): value for key, value in measures.items()}
+    value = next((lookup[key.upper()] for key in keys if key.upper() in lookup), None)
+    match = re.search(r"(?<!\d)([0-5])(?!\d)", str(value)) if value is not None else None
+    return int(match.group(1)) if match else None
+
+
+def build_rehab_plan(
+    issues: List[FunctionalIssue],
+    patient_parameters: Optional[Dict[str, Any]] = None,
+) -> List[RehabExercise]:
     seen = set()
     plan: List[RehabExercise] = []
+    upper_mmt = _clinical_grade(patient_parameters, "MMT_UPPER_LIMB", "MMT_UPPER", "UL_MMT")
+    mas = _clinical_grade(patient_parameters, "MAS", "ASHWORTH", "MODIFIED_ASHWORTH")
+    priorities = (patient_parameters or {}).get("patient_priorities") or []
+    if isinstance(priorities, str):
+        priorities = [priorities]
+    priority = str(priorities[0]).strip() if priorities else ""
     for issue in issues:
-        ex = EXERCISE_LIBRARY.get(issue.code)
+        rehab_code = PHENOTYPE_REHAB_ALIASES.get(issue.code, issue.code)
+        ex = EXERCISE_LIBRARY.get(rehab_code)
         if ex and ex.id not in seen:
-            plan.append(ex)
+            sets, reps, frequency = ex.sets, ex.reps, ex.frequency
+            is_upper = issue.related_task.startswith("T") or issue.code in {
+                "TRUNK_COMP", "SHOULDER_HIKE", "REACH_INCOMPLETE", "SHOULDER_FLEX_LIMITED",
+                "H2M_IMPAIRED", "GROSS_GRASP", "HAND_OPENING", "PINCH_IMPAIRED", "BILATERAL_NONUSE",
+            }
+            safety_notes = ["Use a pain-free range and stop for new shoulder pain, marked fatigue, dizziness, or loss of sitting balance."]
+            if issue.severity == "severe":
+                sets, reps = min(sets, 2), min(reps, 6)
+                frequency = "Therapist-supervised starting dose"
+                safety_notes.append("The severe task failure requires hands-on safety and assistance-level confirmation before home practice.")
+            if is_upper and upper_mmt is not None and upper_mmt <= 2:
+                sets, reps = min(sets, 2), min(reps, 8)
+                frequency = "Daily with therapist-approved assistance"
+                safety_notes.append("MMT 0-2/5 requires gravity-reduced or active-assisted practice; do not add resistance automatically.")
+            if is_upper and mas is not None and mas >= 2:
+                sets, reps = min(sets, 2), min(reps, 8)
+                safety_notes.append("MAS 2 or above requires tone, passive ROM, skin and positioning review before resistance or prolonged stretch.")
+            reason = f"Selected because {issue.label.lower()} was identified in task {issue.related_task}"
+            if issue.related_step:
+                reason += f", step {issue.related_step}"
+            if priority:
+                reason += f"; progression should support the patient's priority: {priority}"
+            plan.append(ex.model_copy(update={
+                "targets_issue": issue.code,
+                "sets": sets,
+                "reps": reps,
+                "frequency": frequency,
+                "selection_reason": reason + ".",
+                "safety_note": " ".join(safety_notes),
+                "requires_clinician_confirmation": True,
+            }))
             seen.add(ex.id)
     return plan
 
@@ -497,23 +969,67 @@ async def get_status_checks():
 
 
 @api_router.get("/assessment/tasks")
-async def get_tasks():
-    return {"tasks": TASKS_DATA, "voice_id": TTS_VOICE}
+async def get_tasks(package: str = "upper_limb"):
+    selected = ASSESSMENT_PACKAGES.get(package, ASSESSMENT_PACKAGES["upper_limb"])
+    packages = [
+        {
+            "id": item["id"],
+            "title": item["title"],
+            "subtitle": item["subtitle"],
+            "task_count": len(item["tasks"]),
+        }
+        for item in ASSESSMENT_PACKAGES.values()
+    ]
+    return {
+        "tasks": selected["tasks"],
+        "voice_id": TTS_VOICE,
+        "package_id": selected["id"],
+        "package_title": selected["title"],
+        "package_subtitle": selected["subtitle"],
+        "packages": packages,
+    }
 
 
-@api_router.post("/tts/generate", response_model=TTSResponse)
-async def generate_tts(req: TTSRequest):
-    # Use OpenAI TTS (nova by default) via Emergent LLM key.
-    # `voice_id` from old clients is accepted but ignored unless it matches a valid OpenAI voice.
-    valid_voices = {"alloy", "ash", "coral", "echo", "fable", "nova", "onyx", "sage", "shimmer"}
-    voice = req.voice_id if (req.voice_id in valid_voices) else TTS_VOICE
-    try:
-        audio_b64 = await tts_client.generate_speech_base64(
-            text=req.text,
+@api_router.get("/assessment/modeling-spec")
+async def get_modeling_specification():
+    return modeling_specification()
+
+
+async def _generate_tts_audio_base64(text: str, voice: str) -> str:
+    if openai_tts_client:
+        response = openai_tts_client.audio.speech.create(
+            model=TTS_MODEL,
+            voice=voice,
+            input=text,
+            response_format="mp3",
+        )
+        if hasattr(response, "read"):
+            audio_bytes = response.read()
+        elif hasattr(response, "content"):
+            audio_bytes = response.content
+        else:
+            audio_bytes = bytes(response)
+        return base64.b64encode(audio_bytes).decode("ascii")
+
+    if tts_client:
+        return await tts_client.generate_speech_base64(
+            text=text,
             model=TTS_MODEL,
             voice=voice,
             response_format="mp3",
         )
+
+    raise HTTPException(status_code=503, detail="Voice service unavailable: OPENAI_API_KEY is not configured.")
+
+
+@api_router.post("/tts/generate", response_model=TTSResponse)
+async def generate_tts(req: TTSRequest):
+    # Use OpenAI TTS (nova by default).
+    # `voice_id` from old clients is accepted but ignored unless it matches a valid OpenAI voice.
+    valid_voices = {"alloy", "ash", "coral", "echo", "fable", "nova", "onyx", "sage", "shimmer"}
+    voice = req.voice_id if (req.voice_id in valid_voices) else TTS_VOICE
+    try:
+        audio_b64 = await _generate_tts_audio_base64(req.text, voice)
         return TTSResponse(audio_b64=audio_b64, text=req.text)
     except Exception as e:
         msg = str(e)
@@ -528,15 +1044,16 @@ async def generate_tts(req: TTSRequest):
 
 @api_router.get("/tts/health")
 async def tts_health():
-    """Diagnostic: check whether OpenAI TTS via Emergent LLM key works."""
+    """Diagnostic: check whether OpenAI TTS works."""
     try:
-        b = await tts_client.generate_speech(
-            text="ok",
-            model=TTS_MODEL,
-            voice=TTS_VOICE,
-            response_format="mp3",
-        )
-        return {"ok": True, "bytes": len(b), "voice": TTS_VOICE, "model": TTS_MODEL, "provider": "openai"}
+        audio_b64 = await _generate_tts_audio_base64("ok", TTS_VOICE)
+        return {
+            "ok": True,
+            "bytes": len(base64.b64decode(audio_b64)),
+            "voice": TTS_VOICE,
+            "model": TTS_MODEL,
+            "provider": "openai-direct" if openai_tts_client else "openai-emergent",
+        }
     except Exception as e:
         msg = str(e)
         quota = "quota_exceeded" in msg or "402" in msg
@@ -551,14 +1068,56 @@ async def tts_health():
         }
 
 
+def _assessment_patient_parameters(
+    submitted: Dict[str, Any],
+    user: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    merged = dict(submitted or {})
+    profile = user.get("profile") if isinstance(user, dict) and isinstance(user.get("profile"), dict) else {}
+    if profile:
+        for key in ("age_band", "months_since_stroke", "side_affected", "dominant_hand", "mobility_level", "has_caregiver"):
+            if profile.get(key) is not None:
+                merged.setdefault(key, profile[key])
+        if not merged.get("patient_priorities"):
+            priorities = []
+            if str(profile.get("primary_goal") or "").strip():
+                priorities.append(str(profile["primary_goal"]).strip())
+            priorities.extend(str(item).strip() for item in profile.get("secondary_goals") or [] if str(item).strip())
+            if priorities:
+                merged["patient_priorities"] = priorities
+    return merged
+
+
 @api_router.post("/assessment/submit", response_model=Assessment)
 async def submit_assessment(payload: AssessmentSubmit, request: Request):
     user = await _user_from_header(dict(request.headers))
     if user:
         await consume_credits(user["id"], "assessment")
         await consume_credits(user["id"], "rehab_plan")
+    patient_parameters = _assessment_patient_parameters(payload.patient_parameters, user)
     issues = derive_functional_issues(payload.task_results)
-    plan = build_rehab_plan(issues)
+    plan = build_rehab_plan(issues, patient_parameters)
+    domain_assessments = build_domain_assessments(payload.task_results)
+    clinician_measures = build_clinician_measure_summary(patient_parameters)
+    biomechanical_estimates = build_biomechanical_estimates(
+        payload.task_results,
+        patient_parameters,
+        payload.musculoskeletal_outputs,
+    )
+    measurement_form = build_clinical_measurement_form(
+        payload.task_results,
+        patient_parameters,
+        payload.musculoskeletal_outputs,
+    )
+    rehabilitation_goals = build_rehab_goals(
+        payload.task_results,
+        issues,
+        measurement_form,
+        patient_parameters,
+    )
+    muscle_activation_diagnosis = build_muscle_activation_diagnosis(
+        [t.dict() for t in payload.task_results],
+    )
     assessment = Assessment(
         id=str(uuid.uuid4()),
         created_at=datetime.now(timezone.utc).isoformat(),
@@ -566,11 +1125,21 @@ async def submit_assessment(payload: AssessmentSubmit, request: Request):
         task_results=payload.task_results,
         functional_issues=issues,
         rehab_plan=plan,
+        domain_assessments=domain_assessments,
+        clinician_measures=clinician_measures,
+        biomechanical_estimates=biomechanical_estimates,
+        measurement_form=measurement_form,
+        rehabilitation_goals=rehabilitation_goals,
+        muscle_activation_diagnosis=muscle_activation_diagnosis,
     )
     doc = assessment.dict()
     if user:
         doc["user_id"] = user["id"]
-    await db.assessments.insert_one(doc)
+    try:
+        await db.assessments.insert_one(doc)
+    except Exception as e:
+        logger.warning(f"Mongo unavailable for assessment insert; using local fallback: {str(e)[:120]}")
+        LOCAL_ASSESSMENTS.append(doc.copy())
     return assessment
 
 
@@ -580,21 +1149,49 @@ async def get_assessment_history(request: Request):
     user = await _user_from_header(dict(request.headers))
     if not user:
         return []
-    docs = (
-        await db.assessments
-        .find({"user_id": user["id"]}, {"_id": 0})
-        .sort("created_at", -1)
-        .to_list(50)
-    )
+    try:
+        docs = (
+            await db.assessments
+            .find({"user_id": user["id"]}, {"_id": 0})
+            .sort("created_at", -1)
+            .to_list(50)
+        )
+    except Exception as e:
+        logger.warning(f"Mongo unavailable for assessment history; using local fallback: {str(e)[:120]}")
+        docs = [
+            {k: v for k, v in item.items() if k != "_id"}
+            for item in LOCAL_ASSESSMENTS
+            if item.get("user_id") == user["id"]
+        ]
+        docs.sort(key=lambda item: item.get("created_at", ""), reverse=True)
+        docs = docs[:50]
     return [Assessment(**d) for d in docs]
 
 
 @api_router.get("/assessment/{assessment_id}", response_model=Assessment)
 async def get_assessment(assessment_id: str):
-    doc = await db.assessments.find_one({"id": assessment_id}, {"_id": 0})
+    try:
+        doc = await db.assessments.find_one({"id": assessment_id}, {"_id": 0})
+    except Exception as e:
+        logger.warning(f"Mongo unavailable for assessment get; using local fallback: {str(e)[:120]}")
+        doc = next((item for item in LOCAL_ASSESSMENTS if item.get("id") == assessment_id), None)
     if not doc:
         raise HTTPException(status_code=404, detail="Assessment not found")
     return Assessment(**doc)
+
+
+@api_router.get("/assessment/{assessment_id}/muscle-diagnosis")
+async def get_muscle_diagnosis(assessment_id: str):
+    """Recompute the four-anomaly muscle-activation diagnosis for a stored
+    assessment (also works for assessments saved before this feature)."""
+    try:
+        doc = await db.assessments.find_one({"id": assessment_id}, {"_id": 0})
+    except Exception as e:
+        logger.warning(f"Mongo unavailable for muscle diagnosis; local fallback: {str(e)[:120]}")
+        doc = next((item for item in LOCAL_ASSESSMENTS if item.get("id") == assessment_id), None)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Assessment not found")
+    return build_muscle_activation_diagnosis(doc.get("task_results", []))
 
 
 # ============ Pose Runner HTML (served at /api/pose/runner) ============
@@ -614,7 +1211,7 @@ POSE_RUNNER_HTML = r"""<!DOCTYPE html>
   html,body{width:100%;height:100%;background:#0c100e;color:#fdfdfd;font-family:-apple-system,BlinkMacSystemFont,"Plus Jakarta Sans",sans-serif;overflow:hidden}
   #stage{position:relative;width:100vw;height:100vh;background:#000}
   video{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;transform:scaleX(-1)}
-  canvas{position:absolute;inset:0;width:100%;height:100%;transform:scaleX(-1)}
+  canvas{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;transform:scaleX(-1)}
   #ui{position:absolute;inset:0;pointer-events:none;display:flex;flex-direction:column;justify-content:space-between;padding:env(safe-area-inset-top,24px) 16px env(safe-area-inset-bottom,24px) 16px}
   #top{display:flex;align-items:center;gap:8px;background:rgba(28,32,29,0.65);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);border-radius:24px;padding:12px 16px;pointer-events:auto}
   #top .dots{display:flex;gap:6px;flex:1;justify-content:center}
@@ -644,6 +1241,26 @@ POSE_RUNNER_HTML = r"""<!DOCTYPE html>
   #overlay h1{font-size:22px;font-weight:700}
   #overlay p{font-size:15px;color:#bcc2ba;line-height:1.5}
   #overlay button{background:#4A7856;color:#fff;border:none;padding:14px 28px;border-radius:16px;font-weight:700;font-size:16px}
+  #advancedMarkerGate{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:#0c100ef5;padding:20px;pointer-events:auto;z-index:11}
+  #advancedMarkerGate .gateCard{width:min(520px,100%);max-height:92vh;overflow:auto;background:#FDFDFD;color:#1C201D;border-radius:24px;padding:22px;text-align:left;box-shadow:0 24px 80px rgba(0,0,0,.35)}
+  #advancedMarkerGate .gateEyebrow{color:#4A7856;font-size:13px;font-weight:800;letter-spacing:.5px;text-transform:uppercase;margin-bottom:8px}
+  #advancedMarkerGate h2{font-size:24px;line-height:1.2;color:#1C201D;margin-bottom:10px}
+  #advancedMarkerGate p{font-size:16px;line-height:1.45;color:#2C312E;margin-bottom:12px}
+  #advancedMarkerGate .gateBox{background:#D9E5DC;border-radius:16px;padding:14px;margin:14px 0;color:#253C2B}
+  #advancedMarkerGate .gateBox.warn{background:#FFF4E8;color:#503018}
+  #advancedMarkerGate ul{padding-left:18px;margin:8px 0 0}
+  #advancedMarkerGate li{font-size:15px;line-height:1.45;margin:4px 0}
+  #advancedMarkerGate .gateActions{display:flex;flex-direction:column;gap:10px;margin-top:16px}
+  #advancedMarkerGate button{border:none;border-radius:16px;padding:15px 16px;font-size:16px;font-weight:800;cursor:pointer;text-align:center}
+  #markerConfirmBtn{background:#4A7856;color:#fff}
+  #markerMissingBtn{background:#E18E6D;color:#1C201D}
+  #markerBasicBtn,#markerBackBtn{background:#EEF0ED;color:#1C201D}
+  #markerStoreBtn{background:#4A7856;color:#fff}
+  #advancedMarkerGate .missingPanel{margin-top:14px;border-top:1px solid #E3E6E1;padding-top:14px}
+  #diagnosticsBadge{position:absolute;right:16px;top:84px;z-index:4;background:rgba(28,32,29,.72);color:#FDFDFD;border-radius:18px;padding:9px 11px;font-size:12px;line-height:1.35;backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);pointer-events:none;min-width:128px}
+  #diagnosticsBadge strong{display:block;color:#D9E5DC;font-size:12px;margin-bottom:2px}
+  #diagnosticsBadge.good{border:1px solid rgba(127,229,163,.65)}
+  #diagnosticsBadge.warn{border:1px solid rgba(225,142,109,.75)}
   .hidden{display:none !important}
   /* Celebration overlay */
   #celebrate{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:linear-gradient(180deg, rgba(74,120,86,0.92), rgba(28,32,29,0.92));text-align:center;padding:24px;flex-direction:column;gap:14px;pointer-events:auto;z-index:9;opacity:0;transition:opacity .35s ease-out}
@@ -685,8 +1302,45 @@ POSE_RUNNER_HTML = r"""<!DOCTYPE html>
     <p>We will guide you through 7 short movement tasks using your camera. Move into the camera view, then tap Start.</p>
     <button id="startBtn" data-testid="assessment-start">Start Assessment</button>
   </div>
+  <div id="advancedMarkerGate" class="hidden" data-testid="advanced-marker-gate">
+    <div class="gateCard">
+      <div class="gateEyebrow">AxonAI Hand Function Package</div>
+      <h2>Next: advanced grasp-release task</h2>
+      <p>This task observes you picking up and releasing a real lightweight object. Move slowly, and keep safety first.</p>
+      <div class="gateBox">
+        <p><strong>Please prepare one light, safe, easy-to-hold object:</strong></p>
+        <ul>
+          <li>Empty plastic cup</li>
+          <li>Soft ball</li>
+          <li>Light foam cylinder</li>
+          <li>Small paper box</li>
+        </ul>
+      </div>
+      <div class="gateBox warn">
+        <p><strong>Please do not use:</strong> glass cups, hot drinks, heavy objects, sharp objects, or items that are very small, reflective, or transparent.</p>
+        <p>To help AxonAI see the object clearly, place the AxonAI marker on the front of the object and keep the marker facing the camera.</p>
+      </div>
+      <div class="gateActions" id="markerChoicePanel">
+        <button id="markerConfirmBtn" data-testid="marker-confirmed">I have an AxonAI marker and placed it on the object</button>
+        <button id="markerMissingBtn" data-testid="marker-missing">I do not have a marker yet</button>
+      </div>
+      <div class="missingPanel hidden" id="markerMissingPanel">
+        <p><strong>That is okay. You can complete the basic hand function tasks first.</strong></p>
+        <p>Without a marker, AxonAI cannot reliably tell whether the object was grasped or released. When your marker is ready, you can return to the advanced grasp-release task.</p>
+        <div class="gateActions">
+          <button id="markerStoreBtn" data-testid="marker-store">Order AxonAI marker</button>
+          <button id="markerBasicBtn" data-testid="marker-basic-fallback">Do basic hand tasks first</button>
+          <button id="markerBackBtn" data-testid="marker-back-choice">Back to choices</button>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div id="diagnosticsBadge" class="hidden" data-testid="runtime-diagnostics">
+    <strong>Frame status</strong>
+    <span id="diagnosticsText">Preparing</span>
+  </div>
   <div id="celebrate" class="hidden">
-    <div class="star">⭐</div>
+    <div class="star">&#11088;</div>
     <div class="next" id="celebrateLabel">Task 1 complete</div>
     <h2 id="celebrateTitle">Wonderful work!</h2>
     <p class="msg" id="celebrateMsg">You did beautifully. Take a breath — the next task is on its way.</p>
@@ -710,6 +1364,16 @@ const overlay = document.getElementById("overlay");
 const startBtn = document.getElementById("startBtn");
 const skipBtn = document.getElementById("skipBtn");
 const exitBtn = document.getElementById("exitBtn");
+const advancedMarkerGate = document.getElementById("advancedMarkerGate");
+const markerChoicePanel = document.getElementById("markerChoicePanel");
+const markerMissingPanel = document.getElementById("markerMissingPanel");
+const markerConfirmBtn = document.getElementById("markerConfirmBtn");
+const markerMissingBtn = document.getElementById("markerMissingBtn");
+const markerStoreBtn = document.getElementById("markerStoreBtn");
+const markerBasicBtn = document.getElementById("markerBasicBtn");
+const markerBackBtn = document.getElementById("markerBackBtn");
+const diagnosticsBadge = document.getElementById("diagnosticsBadge");
+const diagnosticsText = document.getElementById("diagnosticsText");
 const celebrateEl = document.getElementById("celebrate");
 const celebrateLabel = document.getElementById("celebrateLabel");
 const celebrateTitle = document.getElementById("celebrateTitle");
@@ -735,6 +1399,44 @@ const CELEBRATION_VOICES = [
   "Excellent! That's the spirit. One step closer to recovery.",
 ];
 
+const AXONAI_MARKER_STORE_URL = "/store/axonai-marker";
+const ADVANCED_MARKER_TASK_IDS = new Set(["T4", "T5"]);
+const POSE_SCAN_INTERVAL_MS = 0;
+const MARKER_SCAN_INTERVAL_MS = 120;
+const HAND_SCAN_INTERVAL_MS = 0;
+const HAND_PACKAGE_POSE_SCAN_INTERVAL_MS = 0;
+const HAND_BACKOFF_SCAN_INTERVAL_MS = 180;
+const HAND_BACKOFF_POSE_SCAN_INTERVAL_MS = 800;
+const HAND_LANDMARK_FRESH_MS = 350;
+const HAND_BACKOFF_LANDMARK_FRESH_MS = 2600;
+const MARKER_JITTER_LIMIT = 0.035;
+const MIN_RUNTIME_FPS = 15;
+const HAND_METRIC_NAMES = new Set([
+  "finger_extension",
+  "palm_openness",
+  "thumb_index_spread",
+  "closure_completeness",
+  "closing_speed",
+  "pinch_distance",
+  "pinch_accuracy",
+  "pinch_stability",
+  "hand_opening",
+  "open_close_timing",
+  "unwanted_finger_flexion",
+  "object_hand_coupling",
+  "hold_stability",
+  "release_delay",
+  "object_hand_separation",
+  "placement_endpoint_error",
+]);
+const HAND_CONNECTIONS = HandLandmarker.HAND_CONNECTIONS || [
+  [0,1],[1,2],[2,3],[3,4],
+  [0,5],[5,6],[6,7],[7,8],
+  [5,9],[9,10],[10,11],[11,12],
+  [9,13],[13,14],[14,15],[15,16],
+  [13,17],[0,17],[17,18],[18,19],[19,20],
+];
+
 let landmarker = null;
 let handLandmarker = null;
 let drawingUtils = null;
@@ -751,17 +1453,64 @@ let stepMetrics = {};
 let trunkLeanMax = 0;
 let shoulderFlexionMax = 0;
 let shoulderHikeDetected = false;
+let kneeExtensionMaxDeg = 0;
+let ankleDorsiflexionMax = 0;
+let affectedPelvisShiftMax = 0;
+let lateralTrunkShiftMax = 0;
+let shoulderElevationMaxDeg = 0;
+let elbowFlexionMaxDeg = 0;
+let hipFlexionMaxDeg = 0;
+let kneeFlexionMaxDeg = 0;
+let toeClearanceMaxRatio = 0;
+let circumductionMaxRatio = 0;
+let affectedStepLengthMaxRatio = 0;
+let affectedWristMoveMaxRatio = 0;
+let unaffectedWristMoveMaxRatio = 0;
+let handToMouthMinRatio = Infinity;
+let bodyMetricSamples = [];
+let stepStartBodyState = null;
 let running = false;
 let audioEl = new Audio();
+const voiceAudioCache = new Map();
+const voiceAudioInflight = new Map();
 let latestHandLandmarks = null;        // result.landmarks[0] from HandLandmarker (21 points)
+let latestHandedness = "";             // "Left" / "Right" from MediaPipe, used for palm/back orientation
 let latestPoseLandmarks = null;        // result.landmarks[0] from PoseLandmarker (33 points)
 let dynamicTargetPos = null;           // {x,y} captured once per step for WRIST_DYNAMIC
 let handOpenScore = 0;                 // 0..1 — finger extension confidence
+let fistClosureScore = 0;              // 0..1 — mass finger flexion confidence
 let pinchScore = 0;                    // 0..1 — pinch confidence (1 = very close)
+let palmFacingScore = 0;               // 0..1 — palm plane faces camera rather than edge-on
+let fingerTotalFlexionMaxDeg = 0;
+let fingerAbductionMaxRatio = 0;
+let thumbIndexMinDistanceRatio = Infinity;
 // Pull signed-in user id from URL (?uid=…) so /assessment/submit attributes the
 // new assessment to the correct user and credits get debited from their wallet.
+let advancedGateSeen = {};
+let advancedObjectModeByTask = {};
+let waitingForAdvancedGate = false;
+let lastFrameTs = 0;
+let lastPoseScanTs = 0;
+let currentFps = 0;
+let frameStats = {totalFrames:0, handFrames:0, markerFrames:0};
+let markerCanvas = document.createElement("canvas");
+markerCanvas.width = 160;
+markerCanvas.height = 90;
+let markerCtx = markerCanvas.getContext("2d", {willReadFrequently:true});
+let lastMarkerScanTs = 0;
+let lastHandScanTs = 0;
+let latestHandSeenAt = 0;
+let markerHistory = [];
+let latestMarker = null; // {object_center, object_visibility, object_stability}
+let handObjectOverlapStartedAt = null;
+let handObjectOverlapMs = 0;
+let objectTransportSamples = [];
+let visionFilesetResolver = null;
 const URL_PARAMS = new URLSearchParams(window.location.search);
 const CURRENT_USER_ID = URL_PARAMS.get("uid") || "";
+const ASSESSMENT_PACKAGE = URL_PARAMS.get("package") || "upper_limb";
+const START_TASK_ID = URL_PARAMS.get("start_task") || "";
+const AFFECTED_SIDE = URL_PARAMS.get("affected_side") === "left" ? "left" : "right";
 
 function postRN(data){
   if(window.ReactNativeWebView){
@@ -770,10 +1519,16 @@ function postRN(data){
 }
 
 async function loadTasks(){
-  const res = await fetch(`${API_BASE}/assessment/tasks`);
+  const res = await fetch(`${API_BASE}/assessment/tasks?package=${encodeURIComponent(ASSESSMENT_PACKAGE)}`);
   const json = await res.json();
   tasks = json.tasks;
   voiceId = json.voice_id;
+  const overlayCopy = overlay.querySelector("p");
+  if(overlayCopy) overlayCopy.textContent = `We will guide you through ${tasks.length} short movement tasks using your camera. Move into the camera view, then tap Start.`;
+  if(START_TASK_ID){
+    const startIdx = tasks.findIndex((task) => task.id === START_TASK_ID);
+    if(startIdx >= 0) currentTaskIdx = startIdx;
+  }
   renderDots();
 }
 
@@ -789,7 +1544,10 @@ function renderDots(){
 
 async function setupCamera(){
   try{
-    const stream = await navigator.mediaDevices.getUserMedia({video:{facingMode:"user", width:{ideal:1280}, height:{ideal:720}}, audio:false});
+    const videoSettings = ASSESSMENT_PACKAGE === "hand"
+      ? {facingMode:"user", width:{ideal:640}, height:{ideal:480}, frameRate:{ideal:30, max:30}}
+      : {facingMode:"user", width:{ideal:480}, height:{ideal:360}, frameRate:{ideal:30, max:30}};
+    const stream = await navigator.mediaDevices.getUserMedia({video:videoSettings, audio:false});
     video.srcObject = stream;
     await new Promise(r => video.onloadedmetadata = r);
     canvas.width = video.videoWidth;
@@ -802,45 +1560,164 @@ async function setupCamera(){
   }
 }
 
+async function getVisionFilesetResolver(){
+  if(!visionFilesetResolver){
+    visionFilesetResolver = await FilesetResolver.forVisionTasks(
+      "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm"
+    );
+  }
+  return visionFilesetResolver;
+}
+
 async function setupPose(){
-  const filesetResolver = await FilesetResolver.forVisionTasks(
-    "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm"
-  );
+  const filesetResolver = await getVisionFilesetResolver();
   landmarker = await PoseLandmarker.createFromOptions(filesetResolver, {
     baseOptions:{ modelAssetPath: "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task" },
     runningMode: "VIDEO",
     numPoses: 1,
   });
+}
+
+async function setupHand(){
+  const filesetResolver = await getVisionFilesetResolver();
   try{
     handLandmarker = await HandLandmarker.createFromOptions(filesetResolver, {
       baseOptions:{ modelAssetPath: "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task" },
       runningMode: "VIDEO",
-      numHands: 2,
+      numHands: 1,
+      minHandDetectionConfidence: 0.65,
+      minHandPresenceConfidence: 0.65,
+      minTrackingConfidence: 0.7,
     });
   }catch(e){
     // hand detection optional — falls back to pose-based heuristics
     handLandmarker = null;
     postRN({type:"hand_landmarker_unavailable", message:String(e)});
   }
+}
+
+async function setupTrackingModels(){
+  if(ASSESSMENT_PACKAGE === "hand"){
+    await setupHand();
+  }else{
+    await setupPose();
+  }
   drawingUtils = new DrawingUtils(ctx);
+}
+
+function playBrowserVoice(text){
+  return new Promise((resolve) => {
+    if(!("speechSynthesis" in window) || !window.SpeechSynthesisUtterance){
+      resolve(false);
+      return;
+    }
+    try{
+      window.speechSynthesis.cancel();
+      const utterance = new SpeechSynthesisUtterance(text);
+      utterance.lang = "en-US";
+      utterance.rate = 0.88;
+      utterance.pitch = 1.0;
+      utterance.onend = () => resolve(true);
+      utterance.onerror = () => resolve(false);
+      window.speechSynthesis.speak(utterance);
+      setTimeout(() => resolve(true), Math.min(14000, Math.max(3500, text.length * 70)));
+    }catch(e){
+      resolve(false);
+    }
+  });
+}
+
+function voiceCacheKey(text){
+  return `${voiceId}::${text}`;
+}
+
+async function fetchVoiceAudio(text){
+  const key = voiceCacheKey(text);
+  if(voiceAudioCache.has(key)) return voiceAudioCache.get(key);
+  if(voiceAudioInflight.has(key)) return voiceAudioInflight.get(key);
+  const promise = fetch(`${API_BASE}/tts/generate`,{
+    method:"POST", headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({text, voice_id: voiceId})
+  })
+    .then(async (res) => {
+      if(!res.ok) throw new Error("tts failed");
+      const data = await res.json();
+      voiceAudioCache.set(key, data.audio_b64);
+      return data.audio_b64;
+    })
+    .finally(() => voiceAudioInflight.delete(key));
+  voiceAudioInflight.set(key, promise);
+  return promise;
+}
+
+function prefetchVoice(text){
+  if(!text) return;
+  fetchVoiceAudio(text).catch(() => {});
+}
+
+function prefetchUpcomingVoice(){
+  const task = tasks[currentTaskIdx];
+  if(!task || !Array.isArray(task.steps)) return;
+  const nextStep = task.steps[currentStepIdx + 1];
+  if(nextStep && nextStep.voice){
+    prefetchVoice(nextStep.voice);
+  }
 }
 
 async function playVoice(text){
   try{
     voiceText.textContent = "Playing instruction…";
-    const res = await fetch(`${API_BASE}/tts/generate`,{
-      method:"POST", headers:{"Content-Type":"application/json"},
-      body: JSON.stringify({text, voice_id: voiceId})
-    });
-    if(!res.ok) throw new Error("tts failed");
-    const data = await res.json();
-    audioEl.src = "data:audio/mpeg;base64," + data.audio_b64;
+    const audioB64 = await fetchVoiceAudio(text);
+    audioEl.src = "data:audio/mpeg;base64," + audioB64;
     audioEl.play().catch(()=>{});
     audioEl.onended = () => { voiceText.textContent = "Instruction ready · follow the target"; };
   }catch(e){
-    voiceText.textContent = "Voice unavailable — follow on-screen text";
+    voiceText.textContent = "Using device voice";
+    const spoke = await playBrowserVoice(text);
+    voiceText.textContent = spoke ? "Instruction ready · follow the target" : "Voice unavailable — follow on-screen text";
     postRN({type:"voice_error", message:String(e)});
   }
+}
+
+function isAdvancedMarkerTask(task){
+  return !!(task && (task.advanced_marker_required || ADVANCED_MARKER_TASK_IDS.has(task.id)));
+}
+
+function isAdvancedObjectMode(){
+  const task = tasks[currentTaskIdx];
+  return !!(task && advancedObjectModeByTask[task.id]);
+}
+
+function resetAdvancedTracking(){
+  frameStats = {totalFrames:0, handFrames:0, markerFrames:0};
+  latestMarker = null;
+  markerHistory = [];
+  handObjectOverlapStartedAt = null;
+  handObjectOverlapMs = 0;
+  objectTransportSamples = [];
+  lastMarkerScanTs = 0;
+  lastHandScanTs = 0;
+}
+
+function showAdvancedMarkerGate(task){
+  waitingForAdvancedGate = true;
+  markerChoicePanel.classList.remove("hidden");
+  markerMissingPanel.classList.add("hidden");
+  advancedMarkerGate.classList.remove("hidden");
+  captionEl.textContent = "Prepare a light object and AxonAI marker first";
+  voiceText.textContent = "Confirm when you are ready for the advanced task";
+  postRN({type:"advanced_marker_gate", task_id: task.id});
+}
+
+function continueAdvancedTask(hasMarker){
+  const task = tasks[currentTaskIdx];
+  if(!task) return;
+  advancedGateSeen[task.id] = true;
+  advancedObjectModeByTask[task.id] = !!hasMarker;
+  waitingForAdvancedGate = false;
+  advancedMarkerGate.classList.add("hidden");
+  resetAdvancedTracking();
+  startStep();
 }
 
 function getCurrentStep(){
@@ -853,19 +1730,50 @@ async function startStep(){
   const step = getCurrentStep();
   const task = tasks[currentTaskIdx];
   if(!step) return;
+  if(currentStepIdx === 0 && isAdvancedMarkerTask(task) && !advancedGateSeen[task.id]){
+    showAdvancedMarkerGate(task);
+    return;
+  }
+  if(needsHandLandmarks() && !handLandmarker){
+    voiceText.textContent = "Preparing hand tracking...";
+    await setupHand();
+  }
   stepStartTime = performance.now();
   stepStartedAt = stepStartTime;
   voiceFinishedAt = 0;
-  arrivedAfterMovement = false;
+  arrivedAfterMovement = ASSESSMENT_PACKAGE === "hand" || step.movement_required === false;
   stepStartWristXY = null;
   inTargetSince = null;
   lastInTargetTs = 0;
   stepCompleted = false;
+  fistCloseReadyObserved = false;
+  fistClosureMinScore = 1;
+  fistClosingStarted = false;
   stepMetrics = {};
   trunkLeanMax = 0;
   shoulderFlexionMax = 0;
   shoulderHikeDetected = false;
+  kneeExtensionMaxDeg = 0;
+  ankleDorsiflexionMax = 0;
+  affectedPelvisShiftMax = 0;
+  lateralTrunkShiftMax = 0;
+  shoulderElevationMaxDeg = 0;
+  elbowFlexionMaxDeg = 0;
+  hipFlexionMaxDeg = 0;
+  kneeFlexionMaxDeg = 0;
+  toeClearanceMaxRatio = 0;
+  circumductionMaxRatio = 0;
+  affectedStepLengthMaxRatio = 0;
+  affectedWristMoveMaxRatio = 0;
+  unaffectedWristMoveMaxRatio = 0;
+  handToMouthMinRatio = Infinity;
+  bodyMetricSamples = [];
+  fingerTotalFlexionMaxDeg = 0;
+  fingerAbductionMaxRatio = 0;
+  thumbIndexMinDistanceRatio = Infinity;
+  stepStartBodyState = null;
   dynamicTargetPos = null;
+  if(currentStepIdx === 0) resetAdvancedTracking();
   stepTitle.textContent = `Task ${currentTaskIdx+1} of ${tasks.length} · ${task.title}`;
   captionEl.textContent = step.caption;
   renderDots();
@@ -874,6 +1782,7 @@ async function startStep(){
   document.body.classList.remove("step-active");
   postRN({type:"step_start", task_id: task.id, step_id: step.id});
   await playVoice(step.voice);
+  prefetchUpcomingVoice();
   // Voice finished → unlock the target and fade the bottom card
   voiceFinishedAt = performance.now();
   document.body.classList.remove("voice-playing");
@@ -883,6 +1792,59 @@ async function startStep(){
 function distance(a,b){ return Math.hypot(a.x-b.x, a.y-b.y); }
 
 function rad2deg(r){ return r*180/Math.PI; }
+
+function midpoint(a,b){ return {x:(a.x+b.x)/2, y:(a.y+b.y)/2}; }
+
+function jointAngleDeg(a,b,c){
+  const ab = {x:a.x-b.x, y:a.y-b.y};
+  const cb = {x:c.x-b.x, y:c.y-b.y};
+  const denom = Math.max(1e-6, Math.hypot(ab.x,ab.y) * Math.hypot(cb.x,cb.y));
+  const cosine = Math.max(-1, Math.min(1, (ab.x*cb.x + ab.y*cb.y) / denom));
+  return rad2deg(Math.acos(cosine));
+}
+
+function sideLandmarks(lm, side=AFFECTED_SIDE){
+  const left = side === "left";
+  return {
+    shoulder: lm[left ? 11 : 12],
+    elbow: lm[left ? 13 : 14],
+    wrist: lm[left ? 15 : 16],
+    hip: lm[left ? 23 : 24],
+    knee: lm[left ? 25 : 26],
+    ankle: lm[left ? 27 : 28],
+    heel: lm[left ? 29 : 30],
+    toe: lm[left ? 31 : 32],
+  };
+}
+
+function bodyState(lm){
+  const affected = sideLandmarks(lm, AFFECTED_SIDE);
+  const unaffected = sideLandmarks(lm, AFFECTED_SIDE === "left" ? "right" : "left");
+  const midHip = midpoint(lm[23], lm[24]);
+  const midShoulder = midpoint(lm[11], lm[12]);
+  const shoulderWidthNow = Math.max(0.03, distance(lm[11], lm[12]));
+  const legLength = Math.max(0.05, distance(affected.hip, affected.knee) + distance(affected.knee, affected.ankle));
+  const leftX = Math.min(affected.ankle.x, unaffected.ankle.x);
+  const rightX = Math.max(affected.ankle.x, unaffected.ankle.x);
+  const baseWidth = Math.max(0.03, rightX - leftX);
+  const rightShare = Math.max(0, Math.min(1, (midHip.x - leftX) / baseWidth));
+  const affectedLoadShare = AFFECTED_SIDE === "right" ? rightShare : 1 - rightShare;
+  const affectedKneeAngle = jointAngleDeg(affected.hip, affected.knee, affected.ankle);
+  return {
+    affected, unaffected, midHip, midShoulder,
+    affectedKneeAngle,
+    unaffectedKneeAngle: jointAngleDeg(unaffected.hip, unaffected.knee, unaffected.ankle),
+    shoulderElevation: jointAngleDeg(affected.hip, affected.shoulder, affected.elbow),
+    elbowFlexion: 180 - jointAngleDeg(affected.shoulder, affected.elbow, affected.wrist),
+    hipFlexion: 180 - jointAngleDeg(affected.shoulder, affected.hip, affected.knee),
+    kneeFlexion: 180 - affectedKneeAngle,
+    trunkLean: Math.abs(rad2deg(Math.atan2(midShoulder.x-midHip.x, -(midShoulder.y-midHip.y)))),
+    footSeparation: Math.hypot(affected.ankle.x-unaffected.ankle.x, affected.ankle.y-unaffected.ankle.y),
+    shoulderWidth: shoulderWidthNow,
+    legLength,
+    affectedLoadShare,
+  };
+}
 
 function computeMetrics(landmarks){
   // landmarks are normalized 0..1
@@ -906,9 +1868,43 @@ function computeMetrics(landmarks){
   const flexion = Math.max(0, (shY - wristY)); // larger = arm more raised
   shoulderFlexionMax = Math.max(shoulderFlexionMax, flexion);
 
-  // shoulder hike: shoulder higher than baseline relative to hip
-  const shoulderHipDist = midHip.y - midSh.y;
-  if(shoulderHipDist > 0.35) shoulderHikeDetected = true;
+  const state = bodyState(landmarks);
+  if(!stepStartBodyState) stepStartBodyState = state;
+  const affectedShoulder = state.affected.shoulder;
+  const unaffectedShoulder = state.unaffected.shoulder;
+  const shoulderElevationDelta = unaffectedShoulder.y - affectedShoulder.y;
+  if(shoulderElevationDelta > Math.max(0.015, state.shoulderWidth * 0.10)) shoulderHikeDetected = true;
+  kneeExtensionMaxDeg = Math.max(kneeExtensionMaxDeg, state.affectedKneeAngle);
+  ankleDorsiflexionMax = Math.max(ankleDorsiflexionMax, state.affected.heel.y - state.affected.toe.y);
+  shoulderElevationMaxDeg = Math.max(shoulderElevationMaxDeg, state.shoulderElevation);
+  elbowFlexionMaxDeg = Math.max(elbowFlexionMaxDeg, state.elbowFlexion);
+  hipFlexionMaxDeg = Math.max(hipFlexionMaxDeg, state.hipFlexion);
+  kneeFlexionMaxDeg = Math.max(kneeFlexionMaxDeg, state.kneeFlexion);
+  const affectedDirection = AFFECTED_SIDE === "left" ? -1 : 1;
+  affectedPelvisShiftMax = Math.max(affectedPelvisShiftMax, affectedDirection * (state.midHip.x - stepStartBodyState.midHip.x));
+  lateralTrunkShiftMax = Math.max(lateralTrunkShiftMax, Math.abs(state.midShoulder.x - stepStartBodyState.midShoulder.x));
+  const toeLift = Math.max(0, stepStartBodyState.affected.toe.y - state.affected.toe.y) / state.legLength;
+  const ankleMoveX = Math.abs(state.affected.ankle.x - stepStartBodyState.affected.ankle.x) / state.legLength;
+  const ankleMove = distance(state.affected.ankle, stepStartBodyState.affected.ankle) / state.legLength;
+  const wristMove = distance(state.affected.wrist, stepStartBodyState.affected.wrist) / Math.max(0.05, state.shoulderWidth);
+  const unaffectedWristMove = distance(state.unaffected.wrist, stepStartBodyState.unaffected.wrist) / Math.max(0.05, state.shoulderWidth);
+  const mouthCenter = midpoint(landmarks[9], landmarks[10]);
+  const handToMouth = distance(state.affected.wrist, mouthCenter) / Math.max(0.05, state.shoulderWidth);
+  toeClearanceMaxRatio = Math.max(toeClearanceMaxRatio, toeLift);
+  circumductionMaxRatio = Math.max(circumductionMaxRatio, ankleMoveX);
+  affectedStepLengthMaxRatio = Math.max(affectedStepLengthMaxRatio, ankleMove);
+  affectedWristMoveMaxRatio = Math.max(affectedWristMoveMaxRatio, wristMove);
+  unaffectedWristMoveMaxRatio = Math.max(unaffectedWristMoveMaxRatio, unaffectedWristMove);
+  handToMouthMinRatio = Math.min(handToMouthMinRatio, handToMouth);
+  bodyMetricSamples.push({
+    midHipX:state.midHip.x, midHipY:state.midHip.y,
+    midShoulderX:state.midShoulder.x, midShoulderY:state.midShoulder.y,
+    trunkLean:state.trunkLean, kneeAngle:state.affectedKneeAngle,
+    affectedLoadShare:state.affectedLoadShare,
+    affectedAnkleX:state.affected.ankle.x, affectedAnkleY:state.affected.ankle.y,
+    shoulderWidth:state.shoulderWidth,
+  });
+  if(bodyMetricSamples.length > 360) bodyMetricSamples.shift();
 }
 
 // ---------- Dynamic target resolution ----------
@@ -917,7 +1913,27 @@ function computeMetrics(landmarks){
 // Mirroring: user sees themselves mirrored — so on-screen X = (1 - landmark.x).
 function mirrorX(p){ return {x: 1 - p.x, y: p.y}; }
 
+function handPalmCenter(){
+  if(!latestHandLandmarks || latestHandLandmarks.length < 21) return null;
+  const h = latestHandLandmarks;
+  return mirrorX({x:(h[0].x + h[5].x + h[17].x)/3, y:(h[0].y + h[5].y + h[17].y)/3});
+}
+
+function handWristPoint(){
+  if(!latestHandLandmarks || latestHandLandmarks.length < 21) return null;
+  return mirrorX(latestHandLandmarks[0]);
+}
+
+function activeHandPoint(){
+  return handPalmCenter() || handWristPoint();
+}
+
 function resolveLandmarkPoint(which){
+  if(ASSESSMENT_PACKAGE === "hand"){
+    if(which === "WRIST" || which === "HAND_OPEN" || which === "PINCH" || which === "CHEST"){
+      return activeHandPoint();
+    }
+  }
   const lm = latestPoseLandmarks;
   if(!lm) return null;
   if(which === "WRIST" || which === "WRIST_DYNAMIC"){
@@ -939,7 +1955,7 @@ function resolveLandmarkPoint(which){
     const mid = {x:(ls.x+rs.x)/2, y:(ls.y+rs.y)/2 + 0.06};
     return mirrorX(mid);
   }
-  if(which === "HAND_OPEN" || which === "PINCH"){
+  if(which === "HAND_OPEN" || which === "PINCH" || which === "PINCH_RELEASED"){
     // Anchor on whichever wrist is most raised (active hand)
     const active = lm[15].y < lm[16].y ? lm[15] : lm[16];
     return mirrorX(active);
@@ -948,6 +1964,9 @@ function resolveLandmarkPoint(which){
 }
 
 function getEffectiveTargetXY(step){
+  if(ASSESSMENT_PACKAGE === "hand"){
+    return {x: step.target.x, y: step.target.y};
+  }
   // For WRIST_DYNAMIC, MOUTH, CHEST, HAND_OPEN, PINCH the target follows the body.
   // Otherwise use the static configured x/y.
   const which = step.target.landmark;
@@ -963,7 +1982,7 @@ function getEffectiveTargetXY(step){
     const p = resolveLandmarkPoint(which);
     return p ? {x: p.x, y: p.y} : {x: step.target.x, y: step.target.y};
   }
-  if(which === "HAND_OPEN" || which === "PINCH"){
+  if(which === "HAND_OPEN" || which === "PINCH" || which === "PINCH_RELEASED"){
     // Anchor on the raised hand so user can see the prompt next to their hand
     const p = resolveLandmarkPoint(which);
     return p ? {x: p.x, y: p.y} : {x: step.target.x, y: step.target.y};
@@ -980,28 +1999,259 @@ function computeHandMetrics(){
   if(!latestHandLandmarks || latestHandLandmarks.length < 21){
     // decay scores so old detections don't linger
     handOpenScore = Math.max(0, handOpenScore - 0.15);
+    fistClosureScore = Math.max(0, fistClosureScore - 0.15);
     pinchScore = Math.max(0, pinchScore - 0.15);
+    palmFacingScore = Math.max(0, palmFacingScore - 0.15);
     return;
   }
   const h = latestHandLandmarks;
+  const clamp01 = (v) => Math.max(0, Math.min(1, v));
   const dist = (a,b) => Math.hypot(a.x-b.x, a.y-b.y);
+  const angleDeg = (a,b,c) => {
+    const ab = {x:a.x-b.x, y:a.y-b.y, z:(a.z||0)-(b.z||0)};
+    const cb = {x:c.x-b.x, y:c.y-b.y, z:(c.z||0)-(b.z||0)};
+    const abLen = Math.max(0.0001, Math.hypot(ab.x, ab.y, ab.z));
+    const cbLen = Math.max(0.0001, Math.hypot(cb.x, cb.y, cb.z));
+    const cos = Math.max(-1, Math.min(1, (ab.x*cb.x + ab.y*cb.y + ab.z*cb.z) / (abLen * cbLen)));
+    return Math.acos(cos) * 180 / Math.PI;
+  };
   const palmWidth = Math.max(0.01, dist(h[5], h[17])); // index_mcp <-> pinky_mcp
+  const palmHeight = Math.max(0.01, dist(h[0], h[9])); // wrist <-> middle_mcp
+  const handScale = Math.max(0.01, palmWidth, palmHeight * 0.9);
+  const vIndex = {x:h[5].x-h[0].x, y:h[5].y-h[0].y, z:(h[5].z||0)-(h[0].z||0)};
+  const vPinky = {x:h[17].x-h[0].x, y:h[17].y-h[0].y, z:(h[17].z||0)-(h[0].z||0)};
+  const normal = {
+    x: vIndex.y*vPinky.z - vIndex.z*vPinky.y,
+    y: vIndex.z*vPinky.x - vIndex.x*vPinky.z,
+    z: vIndex.x*vPinky.y - vIndex.y*vPinky.x,
+  };
+  const normalMag = Math.max(0.0001, Math.hypot(normal.x, normal.y, normal.z));
+  const signedPlaneFacing = normal.z / normalMag;
+  const expectedPalmSign = latestHandedness === "Right" ? 1 : (latestHandedness === "Left" ? -1 : 0);
+  const signedPalmTowardCamera = expectedPalmSign ? signedPlaneFacing * expectedPalmSign : signedPlaneFacing;
+  const planeFacesCamera = clamp01((signedPalmTowardCamera - 0.08) / 0.52);
+  const palmSpreadRatio = clamp01((palmWidth / palmHeight - 0.35) / 0.45);
+  const palmDepthTilt = Math.abs((h[5].z||0) - (h[17].z||0)) / palmWidth;
+  const depthFlatness = clamp01(1 - palmDepthTilt / 0.35);
+  const palmFacing = clamp01(planeFacesCamera * 0.65 + palmSpreadRatio * 0.25 + depthFlatness * 0.10);
+  palmFacingScore = palmFacingScore * 0.6 + palmFacing * 0.4;
   const fingerSpread = (
     dist(h[0], h[8])  +  // wrist to index_tip
     dist(h[0], h[12]) +  // wrist to middle_tip
     dist(h[0], h[16]) +  // wrist to ring_tip
     dist(h[0], h[20])    // wrist to pinky_tip
   ) / 4;
-  // Normalize by palm width — extended fingers ~3-4x palm width
-  const openRatio = fingerSpread / palmWidth;
-  // Map 1.8 (closed) -> 0 ; 3.0 (open) -> 1
-  const open = Math.max(0, Math.min(1, (openRatio - 1.8) / 1.2));
+  const fingerDefs = [
+    [5, 6, 7, 8],
+    [9, 10, 11, 12],
+    [13, 14, 15, 16],
+    [17, 18, 19, 20],
+  ];
+  const fingerStraightnessScore = fingerDefs.reduce((sum, [mcp, pip, dip, tip]) => {
+    const pipStraight = clamp01((angleDeg(h[mcp], h[pip], h[dip]) - 110) / 60);
+    const dipStraight = clamp01((angleDeg(h[pip], h[dip], h[tip]) - 120) / 55);
+    const reach = clamp01((dist(h[mcp], h[tip]) / handScale - 0.55) / 0.65);
+    return sum + (pipStraight * 0.45 + dipStraight * 0.35 + reach * 0.20);
+  }, 0) / fingerDefs.length;
+  const fingertipDistanceScore = clamp01((fingerSpread / handScale - 1.15) / 1.15);
+  const thumbIndexSpreadScore = clamp01((dist(h[4], h[8]) / handScale - 0.35) / 0.95);
+  const open = clamp01(fingerStraightnessScore * 0.62 + fingertipDistanceScore * 0.28 + thumbIndexSpreadScore * 0.10);
   handOpenScore = handOpenScore * 0.6 + open * 0.4;
+  const totalFlexion = fingerDefs.reduce((sum, [mcp, pip, dip, tip]) => {
+    const pipFlexion = Math.max(0, 180 - angleDeg(h[mcp], h[pip], h[dip]));
+    const dipFlexion = Math.max(0, 180 - angleDeg(h[pip], h[dip], h[tip]));
+    return sum + pipFlexion + dipFlexion;
+  }, 0) / fingerDefs.length;
+  fingerTotalFlexionMaxDeg = Math.max(fingerTotalFlexionMaxDeg, totalFlexion);
+  fingerAbductionMaxRatio = Math.max(fingerAbductionMaxRatio, dist(h[8], h[20]) / palmWidth);
+  thumbIndexMinDistanceRatio = Math.min(thumbIndexMinDistanceRatio, dist(h[4], h[8]) / palmWidth);
+
+  const palmCenter = {x:(h[0].x + h[5].x + h[9].x + h[13].x + h[17].x)/5, y:(h[0].y + h[5].y + h[9].y + h[13].y + h[17].y)/5};
+  const tipPalmDist = (dist(h[8], palmCenter) + dist(h[12], palmCenter) + dist(h[16], palmCenter) + dist(h[20], palmCenter)) / 4;
+  const closureRatio = tipPalmDist / palmWidth;
+  const closure = clamp01((2.15 - closureRatio) / 0.85);
+  fistClosureScore = fistClosureScore * 0.6 + closure * 0.4;
 
   const pinchDist = dist(h[4], h[8]) / palmWidth;
   // pinchDist < 0.5 means tips are touching; > 1.2 means apart
-  const pinch = Math.max(0, Math.min(1, (1.2 - pinchDist) / 0.7));
+  const pinch = clamp01((1.2 - pinchDist) / 0.7);
   pinchScore = pinchScore * 0.6 + pinch * 0.4;
+}
+
+function needsHandLandmarks(){
+  if(ASSESSMENT_PACKAGE === "hand") return true;
+  const task = tasks[currentTaskIdx];
+  const step = getCurrentStep();
+  const landmark = step && step.target ? step.target.landmark : "";
+  const measures = step && Array.isArray(step.measure) ? step.measure : [];
+  return landmark === "HAND_OPEN"
+    || landmark === "HAND_CLOSED"
+    || landmark === "PINCH"
+    || landmark === "PINCH_RELEASED"
+    || landmark === "OBJECT_COUPLED"
+    || landmark === "OBJECT_AT_TARGET"
+    || landmark === "OBJECT_RELEASED"
+    || isAdvancedObjectMode()
+    || measures.some((name) => HAND_METRIC_NAMES.has(name));
+}
+
+function isHandPerformanceBackoff(){
+  return ASSESSMENT_PACKAGE === "hand" && currentFps > 0 && currentFps < MIN_RUNTIME_FPS;
+}
+
+function handLandmarkFreshMs(){
+  return isHandPerformanceBackoff() ? HAND_BACKOFF_LANDMARK_FRESH_MS : HAND_LANDMARK_FRESH_MS;
+}
+
+function getHandCenter(){
+  const palm = handPalmCenter();
+  if(palm) return palm;
+  const w = activeWrist(latestPoseLandmarks);
+  return w ? {x:w.x, y:w.y} : null;
+}
+
+function detectAxonAIMarker(now){
+  if(!isAdvancedObjectMode() || !markerCtx || video.readyState < 2) return null;
+  if(now - lastMarkerScanTs < MARKER_SCAN_INTERVAL_MS) return latestMarker;
+  lastMarkerScanTs = now;
+  try{
+    markerCtx.drawImage(video, 0, 0, markerCanvas.width, markerCanvas.height);
+    const img = markerCtx.getImageData(0, 0, markerCanvas.width, markerCanvas.height).data;
+    let sx = 0, sy = 0, count = 0;
+    for(let y = 0; y < markerCanvas.height; y += 2){
+      for(let x = 0; x < markerCanvas.width; x += 2){
+        const i = (y * markerCanvas.width + x) * 4;
+        const r = img[i], g = img[i+1], b = img[i+2];
+        const max = Math.max(r,g,b), min = Math.min(r,g,b);
+        const saturation = max - min;
+        const orangeMarker = r > 150 && g > 70 && g < 185 && b < 120 && saturation > 60;
+        const greenMarker = g > 135 && r < 135 && b < 150 && saturation > 55;
+        const blueMarker = b > 145 && r < 140 && g > 70 && saturation > 55;
+        if(orangeMarker || greenMarker || blueMarker){
+          sx += x;
+          sy += y;
+          count++;
+        }
+      }
+    }
+    if(count < 12){
+      latestMarker = null;
+      return null;
+    }
+    const centerRaw = {x:sx/count/markerCanvas.width, y:sy/count/markerCanvas.height};
+    const object_center = {x:1 - centerRaw.x, y:centerRaw.y};
+    const object_visibility = Math.min(1, count / 160);
+    markerHistory.push({x:object_center.x, y:object_center.y, t:now});
+    markerHistory = markerHistory.filter(p => now - p.t < 1200).slice(-14);
+    let jitter = 0;
+    for(let i=1; i<markerHistory.length; i++){
+      jitter += Math.hypot(markerHistory[i].x-markerHistory[i-1].x, markerHistory[i].y-markerHistory[i-1].y);
+    }
+    const markerCenterJitter = markerHistory.length > 1 ? jitter / (markerHistory.length - 1) : 0;
+    const object_stability = Math.max(0, Math.min(1, 1 - markerCenterJitter / MARKER_JITTER_LIMIT));
+    latestMarker = {object_center, object_visibility, object_stability, markerCenterJitter};
+    return latestMarker;
+  }catch(e){
+    latestMarker = null;
+    return null;
+  }
+}
+
+function updateRuntimeDiagnostics(now){
+  frameStats.totalFrames += 1;
+  if(latestHandLandmarks && (now - latestHandSeenAt) < handLandmarkFreshMs()) frameStats.handFrames += 1;
+  if(latestMarker) frameStats.markerFrames += 1;
+  if(lastFrameTs){
+    const fpsNow = 1000 / Math.max(1, now - lastFrameTs);
+    currentFps = currentFps ? currentFps * 0.85 + fpsNow * 0.15 : fpsNow;
+  }
+  lastFrameTs = now;
+
+  const handCenter = getHandCenter();
+  if(isAdvancedObjectMode() && latestMarker && handCenter){
+    const d = Math.hypot(handCenter.x - latestMarker.object_center.x, handCenter.y - latestMarker.object_center.y);
+    if(d < 0.22){
+      if(handObjectOverlapStartedAt == null) handObjectOverlapStartedAt = now;
+      handObjectOverlapMs = Math.max(handObjectOverlapMs, now - handObjectOverlapStartedAt);
+    }else{
+      handObjectOverlapStartedAt = null;
+    }
+    objectTransportSamples.push({t:now, hand:handCenter, object:latestMarker.object_center, open:handOpenScore});
+    objectTransportSamples = objectTransportSamples.filter(s => now - s.t < 5000).slice(-80);
+  }
+
+  const handDetectionRate = frameStats.totalFrames ? frameStats.handFrames / frameStats.totalFrames : 0;
+  const markerDetectionRate = frameStats.totalFrames ? frameStats.markerFrames / frameStats.totalFrames : 0;
+  if(isAdvancedObjectMode()){
+    diagnosticsBadge.classList.remove("hidden");
+    const smoothOk = currentFps >= MIN_RUNTIME_FPS;
+    const handOk = handDetectionRate >= 0.8;
+    const markerOk = markerDetectionRate >= 0.8 && latestMarker && latestMarker.object_stability > 0.45;
+    diagnosticsBadge.classList.toggle("good", !!(smoothOk && handOk && markerOk));
+    diagnosticsBadge.classList.toggle("warn", !(smoothOk && handOk && markerOk));
+    diagnosticsText.textContent = markerOk
+      ? `Hand clear · marker clear · ${Math.round(currentFps)} FPS`
+      : "I cannot see the marker clearly yet. Turn the marker toward the camera.";
+  }else{
+    diagnosticsBadge.classList.add("hidden");
+  }
+}
+
+function getAdvancedQuality(){
+  const handDetectionRate = frameStats.totalFrames ? frameStats.handFrames / frameStats.totalFrames : 0;
+  const markerDetectionRate = frameStats.totalFrames ? frameStats.markerFrames / frameStats.totalFrames : 0;
+  const markerCenterJitter = latestMarker ? latestMarker.markerCenterJitter : 1;
+  const qualityOk = isAdvancedObjectMode()
+    && handDetectionRate >= 0.8
+    && markerDetectionRate >= 0.8
+    && handObjectOverlapMs >= 1000
+    && markerCenterJitter <= MARKER_JITTER_LIMIT
+    && currentFps >= MIN_RUNTIME_FPS;
+  return {
+    qualityOk,
+    currentFps:+currentFps.toFixed(1),
+    handDetectionRate:+handDetectionRate.toFixed(2),
+    markerDetectionRate:+markerDetectionRate.toFixed(2),
+    markerCenterJitter:+markerCenterJitter.toFixed(3),
+    handObjectOverlapMs:Math.round(handObjectOverlapMs),
+    object_center:latestMarker ? latestMarker.object_center : null,
+    object_visibility:latestMarker ? +latestMarker.object_visibility.toFixed(2) : 0,
+    object_stability:latestMarker ? +latestMarker.object_stability.toFixed(2) : 0,
+  };
+}
+
+function computeAdvancedObjectMetrics(){
+  const q = getAdvancedQuality();
+  if(!isAdvancedObjectMode()){
+    return {advanced_object_mode:false};
+  }
+  if(!q.qualityOk){
+    return {
+      advanced_object_mode:true,
+      object_metric_status:"insufficient_marker_data",
+      patient_message:"Not enough data. Please adjust the marker and lighting, then try again.",
+      ...q,
+    };
+  }
+  let coupledFrames = 0, releaseFrames = 0, endpointError = null;
+  for(const s of objectTransportSamples){
+    const d = Math.hypot(s.hand.x - s.object.x, s.hand.y - s.object.y);
+    if(d < 0.22) coupledFrames += 1;
+    if(d > 0.24 && s.open > 0.5) releaseFrames += 1;
+    endpointError = Math.hypot(s.object.x - 0.70, s.object.y - 0.65);
+  }
+  const objectHandCoupling = objectTransportSamples.length ? coupledFrames / objectTransportSamples.length : 0;
+  const objectHandSeparation = objectTransportSamples.length ? releaseFrames / objectTransportSamples.length : 0;
+  const releaseDelayMs = objectHandSeparation > 0 ? Math.max(0, Math.round(1200 * (1 - objectHandSeparation))) : null;
+  return {
+    advanced_object_mode:true,
+    object_metric_status:"quality_passed",
+    objectHandCoupling:+objectHandCoupling.toFixed(2),
+    objectHandSeparation:+objectHandSeparation.toFixed(2),
+    releaseDelayMs,
+    placementEndpointError:endpointError == null ? null : +endpointError.toFixed(3),
+    ...q,
+  };
 }
 
 // Returns the user's shoulder-width in normalized coords (a robust "size unit")
@@ -1017,6 +2267,9 @@ function shoulderWidth(lm){
 // resting wrist doesn't accidentally trigger the next target.
 function effectiveRadius(step, lm){
   const baseR = step.target.r || 0.10;
+  if(ASSESSMENT_PACKAGE === "hand"){
+    return Math.min(Math.max(baseR, 0.12), 0.28);
+  }
   const sw = shoulderWidth(lm);
   // Tighter radius — about 0.55 × shoulder-width for most targets,
   // 0.70 × for body-anchored targets (MOUTH/CHEST) since they're depth-tricky.
@@ -1033,10 +2286,16 @@ let stepStartedAt = 0;
 let voiceFinishedAt = 0;        // 0 until voice intro for current step finishes
 let arrivedAfterMovement = false; // becomes true once wrist has moved >= 0.18 from step-start
 let stepStartWristXY = null;    // wrist position captured at step start
+let fistCloseReadyObserved = false;
+let fistClosureMinScore = 1;
+let fistClosingStarted = false;
 
 function distXY(a,b){ if(!a||!b) return Infinity; return Math.hypot(a.x-b.x, a.y-b.y); }
 
 function activeWrist(lm){
+  if(ASSESSMENT_PACKAGE === "hand"){
+    return activeHandPoint();
+  }
   if(!lm) return null;
   // pick the wrist closer to the current effective target
   const step = getCurrentStep();
@@ -1048,28 +2307,199 @@ function activeWrist(lm){
   return dL < dR ? lW : rW;
 }
 
+function activeControlPoint(lm){
+  if(!lm) return null;
+  if(ASSESSMENT_PACKAGE === "lower_limb"){
+    const step = getCurrentStep();
+    const state = bodyState(lm);
+    if(step && ["HIP_RISEN", "STAND_UPRIGHT", "HIP_SEATED"].includes(step.target.landmark)) return mirrorX(state.midHip);
+    if(step && ["AFFECTED_KNEE_LIFTED", "UNAFFECTED_KNEE_LIFTED"].includes(step.target.landmark)){
+      const side = step.target.landmark === "AFFECTED_KNEE_LIFTED" ? state.affected : state.unaffected;
+      return mirrorX(side.knee);
+    }
+    return mirrorX(state.affected.ankle);
+  }
+  if(ASSESSMENT_PACKAGE === "balance"){
+    return mirrorX(bodyState(lm).midHip);
+  }
+  return activeWrist(lm);
+}
+
 function updateMovementGate(lm){
   if(!stepStartWristXY){
-    const w = activeWrist(lm);
+    const w = activeControlPoint(lm);
     if(w) stepStartWristXY = {x: w.x, y: w.y};
     return;
   }
   if(arrivedAfterMovement) return;
-  const w = activeWrist(lm);
+  const w = activeControlPoint(lm);
   if(!w) return;
   // Required movement scales with shoulder-width to be size-invariant
-  const requiredMove = Math.max(0.12, shoulderWidth(lm) * 0.75);
+  const requiredMove = (ASSESSMENT_PACKAGE === "lower_limb" || ASSESSMENT_PACKAGE === "balance")
+    ? Math.max(0.035, shoulderWidth(lm) * 0.22)
+    : Math.max(0.12, shoulderWidth(lm) * 0.75);
   if(distXY(w, stepStartWristXY) >= requiredMove) arrivedAfterMovement = true;
+}
+
+function rangeOf(values){
+  if(!values || values.length === 0) return 0;
+  return Math.max(...values) - Math.min(...values);
+}
+
+function meanOf(values){
+  if(!values || values.length === 0) return 0;
+  return values.reduce((sum, value) => sum + value, 0) / values.length;
+}
+
+function lowerBalanceMetricSnapshot(lm, step=null, durationMs=0, skipped=false){
+  if(!lm || lm.length < 33) return {};
+  const state = bodyState(lm);
+  const leftX = Math.min(state.affected.ankle.x, state.unaffected.ankle.x);
+  const rightX = Math.max(state.affected.ankle.x, state.unaffected.ankle.x);
+  const baseWidth = Math.max(0.03, rightX - leftX);
+  const rightShare = Math.max(0, Math.min(1, (state.midHip.x - leftX) / baseWidth));
+  const affectedShare = AFFECTED_SIDE === "right" ? rightShare : 1 - rightShare;
+  const scale = Math.max(0.03, meanOf(bodyMetricSamples.map(sample => sample.shoulderWidth)) || state.shoulderWidth);
+  const trunkSway = Math.hypot(
+    rangeOf(bodyMetricSamples.map(sample => sample.midShoulderX)),
+    rangeOf(bodyMetricSamples.map(sample => sample.midShoulderY)),
+  ) / scale;
+  const pelvisSway = Math.hypot(
+    rangeOf(bodyMetricSamples.map(sample => sample.midHipX)),
+    rangeOf(bodyMetricSamples.map(sample => sample.midHipY)),
+  ) / scale;
+  const kneeStability = rangeOf(bodyMetricSamples.map(sample => sample.kneeAngle));
+  const averageAffectedLoad = bodyMetricSamples.length
+    ? meanOf(bodyMetricSamples.map(sample => sample.affectedLoadShare))
+    : affectedShare;
+  const weightSymmetry = Math.max(0, 1 - 2 * Math.abs(averageAffectedLoad - 0.5));
+  const measures = step && Array.isArray(step.measure) ? step.measure : [];
+  const bilateralMoveMax = Math.max(affectedWristMoveMaxRatio, unaffectedWristMoveMaxRatio);
+  const bilateralSymmetry = bilateralMoveMax >= 0.10
+    ? Math.min(affectedWristMoveMaxRatio, unaffectedWristMoveMaxRatio) / bilateralMoveMax
+    : null;
+  return {
+    knee_extension_deg: +kneeExtensionMaxDeg.toFixed(1),
+    ankle_dorsiflexion_proxy: +ankleDorsiflexionMax.toFixed(3),
+    shoulder_elevation_deg: +shoulderElevationMaxDeg.toFixed(1),
+    elbow_flexion_deg: +elbowFlexionMaxDeg.toFixed(1),
+    hip_flexion_deg: +hipFlexionMaxDeg.toFixed(1),
+    knee_flexion_deg: +kneeFlexionMaxDeg.toFixed(1),
+    toe_clearance_leg_ratio: +toeClearanceMaxRatio.toFixed(3),
+    circumduction_leg_ratio: +circumductionMaxRatio.toFixed(3),
+    affected_step_length_leg_ratio: +affectedStepLengthMaxRatio.toFixed(3),
+    affected_wrist_displacement_body_ratio: +affectedWristMoveMaxRatio.toFixed(3),
+    unaffected_wrist_displacement_body_ratio: +unaffectedWristMoveMaxRatio.toFixed(3),
+    hand_to_mouth_distance_ratio: Number.isFinite(handToMouthMinRatio) ? +handToMouthMinRatio.toFixed(3) : null,
+    bilateral_wrist_displacement_symmetry: bilateralSymmetry == null ? null : +bilateralSymmetry.toFixed(3),
+    affected_load_proxy: +averageAffectedLoad.toFixed(3),
+    weight_shift_symmetry: +weightSymmetry.toFixed(3),
+    pelvis_shift_affected: +affectedPelvisShiftMax.toFixed(3),
+    lateral_trunk_shift: +lateralTrunkShiftMax.toFixed(3),
+    trunk_sway_ratio: +trunkSway.toFixed(3),
+    pelvis_sway_ratio: +pelvisSway.toFixed(3),
+    midline_alignment_deg: +meanOf(bodyMetricSamples.map(sample => sample.trunkLean)).toFixed(1),
+    knee_stability_deg: +kneeStability.toFixed(1),
+    hold_duration_ms: skipped ? 0 : (step && step.movement_required === false ? step.hold_ms : 0),
+    sit_to_stand_time_ms: step && measures.includes("sit_to_stand_time") && !skipped ? Math.round(durationMs) : null,
+  };
+}
+
+function handMetricSnapshot(){
+  return {
+    finger_total_flexion_deg: +fingerTotalFlexionMaxDeg.toFixed(1),
+    finger_abduction_ratio: +fingerAbductionMaxRatio.toFixed(3),
+    thumb_index_distance_ratio: Number.isFinite(thumbIndexMinDistanceRatio)
+      ? +thumbIndexMinDistanceRatio.toFixed(3)
+      : null,
+  };
+}
+
+function checkLowerBalanceTarget(landmarks, step){
+  if(!landmarks || landmarks.length < 33) return false;
+  if(!arrivedAfterMovement && step.movement_required !== false) return false;
+  const state = bodyState(landmarks);
+  const start = stepStartBodyState || state;
+  const which = step.target.landmark;
+  const affectedFootMove = Math.hypot(state.affected.ankle.x-start.affected.ankle.x, state.affected.ankle.y-start.affected.ankle.y);
+  const unaffectedFootMove = Math.hypot(state.unaffected.ankle.x-start.unaffected.ankle.x, state.unaffected.ankle.y-start.unaffected.ankle.y);
+  const affectedDirection = AFFECTED_SIDE === "left" ? -1 : 1;
+  const pelvisTowardAffected = affectedDirection * (state.midHip.x - start.midHip.x);
+  const trunkTowardAffected = affectedDirection * (state.midShoulder.x - start.midShoulder.x);
+  const standing = state.affectedKneeAngle > 145 && state.unaffectedKneeAngle > 145 && state.trunkLean < 20;
+
+  if(which === "SEATED_READY") return state.trunkLean < 20 && state.midHip.y < Math.max(state.affected.knee.y, state.unaffected.knee.y);
+  if(which === "KNEE_EXTENDED" || which === "KNEE_EXTENDED_STABLE") return state.affectedKneeAngle > 145;
+  if(which === "FOOT_RETURNED") return Math.abs(state.affected.ankle.y - state.affected.toe.y) < 0.10 && state.affectedKneeAngle < 145;
+  if(which === "TOES_LIFTED") return (state.affected.heel.y - state.affected.toe.y) > 0.012;
+  if(which === "SIT_TO_STAND_READY") return state.trunkLean < 35 && state.affectedKneeAngle < 145;
+  if(which === "HIP_RISEN") return (start.midHip.y - state.midHip.y) > 0.07 && state.affectedKneeAngle > 110;
+  if(which === "STAND_UPRIGHT") return standing;
+  if(which === "HIP_SEATED") return (state.midHip.y - start.midHip.y) > 0.07 && state.affectedKneeAngle < 145;
+  if(which === "SUPPORTED_STAND_STABLE") return standing && lateralTrunkShiftMax < 0.06;
+  if(which === "AFFECTED_FOOT_FORWARD") return standing && affectedFootMove > 0.05;
+  if(which === "AFFECTED_FOOT_RETURNED") return affectedFootMove > 0.045 && state.footSeparation < 0.16;
+  if(which === "AFFECTED_KNEE_LIFTED") return (start.affected.knee.y - state.affected.knee.y) > 0.04;
+  if(which === "UNAFFECTED_KNEE_LIFTED") return (start.unaffected.knee.y - state.unaffected.knee.y) > 0.04;
+  if(which === "SEATED_STABLE") return state.trunkLean < 14 && lateralTrunkShiftMax < 0.05;
+  if(which === "TRUNK_SHIFT_AFFECTED") return trunkTowardAffected > 0.025 && affectedFootMove < 0.04 && unaffectedFootMove < 0.04;
+  if(which === "WEIGHT_SHIFT_AFFECTED") return pelvisTowardAffected > 0.02 && affectedFootMove < 0.04 && unaffectedFootMove < 0.04;
+  if(which === "STEP_STANCE_STABLE") return standing && state.footSeparation > 0.06 && lateralTrunkShiftMax < 0.06;
+  return false;
 }
 
 function checkTarget(landmarks){
   const step = getCurrentStep();
-  if(!step || !landmarks) return false;
+  if(!step) return false;
+  const measures = Array.isArray(step.measure) ? step.measure : [];
   // VOICE GATE — target is NOT detectable until the voice intro has finished
   // playing AND a short settle window (350ms) has elapsed. Prevents the patient
   // accidentally triggering the step while Aria is still explaining it.
   if(voiceFinishedAt === 0) return false;
   if(performance.now() - voiceFinishedAt < 350) return false;
+  if(ASSESSMENT_PACKAGE === "hand"){
+    const target = step.target;
+    const which = target.landmark;
+    const point = activeHandPoint();
+    if(!point) return false;
+    const R = effectiveRadius(step, null);
+    const near = Math.hypot(point.x - target.x, point.y - target.y) < R;
+    if(step.id === "H1-S1"){
+      return near && palmFacingScore > 0.45 && handOpenScore < 0.72;
+    }
+    if(step.id === "H2-S2"){
+      if(!near) return false;
+      fistClosureMinScore = Math.min(fistClosureMinScore, fistClosureScore);
+      if(!fistCloseReadyObserved){
+        if(fistClosureScore < 0.86 || handOpenScore > 0.20){
+          fistCloseReadyObserved = true;
+          fistClosureMinScore = Math.min(fistClosureMinScore, fistClosureScore);
+        }
+        return false;
+      }
+      const closureDelta = fistClosureScore - fistClosureMinScore;
+      if(!fistClosingStarted && (closureDelta > 0.035 || (handOpenScore < 0.58 && fistClosureScore > fistClosureMinScore + 0.02))){
+        fistClosingStarted = true;
+      }
+      return fistClosingStarted && (closureDelta > 0.02 || fistClosureScore > 0.30 || handOpenScore < 0.62);
+    }
+    if(measures.includes("closure_completeness")){
+      return near && fistClosureScore > 0.45;
+    }
+    if(which === "HAND_OPEN"){
+      const palmOk = step.id !== "H1-S2" || palmFacingScore > 0.45;
+      const openThreshold = 0.45;
+      return near && palmOk && handOpenScore > openThreshold;
+    }
+    if(which === "PINCH"){
+      return near && pinchScore > 0.45;
+    }
+    return near;
+  }
+  if(ASSESSMENT_PACKAGE === "lower_limb" || ASSESSMENT_PACKAGE === "balance"){
+    return checkLowerBalanceTarget(landmarks, step);
+  }
+  if(!landmarks) return false;
   // MOVEMENT GATE — wrist must have moved meaningfully from its position at
   // step-start before the target can fire. Stops "I didn't move and the next
   // circle counted because I was already inside it" bug.
@@ -1093,9 +2523,19 @@ function checkTarget(landmarks){
     const gestureOk = handLandmarker ? handOpenScore > 0.45 : true;
     return near && gestureOk;
   }
+  if(which === "HAND_CLOSED"){
+    const near = wristDist() < R;
+    const gestureOk = handLandmarker ? (fistClosureScore > 0.30 && handOpenScore < 0.62) : true;
+    return near && gestureOk;
+  }
   if(which === "PINCH"){
     const near = wristDist() < R;
     const gestureOk = handLandmarker ? pinchScore > 0.45 : true;
+    return near && gestureOk;
+  }
+  if(which === "PINCH_RELEASED"){
+    const near = wristDist() < R;
+    const gestureOk = handLandmarker ? pinchScore < 0.35 : true;
     return near && gestureOk;
   }
   if(which === "MOUTH" || which === "CHEST"){
@@ -1111,6 +2551,42 @@ function checkTarget(landmarks){
     const okR = rW && Math.hypot(rW.x - targetXY.x, rW.y - targetXY.y) < R;
     return okL && okR;
   }
+  if(which === "WRISTS_APART"){
+    const lW = mirrorX(landmarks[15]);
+    const rW = mirrorX(landmarks[16]);
+    const sameHeight = Math.abs(lW.y - rW.y) < 0.14;
+    const workingHeight = Math.abs(((lW.y + rW.y) / 2) - targetXY.y) < Math.max(R, 0.14);
+    return sameHeight && workingHeight && Math.abs(lW.x - rW.x) > 0.28;
+  }
+  if(which === "WRISTS_LOW"){
+    const lW = mirrorX(landmarks[15]);
+    const rW = mirrorX(landmarks[16]);
+    return lW.y > 0.68 && rW.y > 0.68;
+  }
+  if(which === "OBJECT_COUPLED"){
+    const near = wristDist() < R;
+    if(!isAdvancedObjectMode()){
+      return near && (!handLandmarker || (fistClosureScore > 0.25 && handOpenScore < 0.70));
+    }
+    const handCenter = getHandCenter();
+    const coupled = latestMarker && handCenter
+      && Math.hypot(handCenter.x - latestMarker.object_center.x, handCenter.y - latestMarker.object_center.y) < 0.22;
+    return near && !!coupled && fistClosureScore > 0.20;
+  }
+  if(which === "OBJECT_AT_TARGET"){
+    if(!isAdvancedObjectMode()) return wristDist() < R;
+    return !!latestMarker
+      && Math.hypot(latestMarker.object_center.x - targetXY.x, latestMarker.object_center.y - targetXY.y) < R;
+  }
+  if(which === "OBJECT_RELEASED"){
+    if(!isAdvancedObjectMode()) return wristDist() < R && (!handLandmarker || handOpenScore > 0.45);
+    const handCenter = getHandCenter();
+    const objectAtTarget = latestMarker
+      && Math.hypot(latestMarker.object_center.x - targetXY.x, latestMarker.object_center.y - targetXY.y) < R;
+    const separated = latestMarker && handCenter
+      && Math.hypot(handCenter.x - latestMarker.object_center.x, handCenter.y - latestMarker.object_center.y) > 0.24;
+    return !!objectAtTarget && !!separated && handOpenScore > 0.45;
+  }
   return wristDist() < R;
 }
 
@@ -1123,6 +2599,10 @@ function drawOverlay(landmarks){
   if(landmarks){
     drawingUtils.drawLandmarks(landmarks, {color:"#D9E5DC", radius:3});
     drawingUtils.drawConnectors(landmarks, PoseLandmarker.POSE_CONNECTIONS, {color:"#4A7856", lineWidth:4});
+  }
+  if(latestHandLandmarks && latestHandLandmarks.length >= 21){
+    drawingUtils.drawConnectors(latestHandLandmarks, HAND_CONNECTIONS, {color:"rgba(127,229,163,0.88)", lineWidth:2});
+    drawingUtils.drawLandmarks(latestHandLandmarks, {color:"rgba(217,229,220,0.72)", radius:1.4});
   }
   const step = getCurrentStep();
   if(!step) return;
@@ -1182,11 +2662,30 @@ function drawOverlay(landmarks){
     ctx.stroke();
   }
 
+  if(isAdvancedObjectMode() && latestMarker){
+    const mx = latestMarker.object_center.x * canvas.width;
+    const my = latestMarker.object_center.y * canvas.height;
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(mx, my, 18, 0, Math.PI*2);
+    ctx.lineWidth = 5;
+    ctx.strokeStyle = latestMarker.object_stability > 0.45 ? "#7FE5A3" : "#E18E6D";
+    ctx.stroke();
+    ctx.translate(mx, my + 34);
+    ctx.scale(-1, 1);
+    ctx.font = "bold 16px -apple-system,sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillStyle = "rgba(255,255,255,0.92)";
+    ctx.fillText("marker", 0, 0);
+    ctx.restore();
+  }
+
   // small status badge for hand gesture requirements
   const which = step.target.landmark;
-  if(which === "HAND_OPEN" || which === "PINCH"){
-    const score = which === "HAND_OPEN" ? handOpenScore : pinchScore;
-    const label = which === "HAND_OPEN" ? "Open" : "Pinch";
+  if(which === "HAND_OPEN" || which === "PINCH" || step.id === "H1-S1"){
+    const h1OpenQuality = Math.min(handOpenScore, palmFacingScore);
+    const score = step.id === "H1-S1" ? palmFacingScore : (step.id === "H1-S2" ? h1OpenQuality : (which === "HAND_OPEN" ? handOpenScore : pinchScore));
+    const label = step.id === "H1-S1" ? "Palm" : (step.id === "H1-S2" ? "Palm + open" : (which === "HAND_OPEN" ? "Open" : "Pinch"));
     ctx.save();
     ctx.translate(tx, ty + tr + 32);
     ctx.scale(-1, 1);
@@ -1206,17 +2705,38 @@ function nextStep(skipped=false){
       task_id: task.id, completed_steps:0, total_steps:task.steps.length, duration_ms:0, steps:[], metrics:{}
     };
   }
+  const stepDurationMs = Math.round(performance.now() - stepStartTime);
   taskResults[currentTaskIdx].steps.push({
-    step_id: step.id, completed: !skipped, duration_ms: Math.round(performance.now() - stepStartTime),
-    metrics: {trunk_lean_deg: Math.round(trunkLeanMax), shoulder_flexion_ratio: +shoulderFlexionMax.toFixed(2), shoulder_hike: shoulderHikeDetected}
+    step_id: step.id,
+    completed: !skipped,
+    failure_code: skipped && step.failure_phenotype ? step.failure_phenotype.code : null,
+    duration_ms: stepDurationMs,
+    metrics: {
+      trunk_lean_deg: Math.round(trunkLeanMax),
+      shoulder_flexion_ratio: +shoulderFlexionMax.toFixed(2),
+      shoulder_hike: shoulderHikeDetected,
+      hand_open_score: +handOpenScore.toFixed(2),
+      fist_closure_score: +fistClosureScore.toFixed(2),
+      pinch_score: +pinchScore.toFixed(2),
+      palm_facing_score: +palmFacingScore.toFixed(2),
+      ...lowerBalanceMetricSnapshot(latestPoseLandmarks, step, stepDurationMs, skipped),
+      ...handMetricSnapshot(),
+      ...computeAdvancedObjectMetrics()
+    }
   });
   if(!skipped) taskResults[currentTaskIdx].completed_steps += 1;
-  taskResults[currentTaskIdx].duration_ms += Math.round(performance.now() - stepStartTime);
+  taskResults[currentTaskIdx].duration_ms += stepDurationMs;
 
   // aggregate metrics
   if(trunkLeanMax > (taskResults[currentTaskIdx].metrics.trunk_lean_deg||0))
     taskResults[currentTaskIdx].metrics.trunk_lean_deg = Math.round(trunkLeanMax);
   if(shoulderHikeDetected) taskResults[currentTaskIdx].metrics.shoulder_hike = true;
+  Object.assign(taskResults[currentTaskIdx].metrics, lowerBalanceMetricSnapshot(latestPoseLandmarks, step, stepDurationMs, skipped));
+  Object.assign(taskResults[currentTaskIdx].metrics, handMetricSnapshot());
+  if(isAdvancedMarkerTask(task)){
+    taskResults[currentTaskIdx].metrics.advanced_marker_confirmed = !!advancedObjectModeByTask[task.id];
+    Object.assign(taskResults[currentTaskIdx].metrics, computeAdvancedObjectMetrics());
+  }
 
   currentStepIdx += 1;
   if(currentStepIdx >= task.steps.length){
@@ -1266,7 +2786,7 @@ async function celebrateAndAdvance(){
   spawnConfetti(28);
   if(navigator.vibrate) navigator.vibrate([60, 40, 100]);
 
-  postRN({type:"task_complete", task_id: finishedTask.id, task_index: currentTaskIdx});
+  postRN({type:"task_complete", package_id: ASSESSMENT_PACKAGE, task_id: finishedTask.id, task_index: currentTaskIdx});
 
   // Determine if there are more tasks
   const hasNext = (currentTaskIdx + 1) < tasks.length;
@@ -1304,7 +2824,7 @@ async function finishAssessment(){
   try{
     const res = await fetch(`${API_BASE}/assessment/submit`,{
       method:"POST", headers:{"Content-Type":"application/json", ...(CURRENT_USER_ID ? {"X-User-Id": CURRENT_USER_ID} : {})},
-      body: JSON.stringify({task_results: taskResults, affected_side: "right"})
+      body: JSON.stringify({task_results: taskResults.filter(Boolean), affected_side: AFFECTED_SIDE})
     });
     const data = await res.json();
     postRN({type:"assessment_complete", assessment: data});
@@ -1316,30 +2836,53 @@ async function finishAssessment(){
 function loop(){
   if(!running) return;
   const now = performance.now();
-  let result = null;
-  try{
-    result = landmarker.detectForVideo(video, now);
-  }catch(e){}
-  let landmarks = null;
-  if(result && result.landmarks && result.landmarks[0]) landmarks = result.landmarks[0];
-  latestPoseLandmarks = landmarks;
-  if(landmarks){
-    computeMetrics(landmarks);
-    updateMovementGate(landmarks);
+  let landmarks = latestPoseLandmarks;
+  const handBackoff = isHandPerformanceBackoff();
+  const poseScanInterval = ASSESSMENT_PACKAGE === "hand"
+    ? (handBackoff ? HAND_BACKOFF_POSE_SCAN_INTERVAL_MS : HAND_PACKAGE_POSE_SCAN_INTERVAL_MS)
+    : POSE_SCAN_INTERVAL_MS;
+  if(landmarker && (now - lastPoseScanTs) >= poseScanInterval){
+    let result = null;
+    try{
+      result = landmarker.detectForVideo(video, now);
+    }catch(e){}
+    lastPoseScanTs = performance.now();
+    if(result && result.landmarks && result.landmarks[0]){
+      landmarks = result.landmarks[0];
+      latestPoseLandmarks = landmarks;
+      computeMetrics(landmarks);
+      updateMovementGate(landmarks);
+    }else{
+      latestPoseLandmarks = null;
+      landmarks = null;
+    }
   }
 
-  // Hand landmarks (optional)
-  if(handLandmarker){
+  // Hand landmarks (optional). Run at a controlled cadence so Pose + Hands do
+  // not block the UI thread on every animation frame.
+  const handNeeded = needsHandLandmarks();
+  const handScanInterval = handBackoff ? HAND_BACKOFF_SCAN_INTERVAL_MS : HAND_SCAN_INTERVAL_MS;
+  if(handLandmarker && handNeeded && (now - lastHandScanTs) >= handScanInterval){
+    lastHandScanTs = now;
     try{
       const hr = handLandmarker.detectForVideo(video, now);
       if(hr && hr.landmarks && hr.landmarks[0]){
         latestHandLandmarks = hr.landmarks[0];
+        const rawHandedness = (hr.handednesses && hr.handednesses[0] && hr.handednesses[0][0] && hr.handednesses[0][0].categoryName) || "";
+        latestHandedness = rawHandedness === "Right" ? "Left" : (rawHandedness === "Left" ? "Right" : latestHandedness || "");
+        latestHandSeenAt = now;
       }else{
         latestHandLandmarks = null;
+        latestHandedness = "";
       }
     }catch(e){}
+  }else if(!handNeeded){
+    latestHandLandmarks = null;
+    latestHandedness = "";
   }
   computeHandMetrics();
+  detectAxonAIMarker(now);
+  updateRuntimeDiagnostics(now);
 
   drawOverlay(landmarks);
 
@@ -1371,14 +2914,41 @@ startBtn.addEventListener("click", async () => {
   await loadTasks();
   const camOk = await setupCamera();
   if(!camOk){ overlay.classList.remove("hidden"); return; }
-  await setupPose();
+  await setupTrackingModels();
   running = true;
   await startStep();
   requestAnimationFrame(loop);
 });
 
+markerConfirmBtn.addEventListener("click", () => {
+  if(!waitingForAdvancedGate) return;
+  if(navigator.vibrate) navigator.vibrate(50);
+  continueAdvancedTask(true);
+});
+
+markerMissingBtn.addEventListener("click", () => {
+  markerChoicePanel.classList.add("hidden");
+  markerMissingPanel.classList.remove("hidden");
+});
+
+markerBasicBtn.addEventListener("click", () => {
+  if(!waitingForAdvancedGate) return;
+  if(navigator.vibrate) navigator.vibrate(40);
+  continueAdvancedTask(false);
+});
+
+markerBackBtn.addEventListener("click", () => {
+  markerMissingPanel.classList.add("hidden");
+  markerChoicePanel.classList.remove("hidden");
+});
+
+markerStoreBtn.addEventListener("click", () => {
+  window.open(AXONAI_MARKER_STORE_URL, "_blank");
+});
+
 skipBtn.addEventListener("click", () => {
   if(!running) return;
+  if(waitingForAdvancedGate) return;
   nextStep(true);
 });
 
@@ -1718,6 +3288,28 @@ overlayBody.textContent = CFG.setup_voice;
 
 function postRN(d){ if(window.ReactNativeWebView) window.ReactNativeWebView.postMessage(JSON.stringify(d)); }
 
+function playBrowserVoice(text){
+  return new Promise((resolve) => {
+    if(!("speechSynthesis" in window) || !window.SpeechSynthesisUtterance){
+      resolve(false);
+      return;
+    }
+    try{
+      window.speechSynthesis.cancel();
+      const utterance = new SpeechSynthesisUtterance(text);
+      utterance.lang = "en-US";
+      utterance.rate = 0.88;
+      utterance.pitch = 1.0;
+      utterance.onend = () => resolve(true);
+      utterance.onerror = () => resolve(false);
+      window.speechSynthesis.speak(utterance);
+      setTimeout(() => resolve(true), Math.min(14000, Math.max(3500, text.length * 70)));
+    }catch(e){
+      resolve(false);
+    }
+  });
+}
+
 async function playVoice(text){
   if(!text) return;
   try{
@@ -1729,7 +3321,9 @@ async function playVoice(text){
     await audioEl.play().catch(()=>{});
     return new Promise(r => { audioEl.onended = () => { voiceText.textContent = "—"; r(); }; });
   }catch(e){
-    voiceText.textContent = "Voice unavailable — follow on-screen text";
+    voiceText.textContent = "Using device voice";
+    const spoke = await playBrowserVoice(text);
+    voiceText.textContent = spoke ? "—" : "Voice unavailable — follow on-screen text";
   }
 }
 
@@ -2394,7 +3988,24 @@ async def create_story(payload: StoryCreate):
 
 
 # ============ Chat assistant (Claude Sonnet 4.5 via Emergent LLM key) ============
-from emergentintegrations.llm.chat import LlmChat, UserMessage  # noqa: E402
+try:
+    from emergentintegrations.llm.chat import LlmChat, UserMessage  # noqa: E402
+except ModuleNotFoundError:
+    class UserMessage:  # type: ignore[no-redef]
+        def __init__(self, text: str):
+            self.text = text
+
+    class LlmChat:  # type: ignore[no-redef]
+        """Keep non-chat APIs available when Emergent's private SDK is absent."""
+
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def with_model(self, *args, **kwargs):
+            return self
+
+        async def send_message(self, message):
+            raise RuntimeError("Chat integration is unavailable in this local runtime.")
 
 EMERGENT_LLM_KEY = os.environ.get("EMERGENT_LLM_KEY", "")
 
@@ -2431,18 +4042,29 @@ SUBSCRIPTION_UNLIMITED_ACTIONS = {"assessment", "rehab_plan", "guided_exercise"}
 
 
 async def get_or_create_user(email: str, name: str, role: str = "patient") -> Dict[str, Any]:
-    doc = await db.users.find_one({"email": email.lower()}, {"_id": 0})
-    if doc:
-        return doc
+    email = email.lower()
+    try:
+        doc = await db.users.find_one({"email": email}, {"_id": 0})
+        if doc:
+            return doc
+    except Exception as e:
+        logger.warning(f"Mongo unavailable for user lookup; using local fallback: {str(e)[:120]}")
+        for doc in LOCAL_USERS.values():
+            if doc.get("email") == email:
+                return doc
     doc = {
         "id": "u_" + str(uuid.uuid4())[:12],
-        "email": email.lower(),
+        "email": email,
         "name": name,
         "role": role,
         "credits": 100,
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
-    await db.users.insert_one(doc.copy())
+    try:
+        await db.users.insert_one(doc.copy())
+    except Exception as e:
+        logger.warning(f"Mongo unavailable for user insert; using local fallback: {str(e)[:120]}")
+        LOCAL_USERS[doc["id"]] = doc.copy()
     doc.pop("_id", None)
     return doc
 
@@ -2451,12 +4073,20 @@ async def _user_from_header(request_headers: Dict[str, str]) -> Optional[Dict[st
     uid = request_headers.get("x-user-id") or request_headers.get("X-User-Id")
     if not uid:
         return None
-    return await db.users.find_one({"id": uid}, {"_id": 0})
+    try:
+        return await db.users.find_one({"id": uid}, {"_id": 0})
+    except Exception as e:
+        logger.warning(f"Mongo unavailable for user header lookup; using local fallback: {str(e)[:120]}")
+        return LOCAL_USERS.get(uid)
 
 
 async def consume_credits(user_id: str, kind: str) -> Dict[str, Any]:
     cost = CREDIT_COSTS.get(kind, 0)
-    user = await db.users.find_one({"id": user_id}, {"_id": 0})
+    try:
+        user = await db.users.find_one({"id": user_id}, {"_id": 0})
+    except Exception as e:
+        logger.warning(f"Mongo unavailable for credit lookup; using local fallback: {str(e)[:120]}")
+        user = LOCAL_USERS.get(user_id)
     if not user:
         raise HTTPException(status_code=401, detail="Sign in required")
     # Subscription bypass for unlimited-tier actions
@@ -2471,11 +4101,16 @@ async def consume_credits(user_id: str, kind: str) -> Dict[str, Any]:
     if user["credits"] < cost:
         raise HTTPException(status_code=402, detail=f"Not enough credits. Need {cost}, have {user['credits']}.")
     new_credits = user["credits"] - cost
-    await db.users.update_one({"id": user_id}, {"$set": {"credits": new_credits}})
-    await db.credit_log.insert_one({
-        "user_id": user_id, "kind": kind, "cost": cost, "new_balance": new_credits,
-        "ts": datetime.now(timezone.utc).isoformat(),
-    })
+    try:
+        await db.users.update_one({"id": user_id}, {"$set": {"credits": new_credits}})
+        await db.credit_log.insert_one({
+            "user_id": user_id, "kind": kind, "cost": cost, "new_balance": new_credits,
+            "ts": datetime.now(timezone.utc).isoformat(),
+        })
+    except Exception as e:
+        logger.warning(f"Mongo unavailable for credit update; using local fallback: {str(e)[:120]}")
+        user["credits"] = new_credits
+        LOCAL_USERS[user_id] = user
     return {"credits": new_credits, "spent": cost}
 
 
@@ -2513,7 +4148,12 @@ async def submit_patient_onboarding(payload: PatientOnboarding, request: Request
     update = {k: v for k, v in payload.dict().items() if v is not None}
     update["onboarded_at"] = datetime.now(timezone.utc).isoformat()
     update["onboarding_complete"] = True
-    await db.users.update_one({"id": user["id"]}, {"$set": {"profile": update, "onboarding_complete": True}})
+    try:
+        await db.users.update_one({"id": user["id"]}, {"$set": {"profile": update, "onboarding_complete": True}})
+    except Exception as e:
+        logger.warning(f"Mongo unavailable for onboarding update; using local fallback: {str(e)[:120]}")
+        local_user = {**user, "profile": update, "onboarding_complete": True}
+        LOCAL_USERS[user["id"]] = local_user
     return {"ok": True, "profile": update}
 
 

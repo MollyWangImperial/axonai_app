@@ -32,7 +32,7 @@ export default function RehabPlanScreen() {
 
   const planId = id || "default";
 
-  const loadProgress = async (plan: Assessment) => {
+  const loadProgress = React.useCallback(async (plan: Assessment) => {
     const out: Record<string, ExerciseProgress> = {};
     for (const ex of plan.rehab_plan) {
       try {
@@ -44,7 +44,7 @@ export default function RehabPlanScreen() {
       }
     }
     setProgress(out);
-  };
+  }, [planId]);
 
   useEffect(() => {
     (async () => {
@@ -58,13 +58,13 @@ export default function RehabPlanScreen() {
         setLoading(false);
       }
     })();
-  }, [id]);
+  }, [id, loadProgress]);
 
   // Reload progress whenever the screen comes back into focus (after exercise returns)
   useFocusEffect(
     React.useCallback(() => {
       if (data) loadProgress(data);
-    }, [data])
+    }, [data, loadProgress])
   );
 
   const completedCount = Object.values(progress).filter((p) => p.completed_reps >= p.total_reps).length;
@@ -96,7 +96,7 @@ export default function RehabPlanScreen() {
 
       <ScrollView contentContainerStyle={{ padding: spacing.lg, paddingBottom: 140 }}>
         <View style={styles.hero}>
-          <Text style={styles.heroTitle}>Today's Plan</Text>
+          <Text style={styles.heroTitle}>Today&apos;s Plan</Text>
           <Text style={styles.heroSub}>
             {data.rehab_plan.length} exercises tailored to your focus areas. Evidence-based protocols.
           </Text>
@@ -143,6 +143,8 @@ export default function RehabPlanScreen() {
               )}
 
               <Text style={styles.exDesc}>{ex.description}</Text>
+              {!!ex.selection_reason && <Text style={styles.exSource}>Reason: {ex.selection_reason}</Text>}
+              {!!ex.safety_note && <Text style={styles.safetyNote}>{ex.safety_note}</Text>}
               <Text style={styles.exSource}>📖 {ex.source}</Text>
               <View style={styles.exActions}>
                 <Pressable
@@ -224,6 +226,7 @@ const styles = StyleSheet.create({
   scoreLine: { fontSize: 12, color: colors.brandPrimary, fontWeight: "700" },
   exDesc: { fontSize: 14, color: colors.onSurfaceSecondary, lineHeight: 20 },
   exSource: { fontSize: 12, color: colors.onSurfaceTertiary, fontStyle: "italic" },
+  safetyNote: { fontSize: 12, color: colors.warning, lineHeight: 18 },
   exActions: { flexDirection: "row", gap: spacing.sm, marginTop: spacing.sm },
   guidedBtn: { flex: 1, flexDirection: "row", gap: 6, backgroundColor: colors.brandPrimary, paddingVertical: 12, borderRadius: radius.md, alignItems: "center", justifyContent: "center" },
   guidedBtnText: { color: "#fff", fontWeight: "700", fontSize: 14 },

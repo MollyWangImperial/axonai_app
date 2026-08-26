@@ -5,17 +5,79 @@ import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import * as Haptics from "expo-haptics";
 import { colors, spacing, radius } from "@/src/theme";
-
-const BASE = process.env.EXPO_PUBLIC_BACKEND_URL;
+import { API_BASE as BASE } from "@/src/config";
 
 type Story = { id: string; author: string; title: string; body: string; likes: number; months_since_stroke?: number; photo?: string };
 type AIPatient = { id: string; name: string; age: number; months_since_stroke: number; bio: string; photo: string; stage: string; ai: boolean };
 
+const FALLBACK_PATIENTS: AIPatient[] = [
+  {
+    id: "pt_001",
+    name: "Marisol R.",
+    age: 58,
+    months_since_stroke: 14,
+    stage: "moderate",
+    ai: true,
+    photo: "https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=400",
+    bio: "Grandmother of three. Recently held her grandson with both arms after months of steady work.",
+  },
+  {
+    id: "pt_002",
+    name: "Daniel K.",
+    age: 64,
+    months_since_stroke: 8,
+    stage: "moderate",
+    ai: true,
+    photo: "https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=400",
+    bio: "Retired engineer. Buttoning his own shirt was last month's victory.",
+  },
+  {
+    id: "pt_003",
+    name: "Asha N.",
+    age: 46,
+    months_since_stroke: 22,
+    stage: "advanced",
+    ai: true,
+    photo: "https://images.unsplash.com/photo-1573497019940-1c28c88b4f3e?w=400",
+    bio: "Former yoga teacher, now an advocate for slow recovery.",
+  },
+];
+
+const FALLBACK_STORIES: Story[] = [
+  {
+    id: "st_001",
+    author: "Marisol Reyes",
+    months_since_stroke: 14,
+    title: "I held my grandson again today",
+    body: "My right hand could not grip a spoon at first. This morning I held my grandson with both arms. Recovery is slow, but it is real. Keep going.",
+    likes: 312,
+    photo: "https://images.unsplash.com/photo-1566616213894-2d4e1baee5d8?w=400&q=80",
+  },
+  {
+    id: "st_002",
+    author: "Daniel Okafor",
+    months_since_stroke: 11,
+    title: "Young stroke, still rebuilding",
+    body: "The first six months were hard. Now I am typing this slowly with my affected hand, and that feels like a small revolution.",
+    likes: 487,
+    photo: "https://images.unsplash.com/photo-1533101585792-27f81a845550?w=400&q=80",
+  },
+  {
+    id: "st_003",
+    author: "Asha Narayan",
+    months_since_stroke: 22,
+    title: "The day my shoulder stopped hiking",
+    body: "Last Tuesday, I reached for my chai and my shoulder stayed down. A tiny win. Enormous joy.",
+    likes: 218,
+    photo: "https://images.unsplash.com/photo-1592621385612-4d7129426394?w=400&q=80",
+  },
+];
+
 export default function CommunityScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
-  const [stories, setStories] = useState<Story[]>([]);
-  const [aiPatients, setAiPatients] = useState<AIPatient[]>([]);
+  const [stories, setStories] = useState<Story[]>(FALLBACK_STORIES);
+  const [aiPatients, setAiPatients] = useState<AIPatient[]>(FALLBACK_PATIENTS);
   const [loading, setLoading] = useState(true);
   const [likes, setLikes] = useState<Record<string, boolean>>({});
   const [postOpen, setPostOpen] = useState(false);
@@ -25,15 +87,20 @@ export default function CommunityScreen() {
   const [posting, setPosting] = useState(false);
 
   const load = async () => {
+    setLoading(true);
     try {
       const [r1, r2] = await Promise.all([
         fetch(`${BASE}/api/community/stories`).then((r) => r.json()),
         fetch(`${BASE}/api/community/ai_patients`).then((r) => r.json()),
       ]);
-      setStories(r1.stories || []);
-      setAiPatients(r2.patients || []);
-    } catch {/* */}
-    finally { setLoading(false); }
+      setStories((r1.stories?.length ? r1.stories : FALLBACK_STORIES));
+      setAiPatients((r2.patients?.length ? r2.patients : FALLBACK_PATIENTS));
+    } catch {
+      setStories(FALLBACK_STORIES);
+      setAiPatients(FALLBACK_PATIENTS);
+    } finally {
+      setLoading(false);
+    }
   };
 
   useEffect(() => { load(); }, []);
@@ -74,7 +141,6 @@ export default function CommunityScreen() {
       </View>
 
       <ScrollView contentContainerStyle={{ paddingBottom: 32 }} showsVerticalScrollIndicator={false}>
-        {/* AI patients horizontal row */}
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Chat with survivors</Text>
           <Text style={styles.sectionSub}>AI personas of stroke survivors at different stages. Real wisdom, available 24/7.</Text>
@@ -92,7 +158,7 @@ export default function CommunityScreen() {
                   <Text style={styles.aiPillText}>AI</Text>
                 </View>
                 <Text style={styles.patientName} numberOfLines={1}>{p.name.split(" ")[0]}</Text>
-                <Text style={styles.patientMeta}>{p.months_since_stroke} mo · {p.stage}</Text>
+                <Text style={styles.patientMeta}>{p.months_since_stroke} mo - {p.stage}</Text>
                 <View style={styles.chatChip}>
                   <Ionicons name="chatbubble" size={11} color="#fff" />
                   <Text style={styles.chatChipText}>Chat</Text>
@@ -115,7 +181,7 @@ export default function CommunityScreen() {
                   <Image source={{ uri: s.photo }} style={styles.avatar} />
                 ) : (
                   <View style={[styles.avatar, { backgroundColor: colors.brandTertiary, alignItems: "center", justifyContent: "center" }]}>
-                    <Text style={{ color: colors.onBrandTertiary, fontWeight: "800", fontSize: 18 }}>{s.author?.[0] || "·"}</Text>
+                    <Text style={{ color: colors.onBrandTertiary, fontWeight: "800", fontSize: 18 }}>{s.author?.[0] || "A"}</Text>
                   </View>
                 )}
                 <View style={{ flex: 1 }}>
@@ -145,7 +211,7 @@ export default function CommunityScreen() {
             <Text style={styles.modalSub}>Your words can help someone today.</Text>
             <TextInput value={pAuthor} onChangeText={setPAuthor} placeholder="Your name" placeholderTextColor={colors.onSurfaceTertiary} style={styles.modalInput} testID="post-author-input" />
             <TextInput value={pTitle} onChangeText={setPTitle} placeholder="Title" placeholderTextColor={colors.onSurfaceTertiary} style={styles.modalInput} testID="post-title-input" />
-            <TextInput value={pBody} onChangeText={setPBody} placeholder="Your story…" placeholderTextColor={colors.onSurfaceTertiary} multiline style={[styles.modalInput, { minHeight: 120, textAlignVertical: "top" }]} testID="post-body-input" />
+            <TextInput value={pBody} onChangeText={setPBody} placeholder="Your story..." placeholderTextColor={colors.onSurfaceTertiary} multiline style={[styles.modalInput, { minHeight: 120, textAlignVertical: "top" }]} testID="post-body-input" />
             <Pressable onPress={submitPost} style={[styles.modalSubmit, (!pAuthor.trim() || !pTitle.trim() || !pBody.trim() || posting) && { opacity: 0.5 }]} disabled={!pAuthor.trim() || !pTitle.trim() || !pBody.trim() || posting} testID="post-submit">
               {posting ? <ActivityIndicator color="#fff" /> : <Text style={styles.modalSubmitText}>Share</Text>}
             </Pressable>

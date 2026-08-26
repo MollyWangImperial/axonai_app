@@ -2,14 +2,38 @@ import { useRef, useState, useEffect } from "react";
 import { View, Text, StyleSheet, Pressable, ActivityIndicator, Platform } from "react-native";
 import { WebView, WebViewMessageEvent } from "react-native-webview";
 import { Ionicons } from "@expo/vector-icons";
-import { useRouter } from "expo-router";
+import { useLocalSearchParams, useRouter } from "expo-router";
 import * as Haptics from "expo-haptics";
 import { colors, spacing, radius } from "@/src/theme";
-import { POSE_RUNNER_URL } from "@/src/api";
+import { AssessmentPackageId, POSE_RUNNER_URL } from "@/src/api";
 import { getUserId } from "@/src/auth";
+import { storage } from "@/src/utils/storage";
+
+const COMPLETED_TASKS_KEY = (packageId: AssessmentPackageId) => `assessment_completed_tasks_v1:${packageId}`;
+
+function parseCompletedTasks(raw: string | null): Record<string, boolean> {
+  if (!raw) return {};
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+async function markTaskComplete(packageId: AssessmentPackageId, taskId: string) {
+  const key = COMPLETED_TASKS_KEY(packageId);
+  const completed = parseCompletedTasks(await storage.getItem(key, ""));
+  completed[taskId] = true;
+  await storage.setItem(key, JSON.stringify(completed));
+}
 
 export default function AssessmentScreen() {
   const router = useRouter();
+  const params = useLocalSearchParams<{ package?: string; start_task?: string; affected_side?: string }>();
+  const packageParam = params["package"];
+  const startTaskParam = params["start_task"];
+  const affectedSideParam = params["affected_side"];
   const webRef = useRef<WebView>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -18,9 +42,16 @@ export default function AssessmentScreen() {
   useEffect(() => {
     (async () => {
       const uid = await getUserId();
-      setRunnerUri(uid ? `${POSE_RUNNER_URL}?uid=${encodeURIComponent(uid)}` : POSE_RUNNER_URL);
+      const selectedPackage = (typeof packageParam === "string" ? packageParam : "upper_limb") as AssessmentPackageId;
+      const selectedStartTask = typeof startTaskParam === "string" ? startTaskParam : "";
+      const query = new URLSearchParams();
+      if (uid) query.set("uid", uid);
+      query.set("package", selectedPackage);
+      query.set("affected_side", affectedSideParam === "left" ? "left" : "right");
+      if (selectedStartTask) query.set("start_task", selectedStartTask);
+      setRunnerUri(`${POSE_RUNNER_URL}?${query.toString()}`);
     })();
-  }, []);
+  }, [packageParam, startTaskParam, affectedSideParam]);
 
   const onMessage = (e: WebViewMessageEvent) => {
     try {
@@ -31,6 +62,10 @@ export default function AssessmentScreen() {
         Haptics.selectionAsync();
       } else if (msg.type === "task_complete") {
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        if (msg.task_id) {
+          const packageId = (msg.package_id || packageParam || "upper_limb") as AssessmentPackageId;
+          void markTaskComplete(packageId, String(msg.task_id));
+        }
       } else if (msg.type === "camera_error") {
         setError("Camera unavailable. Please grant camera permission in settings and reload.");
       } else if (msg.type === "exit") {

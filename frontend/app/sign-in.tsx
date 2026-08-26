@@ -9,8 +9,7 @@ import * as WebBrowser from "expo-web-browser";
 import { colors, spacing, radius } from "@/src/theme";
 import { signIn, authedFetch, USER_KEY, USER_OBJ } from "@/src/auth";
 import { storage } from "@/src/utils/storage";
-
-const BASE = process.env.EXPO_PUBLIC_BACKEND_URL;
+import { API_BASE as BASE } from "@/src/config";
 
 export default function SignInScreen() {
   const insets = useSafeAreaInsets();

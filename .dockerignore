@@ -1,0 +1,14 @@
+.git
+.github
+.codex_work
+.playwright-cli
+**/.env
+**/.env.*
+**/__pycache__
+**/.pytest_cache
+**/node_modules
+frontend/dist
+outputs
+*.pyc
+*.pyo
+*.log

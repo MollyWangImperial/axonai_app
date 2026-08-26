@@ -6,6 +6,7 @@ import { useRouter } from "expo-router";
 import * as Haptics from "expo-haptics";
 import { colors, spacing, radius } from "@/src/theme";
 import { authedFetch, getUserId, signOut } from "@/src/auth";
+import { API_BASE } from "@/src/config";
 
 const ISSUE_OPTIONS = [
   { code: "REACH_INCOMPLETE", label: "Reduced reach" },
@@ -43,7 +44,7 @@ export default function TherapistPortal() {
       }
     } catch {/* */}
     if (step === "loading" || step === "onboard") {
-      const q = await fetch(`${process.env.EXPO_PUBLIC_BACKEND_URL}/api/therapist/onboarding/questions`).then((x) => x.json());
+      const q = await fetch(`${API_BASE}/api/therapist/onboarding/questions`).then((x) => x.json());
       setQuestions(q.questions || []);
       setStep((s) => (s === "loading" ? "onboard" : s));
     }

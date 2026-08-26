@@ -1,10 +1,5 @@
 import { storage } from "@/src/utils/storage";
-
-const browserHost = typeof globalThis.location !== "undefined" ? globalThis.location.hostname : "";
-const localWebBase = ["localhost", "127.0.0.1"].includes(browserHost)
-  ? `${globalThis.location.protocol}//${browserHost}:8001`
-  : "";
-const BASE = localWebBase || process.env.EXPO_PUBLIC_BACKEND_URL || "";
+import { API_BASE as BASE } from "@/src/config";
 
 export type Me = { id: string; email: string; name: string; role: "patient" | "therapist"; credits: number };
 

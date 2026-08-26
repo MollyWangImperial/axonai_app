@@ -4,10 +4,6 @@
   "buildCommand": "yarn build:web",
   "outputDirectory": "dist",
   "rewrites": [
-    {
-      "source": "/api/:path*",
-      "destination": "https://experiences-city-intervention-cst.trycloudflare.com/api/:path*"
-    },
     { "source": "/((?!api/).*)", "destination": "/index.html" }
   ],
   "headers": [

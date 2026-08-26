@@ -6,8 +6,7 @@ import { useLocalSearchParams, useRouter } from "expo-router";
 import * as Haptics from "expo-haptics";
 import { colors, spacing, radius } from "@/src/theme";
 import { storage } from "@/src/utils/storage";
-
-const BASE = process.env.EXPO_PUBLIC_BACKEND_URL;
+import { API_BASE as BASE } from "@/src/config";
 
 type ExerciseProgress = {
   completed_reps: number;

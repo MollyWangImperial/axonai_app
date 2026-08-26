@@ -9,8 +9,7 @@ import { storage } from "@/src/utils/storage";
 import TypingIndicator from "@/src/components/TypingIndicator";
 import PaywallModal from "@/src/components/PaywallModal";
 import { authedFetch } from "@/src/auth";
-
-const BASE = process.env.EXPO_PUBLIC_BACKEND_URL;
+import { API_BASE as BASE } from "@/src/config";
 
 type Turn = { role: "user" | "assistant"; text: string; ts: string };
 type Persona = { id: string; name: string; photo?: string; title?: string; bio?: string; months_since_stroke?: number; ai?: boolean; trained_on?: string };

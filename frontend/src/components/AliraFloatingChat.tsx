@@ -6,24 +6,15 @@ import { createAudioPlayer } from "expo-audio";
 import * as Haptics from "expo-haptics";
 import { colors, spacing, radius } from "@/src/theme";
 import { authedFetch } from "@/src/auth";
-
-const BASE = process.env.EXPO_PUBLIC_BACKEND_URL;
+import { API_BASE as BASE } from "@/src/config";
 
 type Props = {
-  /** Pixels from the bottom of the screen, above the sticky CTA bar. Defaults to 100. */
   bottomOffset?: number;
 };
 
-/**
- * A floating Aria avatar fixed in the lower-right corner. After a short delay it
- * pops up a speech bubble with a personalized caring message, optionally with
- * voice. Tap the avatar (or bubble) → open the Aria chat tab. Tap the close
- * icon → just dismiss the bubble for this session, the avatar stays.
- */
-export default function AriaFloatingChat({ bottomOffset = 100 }: Props) {
+export default function AliraFloatingChat({ bottomOffset = 100 }: Props) {
   const router = useRouter();
   const [bubble, setBubble] = useState<string | null>(null);
-  const [messages, setMessages] = useState<string[]>([]);
   const [shown, setShown] = useState(false);
   const fade = useRef(new Animated.Value(0)).current;
   const scale = useRef(new Animated.Value(0.6)).current;
@@ -31,7 +22,7 @@ export default function AriaFloatingChat({ bottomOffset = 100 }: Props) {
   const idxRef = useRef(0);
 
   const playVoice = async (text: string) => {
-    if (Platform.OS === "web") return; // most web browsers block autoplay audio
+    if (Platform.OS === "web") return;
     try {
       const r = await fetch(`${BASE}/api/tts/generate`, {
         method: "POST", headers: { "Content-Type": "application/json" },
@@ -41,7 +32,7 @@ export default function AriaFloatingChat({ bottomOffset = 100 }: Props) {
       const d = await r.json();
       const player = createAudioPlayer({ uri: `data:audio/mpeg;base64,${d.audio_b64}` });
       player.play();
-    } catch {/* */}
+    } catch {/* voice is optional */}
   };
 
   const showBubble = (text: string, withVoice = false) => {
@@ -61,7 +52,6 @@ export default function AriaFloatingChat({ bottomOffset = 100 }: Props) {
     });
   };
 
-  // Load proactive messages and greet after ~2 seconds.
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -69,25 +59,24 @@ export default function AriaFloatingChat({ bottomOffset = 100 }: Props) {
         const r = await authedFetch("/api/chat/proactive/messages?n=5");
         const d = await r.json();
         if (cancelled) return;
-        const arr: string[] = d.messages || ["How are you?"];
-        setMessages(arr);
-        // First-show: greet with voice
+        const arr: string[] = d.messages || ["I'm Alira. How are you feeling today?"];
         const t = setTimeout(() => {
           if (cancelled || greetedRef.current) return;
           greetedRef.current = true;
           showBubble(arr[0], true);
-          // Auto-cycle a random other message every 25s, no voice
           const cycle = setInterval(() => {
             idxRef.current = (idxRef.current + 1) % arr.length;
             showBubble(arr[idxRef.current], false);
           }, 25000);
-          // Auto-dismiss the FIRST bubble after 12s; subsequent cycles also auto-dismiss
           const autoDismiss = setInterval(() => hideBubble(), 12000);
-          // Cleanup intervals on unmount via greetedRef ref (we just live as long as the page)
           return () => { clearInterval(cycle); clearInterval(autoDismiss); };
         }, 2000);
         return () => clearTimeout(t);
-      } catch {/* offline / not signed in */}
+      } catch {
+        if (cancelled || greetedRef.current) return;
+        greetedRef.current = true;
+        showBubble("I'm Alira. How are you feeling today?", false);
+      }
     })();
     return () => { cancelled = true; };
   }, []);
