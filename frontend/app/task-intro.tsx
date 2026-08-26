@@ -11,6 +11,7 @@ import { colors, radius, spacing } from "@/src/theme";
 import { storage } from "@/src/utils/storage";
 
 const COMPLETED_TASKS_KEY = (packageId: AssessmentPackageId) => `assessment_completed_tasks_v1:${packageId}`;
+const SAVED_TASK_VIDEOS_KEY = (packageId: AssessmentPackageId) => `assessment_saved_task_videos_v1:${packageId}`;
 
 function parseCompletedTasks(raw: string): Record<string, boolean> {
   try {
@@ -46,13 +47,15 @@ export default function TaskIntro() {
     (async () => {
       try {
         setLoading(true);
-        const [taskResponse, rawCompleted, profileResponse, savedVideos] = await Promise.all([
+        const [taskResponse, rawCompleted, rawSavedVideos, profileResponse, savedVideos] = await Promise.all([
           fetchTasks(packageId),
           storage.getItem(COMPLETED_TASKS_KEY(packageId), ""),
+          storage.getItem(SAVED_TASK_VIDEOS_KEY(packageId), ""),
           authedFetch("/api/users/onboarding").then((r) => r.json()).catch(() => null),
           fetchTaskVideos(packageId).catch(() => []),
         ]);
         const completed = parseCompletedTasks(rawCompleted || "");
+        const deviceSavedVideos = parseCompletedTasks(rawSavedVideos || "");
         const nextTask = taskResponse.tasks.find((task) => !completed[task.id]) || taskResponse.tasks[0];
         const storedSide = await storage.getItem("affected_side_v1", "");
         const profileSide = profileResponse?.profile?.side_affected;
@@ -60,7 +63,7 @@ export default function TaskIntro() {
         setAffectedSide(resolvedSide === "left" ? "left" : "right");
         setCompletedTasks(completed);
         setNextTaskId(nextTask?.id || null);
-        setSavedVideoCount(savedVideos.length);
+        setSavedVideoCount(Math.max(savedVideos.length, Object.keys(deviceSavedVideos).length));
       } catch (e: any) {
         setError(String(e));
       } finally {
