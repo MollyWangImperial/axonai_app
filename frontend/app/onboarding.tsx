@@ -21,19 +21,25 @@ const STEPS: Step[] = [
   { key: "preferred_name", question: "What should we call you?", helper: "We'll use this name in your exercises and check-ins.", type: "text" },
   { key: "age_band", question: "Which age range are you in?", type: "single",
     options: [
-      { value: "<40", label: "Under 40", emoji: "🌱" },
-      { value: "40-54", label: "40 – 54", emoji: "🌿" },
-      { value: "55-64", label: "55 – 64", emoji: "🍃" },
-      { value: "65-74", label: "65 – 74", emoji: "🌳" },
-      { value: "75+", label: "75 or older", emoji: "🌲" },
+      { value: "under_20", label: "Under 20" },
+      { value: "20-29", label: "20 - 29" },
+      { value: "30-39", label: "30 - 39" },
+      { value: "40-49", label: "40 - 49" },
+      { value: "50-59", label: "50 - 59" },
+      { value: "60-69", label: "60 - 69" },
+      { value: "70-79", label: "70 - 79" },
+      { value: "80+", label: "80 or older" },
     ] },
   { key: "months_since_stroke", question: "Roughly how many months since your stroke?", helper: "An estimate is fine — this helps tune your plan to your recovery stage.", type: "number" },
-  { key: "side_affected", question: "Which side of your body was affected?", type: "single",
+  { key: "affected_areas", question: "Which areas of your body were affected?", helper: "Select every area that applies.", type: "multi",
     options: [
-      { value: "left", label: "Left side", emoji: "👈" },
-      { value: "right", label: "Right side", emoji: "👉" },
-      { value: "both", label: "Both sides", emoji: "🤲" },
-      { value: "unsure", label: "Not sure yet", emoji: "🤔" },
+      { value: "left_upper", label: "Left arm or hand" },
+      { value: "left_lower", label: "Left leg" },
+      { value: "right_upper", label: "Right arm or hand" },
+      { value: "right_lower", label: "Right leg" },
+      { value: "face_speech", label: "Face or speech" },
+      { value: "other", label: "Another area" },
+      { value: "unsure", label: "Not sure yet" },
     ] },
   { key: "dominant_hand", question: "Which is your dominant hand (before stroke)?", type: "single",
     options: [
@@ -59,6 +65,16 @@ const STEPS: Step[] = [
       { value: "cook", label: "Cook", emoji: "🍳" },
       { value: "play_music", label: "Play music", emoji: "🎸" },
       { value: "exercise", label: "Exercise / sports", emoji: "🏃" },
+    ], optional: true },
+  { key: "medical_conditions", question: "Do you have any pre-existing medical conditions?", helper: "Select all that apply. This helps us keep guidance appropriate and safe.", type: "multi",
+    options: [
+      { value: "hypertension", label: "High blood pressure" },
+      { value: "arthritis", label: "Arthritis" },
+      { value: "heart_condition", label: "Heart condition" },
+      { value: "diabetes", label: "Diabetes" },
+      { value: "cancer", label: "Cancer" },
+      { value: "other", label: "Another condition" },
+      { value: "none", label: "None of these" },
     ], optional: true },
   { key: "has_caregiver", question: "Is someone helping you at home (family, caregiver)?", type: "single",
     options: [
@@ -102,6 +118,10 @@ export default function OnboardingScreen() {
       setSaving(true);
       try {
         const payload: any = { ...next };
+        const areas: string[] = payload.affected_areas || [];
+        const hasLeft = areas.some((area) => area.startsWith("left_"));
+        const hasRight = areas.some((area) => area.startsWith("right_"));
+        payload.side_affected = hasLeft && hasRight ? "both" : hasLeft ? "left" : hasRight ? "right" : "unsure";
         // map yes/no → boolean
         if (payload.has_caregiver === "yes") payload.has_caregiver = true;
         else if (payload.has_caregiver === "no") payload.has_caregiver = false;
@@ -112,6 +132,9 @@ export default function OnboardingScreen() {
         if (r.ok) {
           // Cache preferred_name locally for the proactive chat & greetings
           if (payload.preferred_name) await storage.setItem("preferred_name_v1", payload.preferred_name);
+          if (payload.side_affected === "left" || payload.side_affected === "right") {
+            await storage.setItem("affected_side_v1", payload.side_affected);
+          }
           await storage.setItem("onboarding_complete_v1", "1");
           Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
           router.replace("/");
@@ -181,7 +204,9 @@ export default function OnboardingScreen() {
                 key={o.value}
                 testID={`onb-multi-${step.key}-${o.value}`}
                 onPress={() => {
-                  const next = active ? selected.filter((s) => s !== o.value) : [...selected, o.value];
+                  let next: string[];
+                  if (o.value === "none") next = active ? [] : ["none"];
+                  else next = active ? selected.filter((s) => s !== o.value) : [...selected.filter((s) => s !== "none"), o.value];
                   setVal(step.key, next);
                 }}
                 style={[styles.chip, active && styles.chipActive]}

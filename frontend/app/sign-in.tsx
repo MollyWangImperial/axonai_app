@@ -144,7 +144,7 @@ export default function SignInScreen() {
     <LinearGradient colors={[colors.brandPrimary, "#1C201D"]} style={[styles.container, { paddingTop: insets.top + spacing.lg }]}>
       <View style={styles.brand}>
         <Ionicons name="heart" size={32} color="#fff" />
-        <Text style={styles.brandText}>NeuroMotion</Text>
+        <Text style={styles.brandText}>Rehyn</Text>
       </View>
       <Text style={styles.title}>Welcome.</Text>
       <Text style={styles.sub}>Sign in to begin — or continue your recovery.</Text>

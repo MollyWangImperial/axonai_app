@@ -1,369 +1,189 @@
-import { useEffect, useState } from "react";
-import { View, Text, StyleSheet, Pressable, ScrollView, ImageBackground, Dimensions, Platform } from "react-native";
+import { useCallback, useState } from "react";
+import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { useFocusEffect, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
-import { useRouter } from "expo-router";
 import * as Haptics from "expo-haptics";
-import { colors, spacing, radius } from "@/src/theme";
-import { fetchHistory, Assessment } from "@/src/api";
-import { ensurePermission, loadSettings, rescheduleReminders } from "@/src/utils/notifications";
-import CreditsBadge from "@/src/components/CreditsBadge";
-import AliraFloatingChat from "@/src/components/AliraFloatingChat";
-import { storage } from "@/src/utils/storage";
+
+import { Assessment, fetchHistory } from "@/src/api";
 import { getCachedUser } from "@/src/auth";
-import { API_BASE as BASE } from "@/src/config";
-
-const HERO = "https://images.pexels.com/photos/8460412/pexels-photo-8460412.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940";
-type ReminderStatus = {
-  days_since_assessment: number | null;
-  exercise_overdue: boolean;
-  assessment_overdue: boolean;
-  daily_reminder_text: string;
-  weekly_reminder_text: string;
-};
-
-const EXAMPLE_GUIDED_EXERCISES = [
-  {
-    id: "ex_wallslide",
-    name: "Arm Raise Upward",
-    focus: "Shoulder elevation",
-    description: "Raise your affected arm upward toward the target with smooth control.",
-    sets: 1,
-    reps: 5,
-    icon: "radio-button-on",
-  },
-  {
-    id: "ex_h2m",
-    name: "Hand-to-Mouth Practice",
-    focus: "Daily activity",
-    description: "Bring your hand toward your mouth, then lower it back with guidance.",
-    sets: 1,
-    reps: 5,
-    icon: "restaurant",
-  },
-  {
-    id: "ex_handopen",
-    name: "Finger Opening Practice",
-    focus: "Hand opening",
-    description: "Open your fingers, relax, and mark each repetition when you finish.",
-    sets: 1,
-    reps: 8,
-    icon: "hand-left",
-  },
-];
+import { JournalEntry, loadJournalEntries } from "@/src/journal";
+import { colors, radius, spacing } from "@/src/theme";
+import { storage } from "@/src/utils/storage";
 
 export default function HomeScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const [history, setHistory] = useState<Assessment[]>([]);
-  const [reminder, setReminder] = useState<ReminderStatus | null>(null);
+  const [entries, setEntries] = useState<JournalEntry[]>([]);
+  const [greetName, setGreetName] = useState("");
   const [loading, setLoading] = useState(true);
-  const [greetName, setGreetName] = useState<string>("");
 
-  const load = async () => {
-    try {
-      const [h, r] = await Promise.all([
-        fetchHistory().catch(() => []),
-        fetch(`${BASE}/api/reminders/status`).then((res) => res.json()).catch(() => null),
-      ]);
-      setHistory(h || []);
-      setReminder(r);
-      // greeting name preference: preferred_name from onboarding > cached user.name
-      const pref = await storage.getItem<string>("preferred_name_v1", "");
-      if (pref) setGreetName(pref);
-      else {
-        const u = await getCachedUser();
-        if (typeof u?.name === "string") setGreetName(u.name.split(" ")[0]);
-      }
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    load();
-    // Schedule reminders on first launch (silent on web / Expo Go iOS limitations)
-    (async () => {
-      if (Platform.OS === "web") return;
-      const granted = await ensurePermission();
-      if (granted) {
-        const s = await loadSettings();
-        await rescheduleReminders(s);
-      }
-    })();
+  const load = useCallback(async () => {
+    setLoading(true);
+    const [assessments, journal, preferredName, user] = await Promise.all([
+      fetchHistory().catch(() => []),
+      loadJournalEntries(),
+      storage.getItem("preferred_name_v1", ""),
+      getCachedUser(),
+    ]);
+    setHistory(assessments);
+    setEntries(journal);
+    setGreetName(preferredName || user?.name?.split(" ")[0] || "there");
+    setLoading(false);
   }, []);
 
+  useFocusEffect(useCallback(() => { void load(); }, [load]));
+
   const latest = history[0];
+  const isInitialAssessment = history.length === 0;
+  const completedThisWeek = Math.min(7, history.length + Math.min(4, entries.length));
+  const weeklyPercent = Math.round((completedThisWeek / 7) * 100);
 
-  const onStart = () => {
+  const startNextSession = () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    router.push("/task-intro");
-  };
-
-  const openExampleExercise = (ex: typeof EXAMPLE_GUIDED_EXERCISES[number]) => {
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    router.push({
-      pathname: "/exercise",
-      params: {
-        exercise_id: ex.id,
-        name: ex.name,
-        plan_id: "example_today_plan",
-        sets: String(ex.sets),
-        reps: String(ex.reps),
-      },
-    });
+    if (isInitialAssessment) {
+      router.push({ pathname: "/session-check" as any, params: { target: "assessment", mode: "initial" } });
+      return;
+    }
+    router.push({ pathname: "/session-check" as any, params: { target: "rehab", id: latest.id } });
   };
 
   return (
-    <View style={[styles.container]}>
-      <ScrollView contentContainerStyle={{ paddingBottom: 140 }} showsVerticalScrollIndicator={false}>
-        {/* Hero */}
-        <ImageBackground source={{ uri: HERO }} style={[styles.hero, { paddingTop: insets.top + spacing.lg }]}>
-          <LinearGradient
-            colors={["rgba(28,32,29,0.15)", "rgba(28,32,29,0.85)"]}
-            style={StyleSheet.absoluteFill}
-          />
-          <View style={styles.heroInner}>
-            <View style={styles.heroTopRow}>
-              <Text style={styles.heroBadge} testID="home-app-badge">NEUROMOTION</Text>
-              <CreditsBadge />
+    <View style={styles.container}>
+      <ScrollView contentContainerStyle={[styles.page, { paddingTop: insets.top + spacing.md }]} showsVerticalScrollIndicator={false}>
+        <View style={styles.inner}>
+          <View style={styles.header}>
+            <View style={styles.brandRow}>
+              <View style={styles.brandIcon}><Ionicons name="pulse" size={19} color={colors.onBrandPrimary} /></View>
+              <Text style={styles.brand}>Rehyn</Text>
             </View>
-            <Text style={styles.heroTitle}>{greetName ? `Good day, ${greetName}.` : "Good day."}{"\n"}Let's move forward, together.</Text>
-            <Text style={styles.heroSub}>
-              A guided upper-limb movement assessment with personalized rehabilitation, grounded in clinical sources.
+            <View style={styles.headerActions}>
+              <Pressable accessibilityLabel="Notifications" style={styles.iconButton}><Ionicons name="notifications-outline" size={20} color={colors.onSurfaceSecondary} /></Pressable>
+              <Pressable accessibilityLabel="Settings" style={styles.iconButton}><Ionicons name="settings-outline" size={20} color={colors.onSurfaceSecondary} /></Pressable>
+              <View style={styles.avatar}><Text style={styles.avatarText}>{greetName.slice(0, 1).toUpperCase()}</Text></View>
+            </View>
+          </View>
+
+          <View style={styles.welcomeCard}>
+            <View style={styles.welcomeBar} />
+            <View style={{ flex: 1 }}>
+              <Text style={styles.welcomeLabel}>Welcome back, {greetName}</Text>
+              <Text style={styles.welcomeText}>{isInitialAssessment ? "Let's learn where to begin, together." : "Every step forward counts. You are building consistency."}</Text>
+            </View>
+          </View>
+
+          <View style={styles.goalCard}>
+            <View style={styles.goalRing}>
+              <Text style={styles.goalPercent}>{weeklyPercent}%</Text>
+              <Text style={styles.goalWord}>GOAL</Text>
+            </View>
+            <View style={styles.goalCopy}>
+              <Text style={styles.goalTitle}>Weekly active goal</Text>
+              <Text style={styles.goalSubtitle}>{isInitialAssessment ? "Begin with your Initial Assessment" : "Keep your recovery routine moving"}</Text>
+              <View style={styles.goalMetaRow}>
+                <View style={styles.metaPill}><Ionicons name="checkmark" size={13} color={colors.brandPrimary} /><Text style={styles.metaText}>{completedThisWeek}/7 sessions</Text></View>
+                <View style={styles.streakPill}><Ionicons name="flame-outline" size={13} color={colors.warning} /><Text style={styles.streakText}>{Math.max(1, entries.length)} day streak</Text></View>
+              </View>
+            </View>
+          </View>
+
+          <View style={styles.sessionCard}>
+            <View style={styles.sessionTopRow}>
+              <Text style={styles.sessionBadge}>{isInitialAssessment ? "GET STARTED" : "NEXT SESSION"}</Text>
+              <View style={styles.duration}><Ionicons name="time-outline" size={15} color="#E8F0EA" /><Text style={styles.durationText}>{isInitialAssessment ? "15 mins" : "20 mins"}</Text></View>
+            </View>
+            <Text style={styles.sessionTitle}>{isInitialAssessment ? "Initial Assessment" : "Today's Rehabilitation"}</Text>
+            <Text style={styles.sessionDescription}>
+              {isInitialAssessment
+                ? "The same seven guided upper-limb tasks for every new patient, so we can understand your movement broadly."
+                : `${latest.rehab_plan.length} guided exercise${latest.rehab_plan.length === 1 ? "" : "s"} selected from your assessment.`}
             </Text>
-          </View>
-        </ImageBackground>
-
-        {/* Reminder cards */}
-        {reminder?.assessment_overdue ? (
-          <View style={styles.section}>
-            <Pressable
-              testID="weekly-reminder-card"
-              onPress={() => router.push("/task-intro")}
-              style={[styles.reminderCard, { backgroundColor: colors.brandSecondary }]}
-            >
-              <Ionicons name="calendar" size={24} color={colors.onBrandSecondary} />
-              <View style={{ flex: 1 }}>
-                <Text style={[styles.reminderTitle, { color: colors.onBrandSecondary }]}>Weekly movement check-in</Text>
-                <Text style={[styles.reminderBody, { color: colors.onBrandSecondary }]}>
-                  {reminder.days_since_assessment == null
-                    ? "Let's start your first assessment to see where you are."
-                    : `It has been ${reminder.days_since_assessment} days. A quick check-in helps us tune your plan.`}
-                </Text>
-              </View>
-              <Ionicons name="chevron-forward" size={20} color={colors.onBrandSecondary} />
+            <Pressable testID="home-start-next-session" onPress={startNextSession} style={styles.startButton}>
+              <Ionicons name="play" size={18} color={colors.brandPrimary} />
+              <Text style={styles.startButtonText}>{isInitialAssessment ? "Start Initial Assessment" : "Start Session"}</Text>
             </Pressable>
           </View>
-        ) : reminder?.exercise_overdue ? (
-          <View style={styles.section}>
-            <Pressable
-              testID="daily-reminder-card"
-              onPress={() => latest && router.push({ pathname: "/rehab-plan", params: { id: latest.id } })}
-              style={[styles.reminderCard, { backgroundColor: colors.brandPrimary }]}
-            >
-              <Ionicons name="alarm" size={24} color={colors.onBrandPrimary} />
-              <View style={{ flex: 1 }}>
-                <Text style={[styles.reminderTitle, { color: colors.onBrandPrimary }]}>Today's exercise reminder</Text>
-                <Text style={[styles.reminderBody, { color: colors.onBrandPrimary }]} numberOfLines={2}>
-                  {reminder.daily_reminder_text}
-                </Text>
-              </View>
-              <Ionicons name="chevron-forward" size={20} color={colors.onBrandPrimary} />
+
+          <View style={styles.sectionHeader}>
+            <Text style={styles.sectionTitle}>Journal & milestones</Text>
+            <Pressable testID="home-add-journal" onPress={() => router.push("/journey" as any)} style={styles.addEntry}>
+              <Ionicons name="add" size={17} color={colors.brandPrimary} />
+              <Text style={styles.addEntryText}>Add entry</Text>
             </Pressable>
           </View>
-        ) : null}
 
-        {/* Today's plan */}
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Today's plan</Text>
-          {loading ? (
-            <View style={styles.card}><Text style={styles.muted}>Loading…</Text></View>
-          ) : latest ? (
-            <Pressable
-              testID="latest-plan-card"
-              onPress={() => router.push({ pathname: "/rehab-plan", params: { id: latest.id } })}
-              style={styles.card}
-            >
-              <View style={styles.cardHeader}>
-                <Ionicons name="fitness" size={22} color={colors.brandPrimary} />
-                <Text style={styles.cardTitle}>Personalized rehab plan</Text>
-              </View>
-              <Text style={styles.cardBody}>
-                {latest.rehab_plan.length} exercises · {latest.functional_issues.length} focus areas
-              </Text>
-              <View style={styles.chips}>
-                {latest.functional_issues.slice(0, 3).map(i => (
-                  <View key={i.code} style={styles.chip}>
-                    <Text style={styles.chipText} numberOfLines={1}>{i.label}</Text>
-                  </View>
-                ))}
-              </View>
-              <Text style={styles.cardLink}>Open plan →</Text>
-            </Pressable>
-          ) : (
-            <View style={styles.card}>
-              <Text style={styles.cardTitle}>No assessment yet</Text>
-              <Text style={styles.cardBody}>Start your first assessment to receive a personalized plan. You can also try a guided example below.</Text>
-            </View>
-          )}
-
-          <View style={styles.exampleHeader}>
-            <Text style={styles.exampleTitle}>Guided examples ready now</Text>
-            <Text style={styles.exampleSub}>These open the same step-by-step camera exercise flow.</Text>
-          </View>
-          <View style={styles.exampleList}>
-            {EXAMPLE_GUIDED_EXERCISES.map((ex) => (
-              <Pressable
-                key={ex.id}
-                testID={`home-example-exercise-${ex.id}`}
-                onPress={() => openExampleExercise(ex)}
-                style={styles.exampleCard}
-              >
-                <View style={styles.exampleIcon}>
-                  <Ionicons name={ex.icon as any} size={22} color={colors.brandPrimary} />
-                </View>
-                <View style={styles.exampleCopy}>
-                  <View style={styles.exampleTopLine}>
-                    <Text style={styles.exampleName} numberOfLines={2}>{ex.name}</Text>
-                    <View style={styles.exampleBadge}>
-                      <Text style={styles.exampleBadgeText}>{ex.reps} reps</Text>
-                    </View>
-                  </View>
-                  <Text style={styles.exampleFocus}>{ex.focus}</Text>
-                  <Text style={styles.exampleDesc} numberOfLines={2}>{ex.description}</Text>
-                </View>
-                <Ionicons name="play-circle" size={24} color={colors.brandPrimary} />
-              </Pressable>
-            ))}
-          </View>
-        </View>
-
-        {/* How it works */}
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>How it works</Text>
-          {[
-            { icon: "videocam", title: "Live camera assessment", body: "7 short upper-limb movement tasks, guided by a warm voice and on-screen targets." },
-            { icon: "analytics", title: "Identify functional issues", body: "Pose tracking flags reduced reach, trunk compensation, hand opening, pinch, and more." },
-            { icon: "medical", title: "Evidence-based plan", body: "Exercises drawn from Fugl-Meyer, ARAT, CIMT, BATRAC, and Task-Specific Training." },
-          ].map((s, i) => (
-            <View key={i} style={styles.step}>
-              <View style={styles.stepIcon}>
-                <Ionicons name={s.icon as any} size={22} color={colors.brandPrimary} />
-              </View>
+          {loading ? <ActivityIndicator color={colors.brandPrimary} /> : entries.length === 0 ? (
+            <Pressable onPress={() => router.push("/journey" as any)} style={styles.emptyJournal}>
+              <View style={styles.journalIcon}><Ionicons name="book-outline" size={21} color={colors.brandPrimary} /></View>
               <View style={{ flex: 1 }}>
-                <Text style={styles.stepTitle}>{s.title}</Text>
-                <Text style={styles.stepBody}>{s.body}</Text>
+                <Text style={styles.journalTitle}>Record your first recovery note</Text>
+                <Text style={styles.journalBody}>Small observations help make future support more personal.</Text>
               </View>
+              <Ionicons name="chevron-forward" size={20} color={colors.borderStrong} />
+            </Pressable>
+          ) : entries.slice(0, 2).map((entry) => (
+            <View key={entry.id} style={styles.journalCard}>
+              <View style={styles.journalTopRow}>
+                <Text style={styles.journalTag}>{entry.tag}</Text>
+                <Text style={styles.journalDate}>{new Date(entry.createdAt).toLocaleDateString(undefined, { month: "short", day: "numeric" })}</Text>
+              </View>
+              <Text style={styles.journalBody} numberOfLines={3}>{entry.body}</Text>
             </View>
           ))}
         </View>
-
-        {/* Quick actions */}
-        <View style={styles.section}>
-          <View style={styles.row}>
-            <Pressable
-              testID="home-history-btn"
-              onPress={() => router.push("/progress")}
-              style={[styles.quickCard, { backgroundColor: colors.surfaceSecondary }]}
-            >
-              <Ionicons name="trending-up" size={26} color={colors.brandPrimary} />
-              <Text style={styles.quickTitle}>Progress</Text>
-              <Text style={styles.quickSub}>{history.length > 0 ? `${history.length} assessment${history.length === 1 ? "" : "s"}` : "No data yet"}</Text>
-            </Pressable>
-            <Pressable
-              testID="home-plan-btn"
-              onPress={() => latest && router.push({ pathname: "/rehab-plan", params: { id: latest.id } })}
-              style={[styles.quickCard, { backgroundColor: colors.brandTertiary }]}
-            >
-              <Ionicons name="clipboard" size={26} color={colors.onBrandTertiary} />
-              <Text style={[styles.quickTitle, { color: colors.onBrandTertiary }]}>My Plan</Text>
-              <Text style={[styles.quickSub, { color: colors.onBrandTertiary }]}>{latest ? "View today" : "—"}</Text>
-            </Pressable>
-          </View>
-        </View>
       </ScrollView>
-
-      {/* Sticky CTA */}
-      <View style={[styles.cta, { paddingBottom: Math.max(insets.bottom, spacing.md) }]}>
-        <Pressable
-          testID="home-start-assessment"
-          onPress={onStart}
-          style={({ pressed }) => [styles.ctaBtn, pressed && { opacity: 0.85 }]}
-        >
-          <Ionicons name="play-circle" size={22} color={colors.onBrandPrimary} />
-          <Text style={styles.ctaText}>Start Assessment</Text>
-        </Pressable>
-      </View>
-
-      {/* Alira - floating caring companion */}
-      <AliraFloatingChat bottomOffset={(insets.bottom || 0) + 84} />
     </View>
   );
 }
 
-const W = Dimensions.get("window").width;
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.surface },
-  hero: { width: "100%", paddingBottom: spacing.xl, minHeight: 260, justifyContent: "flex-end" },
-  heroInner: { paddingHorizontal: spacing.lg, paddingBottom: spacing.lg },
-  heroTopRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: spacing.sm },
-  heroBadge: { color: colors.brandTertiary, fontWeight: "700", letterSpacing: 2, fontSize: 12 },
-  heroTitle: { color: colors.onSurfaceInverse, fontSize: 26, fontWeight: "800", lineHeight: 32, marginBottom: spacing.sm },
-  heroSub: { color: "#E8EBE6", fontSize: 15, lineHeight: 22 },
-  section: { paddingHorizontal: spacing.lg, paddingTop: spacing.lg },
-  sectionTitle: { fontSize: 20, fontWeight: "700", color: colors.onSurface, marginBottom: spacing.md },
-  card: { backgroundColor: colors.surfaceSecondary, borderRadius: radius.lg, padding: spacing.lg, gap: spacing.sm },
-  cardHeader: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
-  cardTitle: { fontSize: 18, fontWeight: "700", color: colors.onSurface },
-  cardBody: { fontSize: 15, color: colors.onSurfaceSecondary, lineHeight: 22 },
-  cardLink: { color: colors.brandPrimary, fontWeight: "700", marginTop: spacing.xs },
-  exampleHeader: { marginTop: spacing.md, marginBottom: spacing.sm, gap: 2 },
-  exampleTitle: { fontSize: 16, fontWeight: "800", color: colors.onSurface },
-  exampleSub: { fontSize: 13, color: colors.onSurfaceSecondary, lineHeight: 18 },
-  exampleList: { gap: spacing.sm },
-  exampleCard: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: spacing.sm,
-    backgroundColor: colors.surfaceSecondary,
-    borderRadius: radius.lg,
-    padding: spacing.md,
-    borderWidth: 1,
-    borderColor: colors.border,
-  },
-  exampleIcon: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    backgroundColor: colors.brandTertiary,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  exampleCopy: { flex: 1, minWidth: 0, gap: 2 },
-  exampleTopLine: { flexDirection: "row", alignItems: "flex-start", gap: spacing.xs },
-  exampleName: { flex: 1, minWidth: 0, fontSize: 16, lineHeight: 20, fontWeight: "800", color: colors.onSurface },
-  exampleBadge: { borderRadius: radius.pill, paddingHorizontal: spacing.sm, paddingVertical: 4, backgroundColor: colors.brandTertiary },
-  exampleBadgeText: { color: colors.onBrandTertiary, fontSize: 11, fontWeight: "800" },
-  exampleFocus: { color: colors.brandPrimary, fontSize: 13, fontWeight: "700" },
-  exampleDesc: { color: colors.onSurfaceSecondary, fontSize: 13, lineHeight: 18 },
-  chips: { flexDirection: "row", flexWrap: "wrap", gap: spacing.xs, marginTop: spacing.xs },
-  chip: { backgroundColor: colors.brandTertiary, borderRadius: radius.pill, paddingHorizontal: spacing.sm, paddingVertical: 6 },
-  chipText: { color: colors.onBrandTertiary, fontSize: 12, fontWeight: "600", maxWidth: W * 0.55 },
-  muted: { color: colors.onSurfaceTertiary },
-  step: { flexDirection: "row", gap: spacing.md, paddingVertical: spacing.sm, alignItems: "flex-start" },
-  stepIcon: { width: 44, height: 44, borderRadius: 22, backgroundColor: colors.brandTertiary, alignItems: "center", justifyContent: "center" },
-  stepTitle: { fontSize: 16, fontWeight: "700", color: colors.onSurface, marginBottom: 2 },
-  stepBody: { fontSize: 14, color: colors.onSurfaceSecondary, lineHeight: 20 },
-  row: { flexDirection: "row", gap: spacing.md },
-  quickCard: { flex: 1, padding: spacing.md, borderRadius: radius.lg, gap: 4, minHeight: 100, justifyContent: "center" },
-  quickTitle: { fontSize: 16, fontWeight: "700", color: colors.onSurface, marginTop: spacing.xs },
-  quickSub: { fontSize: 13, color: colors.onSurfaceSecondary },
-  cta: { position: "absolute", left: 0, right: 0, bottom: 0, padding: spacing.md, backgroundColor: colors.surface, borderTopWidth: 1, borderTopColor: colors.divider },
-  ctaBtn: { flexDirection: "row", gap: spacing.sm, backgroundColor: colors.brandPrimary, borderRadius: radius.lg, padding: spacing.md, alignItems: "center", justifyContent: "center", minHeight: 56 },
-  ctaText: { color: colors.onBrandPrimary, fontSize: 17, fontWeight: "700" },
-  reminderCard: { flexDirection: "row", alignItems: "center", gap: spacing.md, padding: spacing.md, borderRadius: radius.lg },
-  reminderTitle: { fontSize: 16, fontWeight: "800", marginBottom: 2 },
-  reminderBody: { fontSize: 13, lineHeight: 18 },
+  page: { paddingHorizontal: spacing.md, paddingBottom: 110 },
+  inner: { width: "100%", maxWidth: 620, alignSelf: "center", gap: spacing.md },
+  header: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", minHeight: 52 },
+  brandRow: { flexDirection: "row", alignItems: "center", gap: spacing.xs },
+  brandIcon: { width: 34, height: 34, borderRadius: radius.sm, backgroundColor: "#24594F", alignItems: "center", justifyContent: "center" },
+  brand: { fontSize: 22, fontWeight: "800", color: "#24594F" },
+  headerActions: { flexDirection: "row", alignItems: "center", gap: spacing.xs },
+  iconButton: { width: 38, height: 38, borderRadius: 19, alignItems: "center", justifyContent: "center", borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface },
+  avatar: { width: 38, height: 38, borderRadius: 19, backgroundColor: colors.brandSecondary, alignItems: "center", justifyContent: "center" },
+  avatarText: { color: colors.onBrandSecondary, fontWeight: "800" },
+  welcomeCard: { flexDirection: "row", gap: spacing.sm, padding: spacing.md, borderRadius: radius.md, backgroundColor: "#EAF1EF" },
+  welcomeBar: { width: 4, borderRadius: 2, backgroundColor: "#3C8273" },
+  welcomeLabel: { fontSize: 13, color: colors.onSurfaceSecondary },
+  welcomeText: { fontSize: 15, lineHeight: 21, fontWeight: "800", color: colors.onSurface },
+  goalCard: { flexDirection: "row", alignItems: "center", gap: spacing.md, padding: spacing.md, borderRadius: radius.md, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface },
+  goalRing: { width: 78, height: 78, borderRadius: 39, borderWidth: 8, borderColor: colors.brandPrimary, alignItems: "center", justifyContent: "center", backgroundColor: colors.surface },
+  goalPercent: { fontSize: 18, fontWeight: "800", color: colors.onSurface },
+  goalWord: { fontSize: 9, color: colors.onSurfaceTertiary, fontWeight: "700" },
+  goalCopy: { flex: 1, minWidth: 0 },
+  goalTitle: { fontSize: 16, fontWeight: "800", color: colors.onSurface },
+  goalSubtitle: { fontSize: 12, lineHeight: 17, color: colors.onSurfaceTertiary, marginTop: 2 },
+  goalMetaRow: { flexDirection: "row", flexWrap: "wrap", gap: spacing.xs, marginTop: spacing.sm },
+  metaPill: { flexDirection: "row", alignItems: "center", gap: 4, backgroundColor: colors.surfaceSecondary, paddingHorizontal: spacing.sm, paddingVertical: 5, borderRadius: radius.pill },
+  metaText: { fontSize: 11, color: colors.onSurfaceSecondary, fontWeight: "700" },
+  streakPill: { flexDirection: "row", alignItems: "center", gap: 4, backgroundColor: "#FFF3DC", paddingHorizontal: spacing.sm, paddingVertical: 5, borderRadius: radius.pill },
+  streakText: { fontSize: 11, color: "#8A5B18", fontWeight: "700" },
+  sessionCard: { padding: spacing.md, borderRadius: radius.md, backgroundColor: "#24594F", gap: spacing.xs },
+  sessionTopRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
+  sessionBadge: { color: "#DDEBE6", backgroundColor: "rgba(255,255,255,0.13)", borderRadius: radius.sm, paddingHorizontal: spacing.sm, paddingVertical: 5, fontSize: 10, fontWeight: "800" },
+  duration: { flexDirection: "row", alignItems: "center", gap: 4 },
+  durationText: { color: "#E8F0EA", fontSize: 12, fontWeight: "700" },
+  sessionTitle: { color: "#FFFFFF", fontSize: 21, fontWeight: "800", marginTop: spacing.sm },
+  sessionDescription: { color: "#E8F0EA", fontSize: 13, lineHeight: 19 },
+  startButton: { minHeight: 48, marginTop: spacing.sm, borderRadius: radius.sm, backgroundColor: colors.surface, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: spacing.xs },
+  startButtonText: { color: colors.brandPrimary, fontSize: 15, fontWeight: "800" },
+  sectionHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginTop: spacing.sm },
+  sectionTitle: { fontSize: 17, fontWeight: "800", color: colors.onSurface },
+  addEntry: { flexDirection: "row", alignItems: "center", gap: 3, minHeight: 40, paddingHorizontal: spacing.xs },
+  addEntryText: { fontSize: 13, fontWeight: "800", color: colors.brandPrimary },
+  emptyJournal: { flexDirection: "row", alignItems: "center", gap: spacing.sm, padding: spacing.md, borderRadius: radius.md, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface },
+  journalIcon: { width: 42, height: 42, borderRadius: 21, backgroundColor: colors.brandTertiary, alignItems: "center", justifyContent: "center" },
+  journalTitle: { fontSize: 14, fontWeight: "800", color: colors.onSurface },
+  journalBody: { fontSize: 13, lineHeight: 19, color: colors.onSurfaceSecondary },
+  journalCard: { padding: spacing.md, borderRadius: radius.md, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface },
+  journalTopRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: spacing.xs },
+  journalTag: { fontSize: 11, fontWeight: "800", color: colors.brandPrimary },
+  journalDate: { fontSize: 11, color: colors.onSurfaceTertiary },
 });

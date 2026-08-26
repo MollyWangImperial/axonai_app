@@ -129,7 +129,7 @@ export default function ChatScreen() {
     { icon: "analytics-outline" as const, text: "Check My Progress" },
     { icon: "walk-outline" as const, text: "Start Guided Exercise" },
     { icon: "heart" as const, text: "Pain Check-in" },
-    { icon: "people" as const, text: "Message Therapist" },
+    { icon: "book-outline" as const, text: "Reflect on Today" },
   ];
 
   return (

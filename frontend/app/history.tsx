@@ -37,8 +37,8 @@ export default function HistoryScreen() {
             <Ionicons name="bar-chart" size={48} color={colors.borderStrong} />
             <Text style={styles.emptyTitle}>No assessments yet</Text>
             <Text style={styles.emptySub}>Complete an assessment to start tracking your recovery journey.</Text>
-            <Pressable onPress={() => router.push("/task-intro")} style={styles.emptyBtn} testID="history-start">
-              <Text style={styles.emptyBtnText}>Start an assessment</Text>
+            <Pressable onPress={() => router.push({ pathname: "/session-check" as any, params: { target: "assessment", mode: "initial" } })} style={styles.emptyBtn} testID="history-start">
+              <Text style={styles.emptyBtnText}>Start Initial Assessment</Text>
             </Pressable>
           </View>
         ) : (

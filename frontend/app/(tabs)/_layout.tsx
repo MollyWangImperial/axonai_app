@@ -25,23 +25,15 @@ export default function TabsLayout() {
         options={{
           title: "Home",
           tabBarIcon: ({ color, size }) => <Ionicons name="home" size={size} color={color} />,
-          tabBarTestID: "tab-home",
+          tabBarButtonTestID: "tab-home",
         }}
       />
       <Tabs.Screen
-        name="community"
+        name="journey"
         options={{
-          title: "Community",
-          tabBarIcon: ({ color, size }) => <Ionicons name="people" size={size} color={color} />,
-          tabBarTestID: "tab-community",
-        }}
-      />
-      <Tabs.Screen
-        name="therapists"
-        options={{
-          title: "Therapists",
-          tabBarIcon: ({ color, size }) => <Ionicons name="medkit" size={size} color={color} />,
-          tabBarTestID: "tab-therapists",
+          title: "Journey",
+          tabBarIcon: ({ color, size }) => <Ionicons name="book-outline" size={size} color={color} />,
+          tabBarButtonTestID: "tab-journey",
         }}
       />
       <Tabs.Screen
@@ -49,8 +41,16 @@ export default function TabsLayout() {
         options={{
           title: "Alira",
           tabBarIcon: ({ color, size }) => <Ionicons name="chatbubbles" size={size} color={color} />,
-          tabBarTestID: "tab-chat",
+          tabBarButtonTestID: "tab-chat",
         }}
+      />
+      <Tabs.Screen
+        name="community"
+        options={{ href: null }}
+      />
+      <Tabs.Screen
+        name="therapists"
+        options={{ href: null }}
       />
     </Tabs>
   );

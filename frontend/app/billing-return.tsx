@@ -60,7 +60,7 @@ export default function BillingReturnScreen() {
                 : `Your balance: ${creditsNow ?? "—"} credits.`}
             </Text>
             <Pressable onPress={() => router.replace("/")} style={styles.cta} testID="billing-return-home">
-              <Text style={styles.ctaText}>Back to NeuroMotion</Text>
+              <Text style={styles.ctaText}>Back to Rehyn</Text>
             </Pressable>
           </>
         ) : (
@@ -69,7 +69,7 @@ export default function BillingReturnScreen() {
             <Text style={styles.title}>Couldn't verify the payment</Text>
             <Text style={styles.body}>If you completed checkout, your unlock may take a minute to apply. Try refreshing your credits later.</Text>
             <Pressable onPress={() => router.replace("/")} style={styles.cta}>
-              <Text style={styles.ctaText}>Back to NeuroMotion</Text>
+              <Text style={styles.ctaText}>Back to Rehyn</Text>
             </Pressable>
           </>
         )}
