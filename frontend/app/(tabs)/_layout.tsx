@@ -60,6 +60,14 @@ export default function TabsLayout() {
         name="therapists"
         options={{ href: null }}
       />
+      <Tabs.Screen
+        name="profile"
+        options={{ href: null }}
+      />
+      <Tabs.Screen
+        name="settings"
+        options={{ href: null }}
+      />
     </Tabs>
   );
 }

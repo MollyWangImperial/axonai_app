@@ -36,7 +36,7 @@ export async function ensurePermission(): Promise<boolean> {
 }
 
 export async function loadSettings(): Promise<ReminderSettings> {
-  const raw = await storage.getItem(STORE_KEY);
+  const raw = await storage.getItem(STORE_KEY, "");
   if (!raw) return DEFAULT_SETTINGS;
   try { return { ...DEFAULT_SETTINGS, ...JSON.parse(raw) }; }
   catch { return DEFAULT_SETTINGS; }
@@ -84,7 +84,7 @@ export async function rescheduleReminders(s: ReminderSettings) {
         repeats: true,
       } as any,
     });
-  } catch (e) {
+  } catch {
     // Silent — local notifications may be limited in Expo Go on iOS
   }
 }

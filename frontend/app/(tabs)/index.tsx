@@ -60,8 +60,8 @@ export default function HomeScreen() {
             </View>
             <View style={styles.headerActions}>
               <Pressable accessibilityLabel="Notifications" style={styles.iconButton}><Ionicons name="notifications-outline" size={20} color={colors.onSurfaceSecondary} /></Pressable>
-              <Pressable accessibilityLabel="Settings" style={styles.iconButton}><Ionicons name="settings-outline" size={20} color={colors.onSurfaceSecondary} /></Pressable>
-              <View style={styles.avatar}><Text style={styles.avatarText}>{greetName.slice(0, 1).toUpperCase()}</Text></View>
+              <Pressable testID="home-open-settings" accessibilityLabel="Settings" onPress={() => router.push("/settings" as any)} style={styles.iconButton}><Ionicons name="settings-outline" size={20} color={colors.onSurfaceSecondary} /></Pressable>
+              <Pressable testID="home-open-profile" accessibilityLabel="Profile" onPress={() => router.push("/profile" as any)} style={styles.avatar}><Text style={styles.avatarText}>{greetName.slice(0, 1).toUpperCase()}</Text></Pressable>
             </View>
           </View>
 
