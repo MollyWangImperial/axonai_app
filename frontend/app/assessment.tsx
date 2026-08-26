@@ -10,6 +10,7 @@ import { getUserId } from "@/src/auth";
 import { storage } from "@/src/utils/storage";
 
 const COMPLETED_TASKS_KEY = (packageId: AssessmentPackageId) => `assessment_completed_tasks_v1:${packageId}`;
+const SAVED_TASK_VIDEOS_KEY = (packageId: AssessmentPackageId) => `assessment_saved_task_videos_v1:${packageId}`;
 
 function parseCompletedTasks(raw: string | null): Record<string, boolean> {
   if (!raw) return {};
@@ -26,6 +27,13 @@ async function markTaskComplete(packageId: AssessmentPackageId, taskId: string) 
   const completed = parseCompletedTasks(await storage.getItem(key, ""));
   completed[taskId] = true;
   await storage.setItem(key, JSON.stringify(completed));
+}
+
+async function markTaskVideoSaved(packageId: AssessmentPackageId, taskId: string, cloudSaved: boolean) {
+  const key = SAVED_TASK_VIDEOS_KEY(packageId);
+  const current = parseCompletedTasks(await storage.getItem(key, ""));
+  current[taskId] = cloudSaved;
+  await storage.setItem(key, JSON.stringify(current));
 }
 
 export default function AssessmentScreen() {
@@ -65,6 +73,11 @@ export default function AssessmentScreen() {
         if (msg.task_id) {
           const packageId = (msg.package_id || packageParam || "upper_limb") as AssessmentPackageId;
           void markTaskComplete(packageId, String(msg.task_id));
+        }
+      } else if (msg.type === "task_video_saved") {
+        if (msg.task_id) {
+          const packageId = (msg.package_id || packageParam || "upper_limb") as AssessmentPackageId;
+          void markTaskVideoSaved(packageId, String(msg.task_id), Boolean(msg.cloud_saved));
         }
       } else if (msg.type === "camera_error") {
         setError("Camera unavailable. Please grant camera permission in settings and reload.");

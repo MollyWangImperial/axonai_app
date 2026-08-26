@@ -42,6 +42,19 @@ export type AssessmentPackage = {
   task_count: number;
 };
 
+export type TaskVideo = {
+  id: string;
+  user_id: string;
+  package_id: AssessmentPackageId;
+  task_id: string;
+  duration_ms: number;
+  content_type: string;
+  created_at: string;
+  filename: string;
+  size_bytes: number;
+  storage: "gridfs" | "local";
+};
+
 export type FunctionalIssue = {
   code: string;
   label: string;
@@ -267,6 +280,13 @@ export async function fetchTasks(packageId: AssessmentPackageId = "upper_limb"):
 export async function fetchHistory(): Promise<Assessment[]> {
   const res = await authedFetch("/api/assessment/history");
   return res.json();
+}
+
+export async function fetchTaskVideos(packageId: AssessmentPackageId = "initial"): Promise<TaskVideo[]> {
+  const res = await authedFetch(`/api/assessment/task-videos?package=${encodeURIComponent(packageId)}`);
+  if (!res.ok) return [];
+  const data = await res.json();
+  return Array.isArray(data?.videos) ? data.videos : [];
 }
 
 export async function fetchAssessment(id: string): Promise<Assessment> {

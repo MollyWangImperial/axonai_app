@@ -1,8 +1,10 @@
 from fastapi import FastAPI, APIRouter, HTTPException, Request
-from fastapi.responses import HTMLResponse, Response
+from fastapi.responses import HTMLResponse, Response, StreamingResponse
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
-from motor.motor_asyncio import AsyncIOMotorClient
+from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorGridFSBucket
+from bson import ObjectId
+from bson.errors import InvalidId
 import os
 import io
 import base64
@@ -65,6 +67,9 @@ logger = logging.getLogger(__name__)
 mongo_url = os.environ["MONGO_URL"]
 client = AsyncIOMotorClient(mongo_url, serverSelectionTimeoutMS=1000, connectTimeoutMS=1000)
 db = client[os.environ["DB_NAME"]]
+task_video_bucket = AsyncIOMotorGridFSBucket(db, bucket_name="task_videos")
+TASK_VIDEO_MAX_BYTES = 35 * 1024 * 1024
+TASK_VIDEO_FALLBACK_DIR = ROOT_DIR / ".task_videos"
 
 # Local development fallback: keeps Expo phone testing usable when Docker/Mongo
 # is not running. Mongo remains the source of truth whenever it is reachable.
@@ -1026,6 +1031,188 @@ async def get_modeling_specification():
     return modeling_specification()
 
 
+def _safe_video_token(value: str, fallback: str) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9_-]+", "_", str(value or "")).strip("_")
+    return (cleaned or fallback)[:80]
+
+
+def _local_task_video_metadata() -> List[Dict[str, Any]]:
+    if not TASK_VIDEO_FALLBACK_DIR.exists():
+        return []
+    records: List[Dict[str, Any]] = []
+    for metadata_path in TASK_VIDEO_FALLBACK_DIR.glob("*.json"):
+        try:
+            import json
+            records.append(json.loads(metadata_path.read_text(encoding="utf-8")))
+        except Exception:
+            continue
+    return records
+
+
+def _write_local_task_video(data: bytes, metadata: Dict[str, Any]) -> Dict[str, Any]:
+    import json
+
+    TASK_VIDEO_FALLBACK_DIR.mkdir(parents=True, exist_ok=True)
+    existing = [
+        item for item in _local_task_video_metadata()
+        if item.get("user_id") == metadata["user_id"]
+        and item.get("package_id") == metadata["package_id"]
+        and item.get("task_id") == metadata["task_id"]
+    ]
+    for item in existing:
+        for suffix in (".bin", ".json"):
+            try:
+                (TASK_VIDEO_FALLBACK_DIR / f"{item['id']}{suffix}").unlink(missing_ok=True)
+            except Exception:
+                pass
+    video_id = "local_" + uuid.uuid4().hex
+    record = {**metadata, "id": video_id, "size_bytes": len(data), "storage": "local"}
+    (TASK_VIDEO_FALLBACK_DIR / f"{video_id}.bin").write_bytes(data)
+    (TASK_VIDEO_FALLBACK_DIR / f"{video_id}.json").write_text(json.dumps(record), encoding="utf-8")
+    return record
+
+
+async def _task_video_user(request: Request, uid: str = "") -> Optional[Dict[str, Any]]:
+    headers = dict(request.headers)
+    if uid and not (headers.get("x-user-id") or headers.get("X-User-Id")):
+        headers["x-user-id"] = uid
+    return await _user_from_header(headers)
+
+
+@api_router.post("/assessment/task-videos")
+async def save_task_video(
+    request: Request,
+    package_id: str,
+    task_id: str,
+    duration_ms: int = 0,
+):
+    user = await _task_video_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Sign in required")
+    content_type = request.headers.get("content-type", "video/webm").split(";", 1)[0].strip().lower()
+    if not content_type.startswith("video/"):
+        raise HTTPException(status_code=415, detail="A video content type is required")
+    content_length = int(request.headers.get("content-length") or 0)
+    if content_length > TASK_VIDEO_MAX_BYTES:
+        raise HTTPException(status_code=413, detail="Task video is too large")
+    data = await request.body()
+    if not data:
+        raise HTTPException(status_code=400, detail="Task video is empty")
+    if len(data) > TASK_VIDEO_MAX_BYTES:
+        raise HTTPException(status_code=413, detail="Task video is too large")
+
+    safe_package = _safe_video_token(package_id, "assessment")
+    safe_task = _safe_video_token(task_id, "task")
+    extension = "mp4" if content_type in {"video/mp4", "video/quicktime"} else "webm"
+    created_at = datetime.now(timezone.utc).isoformat()
+    metadata = {
+        "user_id": user["id"],
+        "package_id": safe_package,
+        "task_id": safe_task,
+        "duration_ms": max(0, int(duration_ms)),
+        "content_type": content_type,
+        "created_at": created_at,
+    }
+    filename = f"{safe_package}_{safe_task}_{uuid.uuid4().hex[:10]}.{extension}"
+    try:
+        video_id = await task_video_bucket.upload_from_stream(
+            filename,
+            io.BytesIO(data),
+            metadata=metadata,
+        )
+        previous = await db.task_videos.files.find({
+            "metadata.user_id": user["id"],
+            "metadata.package_id": safe_package,
+            "metadata.task_id": safe_task,
+            "_id": {"$ne": video_id},
+        }).to_list(50)
+        for item in previous:
+            await task_video_bucket.delete(item["_id"])
+        return {
+            "id": str(video_id),
+            **metadata,
+            "filename": filename,
+            "size_bytes": len(data),
+            "storage": "gridfs",
+        }
+    except Exception as e:
+        logger.warning(f"Mongo unavailable for task video; using local fallback: {str(e)[:120]}")
+        return _write_local_task_video(data, {**metadata, "filename": filename})
+
+
+@api_router.get("/assessment/task-videos")
+async def list_task_videos(request: Request, package: str = "initial"):
+    user = await _task_video_user(request)
+    if not user:
+        return {"videos": []}
+    safe_package = _safe_video_token(package, "assessment")
+    records: List[Dict[str, Any]] = []
+    try:
+        docs = await db.task_videos.files.find({
+            "metadata.user_id": user["id"],
+            "metadata.package_id": safe_package,
+        }).sort("uploadDate", -1).to_list(100)
+        records = [
+            {
+                "id": str(doc["_id"]),
+                **(doc.get("metadata") or {}),
+                "filename": doc.get("filename", "task-video"),
+                "size_bytes": int(doc.get("length") or 0),
+                "storage": "gridfs",
+            }
+            for doc in docs
+        ]
+    except Exception as e:
+        logger.warning(f"Mongo unavailable for task video list; using local fallback: {str(e)[:120]}")
+        records = [
+            item for item in _local_task_video_metadata()
+            if item.get("user_id") == user["id"] and item.get("package_id") == safe_package
+        ]
+        records.sort(key=lambda item: item.get("created_at", ""), reverse=True)
+    return {"videos": records}
+
+
+@api_router.get("/assessment/task-videos/file/{video_id}")
+async def get_task_video(video_id: str, request: Request, uid: str = ""):
+    user = await _task_video_user(request, uid)
+    if not user:
+        raise HTTPException(status_code=401, detail="Sign in required")
+    if video_id.startswith("local_"):
+        record = next((item for item in _local_task_video_metadata() if item.get("id") == video_id), None)
+        path = TASK_VIDEO_FALLBACK_DIR / f"{video_id}.bin"
+        if not record or record.get("user_id") != user["id"] or not path.exists():
+            raise HTTPException(status_code=404, detail="Task video not found")
+        return Response(
+            content=path.read_bytes(),
+            media_type=record.get("content_type", "video/webm"),
+            headers={"Content-Disposition": f'inline; filename="{record.get("filename", "task-video.webm")}"'},
+        )
+    try:
+        object_id = ObjectId(video_id)
+    except InvalidId:
+        raise HTTPException(status_code=404, detail="Task video not found")
+    try:
+        grid_out = await task_video_bucket.open_download_stream(object_id)
+    except Exception:
+        raise HTTPException(status_code=404, detail="Task video not found")
+    metadata = grid_out.metadata or {}
+    if metadata.get("user_id") != user["id"]:
+        raise HTTPException(status_code=404, detail="Task video not found")
+
+    async def chunks():
+        while True:
+            chunk = await grid_out.read(256 * 1024)
+            if not chunk:
+                break
+            yield chunk
+
+    return StreamingResponse(
+        chunks(),
+        media_type=metadata.get("content_type", "video/webm"),
+        headers={"Content-Disposition": f'inline; filename="{grid_out.filename or "task-video.webm"}"'},
+    )
+
+
 async def _generate_tts_audio_base64(text: str, voice: str) -> str:
     if openai_tts_client:
         response = openai_tts_client.audio.speech.create(
@@ -1566,6 +1753,12 @@ const CURRENT_USER_ID = URL_PARAMS.get("uid") || "";
 const ASSESSMENT_PACKAGE = URL_PARAMS.get("package") || "upper_limb";
 const START_TASK_ID = URL_PARAMS.get("start_task") || "";
 const AFFECTED_SIDE = URL_PARAMS.get("affected_side") === "left" ? "left" : "right";
+const TASK_VIDEO_DB_NAME = "rehyn-task-videos-v1";
+const TASK_VIDEO_STORE_NAME = "task-videos";
+let activeTaskRecorder = null;
+let activeTaskRecording = null;
+let pendingTaskVideoSaves = new Set();
+let recorderUnavailableReported = false;
 
 function taskDomain(task=tasks[currentTaskIdx]){
   const id = task && task.id ? task.id : "";
@@ -1583,6 +1776,175 @@ function postRN(data){
   if(window.ReactNativeWebView){
     window.ReactNativeWebView.postMessage(JSON.stringify(data));
   }
+}
+
+function openTaskVideoDatabase(){
+  return new Promise((resolve, reject) => {
+    if(!window.indexedDB){ reject(new Error("IndexedDB is unavailable")); return; }
+    const request = indexedDB.open(TASK_VIDEO_DB_NAME, 1);
+    request.onupgradeneeded = () => {
+      const database = request.result;
+      if(!database.objectStoreNames.contains(TASK_VIDEO_STORE_NAME)){
+        database.createObjectStore(TASK_VIDEO_STORE_NAME, {keyPath:"key"});
+      }
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error || new Error("Could not open task video storage"));
+  });
+}
+
+async function saveTaskVideoLocally(record){
+  const database = await openTaskVideoDatabase();
+  try{
+    await new Promise((resolve, reject) => {
+      const transaction = database.transaction(TASK_VIDEO_STORE_NAME, "readwrite");
+      transaction.objectStore(TASK_VIDEO_STORE_NAME).put(record);
+      transaction.oncomplete = () => resolve();
+      transaction.onerror = () => reject(transaction.error || new Error("Could not save task video"));
+      transaction.onabort = () => reject(transaction.error || new Error("Task video save was cancelled"));
+    });
+  }finally{
+    database.close();
+  }
+}
+
+function supportedTaskVideoMimeType(){
+  if(!window.MediaRecorder || !MediaRecorder.isTypeSupported) return "";
+  const candidates = [
+    "video/mp4;codecs=avc1.42E01E",
+    "video/mp4",
+    "video/webm;codecs=vp8",
+    "video/webm",
+  ];
+  return candidates.find(type => MediaRecorder.isTypeSupported(type)) || "";
+}
+
+function beginTaskRecording(taskId){
+  if(activeTaskRecorder && activeTaskRecording && activeTaskRecording.taskId === taskId) return;
+  if(!window.MediaRecorder || !video.srcObject){
+    if(!recorderUnavailableReported){
+      recorderUnavailableReported = true;
+      postRN({type:"task_video_unavailable", message:"This device does not support assessment video recording."});
+    }
+    return;
+  }
+  try{
+    const sourceTrack = video.srcObject.getVideoTracks()[0];
+    if(!sourceTrack) throw new Error("Camera video track is unavailable");
+    const recordingStream = new MediaStream([sourceTrack]);
+    const mimeType = supportedTaskVideoMimeType();
+    const options = {videoBitsPerSecond:700000};
+    if(mimeType) options.mimeType = mimeType;
+    const recorder = new MediaRecorder(recordingStream, options);
+    const recording = {
+      taskId,
+      startedAt: performance.now(),
+      chunks: [],
+      mimeType: mimeType || "video/webm",
+    };
+    recorder.ondataavailable = event => {
+      if(event.data && event.data.size > 0) recording.chunks.push(event.data);
+    };
+    recorder.onerror = event => {
+      postRN({type:"task_video_error", task_id:taskId, message:String(event.error || "Recording failed")});
+    };
+    recorder.start(1000);
+    activeTaskRecorder = recorder;
+    activeTaskRecording = recording;
+    postRN({type:"task_video_recording", package_id:ASSESSMENT_PACKAGE, task_id:taskId});
+  }catch(e){
+    postRN({type:"task_video_error", task_id:taskId, message:String(e)});
+  }
+}
+
+async function persistTaskVideo(recording, blob){
+  const durationMs = Math.max(0, Math.round(performance.now() - recording.startedAt));
+  const localKey = `${CURRENT_USER_ID || "anonymous"}:${ASSESSMENT_PACKAGE}:${recording.taskId}`;
+  let localSaved = false;
+  try{
+    await saveTaskVideoLocally({
+      key: localKey,
+      userId: CURRENT_USER_ID || "anonymous",
+      packageId: ASSESSMENT_PACKAGE,
+      taskId: recording.taskId,
+      createdAt: new Date().toISOString(),
+      durationMs,
+      mimeType: blob.type || recording.mimeType,
+      blob,
+    });
+    localSaved = true;
+  }catch(e){
+    postRN({type:"task_video_error", task_id:recording.taskId, message:`Local save failed: ${String(e)}`});
+  }
+
+  let cloudRecord = null;
+  if(CURRENT_USER_ID){
+    try{
+      const query = new URLSearchParams({
+        package_id: ASSESSMENT_PACKAGE,
+        task_id: recording.taskId,
+        duration_ms: String(durationMs),
+      });
+      const response = await fetch(`${API_BASE}/assessment/task-videos?${query.toString()}`, {
+        method:"POST",
+        headers:{
+          "Content-Type": blob.type || recording.mimeType || "video/webm",
+          "X-User-Id": CURRENT_USER_ID,
+        },
+        body:blob,
+      });
+      if(!response.ok) throw new Error(`Video upload failed (${response.status})`);
+      cloudRecord = await response.json();
+    }catch(e){
+      postRN({type:"task_video_error", task_id:recording.taskId, local_saved:localSaved, message:String(e)});
+    }
+  }
+
+  if(localSaved || cloudRecord){
+    postRN({
+      type:"task_video_saved",
+      package_id:ASSESSMENT_PACKAGE,
+      task_id:recording.taskId,
+      local_saved:localSaved,
+      cloud_saved:!!cloudRecord && cloudRecord.storage === "gridfs",
+      server_saved:!!cloudRecord,
+      video:cloudRecord,
+    });
+  }
+}
+
+function stopAndSaveTaskRecording(taskId){
+  const recorder = activeTaskRecorder;
+  const recording = activeTaskRecording;
+  activeTaskRecorder = null;
+  activeTaskRecording = null;
+  if(!recorder || !recording || recording.taskId !== taskId || recorder.state === "inactive"){
+    return Promise.resolve();
+  }
+  const savePromise = new Promise(resolve => {
+    recorder.onstop = async () => {
+      try{
+        const mimeType = recorder.mimeType || recording.mimeType || "video/webm";
+        const blob = new Blob(recording.chunks, {type:mimeType});
+        if(blob.size > 0) await persistTaskVideo(recording, blob);
+      }catch(e){
+        postRN({type:"task_video_error", task_id:taskId, message:String(e)});
+      }finally{
+        recording.chunks.length = 0;
+        resolve();
+      }
+    };
+    try{
+      recorder.requestData();
+      recorder.stop();
+    }catch(e){
+      postRN({type:"task_video_error", task_id:taskId, message:String(e)});
+      resolve();
+    }
+  });
+  pendingTaskVideoSaves.add(savePromise);
+  savePromise.finally(() => pendingTaskVideoSaves.delete(savePromise));
+  return savePromise;
 }
 
 function compactLandmarks(points){
@@ -1838,6 +2200,7 @@ async function startStep(){
     voiceText.textContent = "Preparing hand tracking...";
     await setupHand();
   }
+  if(currentStepIdx === 0) beginTaskRecording(task.id);
   stepStartTime = performance.now();
   stepStartedAt = stepStartTime;
   voiceFinishedAt = 0;
@@ -2917,6 +3280,8 @@ async function celebrateAndAdvance(){
   spawnConfetti(28);
   if(navigator.vibrate) navigator.vibrate([60, 40, 100]);
 
+  stopAndSaveTaskRecording(finishedTask.id);
+
   postRN({type:"task_complete", package_id: ASSESSMENT_PACKAGE, task_id: finishedTask.id, task_index: currentTaskIdx});
 
   // Determine if there are more tasks
@@ -2950,9 +3315,12 @@ async function celebrateAndAdvance(){
 async function finishAssessment(){
   running = false;
   audioEl.pause();
-  captionEl.textContent = "Saving your results…";
+  captionEl.textContent = "Saving your task videos and results…";
   voiceText.textContent = "Generating personalized plan…";
   try{
+    if(pendingTaskVideoSaves.size){
+      await Promise.allSettled(Array.from(pendingTaskVideoSaves));
+    }
     const res = await fetch(`${API_BASE}/assessment/submit`,{
       method:"POST", headers:{"Content-Type":"application/json", ...(CURRENT_USER_ID ? {"X-User-Id": CURRENT_USER_ID} : {})},
       body: JSON.stringify({

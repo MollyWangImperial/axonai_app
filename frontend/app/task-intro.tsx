@@ -5,7 +5,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 
-import { AssessmentPackageId, fetchTasks } from "@/src/api";
+import { AssessmentPackageId, fetchTaskVideos, fetchTasks } from "@/src/api";
 import { authedFetch } from "@/src/auth";
 import { colors, radius, spacing } from "@/src/theme";
 import { storage } from "@/src/utils/storage";
@@ -38,6 +38,7 @@ export default function TaskIntro() {
   const [completedTasks, setCompletedTasks] = useState<Record<string, boolean>>({});
   const [nextTaskId, setNextTaskId] = useState<string | null>(null);
   const [affectedSide, setAffectedSide] = useState<"left" | "right">("right");
+  const [savedVideoCount, setSavedVideoCount] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -45,10 +46,11 @@ export default function TaskIntro() {
     (async () => {
       try {
         setLoading(true);
-        const [taskResponse, rawCompleted, profileResponse] = await Promise.all([
+        const [taskResponse, rawCompleted, profileResponse, savedVideos] = await Promise.all([
           fetchTasks(packageId),
           storage.getItem(COMPLETED_TASKS_KEY(packageId), ""),
           authedFetch("/api/users/onboarding").then((r) => r.json()).catch(() => null),
+          fetchTaskVideos(packageId).catch(() => []),
         ]);
         const completed = parseCompletedTasks(rawCompleted || "");
         const nextTask = taskResponse.tasks.find((task) => !completed[task.id]) || taskResponse.tasks[0];
@@ -58,6 +60,7 @@ export default function TaskIntro() {
         setAffectedSide(resolvedSide === "left" ? "left" : "right");
         setCompletedTasks(completed);
         setNextTaskId(nextTask?.id || null);
+        setSavedVideoCount(savedVideos.length);
       } catch (e: any) {
         setError(String(e));
       } finally {
@@ -116,6 +119,14 @@ export default function TaskIntro() {
               <Text style={styles.sessionReadyText}>
                 Alira will launch your next guided task automatically and continue through the assessment in order.
               </Text>
+              {savedVideoCount > 0 && (
+                <View style={styles.savedVideoRow} testID="saved-task-video-count">
+                  <Ionicons name="cloud-done-outline" size={16} color={colors.brandPrimary} />
+                  <Text style={styles.savedVideoText}>
+                    {savedVideoCount} task {savedVideoCount === 1 ? "video is" : "videos are"} saved for later review and reanalysis.
+                  </Text>
+                </View>
+              )}
             </View>
           </View>
         )}
@@ -149,6 +160,8 @@ const styles = StyleSheet.create({
   sessionReadyCopy: { flex: 1, minWidth: 0 },
   sessionReadyTitle: { color: colors.onSurface, fontSize: 16, lineHeight: 21, fontWeight: "800" },
   sessionReadyText: { color: colors.onSurfaceSecondary, fontSize: 13, lineHeight: 19, marginTop: 3 },
+  savedVideoRow: { flexDirection: "row", alignItems: "center", gap: 6, marginTop: spacing.sm },
+  savedVideoText: { flex: 1, color: colors.brandPrimary, fontSize: 12, lineHeight: 17, fontWeight: "700" },
   errorText: { color: colors.error, fontSize: 14, lineHeight: 20, marginVertical: spacing.md },
   cta: { position: "absolute", left: 0, right: 0, bottom: 0, padding: spacing.md, backgroundColor: colors.surface, borderTopWidth: 1, borderTopColor: colors.divider },
   ctaBtn: { width: "100%", maxWidth: 620, alignSelf: "center", minHeight: 56, borderRadius: radius.md, backgroundColor: colors.brandPrimary, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: spacing.sm },
