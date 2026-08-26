@@ -55,6 +55,17 @@ def test_onboarding_collects_pdf_feedback_fields():
     assert "medical_conditions_other: Optional[str]" in server
 
 
+def test_onboarding_finish_recovers_stale_session_and_reports_failures():
+    onboarding = read("frontend/app/onboarding.tsx")
+    auth = read("frontend/src/auth.ts")
+    assert "if (response.status === 401)" in onboarding
+    assert "const refreshedUser = await signIn" in onboarding
+    assert 'headers: userId ? { "X-User-Id": userId } : undefined' in onboarding
+    assert 'testID="onb-save-error"' in onboarding
+    assert "router.replace(\"/\")" in onboarding
+    assert 'uid && !headers.has("X-User-Id")' in auth
+
+
 def test_each_home_session_confirms_patient_or_carer():
     session_check = read("frontend/app/session-check.tsx")
     assert "Who is starting this session?" in session_check

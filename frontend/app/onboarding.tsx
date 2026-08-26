@@ -5,7 +5,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import * as Haptics from "expo-haptics";
 import { colors, spacing, radius } from "@/src/theme";
-import { authedFetch } from "@/src/auth";
+import { authedFetch, getCachedUser, signIn } from "@/src/auth";
 import { storage } from "@/src/utils/storage";
 
 type Step = {
@@ -94,6 +94,7 @@ export default function OnboardingScreen() {
   const [otherConditionText, setOtherConditionText] = useState("");
   const [showOtherCondition, setShowOtherCondition] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   const step = STEPS[idx];
   const progress = ((idx + 1) / STEPS.length) * 100;
@@ -111,6 +112,7 @@ export default function OnboardingScreen() {
 
   const onContinue = async () => {
     Haptics.selectionAsync();
+    setSaveError(null);
     let next = { ...values };
     if (step.type === "text") next[step.key] = textInput.trim();
     else if (step.type === "number") next[step.key] = parseInt(textInput, 10);
@@ -129,23 +131,44 @@ export default function OnboardingScreen() {
         // map yes/no → boolean
         if (payload.has_caregiver === "yes") payload.has_caregiver = true;
         else if (payload.has_caregiver === "no") payload.has_caregiver = false;
-        const r = await authedFetch("/api/users/onboarding", {
+        const submit = (userId?: string) => authedFetch("/api/users/onboarding", {
           method: "POST",
+          headers: userId ? { "X-User-Id": userId } : undefined,
           body: JSON.stringify(payload),
         });
-        if (r.ok) {
-          // Cache preferred_name locally for the proactive chat & greetings
-          if (payload.preferred_name) await storage.setItem("preferred_name_v1", payload.preferred_name);
-          if (payload.side_affected === "left" || payload.side_affected === "right") {
-            await storage.setItem("affected_side_v1", payload.side_affected);
-          }
-          await storage.setItem("onboarding_complete_v1", "1");
-          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-          router.replace("/");
-        } else {
-          setSaving(false);
+
+        let response = await submit();
+        if (response.status === 401) {
+          const cachedUser = await getCachedUser();
+          if (!cachedUser?.email) throw new Error("SESSION_EXPIRED");
+          const refreshedUser = await signIn(cachedUser.email, cachedUser.name, cachedUser.role);
+          response = await submit(refreshedUser.id);
         }
-      } catch {
+
+        if (!response.ok) {
+          const body = await response.json().catch(() => null);
+          throw new Error(body?.detail || `SAVE_FAILED_${response.status}`);
+        }
+
+        // These caches improve startup speed, but the saved server profile remains
+        // authoritative if browser or device storage is unavailable.
+        const cacheWrites: Promise<boolean>[] = [];
+        if (payload.preferred_name) cacheWrites.push(storage.setItem("preferred_name_v1", payload.preferred_name));
+        if (payload.side_affected === "left" || payload.side_affected === "right") {
+          cacheWrites.push(storage.setItem("affected_side_v1", payload.side_affected));
+        }
+        cacheWrites.push(storage.setItem("onboarding_complete_v1", "1"));
+        await Promise.all(cacheWrites);
+
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        router.replace("/");
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "";
+        setSaveError(
+          message === "SESSION_EXPIRED" || message === "Sign in required"
+            ? "Your session expired. Please sign in again, then tap Finish."
+            : "We couldn't save your profile. Check your connection and tap Finish again.",
+        );
         setSaving(false);
       }
     }
@@ -276,6 +299,11 @@ export default function OnboardingScreen() {
         </ScrollView>
 
         <View style={[styles.footer, { paddingBottom: Math.max(insets.bottom, spacing.md) }]}>
+          {saveError && (
+            <Text testID="onb-save-error" accessibilityRole="alert" style={styles.saveError}>
+              {saveError}
+            </Text>
+          )}
           <Pressable
             testID="onb-continue"
             disabled={!canContinue() || saving}
@@ -426,6 +454,7 @@ const styles = StyleSheet.create({
   chipText: { flexShrink: 1, fontSize: 14, lineHeight: 19, fontWeight: "600", color: colors.onSurface },
   chipTextActive: { color: colors.onBrandTertiary, fontWeight: "700" },
   footer: { padding: spacing.md, backgroundColor: colors.surface, borderTopWidth: 1, borderTopColor: colors.divider },
+  saveError: { color: colors.error, fontSize: 14, lineHeight: 20, marginBottom: spacing.sm, textAlign: "center" },
   continueBtn: { backgroundColor: colors.brandPrimary, padding: 16, borderRadius: radius.lg, alignItems: "center", minHeight: 56, justifyContent: "center" },
   continueBtnDisabled: { opacity: 0.4 },
   continueText: { color: colors.onBrandPrimary, fontSize: 17, fontWeight: "800" },

@@ -4074,7 +4074,8 @@ async def _user_from_header(request_headers: Dict[str, str]) -> Optional[Dict[st
     if not uid:
         return None
     try:
-        return await db.users.find_one({"id": uid}, {"_id": 0})
+        user = await db.users.find_one({"id": uid}, {"_id": 0})
+        return user or LOCAL_USERS.get(uid)
     except Exception as e:
         logger.warning(f"Mongo unavailable for user header lookup; using local fallback: {str(e)[:120]}")
         return LOCAL_USERS.get(uid)

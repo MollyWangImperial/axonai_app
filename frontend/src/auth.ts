@@ -39,7 +39,7 @@ export async function signOut() {
 export async function authedFetch(path: string, init: RequestInit = {}): Promise<Response> {
   const uid = await getUserId();
   const headers = new Headers(init.headers as any);
-  if (uid) headers.set("X-User-Id", uid);
+  if (uid && !headers.has("X-User-Id")) headers.set("X-User-Id", uid);
   headers.set("Content-Type", "application/json");
   return fetch(`${BASE}${path}`, { ...init, headers });
 }
