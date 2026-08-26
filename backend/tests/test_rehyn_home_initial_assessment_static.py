@@ -40,6 +40,10 @@ def test_onboarding_collects_pdf_feedback_fields():
     server = read("backend/server.py")
     assert 'value: "under_20"' in onboarding
     assert 'key: "affected_areas"' in onboarding
+    assert 'label: "Left upper limb (shoulder, arm or hand)"' in onboarding
+    assert 'label: "Left lower limb (hip, leg or foot)"' in onboarding
+    assert 'label: "Right upper limb (shoulder, arm or hand)"' in onboarding
+    assert 'label: "Right lower limb (hip, leg or foot)"' in onboarding
     assert 'key: "medical_conditions"' in onboarding
     assert 'testID="onb-other-condition-input"' in onboarding
     assert 'testID="onb-other-condition-save"' in onboarding
