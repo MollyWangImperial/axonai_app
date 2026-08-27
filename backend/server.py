@@ -579,7 +579,7 @@ HAND_TASKS_DATA: List[Dict[str, Any]] = [
         "steps": [
             {"id": "H3-S1", "voice": "Bring your hand up in front of your chest, palm facing you or the camera.", "target": {"x": 0.5, "y": 0.40, "r": 0.10, "landmark": "WRIST"}, "hold_ms": 1200, "caption": "Hand ready for pinch"},
             {"id": "H3-S2", "voice": "Touch the tip of your thumb to the tip of your index finger, as if pinching a small coin. Hold it steady.", "target": {"x": 0.5, "y": 0.40, "r": 0.12, "landmark": "PINCH", "icon": "coin"}, "hold_ms": 1800, "caption": "Pinch thumb and index finger", "measure": ["pinch_distance", "pinch_accuracy", "pinch_stability"]},
-            {"id": "H3-S3", "voice": "Separate your fingers and relax.", "target": {"x": 0.5, "y": 0.78, "r": 0.10, "landmark": "WRIST"}, "hold_ms": 1200, "caption": "Relax hand"},
+            {"id": "H3-S3", "voice": "Separate your fingers, then lower your affected hand to the same place on your lap.", "target": {"x": 0.5, "y": 0.78, "r": 0.10, "landmark": "LAP_DYNAMIC"}, "hold_ms": 1200, "caption": "Return hand to the calibrated lap position"},
         ],
     },
     {
@@ -590,7 +590,7 @@ HAND_TASKS_DATA: List[Dict[str, Any]] = [
         "steps": [
             {"id": "H4-S1", "voice": "Open your hand wide and show your palm to the camera.", "target": {"x": 0.5, "y": 0.45, "r": 0.12, "landmark": "HAND_OPEN"}, "hold_ms": 1500, "caption": "Open hand", "measure": ["hand_opening"]},
             {"id": "H4-S2", "voice": "Now close your hand gently, then open it again. Move slowly and smoothly.", "target": {"x": 0.5, "y": 0.45, "r": 0.12, "landmark": "WRIST"}, "hold_ms": 2500, "caption": "Close and open smoothly", "measure": ["open_close_timing", "movement_smoothness"]},
-            {"id": "H4-S3", "voice": "Well done. Lower your hand to rest.", "target": {"x": 0.5, "y": 0.78, "r": 0.10, "landmark": "WRIST"}, "hold_ms": 1200, "caption": "Lower hand"},
+            {"id": "H4-S3", "voice": "Well done. Lower your affected hand to the same place on your lap.", "target": {"x": 0.5, "y": 0.78, "r": 0.10, "landmark": "LAP_DYNAMIC"}, "hold_ms": 1200, "caption": "Return hand to the calibrated lap position"},
         ],
     },
     {
@@ -1760,6 +1760,7 @@ POSE_RUNNER_HTML = r"""<!DOCTYPE html>
       <h2 id="walkingCaptureTitle">Record a comfortable walk</h2>
       <p id="walkingCaptureLead">Ask a carer or family member to record from the side while you walk at your usual comfortable pace.</p>
       <ul>
+        <li>Before walking, have the patient face the camera clearly for two seconds so Rehyn can confirm the video belongs to the same assessment.</li>
         <li>Keep the patient's head, trunk, hips, knees, feet, and walking aid visible for the entire recording.</li>
         <li>Use a fixed side view when possible. Otherwise move smoothly parallel at a safe distance.</li>
         <li>Do not zoom, walk backward, cross the patient's path, or film while providing hands-on support.</li>
@@ -2073,6 +2074,7 @@ function newLapTargetCalibration(){
   return {samples:[], target:null, ready:false, announced:false, lastCandidateAt:0};
 }
 let lapTargetCalibration = newLapTargetCalibration();
+let assessmentLapTarget = null;
 let lapCalibrationDiagnostic = {
   reason:"waiting_for_pose",
   guidance:"Keep your affected hand relaxed on the top of your same-side thigh."
@@ -2134,6 +2136,15 @@ let recorderUnavailableReported = false;
 let walkingCaptureActive = false;
 let walkingCapturePromptPlayed = false;
 let walkingCameraSwitching = false;
+const FACE_SIGNATURE_SIZE = 12;
+const WALKING_FACE_MATCH_THRESHOLD = 0.58;
+const faceSignatureCanvas = document.createElement("canvas");
+faceSignatureCanvas.width = FACE_SIGNATURE_SIZE;
+faceSignatureCanvas.height = FACE_SIGNATURE_SIZE;
+const faceSignatureCtx = faceSignatureCanvas.getContext("2d", {willReadFrequently:true});
+let patientFaceReferenceSamples = [];
+let patientFaceReference = null;
+let lastPatientFaceReferenceAt = 0;
 
 function taskDomain(task=tasks[currentTaskIdx]){
   const id = task && task.id ? task.id : "";
@@ -2233,50 +2244,73 @@ function beginTaskRecording(taskId){
   }
 }
 
-async function persistTaskVideo(recording, blob){
+function uploadTaskVideoToCloud(recording, blob, durationMs, onUploadProgress=null){
+  return new Promise((resolve, reject) => {
+    const query = new URLSearchParams({
+      package_id: ASSESSMENT_PACKAGE,
+      task_id: recording.taskId,
+      duration_ms: String(durationMs),
+    });
+    const request = new XMLHttpRequest();
+    request.open("POST", `${API_BASE}/assessment/task-videos?${query.toString()}`);
+    request.setRequestHeader("Content-Type", blob.type || recording.mimeType || "video/webm");
+    request.setRequestHeader("X-User-Id", CURRENT_USER_ID);
+    if(request.upload && typeof onUploadProgress === "function"){
+      request.upload.onprogress = event => {
+        if(event.lengthComputable && event.total > 0){
+          onUploadProgress(Math.max(0, Math.min(1, event.loaded / event.total)));
+        }
+      };
+    }
+    request.onerror = () => reject(new Error("Video upload failed because the network connection was interrupted."));
+    request.onabort = () => reject(new Error("Video upload was cancelled."));
+    request.onload = () => {
+      if(request.status < 200 || request.status >= 300){
+        reject(new Error(`Video upload failed (${request.status})`));
+        return;
+      }
+      if(typeof onUploadProgress === "function") onUploadProgress(1);
+      try{
+        resolve(JSON.parse(request.responseText || "{}"));
+      }catch(error){
+        reject(new Error("Video upload returned an invalid response."));
+      }
+    };
+    request.send(blob);
+  });
+}
+
+async function persistTaskVideo(recording, blob, {onUploadProgress=null}={}){
   const durationMs = Number.isFinite(recording.durationMs)
     ? Math.max(0, Math.round(recording.durationMs))
     : Math.max(0, Math.round(performance.now() - recording.startedAt));
   const localKey = `${CURRENT_USER_ID || "anonymous"}:${ASSESSMENT_PACKAGE}:${recording.taskId}`;
-  let localSaved = false;
-  try{
-    await saveTaskVideoLocally({
-      key: localKey,
-      userId: CURRENT_USER_ID || "anonymous",
-      packageId: ASSESSMENT_PACKAGE,
-      taskId: recording.taskId,
-      createdAt: new Date().toISOString(),
-      durationMs,
-      mimeType: blob.type || recording.mimeType,
-      blob,
-    });
-    localSaved = true;
-  }catch(e){
-    postRN({type:"task_video_error", task_id:recording.taskId, message:`Local save failed: ${String(e)}`});
-  }
-
-  let cloudRecord = null;
-  if(CURRENT_USER_ID){
+  const localSavePromise = (async () => {
     try{
-      const query = new URLSearchParams({
-        package_id: ASSESSMENT_PACKAGE,
-        task_id: recording.taskId,
-        duration_ms: String(durationMs),
+      await saveTaskVideoLocally({
+        key: localKey,
+        userId: CURRENT_USER_ID || "anonymous",
+        packageId: ASSESSMENT_PACKAGE,
+        taskId: recording.taskId,
+        createdAt: new Date().toISOString(),
+        durationMs,
+        mimeType: blob.type || recording.mimeType,
+        blob,
       });
-      const response = await fetch(`${API_BASE}/assessment/task-videos?${query.toString()}`, {
-        method:"POST",
-        headers:{
-          "Content-Type": blob.type || recording.mimeType || "video/webm",
-          "X-User-Id": CURRENT_USER_ID,
-        },
-        body:blob,
-      });
-      if(!response.ok) throw new Error(`Video upload failed (${response.status})`);
-      cloudRecord = await response.json();
+      return true;
     }catch(e){
-      postRN({type:"task_video_error", task_id:recording.taskId, local_saved:localSaved, message:String(e)});
+      postRN({type:"task_video_error", task_id:recording.taskId, message:`Local save failed: ${String(e)}`});
+      return false;
     }
-  }
+  })();
+
+  const cloudSavePromise = CURRENT_USER_ID
+    ? uploadTaskVideoToCloud(recording, blob, durationMs, onUploadProgress).catch(e => {
+        postRN({type:"task_video_error", task_id:recording.taskId, message:String(e)});
+        return null;
+      })
+    : Promise.resolve(null);
+  const [localSaved, cloudRecord] = await Promise.all([localSavePromise, cloudSavePromise]);
 
   if(localSaved || cloudRecord){
     postRN({
@@ -2460,17 +2494,18 @@ function setWalkingCaptureStatus(message, tone=""){
 }
 
 async function showWalkingCapture(task){
+  finalizePatientFaceReference();
   walkingCaptureTitle.textContent = IS_MOBILE_CAPTURE_DEVICE
     ? "Record the walking test"
     : "Upload a walking video";
   walkingCaptureLead.textContent = IS_MOBILE_CAPTURE_DEVICE
     ? "Hand the phone to a carer or family member. They should record from the side and keep your whole body visible."
-    : "A computer should stay in place. Ask a carer or family member to record the walk on a phone, then upload that video here.";
+    : "A computer should stay in place. Ask a carer or family member to record the walk on a phone, then upload that video here. The patient should face the camera for two seconds before turning sideways to walk.";
   walkingDesktopActions.classList.toggle("hidden", IS_MOBILE_CAPTURE_DEVICE);
   walkingMobileActions.classList.toggle("hidden", !IS_MOBILE_CAPTURE_DEVICE);
   setWalkingCaptureStatus(IS_MOBILE_CAPTURE_DEVICE
     ? "When everyone is safely positioned, tap Start recording walking."
-    : "Choose a 4 to 90 second side-view video. Rehyn will check that the full body stays visible.");
+    : "Choose a 6 to 90 second video. Rehyn will check the patient, video quality, and full-body visibility on this device before uploading.");
   walkingCapture.classList.remove("hidden");
   ui.classList.add("hidden");
   renderDots();
@@ -2478,9 +2513,138 @@ async function showWalkingCapture(task){
     walkingCapturePromptPlayed = true;
     const prompt = IS_MOBILE_CAPTURE_DEVICE
       ? "For the walking test, hand the phone to a carer or family member. Keep your whole body visible from the side. Tap Start recording walking when everyone is safely positioned."
-      : "For the walking test, ask a carer or family member to record a side-view video on a phone. Keep your whole body visible, then upload the video here.";
+      : "For the walking test, ask a carer or family member to record on a phone. Face the camera clearly for two seconds first, then turn sideways and walk while keeping your whole body visible. Upload that video here.";
     await playVoice(prompt);
   }
+}
+
+function facePoseIsFrontal(pose){
+  if(!pose || pose.length < 11) return false;
+  const required = [pose[0], pose[2], pose[5], pose[9], pose[10]];
+  if(!required.every(point => landmarkIsUsable(point, 0.25))) return false;
+  const eyeDistance = Math.abs(pose[2].x - pose[5].x);
+  if(eyeDistance < 0.018) return false;
+  const eyeCenterX = (pose[2].x + pose[5].x) / 2;
+  return Math.abs(pose[0].x - eyeCenterX) <= eyeDistance * 0.72;
+}
+
+function normalizedFaceAppearance(source, pose){
+  if(!faceSignatureCtx || !source || !facePoseIsFrontal(pose)) return null;
+  const sourceWidth = Number(source.videoWidth || source.naturalWidth || source.width || 0);
+  const sourceHeight = Number(source.videoHeight || source.naturalHeight || source.height || 0);
+  if(sourceWidth < 1 || sourceHeight < 1) return null;
+  const points = pose.slice(0, 11).filter(point => landmarkIsUsable(point, 0.18));
+  if(points.length < 7) return null;
+  const minX = Math.min(...points.map(point => point.x));
+  const maxX = Math.max(...points.map(point => point.x));
+  const minY = Math.min(...points.map(point => point.y));
+  const maxY = Math.max(...points.map(point => point.y));
+  const centerX = (minX + maxX) / 2;
+  const centerY = (minY + maxY) / 2;
+  const faceSize = Math.min(0.85, Math.max(0.10, (maxX - minX) * 1.45, (maxY - minY) * 2.20));
+  const cropX = Math.max(0, Math.min(1 - faceSize, centerX - faceSize / 2));
+  const cropY = Math.max(0, Math.min(1 - faceSize, centerY - faceSize * 0.48));
+  try{
+    faceSignatureCtx.clearRect(0, 0, FACE_SIGNATURE_SIZE, FACE_SIGNATURE_SIZE);
+    faceSignatureCtx.drawImage(
+      source,
+      cropX * sourceWidth,
+      cropY * sourceHeight,
+      faceSize * sourceWidth,
+      faceSize * sourceHeight,
+      0,
+      0,
+      FACE_SIGNATURE_SIZE,
+      FACE_SIGNATURE_SIZE,
+    );
+    const rgba = faceSignatureCtx.getImageData(0, 0, FACE_SIGNATURE_SIZE, FACE_SIGNATURE_SIZE).data;
+    const luminance = [];
+    for(let index=0; index<rgba.length; index += 4){
+      luminance.push(0.299 * rgba[index] + 0.587 * rgba[index+1] + 0.114 * rgba[index+2]);
+    }
+    const mean = luminance.reduce((sum, value) => sum + value, 0) / luminance.length;
+    const variance = luminance.reduce((sum, value) => sum + (value-mean) ** 2, 0) / luminance.length;
+    const deviation = Math.max(12, Math.sqrt(variance));
+    const pixels = luminance.map(value => (value - mean) / deviation);
+    const eyeDistance = Math.max(0.001, distance(pose[2], pose[5]));
+    const geometry = [
+      distance(pose[9], pose[10]) / eyeDistance,
+      distance(pose[0], midpoint(pose[9], pose[10])) / eyeDistance,
+    ];
+    return {pixels, geometry};
+  }catch(error){
+    return null;
+  }
+}
+
+function flippedFacePixels(pixels){
+  const flipped = [];
+  for(let row=0; row<FACE_SIGNATURE_SIZE; row += 1){
+    for(let column=0; column<FACE_SIGNATURE_SIZE; column += 1){
+      flipped.push(pixels[row * FACE_SIGNATURE_SIZE + (FACE_SIGNATURE_SIZE - 1 - column)]);
+    }
+  }
+  return flipped;
+}
+
+function vectorCorrelation(left, right){
+  if(!left || !right || left.length !== right.length || !left.length) return -1;
+  let dot = 0;
+  let leftMagnitude = 0;
+  let rightMagnitude = 0;
+  for(let index=0; index<left.length; index += 1){
+    dot += left[index] * right[index];
+    leftMagnitude += left[index] * left[index];
+    rightMagnitude += right[index] * right[index];
+  }
+  return dot / Math.max(0.0001, Math.sqrt(leftMagnitude * rightMagnitude));
+}
+
+function faceSignatureSimilarity(reference, candidate){
+  if(!reference || !candidate) return 0;
+  const appearanceCorrelation = Math.max(
+    vectorCorrelation(reference.pixels, candidate.pixels),
+    vectorCorrelation(reference.pixels, flippedFacePixels(candidate.pixels)),
+  );
+  const appearanceScore = Math.max(0, Math.min(1, (appearanceCorrelation + 1) / 2));
+  const geometryDelta = reference.geometry.reduce((sum, value, index) => {
+    const candidateValue = Math.max(0.001, candidate.geometry[index] || 0.001);
+    return sum + Math.abs(Math.log(Math.max(0.001, value) / candidateValue));
+  }, 0) / reference.geometry.length;
+  const geometryScore = Math.exp(-geometryDelta * 1.8);
+  return appearanceScore * 0.82 + geometryScore * 0.18;
+}
+
+function capturePatientFaceReference(source, pose, now=performance.now()){
+  if(patientFaceReference || now - lastPatientFaceReferenceAt < 220) return;
+  const signature = normalizedFaceAppearance(source, pose);
+  if(!signature) return;
+  lastPatientFaceReferenceAt = now;
+  patientFaceReferenceSamples.push(signature);
+  if(patientFaceReferenceSamples.length > 8) patientFaceReferenceSamples.shift();
+  if(patientFaceReferenceSamples.length >= 5) finalizePatientFaceReference();
+}
+
+function finalizePatientFaceReference(){
+  if(patientFaceReference || patientFaceReferenceSamples.length < 3) return patientFaceReference;
+  const sampleCount = patientFaceReferenceSamples.length;
+  patientFaceReference = {
+    pixels:patientFaceReferenceSamples[0].pixels.map((_, index) =>
+      patientFaceReferenceSamples.reduce((sum, sample) => sum + sample.pixels[index], 0) / sampleCount
+    ),
+    geometry:patientFaceReferenceSamples[0].geometry.map((_, index) =>
+      medianValue(patientFaceReferenceSamples.map(sample => sample.geometry[index]))
+    ),
+  };
+  return patientFaceReference;
+}
+
+if(URL_PARAMS.get("test_mode") === "walking_identity"){
+  window.__rehynWalkingIdentityTest = {
+    threshold:WALKING_FACE_MATCH_THRESHOLD,
+    similarity:faceSignatureSimilarity,
+    flip:flippedFacePixels,
+  };
 }
 
 async function waitForWalkingCameraFrame(timeoutMs=5000){
@@ -2554,13 +2718,17 @@ function seekWalkingReviewVideo(timeSeconds){
   });
 }
 
-async function validateWalkingVideo(file){
+async function validateWalkingVideo(file, onProgress=()=>{}){
   if(!file || !String(file.type || "").startsWith("video/")){
     return {ok:false, message:"Please choose a video file."};
+  }
+  if(Number(file.size || 0) > 35 * 1024 * 1024){
+    return {ok:false, message:"This video is larger than 35 MB. Record at 1080p or lower, or trim the clip to the walking test, then choose it again."};
   }
   const objectUrl = URL.createObjectURL(file);
   let validator = null;
   try{
+    onProgress({stage:"metadata", message:"Opening the video on this device..."});
     walkingReviewVideo.src = objectUrl;
     await new Promise((resolve, reject) => {
       const timeout = setTimeout(() => reject(new Error("Video metadata timed out")), 8000);
@@ -2570,8 +2738,8 @@ async function validateWalkingVideo(file){
     const durationSeconds = Number(walkingReviewVideo.duration || 0);
     const width = Number(walkingReviewVideo.videoWidth || 0);
     const height = Number(walkingReviewVideo.videoHeight || 0);
-    if(durationSeconds < 4 || durationSeconds > 90){
-      return {ok:false, message:"Record between 4 and 90 seconds, including the start, several steps, and a safe stop."};
+    if(durationSeconds < 6 || durationSeconds > 90){
+      return {ok:false, message:"Record between 6 and 90 seconds, including the two-second face check, several steps, and a safe stop."};
     }
     if(Math.min(width, height) < 360){
       return {ok:false, message:"The video is too small. Please use standard phone video quality and try again."};
@@ -2582,13 +2750,51 @@ async function validateWalkingVideo(file){
       runningMode:"VIDEO",
       numPoses:1,
     });
-    const sampleCount = 18;
-    const sampledFrames = [];
+    const reference = finalizePatientFaceReference();
+    if(!reference){
+      return {ok:false, message:"Rehyn could not create the seated patient reference. Return to the assessment camera and keep the patient's face clear before choosing the video again."};
+    }
     const timestampBase = performance.now() + 1000;
+    let detectorIndex = 0;
+    const identityTimes = [0.20, 0.85, 1.50].filter(time => time < durationSeconds - 0.5);
+    const identityScores = [];
+    for(let index=0; index<identityTimes.length; index += 1){
+      onProgress({
+        stage:"identity",
+        current:index + 1,
+        total:identityTimes.length,
+        message:`Confirming the patient in the video (${index + 1}/${identityTimes.length})...`,
+      });
+      await seekWalkingReviewVideo(identityTimes[index]);
+      const result = validator.detectForVideo(walkingReviewVideo, timestampBase + detectorIndex * 1000);
+      detectorIndex += 1;
+      const pose = result && result.landmarks && result.landmarks[0] ? result.landmarks[0] : null;
+      const signature = normalizedFaceAppearance(walkingReviewVideo, pose);
+      if(signature) identityScores.push(faceSignatureSimilarity(reference, signature));
+    }
+    if(identityScores.length < 2){
+      return {ok:false, message:"Rehyn could not see the patient's face clearly at the start. Re-record with the patient facing the camera and holding still for two seconds before turning sideways to walk."};
+    }
+    const patientMatchScore = medianValue(identityScores);
+    if(patientMatchScore < WALKING_FACE_MATCH_THRESHOLD){
+      return {ok:false, message:"This video does not appear consistent with the patient who completed the seated assessment. Please choose the correct patient's video or restart the assessment with the intended patient."};
+    }
+
+    const sampleCount = 10;
+    const sampledFrames = [];
+    const walkingStartSeconds = Math.min(durationSeconds * 0.35, 2.15);
+    const walkingEndSeconds = durationSeconds * 0.94;
     for(let index=0; index<sampleCount; index += 1){
-      const time = durationSeconds * (0.04 + (0.92 * index / (sampleCount - 1)));
+      onProgress({
+        stage:"movement",
+        current:index + 1,
+        total:sampleCount,
+        message:`Checking full-body walking visibility (${index + 1}/${sampleCount})...`,
+      });
+      const time = walkingStartSeconds + ((walkingEndSeconds - walkingStartSeconds) * index / (sampleCount - 1));
       await seekWalkingReviewVideo(time);
-      const result = validator.detectForVideo(walkingReviewVideo, timestampBase + index * 1000);
+      const result = validator.detectForVideo(walkingReviewVideo, timestampBase + detectorIndex * 1000);
+      detectorIndex += 1;
       const pose = result && result.landmarks && result.landmarks[0] ? result.landmarks[0] : null;
       const world = result && result.worldLandmarks && result.worldLandmarks[0] ? result.worldLandmarks[0] : null;
       if(pose) sampledFrames.push({time, pose, world, fullBody:fullBodyVisibleForWalking(pose)});
@@ -2596,7 +2802,7 @@ async function validateWalkingVideo(file){
     const poseFrameCount = sampledFrames.length;
     const fullBodyFrameCount = sampledFrames.filter(frame => frame.fullBody).length;
     const fullBodyRatio = poseFrameCount ? fullBodyFrameCount / poseFrameCount : 0;
-    if(poseFrameCount < 12){
+    if(poseFrameCount < 7){
       return {ok:false, message:"Rehyn could not see the patient clearly enough. Improve lighting and keep other people out of the frame."};
     }
     if(fullBodyRatio < 0.70){
@@ -2611,6 +2817,8 @@ async function validateWalkingVideo(file){
       poseFrameCount,
       fullBodyFrameCount,
       fullBodyRatio,
+      patientMatchScore,
+      samePatientConfirmed:true,
       sampledFrames,
     };
   }catch(error){
@@ -2649,6 +2857,8 @@ async function completeUploadedWalkingTask(file, validation){
     gait_pose_frame_count:validation.poseFrameCount,
     gait_full_body_visible_frame_count:validation.fullBodyFrameCount,
     gait_full_body_visibility_ratio:+validation.fullBodyRatio.toFixed(3),
+    walking_same_patient_confirmed:validation.samePatientConfirmed === true,
+    walking_patient_match_score:+validation.patientMatchScore.toFixed(3),
   };
   const perStepDuration = Math.round(validation.durationMs / Math.max(1, task.steps.length));
   taskResults[currentTaskIdx] = {
@@ -2664,7 +2874,12 @@ async function completeUploadedWalkingTask(file, validation){
     startedAt:performance.now(),
     durationMs:validation.durationMs,
     mimeType:file.type || "video/mp4",
-  }, file);
+  }, file, {
+    onUploadProgress:progress => {
+      const percent = Math.round(progress * 100);
+      setWalkingCaptureStatus(`Video checks passed. Saving securely (${percent}%)...`, "good");
+    },
+  });
   walkingCaptureActive = true;
   walkingCapture.classList.add("hidden");
   ui.classList.remove("hidden");
@@ -2930,7 +3145,13 @@ async function startStep(){
   if(currentStepIdx === 0){
     affectedHandTrackWrist = null;
     affectedHandTrackSeenAt = 0;
-    if(preservePreAssessmentLapCalibration && currentTaskLapStep()){
+    if(assessmentLapTarget){
+      lapTargetCalibration.target = {...assessmentLapTarget};
+      lapTargetCalibration.ready = true;
+      lapTargetCalibration.announced = true;
+      dynamicTargetPos = {...assessmentLapTarget};
+      preservePreAssessmentLapCalibration = false;
+    }else if(preservePreAssessmentLapCalibration && currentTaskLapStep()){
       preservePreAssessmentLapCalibration = false;
     }else if(!preservePreAssessmentLapCalibration){
       lapTargetCalibration = newLapTargetCalibration();
@@ -3361,6 +3582,10 @@ async function completePreAssessmentCalibration(){
   calibrationLead.textContent = "Stay seated in this position and do not move the camera. The assessment will begin automatically.";
   await playVoice(CALIBRATION_COMPLETE_INSTRUCTION);
   if(!calibratingAssessment) return;
+  finalizePatientFaceReference();
+  assessmentLapTarget = lapTargetCalibration.target
+    ? {...lapTargetCalibration.target}
+    : null;
   preservePreAssessmentLapCalibration = true;
   calibratingAssessment = false;
   calibrationOverlay.classList.add("hidden");
@@ -3447,6 +3672,13 @@ if(URL_PARAMS.get("test_mode") === "lap_calibration"){
         title:calibrationTitle.textContent,
       };
     },
+    lockAssessmentTarget:(target) => {
+      assessmentLapTarget = {...target};
+      lapTargetCalibration.target = {...target};
+      lapTargetCalibration.ready = true;
+      return getEffectiveTargetXY({target:{x:0.5, y:0.8, landmark:"LAP_DYNAMIC"}});
+    },
+    effectiveTarget:() => getEffectiveTargetXY({target:{x:0.5, y:0.8, landmark:"LAP_DYNAMIC"}}),
     affectedSide:AFFECTED_SIDE,
   };
 }
@@ -3471,7 +3703,7 @@ if(URL_PARAMS.get("test_mode") === "mouth_target"){
       latestHandLandmarks = null;
       const point = closestAffectedHandPointToTarget(landmarks, target);
       const distance = mouthContactDistance(landmarks, target);
-      const affectedWrist = mirrorX(sideLandmarks(landmarks, AFFECTED_SIDE).wrist);
+      const affectedWrist = sideLandmarks(landmarks, AFFECTED_SIDE).wrist;
       latestHandLandmarks = savedHand;
       return {
         point,
@@ -3604,7 +3836,9 @@ function poseMouthTarget(lm){
   const leftMouth = lm[9];
   const rightMouth = lm[10];
   if(!landmarkIsUsable(leftMouth, 0.25) || !landmarkIsUsable(rightMouth, 0.25)) return null;
-  return mirrorX(midpoint(leftMouth, rightMouth));
+  // Video and canvas are mirrored together in CSS. Keep the anatomical mouth
+  // point in raw camera coordinates so the displayed ring lands on the mouth.
+  return midpoint(leftMouth, rightMouth);
 }
 
 function updateMouthTargetCalibration(lm, sampleKey=(lastPoseScanTs || performance.now())){
@@ -3640,8 +3874,7 @@ function affectedPoseHandPoints(lm){
   const indices = left ? [15, 17, 19, 21] : [16, 18, 20, 22];
   return indices
     .map(index => lm[index])
-    .filter(point => landmarkIsUsable(point, 0.20))
-    .map(mirrorX);
+    .filter(point => landmarkIsUsable(point, 0.20));
 }
 
 function affectedMouthContactPoints(lm){
@@ -3650,10 +3883,9 @@ function affectedMouthContactPoints(lm){
     && performance.now() - latestHandSeenAt <= handLandmarkFreshMs()){
     const fingertips = [4, 8, 12, 16, 20]
       .map(index => latestHandLandmarks[index])
-      .filter(point => point && Number.isFinite(point.x) && Number.isFinite(point.y))
-      .map(mirrorX);
+      .filter(point => point && Number.isFinite(point.x) && Number.isFinite(point.y));
     points.push(...fingertips);
-    const palm = handPalmCenter();
+    const palm = rawHandPalmCenter();
     if(palm) points.push(palm);
   }
   return points;
@@ -3670,9 +3902,14 @@ function mouthContactDistance(lm, target){
 }
 
 function handPalmCenter(){
+  const raw = rawHandPalmCenter();
+  return raw ? mirrorX(raw) : null;
+}
+
+function rawHandPalmCenter(){
   if(!latestHandLandmarks || latestHandLandmarks.length < 21) return null;
   const h = latestHandLandmarks;
-  return mirrorX({x:(h[0].x + h[5].x + h[17].x)/3, y:(h[0].y + h[5].y + h[17].y)/3});
+  return {x:(h[0].x + h[5].x + h[17].x)/3, y:(h[0].y + h[5].y + h[17].y)/3};
 }
 
 function handWristPoint(){
@@ -3719,7 +3956,7 @@ function resolveLandmarkPoint(which){
 
 function getEffectiveTargetXY(step){
   if(isLapTarget(step)){
-    return lapTargetCalibration.target || {x: step.target.x, y: step.target.y};
+    return assessmentLapTarget || lapTargetCalibration.target || {x: step.target.x, y: step.target.y};
   }
   if(isHandTask()){
     return {x: step.target.x, y: step.target.y};
@@ -4095,13 +4332,13 @@ function distXY(a,b){ if(!a||!b) return Infinity; return Math.hypot(a.x-b.x, a.y
 
 function activeWrist(lm){
   const step = getCurrentStep();
-  if(isLapTarget(step) && lm) return mirrorX(sideLandmarks(lm, AFFECTED_SIDE).wrist);
+  if(isLapTarget(step) && lm) return sideLandmarks(lm, AFFECTED_SIDE).wrist;
   if(isHandTask()){
     return activeHandPoint();
   }
   if(!lm) return null;
   if(step && step.target && step.target.landmark === "MOUTH"){
-    return mirrorX(sideLandmarks(lm, AFFECTED_SIDE).wrist);
+    return sideLandmarks(lm, AFFECTED_SIDE).wrist;
   }
   // pick the wrist closer to the current effective target
   if(!step) return mirrorX(lm[15]);
@@ -5000,6 +5237,9 @@ function loop(){
     latestHandLandmarks = null;
     latestHandedness = "";
   }
+  if(!walkingCaptureActive && landmarks){
+    capturePatientFaceReference(video, landmarks, now);
+  }
   if(calibratingAssessment) updatePreAssessmentCalibrationUI(landmarks);
   computeHandMetrics();
   updateTargetAttemptTracking(landmarks);
@@ -5052,6 +5292,10 @@ startBtn.addEventListener("click", async () => {
   calibrationInstructionFinished = false;
   preAssessmentCalibrationReady = false;
   calibrationAutoStartInProgress = false;
+  assessmentLapTarget = null;
+  patientFaceReferenceSamples = [];
+  patientFaceReference = null;
+  lastPatientFaceReferenceAt = 0;
   lapTargetCalibration = newLapTargetCalibration();
   if(calibratingAssessment){
     ui.classList.add("hidden");
@@ -5102,8 +5346,10 @@ walkingVideoInput.addEventListener("change", async () => {
   const file = walkingVideoInput.files && walkingVideoInput.files[0];
   if(!file) return;
   walkingChooseVideoBtn.disabled = true;
-  setWalkingCaptureStatus("Checking video length, quality, and full-body visibility...");
-  const validation = await validateWalkingVideo(file);
+  setWalkingCaptureStatus("Opening the walking video on this device...");
+  const validation = await validateWalkingVideo(file, progress => {
+    setWalkingCaptureStatus(progress.message || "Checking the walking video...");
+  });
   if(!validation.ok){
     setWalkingCaptureStatus(validation.message, "warn");
     walkingChooseVideoBtn.disabled = false;
@@ -5112,6 +5358,7 @@ walkingVideoInput.addEventListener("change", async () => {
   }
   setWalkingCaptureStatus(validation.message, "good");
   await playVoice("The walking video passed the recording check. Thank you. Your assessment is now complete.");
+  setWalkingCaptureStatus("Video checks passed. Preparing secure save...", "good");
   await completeUploadedWalkingTask(file, validation);
 });
 

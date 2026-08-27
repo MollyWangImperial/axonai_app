@@ -15,6 +15,7 @@ def test_initial_walking_task_has_explicit_caregiver_filming_guidance():
     assert task["caregiver_recorded"] is True
     guidance = " ".join(task["filming_guidance"]).lower()
     for phrase in (
+        "face the camera clearly for two seconds",
         "head, trunk, hips, knees, feet",
         "walking aid",
         "fixed camera",
@@ -32,6 +33,7 @@ def test_walking_voice_guides_carer_before_during_and_after_walk():
     walking = steps["L6-S2"]["voice"].lower()
     stopping = steps["L6-S3"]["voice"].lower()
     assert "carer or family member" in setup
+    assert "face the camera clearly" in setup
     assert "whole body" in setup
     assert "walk smoothly parallel" in setup
     assert "must not walk backward" in setup
@@ -77,13 +79,40 @@ def test_walking_uses_device_specific_capture_controls_instead_of_target_circles
 
 def test_desktop_walking_upload_is_quality_checked_before_collection_completes():
     source = server.POSE_RUNNER_HTML
-    assert "async function validateWalkingVideo(file)" in source
-    assert "durationSeconds < 4 || durationSeconds > 90" in source
-    assert "const sampleCount = 18;" in source
+    assert "async function validateWalkingVideo(file, onProgress=()=>{})" in source
+    assert "durationSeconds < 6 || durationSeconds > 90" in source
+    assert "const sampleCount = 10;" in source
     assert "fullBodyVisibleForWalking(pose)" in source
     assert "if(fullBodyRatio < 0.70)" in source
     assert "completeUploadedWalkingTask(file, validation)" in source
     assert 'capture_source:"uploaded_walking_video"' in source
+
+
+def test_walking_upload_checks_same_patient_locally_before_accepting_video():
+    source = server.POSE_RUNNER_HTML
+    for marker in (
+        "function normalizedFaceAppearance(source, pose)",
+        "function faceSignatureSimilarity(reference, candidate)",
+        "function capturePatientFaceReference(source, pose",
+        "const identityTimes = [0.20, 0.85, 1.50]",
+        "const patientMatchScore = medianValue(identityScores);",
+        "patientMatchScore < WALKING_FACE_MATCH_THRESHOLD",
+        "samePatientConfirmed:true",
+        "walking_same_patient_confirmed",
+        'URL_PARAMS.get("test_mode") === "walking_identity"',
+    ):
+        assert marker in source
+    assert "patientFaceReferenceSamples" in source
+    assert "body:patientFaceReference" not in source
+
+
+def test_walking_upload_rejects_oversize_early_and_reports_real_progress():
+    source = server.POSE_RUNNER_HTML
+    assert "file.size || 0) > 35 * 1024 * 1024" in source
+    assert "function uploadTaskVideoToCloud" in source
+    assert "request.upload.onprogress" in source
+    assert "Promise.all([localSavePromise, cloudSavePromise])" in source
+    assert "Saving securely (${percent}%)" in source
 
 
 def test_phone_walking_capture_uses_an_explicit_record_button_and_rear_camera_when_available():

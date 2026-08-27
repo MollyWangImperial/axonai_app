@@ -17,6 +17,7 @@ def test_t3_mouth_target_is_stabilized_and_uses_affected_hand_contact_points():
     for marker in (
         "function newMouthTargetCalibration()",
         "function poseMouthTarget(lm)",
+        "return midpoint(leftMouth, rightMouth);",
         "function updateMouthTargetCalibration(lm, sampleKey=(lastPoseScanTs || performance.now()))",
         "function affectedPoseHandPoints(lm)",
         "const indices = left ? [15, 17, 19, 21] : [16, 18, 20, 22];",
@@ -24,8 +25,11 @@ def test_t3_mouth_target_is_stabilized_and_uses_affected_hand_contact_points():
         "function mouthContactDistance(lm, target)",
         'if(which === "MOUTH")',
         "return mouthContactDistance(landmarks, targetXY) < R;",
+        "const palm = rawHandPalmCenter();",
     ):
         assert marker in source
+    mouth_function = source[source.index("function poseMouthTarget") : source.index("function updateMouthTargetCalibration")]
+    assert "mirrorX" not in mouth_function
 
 
 def test_t3_enables_hand_landmarks_and_has_a_browser_simulation_hook():
@@ -34,3 +38,6 @@ def test_t3_enables_hand_landmarks_and_has_a_browser_simulation_hook():
     assert 'window.__rehynMouthTargetTest' in source
     assert 'runTargetSequence:(frames)' in source
     assert 'evaluatePoseHit:(landmarks, target, radius=0.10)' in source
+    assert "const affectedWrist = sideLandmarks(landmarks, AFFECTED_SIDE).wrist;" in source
+    assert 'step.target.landmark === "MOUTH"' in source
+    assert "return sideLandmarks(lm, AFFECTED_SIDE).wrist;" in source

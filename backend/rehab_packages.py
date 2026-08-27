@@ -130,6 +130,7 @@ LOWER_LIMB_TASKS_DATA: List[Dict[str, Any]] = [
         "safety_note": "Only attempt this task if walking is already part of your usual routine. Use your normal walking aid and have another person nearby if you normally need support.",
         "caregiver_recorded": True,
         "filming_guidance": [
+            "Before walking, ask the patient to face the camera clearly for two seconds so Rehyn can confirm that the uploaded video belongs to the person who completed the seated assessment.",
             "Record from the patient's side and keep the head, trunk, hips, knees, feet, and usual walking aid visible for the entire video.",
             "A fixed camera is preferred when the whole safe walking path fits in the frame.",
             "If needed, the caregiver may walk smoothly parallel to the patient at a safe distance while keeping the whole body centered.",
@@ -139,7 +140,7 @@ LOWER_LIMB_TASKS_DATA: List[Dict[str, Any]] = [
         "steps": [
             {
                 "id": "L6-S1",
-                "voice": "For this final walking task, please ask a carer or family member to hold the phone and record you from the side. Keep your head, trunk, hips, knees, feet, and usual walking aid visible for the whole video. A fixed side view is best. If the path does not fit in the frame, the person filming may walk smoothly parallel to you at a safe distance, keeping your whole body centered. They must not walk backward or block your path. If you need hands-on help, use a separate person to guard you. Stand safely at the start when you are ready.",
+                "voice": "For this final walking task, please ask a carer or family member to hold the phone. First, face the camera clearly and keep still for two seconds so Rehyn can confirm it is you. Then turn to the side for the walk. Keep your head, trunk, hips, knees, feet, and usual walking aid visible for the whole video. A fixed side view is best. If the path does not fit in the frame, the person filming may walk smoothly parallel to you at a safe distance, keeping your whole body centered. They must not walk backward or block your path. If you need hands-on help, use a separate person to guard you. Stand safely at the start when you are ready.",
                 "target": {"x": 0.22, "y": 0.78, "r": 0.16, "landmark": "WALK_READY"},
                 "hold_ms": 1500,
                 "movement_required": False,

@@ -16,6 +16,8 @@ def test_true_lap_return_steps_use_patient_specific_dynamic_targets():
         (server.TASKS_DATA, "T1", "T1-S4"),
         (server.TASKS_DATA, "T3", "T3-S4"),
         (server.HAND_TASKS_DATA, "H1", "H1-S3"),
+        (server.HAND_TASKS_DATA, "H3", "H3-S3"),
+        (server.HAND_TASKS_DATA, "H4", "H4-S3"),
     )
     for tasks, task_id, step_id in expected:
         step = _step(tasks, task_id, step_id)
@@ -54,6 +56,16 @@ def test_lap_calibration_starts_before_the_return_step_and_survives_brief_tracki
     assert "if(preservePreAssessmentLapCalibration && currentTaskLapStep()){" in source
 
 
+def test_one_preassessment_lap_target_is_locked_across_all_tasks():
+    source = server.POSE_RUNNER_HTML
+    assert "let assessmentLapTarget = null;" in source
+    assert "assessmentLapTarget = lapTargetCalibration.target" in source
+    assert "if(assessmentLapTarget){" in source
+    assert "lapTargetCalibration.target = {...assessmentLapTarget};" in source
+    assert "dynamicTargetPos = {...assessmentLapTarget};" in source
+    assert "return assessmentLapTarget || lapTargetCalibration.target" in source
+
+
 def test_hand_assessment_loads_pose_for_its_dynamic_lap_target():
     source = server.POSE_RUNNER_HTML
     setup = source[source.index("async function setupTrackingModels()") : source.index("function playBrowserVoice")]
@@ -70,6 +82,8 @@ def test_lap_calibration_has_a_browser_simulation_hook():
     assert "runSequence: (frames, frameMs=100)" in source
     assert "diagnose: (landmarks) => lapTargetCandidateStatus(landmarks)" in source
     assert "function withLapCalibrationTestContext(callback)" in source
+    assert "lockAssessmentTarget:(target)" in source
+    assert "effectiveTarget:() => getEffectiveTargetXY" in source
 
 
 def test_lap_circle_is_hidden_and_noninteractive_until_calibration_is_ready():
@@ -83,10 +97,11 @@ def test_lap_circle_is_hidden_and_noninteractive_until_calibration_is_ready():
 
 def test_lap_drawing_and_hit_testing_share_calibrated_coordinates():
     source = server.POSE_RUNNER_HTML
-    assert "return lapTargetCalibration.target || {x: step.target.x, y: step.target.y};" in source
+    assert "return assessmentLapTarget || lapTargetCalibration.target || {x: step.target.x, y: step.target.y};" in source
     assert "const targetXY = getEffectiveTargetXY(step);" in source
     assert "const affectedWristRaw = sideLandmarks(landmarks, AFFECTED_SIDE).wrist;" in source
     assert "return distXY(affectedWristRaw, targetXY) < effectiveRadius(step, landmarks);" in source
+    assert "if(isLapTarget(step) && lm) return sideLandmarks(lm, AFFECTED_SIDE).wrist;" in source
     assert "updateLapTargetCalibration(landmarks, now);" in source
 
 
@@ -101,6 +116,6 @@ def test_lap_target_uses_the_survey_selected_anatomical_side_without_double_mirr
 
 def test_hand_package_lap_step_is_not_forced_back_to_static_coordinates():
     source = server.POSE_RUNNER_HTML
-    dynamic_index = source.index("if(isLapTarget(step)){\n    return lapTargetCalibration.target")
+    dynamic_index = source.index("if(isLapTarget(step)){\n    return assessmentLapTarget || lapTargetCalibration.target")
     hand_index = source.index("if(isHandTask()){\n    return {x: step.target.x, y: step.target.y};", dynamic_index)
     assert dynamic_index < hand_index
