@@ -7,6 +7,7 @@ import { GestureHandlerRootView } from "react-native-gesture-handler";
 
 import { useIconFonts } from "@/src/hooks/use-icon-fonts";
 import { getCachedUser, authedFetch } from "@/src/auth";
+import { preloadAssessmentMediaPipe } from "@/src/assessmentPreload";
 import { storage } from "@/src/utils/storage";
 
 LogBox.ignoreAllLogs(true);
@@ -25,6 +26,9 @@ function AuthGate() {
         return;
       }
       if (!u) return;
+      if (u.role !== "therapist") {
+        void preloadAssessmentMediaPipe();
+      }
       // Therapist role → therapist portal
       if (u.role === "therapist" && seg0 !== "therapist" && seg0 !== "sign-in") {
         router.replace("/therapist");

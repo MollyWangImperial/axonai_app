@@ -115,6 +115,18 @@ def test_walking_upload_rejects_oversize_early_and_reports_real_progress():
     assert "Saving securely (${percent}%)" in source
 
 
+def test_walking_validator_is_initialized_before_the_video_is_selected():
+    source = server.POSE_RUNNER_HTML
+    assert "let walkingVideoValidatorPromise = null;" in source
+    assert "async function getWalkingVideoValidator()" in source
+    assert "function preloadWalkingVideoValidator()" in source
+    assert "preloadWalkingVideoValidator();" in source
+    assert "validator = await getWalkingVideoValidator();" in source
+    validation = source[source.index("async function validateWalkingVideo") : source.index("async function completeUploadedWalkingTask")]
+    assert 'PoseLandmarker.createFromOptions' not in validation
+    assert 'validator.close()' not in validation
+
+
 def test_phone_walking_capture_uses_an_explicit_record_button_and_rear_camera_when_available():
     source = server.POSE_RUNNER_HTML
     assert "walkingRecordBtn.addEventListener" in source

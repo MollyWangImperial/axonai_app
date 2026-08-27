@@ -2118,6 +2118,8 @@ let handObjectOverlapStartedAt = null;
 let handObjectOverlapMs = 0;
 let objectTransportSamples = [];
 let visionFilesetResolver = null;
+let walkingVideoValidator = null;
+let walkingVideoValidatorPromise = null;
 let motionFrames = [];
 let lastMotionSampleTs = 0;
 const MOTION_SAMPLE_INTERVAL_MS = 100;
@@ -2461,6 +2463,34 @@ async function setupPose(){
   });
 }
 
+async function getWalkingVideoValidator(){
+  if(walkingVideoValidator) return walkingVideoValidator;
+  if(!walkingVideoValidatorPromise){
+    walkingVideoValidatorPromise = (async () => {
+      const filesetResolver = await getVisionFilesetResolver();
+      const validator = await PoseLandmarker.createFromOptions(filesetResolver, {
+        baseOptions:{ modelAssetPath:"https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task" },
+        runningMode:"VIDEO",
+        numPoses:1,
+      });
+      walkingVideoValidator = validator;
+      return validator;
+    })().catch(error => {
+      walkingVideoValidatorPromise = null;
+      throw error;
+    });
+  }
+  return walkingVideoValidatorPromise;
+}
+
+function preloadWalkingVideoValidator(){
+  window.setTimeout(() => {
+    getWalkingVideoValidator().catch(error => {
+      postRN({type:"walking_validator_preload_error", message:String(error)});
+    });
+  }, 8000);
+}
+
 async function setupHand(){
   const filesetResolver = await getVisionFilesetResolver();
   try{
@@ -2744,12 +2774,8 @@ async function validateWalkingVideo(file, onProgress=()=>{}){
     if(Math.min(width, height) < 360){
       return {ok:false, message:"The video is too small. Please use standard phone video quality and try again."};
     }
-    const filesetResolver = await getVisionFilesetResolver();
-    validator = await PoseLandmarker.createFromOptions(filesetResolver, {
-      baseOptions:{ modelAssetPath:"https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task" },
-      runningMode:"VIDEO",
-      numPoses:1,
-    });
+    onProgress({stage:"model", message:"Preparing the walking video check..."});
+    validator = await getWalkingVideoValidator();
     const reference = finalizePatientFaceReference();
     if(!reference){
       return {ok:false, message:"Rehyn could not create the seated patient reference. Return to the assessment camera and keep the patient's face clear before choosing the video again."};
@@ -2824,7 +2850,6 @@ async function validateWalkingVideo(file, onProgress=()=>{}){
   }catch(error){
     return {ok:false, message:`Could not validate this video. ${String(error.message || error)}`};
   }finally{
-    if(validator && typeof validator.close === "function") validator.close();
     walkingReviewVideo.removeAttribute("src");
     walkingReviewVideo.load();
     URL.revokeObjectURL(objectUrl);
@@ -5326,6 +5351,7 @@ startBtn.addEventListener("click", async () => {
     postRN({type:"model_setup_error", message:String(error)});
     return;
   }
+  preloadWalkingVideoValidator();
   await Promise.allSettled([unlockPromise, firstVoicePromise]);
   running = true;
   requestAnimationFrame(loop);
