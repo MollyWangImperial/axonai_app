@@ -98,8 +98,9 @@ def test_advanced_marker_tasks_keep_seven_task_contract():
     assert '"id": "H1-S3"' in html_source
     assert '"r": 0.20' in html_source
     assert "palm_facing_score" in html_source
-    assert "width:{ideal:640}" in html_source
-    assert "canvas{position:absolute;inset:0;width:100%;height:100%;object-fit:cover" in html_source
+    assert "responsiveVideoSettings(640, 480)" in html_source
+    assert "#cameraFrame video,#cameraFrame canvas{position:absolute;inset:0;width:100%;height:100%" in html_source
+    assert "object-fit:cover" not in html_source
     assert "minTrackingConfidence: 0.7" in html_source
     assert "radius:1.4" in html_source
     assert "function activeHandPoint()" in html_source

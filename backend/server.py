@@ -1595,8 +1595,8 @@ POSE_RUNNER_HTML = r"""<!DOCTYPE html>
   *{box-sizing:border-box;margin:0;padding:0}
   html,body{width:100%;height:100%;background:#0c100e;color:#fdfdfd;font-family:-apple-system,BlinkMacSystemFont,"Plus Jakarta Sans",sans-serif;overflow:hidden}
   #stage{position:relative;width:100vw;height:100vh;background:#000}
-  video{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;transform:scaleX(-1)}
-  canvas{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;transform:scaleX(-1)}
+  #cameraFrame{position:absolute;left:0;top:0;width:100%;height:100%;overflow:hidden;background:#000}
+  #cameraFrame video,#cameraFrame canvas{position:absolute;inset:0;width:100%;height:100%;transform:scaleX(-1);transform-origin:center}
   #ui{position:absolute;inset:0;pointer-events:none;display:flex;flex-direction:column;justify-content:space-between;padding:env(safe-area-inset-top,24px) 16px env(safe-area-inset-bottom,24px) 16px}
   #top{display:flex;align-items:center;gap:8px;background:rgba(28,32,29,0.65);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);border-radius:24px;padding:12px 16px;pointer-events:auto}
   #top .dots{display:flex;gap:6px;flex:1;justify-content:center}
@@ -1664,8 +1664,10 @@ POSE_RUNNER_HTML = r"""<!DOCTYPE html>
 </head>
 <body>
 <div id="stage">
-  <video id="video" playsinline autoplay muted></video>
-  <canvas id="canvas"></canvas>
+  <div id="cameraFrame">
+    <video id="video" playsinline autoplay muted></video>
+    <canvas id="canvas"></canvas>
+  </div>
   <div id="ui">
     <div id="top">
       <button id="exitBtn" data-testid="assessment-exit">Exit</button>
@@ -1737,6 +1739,8 @@ POSE_RUNNER_HTML = r"""<!DOCTYPE html>
 import { PoseLandmarker, HandLandmarker, FilesetResolver, DrawingUtils } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs";
 
 const API_BASE = window.location.origin + "/api";
+const stage = document.getElementById("stage");
+const cameraFrame = document.getElementById("cameraFrame");
 const video = document.getElementById("video");
 const canvas = document.getElementById("canvas");
 const ctx = canvas.getContext("2d");
@@ -1764,6 +1768,48 @@ const celebrateLabel = document.getElementById("celebrateLabel");
 const celebrateTitle = document.getElementById("celebrateTitle");
 const celebrateMsg = document.getElementById("celebrateMsg");
 const celebrateDots = document.getElementById("celebrateDots");
+
+function fitCameraViewport(containerWidth, containerHeight, sourceWidth, sourceHeight){
+  const safeContainerWidth = Math.max(1, Number(containerWidth) || 1);
+  const safeContainerHeight = Math.max(1, Number(containerHeight) || 1);
+  const safeSourceWidth = Math.max(1, Number(sourceWidth) || 1);
+  const safeSourceHeight = Math.max(1, Number(sourceHeight) || 1);
+  const scale = Math.min(safeContainerWidth / safeSourceWidth, safeContainerHeight / safeSourceHeight);
+  const width = safeSourceWidth * scale;
+  const height = safeSourceHeight * scale;
+  return {
+    left:(safeContainerWidth - width) / 2,
+    top:(safeContainerHeight - height) / 2,
+    width,
+    height,
+  };
+}
+
+function responsiveVideoSettings(longEdge, shortEdge, maxFrameRate=30){
+  const portrait = stage.clientHeight > stage.clientWidth;
+  return {
+    facingMode:"user",
+    width:{ideal:portrait ? shortEdge : longEdge},
+    height:{ideal:portrait ? longEdge : shortEdge},
+    frameRate:{ideal:maxFrameRate, max:maxFrameRate},
+  };
+}
+
+function syncCameraViewport(){
+  if(!video.videoWidth || !video.videoHeight) return;
+  const rect = fitCameraViewport(stage.clientWidth, stage.clientHeight, video.videoWidth, video.videoHeight);
+  cameraFrame.style.left = `${rect.left}px`;
+  cameraFrame.style.top = `${rect.top}px`;
+  cameraFrame.style.width = `${rect.width}px`;
+  cameraFrame.style.height = `${rect.height}px`;
+  if(canvas.width !== video.videoWidth) canvas.width = video.videoWidth;
+  if(canvas.height !== video.videoHeight) canvas.height = video.videoHeight;
+}
+
+window.addEventListener("resize", syncCameraViewport, {passive:true});
+window.addEventListener("orientationchange", () => setTimeout(syncCameraViewport, 120), {passive:true});
+video.addEventListener("resize", syncCameraViewport);
+if(window.ResizeObserver) new ResizeObserver(syncCameraViewport).observe(stage);
 
 // Pool of warm, encouraging task-completion lines (varied so they don't feel scripted)
 const CELEBRATION_LINES = [
@@ -2177,13 +2223,12 @@ function renderDots(){
 async function setupCamera(){
   try{
     const videoSettings = (ASSESSMENT_PACKAGE === "hand" || ASSESSMENT_PACKAGE === "initial")
-      ? {facingMode:"user", width:{ideal:640}, height:{ideal:480}, frameRate:{ideal:30, max:30}}
-      : {facingMode:"user", width:{ideal:480}, height:{ideal:360}, frameRate:{ideal:30, max:30}};
+      ? responsiveVideoSettings(640, 480)
+      : responsiveVideoSettings(480, 360);
     const stream = await navigator.mediaDevices.getUserMedia({video:videoSettings, audio:false});
     video.srcObject = stream;
     await new Promise(r => video.onloadedmetadata = r);
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
+    syncCameraViewport();
     return true;
   }catch(e){
     captionEl.textContent = "Camera permission denied. Please allow camera access.";
@@ -3974,6 +4019,14 @@ async function finishAssessment(){
             pose_world_3d: "mediapipe_estimated_world_landmarks",
             hand_2d: "camera_normalized_unmirrored",
           },
+          camera_projection: {
+            source_width: video.videoWidth,
+            source_height: video.videoHeight,
+            display_width: cameraFrame.clientWidth,
+            display_height: cameraFrame.clientHeight,
+            fit: "contain",
+            mirrored_for_patient: true,
+          },
           sample_interval_ms: MOTION_SAMPLE_INTERVAL_MS,
           truncated: motionFrames.length >= MAX_MOTION_FRAMES,
           frames: motionFrames,
@@ -4316,8 +4369,8 @@ REHAB_RUNNER_HTML_TEMPLATE = r"""<!DOCTYPE html>
   *{box-sizing:border-box;margin:0;padding:0}
   html,body{width:100%;height:100%;background:#0c100e;color:#fdfdfd;font-family:-apple-system,BlinkMacSystemFont,"Plus Jakarta Sans",sans-serif;overflow:hidden}
   #stage{position:relative;width:100vw;height:100vh;background:#000}
-  video{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;transform:scaleX(-1)}
-  canvas{position:absolute;inset:0;width:100%;height:100%;transform:scaleX(-1)}
+  #cameraFrame{position:absolute;left:0;top:0;width:100%;height:100%;overflow:hidden;background:#000}
+  #cameraFrame video,#cameraFrame canvas{position:absolute;inset:0;width:100%;height:100%;transform:scaleX(-1);transform-origin:center}
   #ui{position:absolute;inset:0;pointer-events:none;display:flex;flex-direction:column;justify-content:space-between;padding:env(safe-area-inset-top,24px) 16px env(safe-area-inset-bottom,24px) 16px}
   #top{display:flex;align-items:center;gap:8px;background:rgba(28,32,29,0.65);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);border-radius:24px;padding:12px 16px;pointer-events:auto}
   #top .meta{flex:1;display:flex;flex-direction:column}
@@ -4361,8 +4414,10 @@ REHAB_RUNNER_HTML_TEMPLATE = r"""<!DOCTYPE html>
 </head>
 <body>
 <div id="stage">
-  <video id="video" playsinline autoplay muted></video>
-  <canvas id="canvas"></canvas>
+  <div id="cameraFrame">
+    <video id="video" playsinline autoplay muted></video>
+    <canvas id="canvas"></canvas>
+  </div>
   <div id="ui">
     <div id="top">
       <button id="exitBtn" data-testid="rehab-exit">Exit</button>
@@ -4415,6 +4470,8 @@ import { PoseLandmarker, HandLandmarker, FilesetResolver, DrawingUtils } from "h
 const API_BASE = window.location.origin + "/api";
 const CFG = __CFG_JSON__;
 
+const stage = document.getElementById("stage");
+const cameraFrame = document.getElementById("cameraFrame");
 const video = document.getElementById("video");
 const canvas = document.getElementById("canvas");
 const ctx = canvas.getContext("2d");
@@ -4437,6 +4494,48 @@ const fbConfirmBtn = document.getElementById("fbConfirmBtn");
 const fbReplay = document.getElementById("fbReplay");
 const checkYes = document.getElementById("checkYes");
 const checkUnderstand = document.getElementById("checkUnderstand");
+
+function fitCameraViewport(containerWidth, containerHeight, sourceWidth, sourceHeight){
+  const safeContainerWidth = Math.max(1, Number(containerWidth) || 1);
+  const safeContainerHeight = Math.max(1, Number(containerHeight) || 1);
+  const safeSourceWidth = Math.max(1, Number(sourceWidth) || 1);
+  const safeSourceHeight = Math.max(1, Number(sourceHeight) || 1);
+  const scale = Math.min(safeContainerWidth / safeSourceWidth, safeContainerHeight / safeSourceHeight);
+  const width = safeSourceWidth * scale;
+  const height = safeSourceHeight * scale;
+  return {
+    left:(safeContainerWidth - width) / 2,
+    top:(safeContainerHeight - height) / 2,
+    width,
+    height,
+  };
+}
+
+function responsiveVideoSettings(longEdge, shortEdge, maxFrameRate=30){
+  const portrait = stage.clientHeight > stage.clientWidth;
+  return {
+    facingMode:"user",
+    width:{ideal:portrait ? shortEdge : longEdge},
+    height:{ideal:portrait ? longEdge : shortEdge},
+    frameRate:{ideal:maxFrameRate, max:maxFrameRate},
+  };
+}
+
+function syncCameraViewport(){
+  if(!video.videoWidth || !video.videoHeight) return;
+  const rect = fitCameraViewport(stage.clientWidth, stage.clientHeight, video.videoWidth, video.videoHeight);
+  cameraFrame.style.left = `${rect.left}px`;
+  cameraFrame.style.top = `${rect.top}px`;
+  cameraFrame.style.width = `${rect.width}px`;
+  cameraFrame.style.height = `${rect.height}px`;
+  if(canvas.width !== video.videoWidth) canvas.width = video.videoWidth;
+  if(canvas.height !== video.videoHeight) canvas.height = video.videoHeight;
+}
+
+window.addEventListener("resize", syncCameraViewport, {passive:true});
+window.addEventListener("orientationchange", () => setTimeout(syncCameraViewport, 120), {passive:true});
+video.addEventListener("resize", syncCameraViewport);
+if(window.ResizeObserver) new ResizeObserver(syncCameraViewport).observe(stage);
 
 let landmarker = null, drawingUtils = null;
 let currentRep = 0;
@@ -4578,11 +4677,10 @@ async function playVoice(text){
 
 async function setupCamera(){
   try{
-    const stream = await navigator.mediaDevices.getUserMedia({video:{facingMode:"user",width:{ideal:1280},height:{ideal:720}},audio:false});
+    const stream = await navigator.mediaDevices.getUserMedia({video:responsiveVideoSettings(1280, 720),audio:false});
     video.srcObject = stream;
     await new Promise(r => video.onloadedmetadata = r);
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
+    syncCameraViewport();
     return true;
   }catch(e){
     captionEl.textContent = "Camera permission denied.";
