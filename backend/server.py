@@ -2289,6 +2289,16 @@ async function startStep(){
   fistCloseReadyObserved = false;
   fistClosureMinScore = 1;
   fistClosingStarted = false;
+  targetAttemptStartPoint = null;
+  targetAttemptStartGesture = null;
+  targetAttemptMaxDisplacement = 0;
+  targetAttemptMaxGestureChange = 0;
+  nearMissStartedAt = null;
+  nearMissReason = "";
+  lastNearMissCoachingAt = 0;
+  nearMissCoachingCount = 0;
+  nearMissEvents = [];
+  correctionVoicePlaying = false;
   stepMetrics = {};
   trunkLeanMax = 0;
   shoulderFlexionMax = 0;
@@ -2843,6 +2853,19 @@ let stepStartWristXY = null;    // wrist position captured at step start
 let fistCloseReadyObserved = false;
 let fistClosureMinScore = 1;
 let fistClosingStarted = false;
+let targetAttemptStartPoint = null;
+let targetAttemptStartGesture = null;
+let targetAttemptMaxDisplacement = 0;
+let targetAttemptMaxGestureChange = 0;
+let nearMissStartedAt = null;
+let nearMissReason = "";
+let lastNearMissCoachingAt = 0;
+let nearMissCoachingCount = 0;
+let nearMissEvents = [];
+let correctionVoicePlaying = false;
+const NEAR_MISS_DWELL_MS = 900;
+const NEAR_MISS_COOLDOWN_MS = 7000;
+const NEAR_MISS_MAX_COACHING_PER_STEP = 2;
 
 function distXY(a,b){ if(!a||!b) return Infinity; return Math.hypot(a.x-b.x, a.y-b.y); }
 
@@ -2893,6 +2916,211 @@ function updateMovementGate(lm){
     ? Math.max(0.035, shoulderWidth(lm) * 0.22)
     : Math.max(0.12, shoulderWidth(lm) * 0.75);
   if(distXY(w, stepStartWristXY) >= requiredMove) arrivedAfterMovement = true;
+}
+
+function targetAttemptGestureSnapshot(){
+  return {
+    open:handOpenScore,
+    closed:fistClosureScore,
+    pinch:pinchScore,
+    palm:palmFacingScore,
+  };
+}
+
+function targetAttemptPoint(lm, step){
+  if(isHandTask()) return activeHandPoint();
+  if(!lm || !step) return null;
+  const which = step.target.landmark;
+  if(isAdvancedObjectMode() && latestMarker && ["OBJECT_AT_TARGET", "OBJECT_RELEASED"].includes(which)){
+    return latestMarker.object_center;
+  }
+  if(which === "WRISTS"){
+    const target = getEffectiveTargetXY(step);
+    const left = mirrorX(lm[15]);
+    const right = mirrorX(lm[16]);
+    return distXY(left, target) <= distXY(right, target) ? left : right;
+  }
+  return activeControlPoint(lm);
+}
+
+function updateTargetAttemptTracking(lm){
+  const step = getCurrentStep();
+  if(!step) return;
+  const point = targetAttemptPoint(lm, step);
+  const gesture = targetAttemptGestureSnapshot();
+  if(!targetAttemptStartGesture) targetAttemptStartGesture = gesture;
+  if(point && !targetAttemptStartPoint) targetAttemptStartPoint = {x:point.x, y:point.y};
+  if(point && targetAttemptStartPoint){
+    targetAttemptMaxDisplacement = Math.max(
+      targetAttemptMaxDisplacement,
+      distXY(point, targetAttemptStartPoint),
+    );
+  }
+  if(targetAttemptStartGesture){
+    targetAttemptMaxGestureChange = Math.max(
+      targetAttemptMaxGestureChange,
+      Math.abs(gesture.open - targetAttemptStartGesture.open),
+      Math.abs(gesture.closed - targetAttemptStartGesture.closed),
+      Math.abs(gesture.pinch - targetAttemptStartGesture.pinch),
+      Math.abs(gesture.palm - targetAttemptStartGesture.palm),
+    );
+  }
+}
+
+function hasIntentionalTargetAttempt(lm, step, radius){
+  const movementThreshold = isHandTask()
+    ? Math.max(0.035, radius * 0.28)
+    : Math.max(0.05, shoulderWidth(lm) * 0.30);
+  const gestureAttempt = isHandTask() && targetAttemptMaxGestureChange >= 0.12;
+  const movementGateAttempt = !isHandTask() && arrivedAfterMovement;
+  return movementGateAttempt || targetAttemptMaxDisplacement >= movementThreshold || gestureAttempt;
+}
+
+function nearMissCorrection(step, distance, radius, lm){
+  const which = step.target.landmark;
+  if(distance > radius){
+    const movingObject = ["OBJECT_COUPLED", "OBJECT_AT_TARGET", "OBJECT_RELEASED"].includes(which);
+    return {
+      reason:"just_outside_circle",
+      guidance:movingObject
+        ? "Move the cup slightly farther toward the center of the circle, then keep it steady there."
+        : "Move your hand slightly farther toward the center of the circle, then keep it still there.",
+    };
+  }
+  if(!isHandTask() && !arrivedAfterMovement && step.movement_required !== false){
+    return {
+      reason:"movement_gate_not_met",
+      guidance:"Move your hand slightly away, then deliberately reach back into the center of the circle and hold it there.",
+    };
+  }
+  const needsVisibleHand = ["HAND_OPEN", "HAND_CLOSED", "PINCH", "PINCH_RELEASED", "OBJECT_COUPLED", "OBJECT_RELEASED"].includes(which)
+    || step.id === "H1-S1"
+    || step.id === "H2-S2"
+    || (Array.isArray(step.measure) && step.measure.includes("closure_completeness"));
+  if(needsVisibleHand && handLandmarker && !latestHandLandmarks){
+    return {
+      reason:"hand_landmarks_not_visible",
+      guidance:"Keep your hand inside the circle with your palm and fingers clearly facing the camera, without the cup covering your whole hand.",
+    };
+  }
+  if(step.id === "H1-S1" && palmFacingScore <= 0.45){
+    return {reason:"palm_not_facing", guidance:"Keep your hand in the circle and turn your palm toward the camera."};
+  }
+  if(step.id === "H2-S2" || (Array.isArray(step.measure) && step.measure.includes("closure_completeness")) || which === "HAND_CLOSED"){
+    return {reason:"hand_not_closed", guidance:"Keep your hand in the center of the circle and gently close your fingers around the imaginary object."};
+  }
+  if(which === "HAND_OPEN"){
+    if(step.id === "H1-S2" && palmFacingScore <= 0.45){
+      return {reason:"palm_not_facing", guidance:"Keep your hand in the circle, turn your palm toward the camera, and spread your fingers."};
+    }
+    return {reason:"hand_not_open", guidance:"Keep your hand in the center of the circle and spread your fingers as comfortably as you can."};
+  }
+  if(which === "PINCH"){
+    return {reason:"pinch_not_detected", guidance:"Keep your hand in the circle and bring the tip of your thumb to the tip of your index finger."};
+  }
+  if(which === "PINCH_RELEASED"){
+    return {reason:"pinch_not_released", guidance:"Keep your hand in the circle and gently separate your thumb and index finger."};
+  }
+  if(which === "WRISTS"){
+    const target = getEffectiveTargetXY(step);
+    const radiusNow = effectiveRadius(step, lm);
+    const leftInside = lm && distXY(mirrorX(lm[15]), target) < radiusNow;
+    const rightInside = lm && distXY(mirrorX(lm[16]), target) < radiusNow;
+    if(!leftInside || !rightInside){
+      return {reason:"both_wrists_required", guidance:"Bring both hands into the circle together and hold them there."};
+    }
+  }
+  if(which === "WRISTS_APART"){
+    return {reason:"hands_not_apart", guidance:"Keep both hands at the target height and move them a little farther apart."};
+  }
+  if(which === "WRISTS_LOW"){
+    return {reason:"hands_not_lowered", guidance:"Lower both hands fully toward the ending area and keep them there."};
+  }
+  if(which === "OBJECT_COUPLED"){
+    return {reason:"cup_grasp_not_detected", guidance:"Keep your hand and cup together in the center of the circle, with your fingers wrapped securely around the cup."};
+  }
+  if(which === "OBJECT_AT_TARGET"){
+    return {reason:"cup_not_centered", guidance:"Move the cup itself, not only your wrist, into the center of the target circle and hold it steady."};
+  }
+  if(which === "OBJECT_RELEASED"){
+    return {reason:"cup_release_not_detected", guidance:"Keep the cup at the target, open your fingers, and move your hand slightly away from the cup."};
+  }
+  return {
+    reason:"activation_condition_not_met",
+    guidance:"Keep the instructed body part in the center of the circle and hold it still until the ring completes.",
+  };
+}
+
+function qualifiesAsNearTargetAttempt(distance, radius, intentional){
+  const nearLimit = Math.max(radius * 1.45, radius + 0.035);
+  return !!intentional && Number.isFinite(distance) && distance <= nearLimit;
+}
+
+function getTargetNearMiss(lm){
+  const step = getCurrentStep();
+  if(!step || isLowerTask() || isBalanceTask()) return null;
+  if(voiceFinishedAt === 0 || performance.now() - voiceFinishedAt < 350) return null;
+  const point = targetAttemptPoint(lm, step);
+  if(!point) return null;
+  const target = getEffectiveTargetXY(step);
+  const radius = effectiveRadius(step, isHandTask() ? null : lm);
+  const distance = distXY(point, target);
+  const intentional = hasIntentionalTargetAttempt(lm, step, radius);
+  if(!qualifiesAsNearTargetAttempt(distance, radius, intentional)) return null;
+  return {
+    ...nearMissCorrection(step, distance, radius, lm),
+    task_id:tasks[currentTaskIdx].id,
+    step_id:step.id,
+    distance:+distance.toFixed(4),
+    radius:+radius.toFixed(4),
+    distance_ratio:+(distance / Math.max(radius, 0.001)).toFixed(2),
+  };
+}
+
+async function speakTargetNearMiss(diagnostic){
+  const step = getCurrentStep();
+  if(!step || correctionVoicePlaying) return;
+  const expectedStepId = step.id;
+  correctionVoicePlaying = true;
+  const correction = `You're close. ${diagnostic.guidance}`;
+  captionEl.textContent = correction;
+  postRN({type:"target_near_miss", ...diagnostic});
+  try{
+    await playVoice(correction);
+  }finally{
+    const current = getCurrentStep();
+    if(current && current.id === expectedStepId){
+      captionEl.textContent = current.caption;
+      voiceFinishedAt = performance.now();
+    }
+    correctionVoicePlaying = false;
+  }
+}
+
+function handleTargetNearMiss(lm, now){
+  if(correctionVoicePlaying || nearMissCoachingCount >= NEAR_MISS_MAX_COACHING_PER_STEP) return;
+  const diagnostic = getTargetNearMiss(lm);
+  if(!diagnostic){
+    nearMissStartedAt = null;
+    nearMissReason = "";
+    return;
+  }
+  if(nearMissStartedAt == null || nearMissReason !== diagnostic.reason){
+    nearMissStartedAt = now;
+    nearMissReason = diagnostic.reason;
+    return;
+  }
+  if(now - nearMissStartedAt < NEAR_MISS_DWELL_MS) return;
+  if(lastNearMissCoachingAt && now - lastNearMissCoachingAt < NEAR_MISS_COOLDOWN_MS) return;
+  nearMissCoachingCount += 1;
+  lastNearMissCoachingAt = now;
+  nearMissStartedAt = null;
+  nearMissEvents.push({
+    reason:diagnostic.reason,
+    distance_ratio:diagnostic.distance_ratio,
+    timestamp_ms:Math.round(now - stepStartedAt),
+  });
+  speakTargetNearMiss(diagnostic);
 }
 
 function rangeOf(values){
@@ -3290,6 +3518,8 @@ function nextStep(skipped=false){
       fist_closure_score: +fistClosureScore.toFixed(2),
       pinch_score: +pinchScore.toFixed(2),
       palm_facing_score: +palmFacingScore.toFixed(2),
+      target_near_miss_count: nearMissEvents.length,
+      target_near_miss_events: nearMissEvents.slice(),
       ...lowerBalanceMetricSnapshot(latestPoseLandmarks, step, stepDurationMs, skipped),
       ...handMetricSnapshot(),
       ...computeAdvancedObjectMetrics()
@@ -3476,6 +3706,7 @@ function loop(){
     latestHandedness = "";
   }
   computeHandMetrics();
+  updateTargetAttemptTracking(landmarks);
   captureMotionFrame(now);
   detectAxonAIMarker(now);
   updateRuntimeDiagnostics(now);
@@ -3483,10 +3714,12 @@ function loop(){
   drawOverlay(landmarks);
 
   // check target hit — with a small "grace period" so brief jitter doesn't reset the hold
-  const inTarget = checkTarget(landmarks);
+  const inTarget = correctionVoicePlaying ? false : checkTarget(landmarks);
   const step = getCurrentStep();
   if(step){
     if(inTarget){
+      nearMissStartedAt = null;
+      nearMissReason = "";
       if(inTargetSince == null) inTargetSince = now;
       lastInTargetTs = now;
       if(!stepCompleted && (now - inTargetSince) >= step.hold_ms){
@@ -3499,6 +3732,7 @@ function loop(){
       if(inTargetSince != null && (now - lastInTargetTs) > 350){
         inTargetSince = null;
       }
+      if(!correctionVoicePlaying) handleTargetNearMiss(landmarks, now);
     }
   }
   requestAnimationFrame(loop);
