@@ -1,4 +1,4 @@
-const CACHE_NAME = "rehyn-shell-v1";
+const CACHE_NAME = "rehyn-shell-v2";
 const SHELL_FILES = [
   "/",
   "/manifest.json",
@@ -6,9 +6,23 @@ const SHELL_FILES = [
   "/icons/icon-512.png",
   "/icons/apple-touch-icon.png",
 ];
+const MODEL_FILES = [
+  "/vendor/mediapipe/vision_bundle.mjs",
+  "/vendor/mediapipe/wasm/vision_wasm_internal.js",
+  "/vendor/mediapipe/wasm/vision_wasm_internal.wasm",
+  "/vendor/mediapipe/wasm/vision_wasm_nosimd_internal.js",
+  "/vendor/mediapipe/wasm/vision_wasm_nosimd_internal.wasm",
+  "/vendor/mediapipe/models/pose_landmarker_lite.task",
+  "/vendor/mediapipe/models/hand_landmarker.task",
+];
 
 self.addEventListener("install", (event) => {
-  event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.addAll(SHELL_FILES)));
+  event.waitUntil(
+    caches.open(CACHE_NAME).then(async (cache) => {
+      await cache.addAll(SHELL_FILES);
+      await Promise.allSettled(MODEL_FILES.map((file) => cache.add(file)));
+    }),
+  );
   self.skipWaiting();
 });
 

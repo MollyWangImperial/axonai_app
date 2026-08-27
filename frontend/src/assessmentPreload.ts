@@ -1,11 +1,13 @@
 import { Platform } from "react-native";
 
 const MEDIAPIPE_ASSETS = [
-  "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs",
-  "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm/vision_wasm_internal.js",
-  "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm/vision_wasm_internal.wasm",
-  "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task",
-  "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task",
+  "/vendor/mediapipe/vision_bundle.mjs",
+  "/vendor/mediapipe/wasm/vision_wasm_internal.js",
+  "/vendor/mediapipe/wasm/vision_wasm_internal.wasm",
+  "/vendor/mediapipe/wasm/vision_wasm_nosimd_internal.js",
+  "/vendor/mediapipe/wasm/vision_wasm_nosimd_internal.wasm",
+  "/vendor/mediapipe/models/pose_landmarker_lite.task",
+  "/vendor/mediapipe/models/hand_landmarker.task",
 ];
 
 let preloadPromise: Promise<void> | null = null;

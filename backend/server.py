@@ -1823,7 +1823,7 @@ POSE_RUNNER_HTML = r"""<!DOCTYPE html>
 </div>
 
 <script type="module">
-import { PoseLandmarker, HandLandmarker, FilesetResolver, DrawingUtils } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs";
+import { PoseLandmarker, HandLandmarker, FilesetResolver, DrawingUtils } from "/vendor/mediapipe/vision_bundle.mjs";
 
 const API_BASE = window.location.origin + "/api";
 const stage = document.getElementById("stage");
@@ -2448,7 +2448,7 @@ async function setupCamera(){
 async function getVisionFilesetResolver(){
   if(!visionFilesetResolver){
     visionFilesetResolver = await FilesetResolver.forVisionTasks(
-      "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm"
+      "/vendor/mediapipe/wasm"
     );
   }
   return visionFilesetResolver;
@@ -2457,7 +2457,7 @@ async function getVisionFilesetResolver(){
 async function setupPose(){
   const filesetResolver = await getVisionFilesetResolver();
   landmarker = await PoseLandmarker.createFromOptions(filesetResolver, {
-    baseOptions:{ modelAssetPath: "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task" },
+    baseOptions:{ modelAssetPath: "/vendor/mediapipe/models/pose_landmarker_lite.task" },
     runningMode: "VIDEO",
     numPoses: 1,
   });
@@ -2469,7 +2469,7 @@ async function getWalkingVideoValidator(){
     walkingVideoValidatorPromise = (async () => {
       const filesetResolver = await getVisionFilesetResolver();
       const validator = await PoseLandmarker.createFromOptions(filesetResolver, {
-        baseOptions:{ modelAssetPath:"https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task" },
+        baseOptions:{ modelAssetPath:"/vendor/mediapipe/models/pose_landmarker_lite.task" },
         runningMode:"VIDEO",
         numPoses:1,
       });
@@ -2495,7 +2495,7 @@ async function setupHand(){
   const filesetResolver = await getVisionFilesetResolver();
   try{
     handLandmarker = await HandLandmarker.createFromOptions(filesetResolver, {
-      baseOptions:{ modelAssetPath: "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task" },
+      baseOptions:{ modelAssetPath: "/vendor/mediapipe/models/hand_landmarker.task" },
       runningMode: "VIDEO",
       numHands: 2,
       minHandDetectionConfidence: 0.65,
@@ -5726,7 +5726,7 @@ REHAB_RUNNER_HTML_TEMPLATE = r"""<!DOCTYPE html>
 </div>
 
 <script type="module">
-import { PoseLandmarker, HandLandmarker, FilesetResolver, DrawingUtils } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs";
+import { PoseLandmarker, HandLandmarker, FilesetResolver, DrawingUtils } from "/vendor/mediapipe/vision_bundle.mjs";
 
 const API_BASE = window.location.origin + "/api";
 const CFG = __CFG_JSON__;
@@ -5989,9 +5989,9 @@ async function setupCamera(){
 }
 
 async function setupPose(){
-  const fr = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm");
+  const fr = await FilesetResolver.forVisionTasks("/vendor/mediapipe/wasm");
   landmarker = await PoseLandmarker.createFromOptions(fr,{
-    baseOptions:{modelAssetPath:"https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task"},
+    baseOptions:{modelAssetPath:"/vendor/mediapipe/models/pose_landmarker_lite.task"},
     runningMode:"VIDEO", numPoses:1
   });
   drawingUtils = new DrawingUtils(ctx);
