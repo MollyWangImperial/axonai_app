@@ -2052,6 +2052,7 @@ let handOpenScore = 0;                 // 0..1 — finger extension confidence
 let fistClosureScore = 0;              // 0..1 — mass finger flexion confidence
 let pinchScore = 0;                    // 0..1 — pinch confidence (1 = very close)
 let palmFacingScore = 0;               // 0..1 — palm plane faces camera rather than edge-on
+const PALM_FACING_THRESHOLD = 0.38;
 let fingerTotalFlexionMaxDeg = 0;
 let fingerAbductionMaxRatio = 0;
 let thumbIndexMinDistanceRatio = Infinity;
@@ -3449,6 +3450,20 @@ if(URL_PARAMS.get("test_mode") === "mouth_target"){
   };
 }
 
+if(URL_PARAMS.get("test_mode") === "palm_projection"){
+  window.__rehynPalmProjectionTest = {
+    threshold:PALM_FACING_THRESHOLD,
+    evaluate:(landmarks, frameCount=4) => {
+      const evidence = palmProjectionEvidence(landmarks);
+      let smoothed = 0;
+      for(let frame=0; frame<frameCount; frame += 1){
+        smoothed = smoothed * 0.55 + evidence.score * 0.45;
+      }
+      return {...evidence, smoothed, passes:smoothed > PALM_FACING_THRESHOLD};
+    },
+  };
+}
+
 if(URL_PARAMS.get("test_mode") === "hand_selection"){
   window.__rehynAffectedHandTest = {
     affectedSide:AFFECTED_SIDE,
@@ -3704,6 +3719,42 @@ function getEffectiveTargetXY(step){
 }
 
 // ---------- Hand metrics (from HandLandmarker) ----------
+function palmProjectionEvidence(h){
+  if(!h || h.length < 21) return {
+    score:0, planeFacing:0, projectedArea:0, palmSpread:0, depthFlatness:0,
+  };
+  const clamp01 = (value) => Math.max(0, Math.min(1, value));
+  const dist = (a,b) => Math.hypot(a.x-b.x, a.y-b.y);
+  const palmWidth = Math.max(0.01, dist(h[5], h[17]));
+  const palmHeight = Math.max(0.01, dist(h[0], h[9]));
+  const vIndex = {x:h[5].x-h[0].x, y:h[5].y-h[0].y, z:(h[5].z||0)-(h[0].z||0)};
+  const vPinky = {x:h[17].x-h[0].x, y:h[17].y-h[0].y, z:(h[17].z||0)-(h[0].z||0)};
+  const normal = {
+    x:vIndex.y*vPinky.z - vIndex.z*vPinky.y,
+    y:vIndex.z*vPinky.x - vIndex.x*vPinky.z,
+    z:vIndex.x*vPinky.y - vIndex.y*vPinky.x,
+  };
+  const normalMag = Math.max(0.0001, Math.hypot(normal.x, normal.y, normal.z));
+  const signedPlaneFacing = normal.z / normalMag;
+  // The sign flips with handedness and mirroring; its magnitude is the stable
+  // evidence that the palm plane is broadside rather than edge-on.
+  const planeFacing = clamp01((Math.abs(signedPlaneFacing) - 0.08) / 0.52);
+  const projectedAreaRatio = Math.abs(vIndex.x*vPinky.y - vIndex.y*vPinky.x)
+    / Math.max(0.0001, palmHeight * palmHeight);
+  const projectedArea = clamp01((projectedAreaRatio - 0.06) / 0.34);
+  const palmSpread = clamp01((palmWidth / palmHeight - 0.28) / 0.42);
+  const palmDepthTilt = Math.abs((h[5].z||0) - (h[17].z||0)) / palmWidth;
+  const depthFlatness = clamp01(1 - palmDepthTilt / 0.55);
+  return {
+    score:clamp01(planeFacing * 0.35 + projectedArea * 0.30 + palmSpread * 0.25 + depthFlatness * 0.10),
+    planeFacing,
+    projectedArea,
+    palmSpread,
+    depthFlatness,
+    signedPlaneFacing,
+  };
+}
+
 function computeHandMetrics(){
   // Hand landmarks indices (MediaPipe Hands): 0=wrist, 4=thumb_tip, 5=index_mcp,
   // 8=index_tip, 12=middle_tip, 16=ring_tip, 20=pinky_tip.
@@ -3731,23 +3782,8 @@ function computeHandMetrics(){
   const palmWidth = Math.max(0.01, dist(h[5], h[17])); // index_mcp <-> pinky_mcp
   const palmHeight = Math.max(0.01, dist(h[0], h[9])); // wrist <-> middle_mcp
   const handScale = Math.max(0.01, palmWidth, palmHeight * 0.9);
-  const vIndex = {x:h[5].x-h[0].x, y:h[5].y-h[0].y, z:(h[5].z||0)-(h[0].z||0)};
-  const vPinky = {x:h[17].x-h[0].x, y:h[17].y-h[0].y, z:(h[17].z||0)-(h[0].z||0)};
-  const normal = {
-    x: vIndex.y*vPinky.z - vIndex.z*vPinky.y,
-    y: vIndex.z*vPinky.x - vIndex.x*vPinky.z,
-    z: vIndex.x*vPinky.y - vIndex.y*vPinky.x,
-  };
-  const normalMag = Math.max(0.0001, Math.hypot(normal.x, normal.y, normal.z));
-  const signedPlaneFacing = normal.z / normalMag;
-  const expectedPalmSign = latestHandedness === "Right" ? 1 : (latestHandedness === "Left" ? -1 : 0);
-  const signedPalmTowardCamera = expectedPalmSign ? signedPlaneFacing * expectedPalmSign : signedPlaneFacing;
-  const planeFacesCamera = clamp01((signedPalmTowardCamera - 0.08) / 0.52);
-  const palmSpreadRatio = clamp01((palmWidth / palmHeight - 0.35) / 0.45);
-  const palmDepthTilt = Math.abs((h[5].z||0) - (h[17].z||0)) / palmWidth;
-  const depthFlatness = clamp01(1 - palmDepthTilt / 0.35);
-  const palmFacing = clamp01(planeFacesCamera * 0.65 + palmSpreadRatio * 0.25 + depthFlatness * 0.10);
-  palmFacingScore = palmFacingScore * 0.6 + palmFacing * 0.4;
+  const palmEvidence = palmProjectionEvidence(h);
+  palmFacingScore = palmFacingScore * 0.55 + palmEvidence.score * 0.45;
   const fingerSpread = (
     dist(h[0], h[8])  +  // wrist to index_tip
     dist(h[0], h[12]) +  // wrist to middle_tip
@@ -4165,14 +4201,14 @@ function nearMissCorrection(step, distance, radius, lm){
       guidance:"Keep your hand inside the circle with your palm and fingers clearly facing the camera, without the cup covering your whole hand.",
     };
   }
-  if(step.id === "H1-S1" && palmFacingScore <= 0.45){
+  if(step.id === "H1-S1" && palmFacingScore <= PALM_FACING_THRESHOLD){
     return {reason:"palm_not_facing", guidance:"Keep your hand in the circle and turn your palm toward the camera."};
   }
   if(step.id === "H2-S2" || (Array.isArray(step.measure) && step.measure.includes("closure_completeness")) || which === "HAND_CLOSED"){
     return {reason:"hand_not_closed", guidance:"Keep your hand in the center of the circle and gently close your fingers around the imaginary object."};
   }
   if(which === "HAND_OPEN"){
-    if(step.id === "H1-S2" && palmFacingScore <= 0.45){
+    if(step.id === "H1-S2" && palmFacingScore <= PALM_FACING_THRESHOLD){
       return {reason:"palm_not_facing", guidance:"Keep your hand in the circle, turn your palm toward the camera, and spread your fingers."};
     }
     return {reason:"hand_not_open", guidance:"Keep your hand in the center of the circle and spread your fingers as comfortably as you can."};
@@ -4439,7 +4475,7 @@ function checkTarget(landmarks){
     const R = effectiveRadius(step, null);
     const near = Math.hypot(point.x - target.x, point.y - target.y) < R;
     if(step.id === "H1-S1"){
-      return near && palmFacingScore > 0.45 && handOpenScore < 0.72;
+      return near && palmFacingScore > PALM_FACING_THRESHOLD && handOpenScore < 0.72;
     }
     if(step.id === "H2-S2"){
       if(!near) return false;
@@ -4461,7 +4497,7 @@ function checkTarget(landmarks){
       return near && fistClosureScore > 0.45;
     }
     if(which === "HAND_OPEN"){
-      const palmOk = step.id !== "H1-S2" || palmFacingScore > 0.45;
+      const palmOk = step.id !== "H1-S2" || palmFacingScore > PALM_FACING_THRESHOLD;
       const openThreshold = 0.45;
       return near && palmOk && handOpenScore > openThreshold;
     }

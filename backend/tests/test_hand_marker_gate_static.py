@@ -80,16 +80,19 @@ def test_advanced_marker_tasks_keep_seven_task_contract():
     assert 'rawCategory === "Right"' in html_source
     assert "function selectAffectedHandDetection" in html_source
     assert "sideLandmarks(latestPoseLandmarks, AFFECTED_SIDE).wrist" in html_source
-    assert "signedPalmTowardCamera" in html_source
+    assert "function palmProjectionEvidence(h)" in html_source
+    assert "Math.abs(signedPlaneFacing)" in html_source
+    assert "projectedAreaRatio" in html_source
     assert "const angleDeg = (a,b,c)" in html_source
     assert "const handScale = Math.max(0.01, palmWidth, palmHeight * 0.9)" in html_source
     assert "fingerStraightnessScore" in html_source
     assert "fingertipDistanceScore" in html_source
     assert "thumbIndexSpreadScore" in html_source
     assert 'step.id === "H1-S1"' in html_source
-    assert "palmFacingScore > 0.45" in html_source
+    assert "PALM_FACING_THRESHOLD" in html_source
+    assert "palmFacingScore > PALM_FACING_THRESHOLD" in html_source
     assert "handOpenScore < 0.72" in html_source
-    assert 'step.id !== "H1-S2" || palmFacingScore > 0.45' in html_source
+    assert 'step.id !== "H1-S2" || palmFacingScore > PALM_FACING_THRESHOLD' in html_source
     assert "const openThreshold = 0.45" in html_source
     assert "Palm + open" in html_source
     assert "voiceAudioCache" in html_source
