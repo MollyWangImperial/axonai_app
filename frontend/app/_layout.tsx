@@ -1,12 +1,12 @@
 import { Stack, useRouter, useSegments } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
 import { LogBox } from "react-native";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 
 import { useIconFonts } from "@/src/hooks/use-icon-fonts";
-import { getCachedUser, authedFetch } from "@/src/auth";
+import { getCachedUser, authedFetch, cachePatientOnboarding, onboardingCompleteKey } from "@/src/auth";
 import { preloadAssessmentMediaPipe } from "@/src/assessmentPreload";
 import { storage } from "@/src/utils/storage";
 
@@ -36,7 +36,7 @@ function AuthGate() {
       }
       // Patient role → ensure onboarding is complete before entering main app
       if (u.role !== "therapist") {
-        const localFlag = await storage.getItem("onboarding_complete_v1");
+        const localFlag = await storage.getItem(onboardingCompleteKey(u.id), "");
         const allowedDuringOnboarding = ["onboarding", "sign-in"];
         if (!localFlag && !allowedDuringOnboarding.includes(seg0)) {
           // double-check with backend (in case user signed in on a fresh device)
@@ -44,8 +44,7 @@ function AuthGate() {
             const r = await authedFetch("/api/users/onboarding");
             const j = await r.json();
             if (j.onboarding_complete) {
-              await storage.setItem("onboarding_complete_v1", "1");
-              if (j.profile?.preferred_name) await storage.setItem("preferred_name_v1", j.profile.preferred_name);
+              await cachePatientOnboarding(u.id, j.profile);
             } else {
               router.replace("/onboarding");
             }

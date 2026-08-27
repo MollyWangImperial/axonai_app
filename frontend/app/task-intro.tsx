@@ -1,17 +1,14 @@
 import { useEffect, useState } from "react";
-import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { ActivityIndicator, Alert, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 
-import { AssessmentPackageId, fetchTaskVideos, fetchTasks } from "@/src/api";
-import { authedFetch } from "@/src/auth";
+import { AssessmentPackageId, fetchTaskProgress, fetchTaskVideos, fetchTasks, resetTaskProgress } from "@/src/api";
+import { affectedSideKey, authedFetch, completedTasksKey, getUserId, savedTaskVideosKey } from "@/src/auth";
 import { colors, radius, spacing } from "@/src/theme";
 import { storage } from "@/src/utils/storage";
-
-const COMPLETED_TASKS_KEY = (packageId: AssessmentPackageId) => `assessment_completed_tasks_v1:${packageId}`;
-const SAVED_TASK_VIDEOS_KEY = (packageId: AssessmentPackageId) => `assessment_saved_task_videos_v1:${packageId}`;
 
 function parseCompletedTasks(raw: string): Record<string, boolean> {
   try {
@@ -37,6 +34,8 @@ export default function TaskIntro() {
   const isInitial = params.mode !== "followup";
   const packageId: AssessmentPackageId = "initial";
   const [completedTasks, setCompletedTasks] = useState<Record<string, boolean>>({});
+  const [taskIds, setTaskIds] = useState<string[]>([]);
+  const [userId, setUserId] = useState<string | null>(null);
   const [nextTaskId, setNextTaskId] = useState<string | null>(null);
   const [affectedSide, setAffectedSide] = useState<"left" | "right">("right");
   const [savedVideoCount, setSavedVideoCount] = useState(0);
@@ -47,19 +46,33 @@ export default function TaskIntro() {
     (async () => {
       try {
         setLoading(true);
-        const [taskResponse, rawCompleted, rawSavedVideos, profileResponse, savedVideos] = await Promise.all([
+        const uid = await getUserId();
+        if (!uid) throw new Error("Please sign in again.");
+        setUserId(uid);
+        const [taskResponse, rawCompleted, rawSavedVideos, profileResponse, savedVideos, serverProgress] = await Promise.all([
           fetchTasks(packageId),
-          storage.getItem(COMPLETED_TASKS_KEY(packageId), ""),
-          storage.getItem(SAVED_TASK_VIDEOS_KEY(packageId), ""),
+          storage.getItem(completedTasksKey(uid, packageId), ""),
+          storage.getItem(savedTaskVideosKey(uid, packageId), ""),
           authedFetch("/api/users/onboarding").then((r) => r.json()).catch(() => null),
           fetchTaskVideos(packageId).catch(() => []),
+          fetchTaskProgress(packageId).catch(() => []),
         ]);
-        const completed = parseCompletedTasks(rawCompleted || "");
+        const deviceCompleted = parseCompletedTasks(rawCompleted || "");
         const deviceSavedVideos = parseCompletedTasks(rawSavedVideos || "");
-        const nextTask = taskResponse.tasks.find((task) => !completed[task.id]) || taskResponse.tasks[0];
-        const storedSide = await storage.getItem("affected_side_v1", "");
+        const serverCompleted = Object.fromEntries(
+          serverProgress
+            .filter(Boolean)
+            .map((taskId) => [taskId, true]),
+        );
+        const completed = { ...deviceCompleted, ...serverCompleted };
+        if (Object.keys(serverCompleted).length > 0) {
+          await storage.setItem(completedTasksKey(uid, packageId), JSON.stringify(completed));
+        }
+        const nextTask = taskResponse.tasks.find((task) => !completed[task.id]);
+        const storedSide = await storage.getItem(affectedSideKey(uid), "");
         const profileSide = profileResponse?.profile?.side_affected;
         const resolvedSide = storedSide || profileSide;
+        setTaskIds(taskResponse.tasks.reduce<string[]>((ids, task) => [...ids, task.id], []));
         setAffectedSide(resolvedSide === "left" ? "left" : "right");
         setCompletedTasks(completed);
         setNextTaskId(nextTask?.id || null);
@@ -73,10 +86,55 @@ export default function TaskIntro() {
   }, []);
 
   const onBegin = () => {
-    if (!nextTaskId) return;
+    if (!nextTaskId) {
+      router.replace("/");
+      return;
+    }
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    router.push({ pathname: "/assessment", params: { package: packageId, start_task: nextTaskId, affected_side: affectedSide } });
+    router.push({
+      pathname: "/assessment",
+      params: {
+        package: packageId,
+        start_task: nextTaskId,
+        completed_tasks: Object.keys(completedTasks).filter((taskId) => completedTasks[taskId]).join(","),
+        affected_side: affectedSide,
+      },
+    });
   };
+
+  const confirmStartOver = () => {
+    if (!userId || taskIds.length === 0) return;
+    Alert.alert(
+      "Start the assessment again?",
+      "Your saved results will remain in your history, but all seven collection tasks will be marked as incomplete.",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Start over",
+          style: "destructive",
+          onPress: () => {
+            void (async () => {
+              setLoading(true);
+              try {
+                await resetTaskProgress(packageId);
+                await storage.removeItem(completedTasksKey(userId, packageId));
+                await storage.removeItem(savedTaskVideosKey(userId, packageId));
+                setCompletedTasks({});
+                setNextTaskId(taskIds[0] || null);
+              } catch (e: any) {
+                setError(String(e));
+              } finally {
+                setLoading(false);
+              }
+            })();
+          },
+        },
+      ],
+    );
+  };
+
+  const completedCount = taskIds.filter((taskId) => completedTasks[taskId]).length;
+  const assessmentComplete = taskIds.length > 0 && completedCount === taskIds.length;
 
   return (
     <View style={styles.container}>
@@ -117,10 +175,12 @@ export default function TaskIntro() {
             </View>
             <View style={styles.sessionReadyCopy}>
               <Text style={styles.sessionReadyTitle}>
-                {Object.keys(completedTasks).length > 0 ? "Continue where you left off" : "Your first guided task is ready"}
+                {assessmentComplete ? "Your Initial Assessment is complete" : completedCount > 0 ? "Continue where you left off" : "Your first guided task is ready"}
               </Text>
               <Text style={styles.sessionReadyText}>
-                Alira will launch your next guided task automatically and continue through the assessment in order.
+                {assessmentComplete
+                  ? "You do not need to repeat these tasks. Your saved results are ready from the Home screen."
+                  : `Alira will launch your next guided task automatically and continue through the remaining assessment. ${completedCount} of ${taskIds.length} tasks are already complete.`}
               </Text>
               {savedVideoCount > 0 && (
                 <View style={styles.savedVideoRow} testID="saved-task-video-count">
@@ -136,9 +196,15 @@ export default function TaskIntro() {
       </ScrollView>
 
       <View style={[styles.cta, { paddingBottom: Math.max(insets.bottom, spacing.md) }]}>
-        <Pressable testID="task-intro-begin" disabled={loading || !nextTaskId} onPress={onBegin} style={[styles.ctaBtn, (loading || !nextTaskId) && { opacity: 0.4 }]}>
-          <Ionicons name="videocam" size={21} color={colors.onBrandPrimary} />
-          <Text style={styles.ctaText}>{Object.keys(completedTasks).length > 0 ? "Continue Assessment" : "Begin Initial Assessment"}</Text>
+        {completedCount > 0 && (
+          <Pressable testID="task-intro-start-over" disabled={loading} onPress={confirmStartOver} style={styles.startOverBtn}>
+            <Ionicons name="refresh" size={18} color={colors.brandPrimary} />
+            <Text style={styles.startOverText}>Start over</Text>
+          </Pressable>
+        )}
+        <Pressable testID="task-intro-begin" disabled={loading} onPress={onBegin} style={[styles.ctaBtn, loading && { opacity: 0.4 }]}>
+          <Ionicons name={assessmentComplete ? "home" : "videocam"} size={21} color={colors.onBrandPrimary} />
+          <Text style={styles.ctaText}>{assessmentComplete ? "Return Home" : completedCount > 0 ? "Continue Assessment" : "Begin Initial Assessment"}</Text>
         </Pressable>
       </View>
     </View>
@@ -150,7 +216,7 @@ const styles = StyleSheet.create({
   header: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: spacing.md, paddingBottom: spacing.sm, borderBottomWidth: 1, borderBottomColor: colors.divider },
   backBtn: { width: 40, height: 40, alignItems: "center", justifyContent: "center" },
   headerTitle: { fontSize: 17, fontWeight: "800", color: colors.onSurface },
-  scroll: { width: "100%", maxWidth: 620, alignSelf: "center", padding: spacing.lg, paddingBottom: 130 },
+  scroll: { width: "100%", maxWidth: 620, alignSelf: "center", padding: spacing.lg, paddingBottom: 180 },
   introIcon: { width: 56, height: 56, borderRadius: 28, alignItems: "center", justifyContent: "center", backgroundColor: colors.brandTertiary, marginBottom: spacing.md },
   title: { fontSize: 28, lineHeight: 34, fontWeight: "800", color: colors.onSurface },
   sub: { fontSize: 15, lineHeight: 22, color: colors.onSurfaceSecondary, marginTop: spacing.sm, marginBottom: spacing.lg },
@@ -166,7 +232,9 @@ const styles = StyleSheet.create({
   savedVideoRow: { flexDirection: "row", alignItems: "center", gap: 6, marginTop: spacing.sm },
   savedVideoText: { flex: 1, color: colors.brandPrimary, fontSize: 12, lineHeight: 17, fontWeight: "700" },
   errorText: { color: colors.error, fontSize: 14, lineHeight: 20, marginVertical: spacing.md },
-  cta: { position: "absolute", left: 0, right: 0, bottom: 0, padding: spacing.md, backgroundColor: colors.surface, borderTopWidth: 1, borderTopColor: colors.divider },
+  cta: { position: "absolute", left: 0, right: 0, bottom: 0, padding: spacing.md, backgroundColor: colors.surface, borderTopWidth: 1, borderTopColor: colors.divider, gap: spacing.sm },
+  startOverBtn: { width: "100%", maxWidth: 620, alignSelf: "center", minHeight: 42, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: spacing.sm },
+  startOverText: { color: colors.brandPrimary, fontSize: 15, fontWeight: "800" },
   ctaBtn: { width: "100%", maxWidth: 620, alignSelf: "center", minHeight: 56, borderRadius: radius.md, backgroundColor: colors.brandPrimary, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: spacing.sm },
   ctaText: { color: colors.onBrandPrimary, fontSize: 17, fontWeight: "800" },
 });

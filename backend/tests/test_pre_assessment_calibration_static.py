@@ -53,7 +53,7 @@ def test_calibration_explains_why_a_visible_hand_has_not_passed():
 
 def test_calibration_runs_before_task_one_and_is_not_recorded_as_task_motion():
     source = server.POSE_RUNNER_HTML
-    start_handler = source[source.index('startBtn.addEventListener("click"') : source.index('markerConfirmBtn.addEventListener')]
+    start_handler = source[source.index("async function beginAssessmentSetup()") : source.index('markerConfirmBtn.addEventListener')]
     assert "calibratingAssessment = shouldRunSeatedCalibration();" in start_handler
     assert start_handler.index("requestAnimationFrame(loop);") < start_handler.index("await playVoice(CALIBRATION_INSTRUCTION);")
     assert "await startStep();" in start_handler

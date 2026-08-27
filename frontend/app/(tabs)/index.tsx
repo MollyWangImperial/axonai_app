@@ -6,7 +6,7 @@ import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 
 import { Assessment, fetchHistory } from "@/src/api";
-import { getCachedUser } from "@/src/auth";
+import { getCachedUser, preferredNameKey } from "@/src/auth";
 import { JournalEntry, loadJournalEntries } from "@/src/journal";
 import { colors, radius, spacing } from "@/src/theme";
 import { storage } from "@/src/utils/storage";
@@ -21,11 +21,11 @@ export default function HomeScreen() {
 
   const load = useCallback(async () => {
     setLoading(true);
-    const [assessments, journal, preferredName, user] = await Promise.all([
+    const user = await getCachedUser();
+    const [assessments, journal, preferredName] = await Promise.all([
       fetchHistory().catch(() => []),
       loadJournalEntries(),
-      storage.getItem("preferred_name_v1", ""),
-      getCachedUser(),
+      user?.id ? storage.getItem(preferredNameKey(user.id), "") : Promise.resolve(""),
     ]);
     setHistory(assessments);
     setEntries(journal);

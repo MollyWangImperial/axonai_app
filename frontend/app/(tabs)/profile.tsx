@@ -16,7 +16,7 @@ import { useFocusEffect, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 
-import { authedFetch, getCachedUser, signOut } from "@/src/auth";
+import { authedFetch, getCachedUser, preferredNameKey, signOut } from "@/src/auth";
 import { colors, radius, spacing } from "@/src/theme";
 import { storage } from "@/src/utils/storage";
 
@@ -101,7 +101,8 @@ export default function ProfileScreen() {
         const result = await response.json();
         setProfile(result.profile || payload);
         setName(value);
-        await storage.setItem("preferred_name_v1", value);
+        const user = await getCachedUser();
+        if (user?.id) await storage.setItem(preferredNameKey(user.id), value);
       }
       setEditMode(null);
     } catch {

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { View, Text, StyleSheet, Pressable, TextInput, ActivityIndicator, KeyboardAvoidingView, Platform, Linking } from "react-native";
+import { View, Text, StyleSheet, Pressable, TextInput, ActivityIndicator, KeyboardAvoidingView, Platform } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
@@ -7,7 +7,7 @@ import { useRouter } from "expo-router";
 import * as Haptics from "expo-haptics";
 import * as WebBrowser from "expo-web-browser";
 import { colors, spacing, radius } from "@/src/theme";
-import { signIn, authedFetch, USER_KEY, USER_OBJ } from "@/src/auth";
+import { signIn, authedFetch, cachePatientOnboarding, USER_KEY, USER_OBJ } from "@/src/auth";
 import { storage } from "@/src/utils/storage";
 import { API_BASE as BASE } from "@/src/config";
 
@@ -60,8 +60,7 @@ export default function SignInScreen() {
           const or = await authedFetch("/api/users/onboarding");
           const oj = await or.json();
           if (oj.onboarding_complete) {
-            await storage.setItem("onboarding_complete_v1", "1");
-            if (oj.profile?.preferred_name) await storage.setItem("preferred_name_v1", oj.profile.preferred_name);
+            await cachePatientOnboarding(u.id, oj.profile);
             router.replace("/");
           } else router.replace("/onboarding");
         } catch { router.replace("/onboarding"); }
@@ -125,8 +124,7 @@ export default function SignInScreen() {
         const r = await authedFetch("/api/users/onboarding");
         const j = await r.json();
         if (j.onboarding_complete) {
-          await storage.setItem("onboarding_complete_v1", "1");
-          if (j.profile?.preferred_name) await storage.setItem("preferred_name_v1", j.profile.preferred_name);
+          await cachePatientOnboarding(u.id, j.profile);
           router.replace("/");
         } else {
           router.replace("/onboarding");
@@ -152,11 +150,11 @@ export default function SignInScreen() {
       <View style={styles.tabs}>
         <Pressable onPress={() => setRole("patient")} style={[styles.tab, role === "patient" && styles.tabActive]} testID="role-patient">
           <Ionicons name="person" size={18} color={role === "patient" ? colors.brandPrimary : "#fff"} />
-          <Text style={[styles.tabText, role === "patient" && { color: colors.brandPrimary }]}>I'm a patient</Text>
+          <Text style={[styles.tabText, role === "patient" && { color: colors.brandPrimary }]}>{"I'm a patient"}</Text>
         </Pressable>
         <Pressable onPress={() => setRole("therapist")} style={[styles.tab, role === "therapist" && styles.tabActive]} testID="role-therapist">
           <Ionicons name="medkit" size={18} color={role === "therapist" ? colors.brandPrimary : "#fff"} />
-          <Text style={[styles.tabText, role === "therapist" && { color: colors.brandPrimary }]}>I'm a therapist</Text>
+          <Text style={[styles.tabText, role === "therapist" && { color: colors.brandPrimary }]}>{"I'm a therapist"}</Text>
         </Pressable>
       </View>
 

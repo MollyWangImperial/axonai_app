@@ -6,6 +6,20 @@ export type Me = { id: string; email: string; name: string; role: "patient" | "t
 export const USER_KEY = "active_user_id_v1";
 export const USER_OBJ = "active_user_obj_v1";
 
+export const onboardingCompleteKey = (userId: string) => `onboarding_complete_v2:${userId}`;
+export const preferredNameKey = (userId: string) => `preferred_name_v2:${userId}`;
+export const affectedSideKey = (userId: string) => `affected_side_v2:${userId}`;
+export const completedTasksKey = (userId: string, packageId: string) => `assessment_completed_tasks_v2:${userId}:${packageId}`;
+export const savedTaskVideosKey = (userId: string, packageId: string) => `assessment_saved_task_videos_v2:${userId}:${packageId}`;
+
+export async function cachePatientOnboarding(userId: string, profile: Record<string, any> | null = null) {
+  await storage.setItem(onboardingCompleteKey(userId), "1");
+  if (profile?.preferred_name) await storage.setItem(preferredNameKey(userId), String(profile.preferred_name));
+  if (profile?.side_affected === "left" || profile?.side_affected === "right") {
+    await storage.setItem(affectedSideKey(userId), profile.side_affected);
+  }
+}
+
 export async function getUserId(): Promise<string | null> {
   const userId = await storage.getItem(USER_KEY, "");
   return userId || null;
@@ -32,6 +46,7 @@ export async function signIn(email: string, name: string, role: "patient" | "the
 export async function signOut() {
   await storage.removeItem(USER_KEY);
   await storage.removeItem(USER_OBJ);
+  // Retain account-scoped onboarding and assessment progress for the next sign-in.
   await storage.removeItem("onboarding_complete_v1");
   await storage.removeItem("preferred_name_v1");
 }

@@ -6,11 +6,8 @@ import { useLocalSearchParams, useRouter } from "expo-router";
 import * as Haptics from "expo-haptics";
 import { colors, spacing, radius } from "@/src/theme";
 import { AssessmentPackageId, POSE_RUNNER_URL } from "@/src/api";
-import { getUserId } from "@/src/auth";
+import { completedTasksKey, getUserId, savedTaskVideosKey } from "@/src/auth";
 import { storage } from "@/src/utils/storage";
-
-const COMPLETED_TASKS_KEY = (packageId: AssessmentPackageId) => `assessment_completed_tasks_v1:${packageId}`;
-const SAVED_TASK_VIDEOS_KEY = (packageId: AssessmentPackageId) => `assessment_saved_task_videos_v1:${packageId}`;
 
 function parseCompletedTasks(raw: string | null): Record<string, boolean> {
   if (!raw) return {};
@@ -22,15 +19,15 @@ function parseCompletedTasks(raw: string | null): Record<string, boolean> {
   }
 }
 
-async function markTaskComplete(packageId: AssessmentPackageId, taskId: string) {
-  const key = COMPLETED_TASKS_KEY(packageId);
+async function markTaskComplete(userId: string, packageId: AssessmentPackageId, taskId: string) {
+  const key = completedTasksKey(userId, packageId);
   const completed = parseCompletedTasks(await storage.getItem(key, ""));
   completed[taskId] = true;
   await storage.setItem(key, JSON.stringify(completed));
 }
 
-async function markTaskVideoSaved(packageId: AssessmentPackageId, taskId: string, cloudSaved: boolean) {
-  const key = SAVED_TASK_VIDEOS_KEY(packageId);
+async function markTaskVideoSaved(userId: string, packageId: AssessmentPackageId, taskId: string, cloudSaved: boolean) {
+  const key = savedTaskVideosKey(userId, packageId);
   const current = parseCompletedTasks(await storage.getItem(key, ""));
   current[taskId] = cloudSaved;
   await storage.setItem(key, JSON.stringify(current));
@@ -38,11 +35,13 @@ async function markTaskVideoSaved(packageId: AssessmentPackageId, taskId: string
 
 export default function AssessmentScreen() {
   const router = useRouter();
-  const params = useLocalSearchParams<{ package?: string; start_task?: string; affected_side?: string }>();
+  const params = useLocalSearchParams<{ package?: string; start_task?: string; completed_tasks?: string; affected_side?: string }>();
   const packageParam = params["package"];
   const startTaskParam = params["start_task"];
   const affectedSideParam = params["affected_side"];
+  const completedTasksParam = params["completed_tasks"];
   const webRef = useRef<WebView>(null);
+  const userIdRef = useRef<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [runnerUri, setRunnerUri] = useState<string | null>(null);
@@ -50,6 +49,7 @@ export default function AssessmentScreen() {
   useEffect(() => {
     (async () => {
       const uid = await getUserId();
+      userIdRef.current = uid;
       const selectedPackage = (typeof packageParam === "string" ? packageParam : "upper_limb") as AssessmentPackageId;
       const selectedStartTask = typeof startTaskParam === "string" ? startTaskParam : "";
       const query = new URLSearchParams();
@@ -57,9 +57,10 @@ export default function AssessmentScreen() {
       query.set("package", selectedPackage);
       query.set("affected_side", affectedSideParam === "left" ? "left" : "right");
       if (selectedStartTask) query.set("start_task", selectedStartTask);
+      if (typeof completedTasksParam === "string" && completedTasksParam) query.set("completed_tasks", completedTasksParam);
       setRunnerUri(`${POSE_RUNNER_URL}?${query.toString()}`);
     })();
-  }, [packageParam, startTaskParam, affectedSideParam]);
+  }, [packageParam, startTaskParam, completedTasksParam, affectedSideParam]);
 
   const onMessage = (e: WebViewMessageEvent) => {
     try {
@@ -70,17 +71,22 @@ export default function AssessmentScreen() {
         Haptics.selectionAsync();
       } else if (msg.type === "task_complete") {
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-        if (msg.task_id) {
+        if (msg.task_id && userIdRef.current) {
           const packageId = (msg.package_id || packageParam || "upper_limb") as AssessmentPackageId;
-          void markTaskComplete(packageId, String(msg.task_id));
+          void markTaskComplete(userIdRef.current, packageId, String(msg.task_id));
         }
       } else if (msg.type === "task_video_saved") {
-        if (msg.task_id) {
+        if (msg.task_id && userIdRef.current) {
           const packageId = (msg.package_id || packageParam || "upper_limb") as AssessmentPackageId;
-          void markTaskVideoSaved(packageId, String(msg.task_id), Boolean(msg.cloud_saved));
+          void markTaskVideoSaved(userIdRef.current, packageId, String(msg.task_id), Boolean(msg.cloud_saved));
         }
       } else if (msg.type === "camera_error") {
-        setError("Camera unavailable. Please grant camera permission in settings and reload.");
+        const detail = typeof msg.message === "string" ? msg.message : "";
+        setError(detail.includes("secure HTTPS")
+          ? "Camera setup requires the secure assessment connection. Please reopen the latest Expo QR code."
+          : "Camera unavailable. Please grant camera permission in settings and reopen the assessment.");
+      } else if (msg.type === "model_setup_error") {
+        setError("The movement model could not finish loading. Check the connection and try again.");
       } else if (msg.type === "exit") {
         router.back();
       } else if (msg.type === "assessment_complete") {

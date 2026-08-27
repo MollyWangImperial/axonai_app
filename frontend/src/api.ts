@@ -326,6 +326,18 @@ export async function fetchTaskVideos(packageId: AssessmentPackageId = "initial"
   return Array.isArray(data?.videos) ? data.videos : [];
 }
 
+export async function fetchTaskProgress(packageId: AssessmentPackageId = "initial"): Promise<string[]> {
+  const res = await authedFetch(`/api/assessment/task-progress?package=${encodeURIComponent(packageId)}`);
+  if (!res.ok) return [];
+  const data = await res.json();
+  return Array.isArray(data?.completed_task_ids) ? data.completed_task_ids.map(String) : [];
+}
+
+export async function resetTaskProgress(packageId: AssessmentPackageId = "initial"): Promise<void> {
+  const res = await authedFetch(`/api/assessment/task-progress?package=${encodeURIComponent(packageId)}`, { method: "DELETE" });
+  if (!res.ok) throw new Error(`Could not reset task progress (${res.status})`);
+}
+
 export async function fetchAssessment(id: string): Promise<Assessment> {
   const res = await fetch(`${BASE}/api/assessment/${id}`);
   return res.json();

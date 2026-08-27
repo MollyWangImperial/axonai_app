@@ -5,8 +5,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import * as Haptics from "expo-haptics";
 import { colors, spacing, radius } from "@/src/theme";
-import { authedFetch, getCachedUser, signIn } from "@/src/auth";
-import { storage } from "@/src/utils/storage";
+import { authedFetch, cachePatientOnboarding, getCachedUser, signIn } from "@/src/auth";
 
 type Step = {
   key: string;
@@ -152,13 +151,8 @@ export default function OnboardingScreen() {
 
         // These caches improve startup speed, but the saved server profile remains
         // authoritative if browser or device storage is unavailable.
-        const cacheWrites: Promise<boolean>[] = [];
-        if (payload.preferred_name) cacheWrites.push(storage.setItem("preferred_name_v1", payload.preferred_name));
-        if (payload.side_affected === "left" || payload.side_affected === "right") {
-          cacheWrites.push(storage.setItem("affected_side_v1", payload.side_affected));
-        }
-        cacheWrites.push(storage.setItem("onboarding_complete_v1", "1"));
-        await Promise.all(cacheWrites);
+        const savedUser = await getCachedUser();
+        if (savedUser?.id) await cachePatientOnboarding(savedUser.id, payload);
 
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
         router.replace("/");

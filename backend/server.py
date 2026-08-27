@@ -14,6 +14,9 @@ from pydantic import BaseModel, Field
 from typing import List, Dict, Any, Optional
 import uuid
 import re
+import asyncio
+import httpx
+import json
 from datetime import datetime, timezone
 
 try:
@@ -86,10 +89,29 @@ db = client[os.environ["DB_NAME"]]
 task_video_bucket = AsyncIOMotorGridFSBucket(db, bucket_name="task_videos")
 TASK_VIDEO_MAX_BYTES = 35 * 1024 * 1024
 TASK_VIDEO_FALLBACK_DIR = ROOT_DIR / ".task_videos"
+LOCAL_STATE_DIR = ROOT_DIR / ".local_state"
+LOCAL_USERS_FILE = LOCAL_STATE_DIR / "users.json"
+LOCAL_TASK_PROGRESS_FILE = LOCAL_STATE_DIR / "task_progress.json"
+
+
+def _load_local_dict(path: Path) -> Dict[str, Dict[str, Any]]:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return {}
+
+
+def _persist_local_dict(path: Path, data: Dict[str, Dict[str, Any]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(json.dumps(data, ensure_ascii=True, indent=2), encoding="utf-8")
+    temporary.replace(path)
 
 # Local development fallback: keeps Expo phone testing usable when Docker/Mongo
 # is not running. Mongo remains the source of truth whenever it is reachable.
-LOCAL_USERS: Dict[str, Dict[str, Any]] = {}
+LOCAL_USERS: Dict[str, Dict[str, Any]] = _load_local_dict(LOCAL_USERS_FILE)
+LOCAL_TASK_PROGRESS: Dict[str, Dict[str, Any]] = _load_local_dict(LOCAL_TASK_PROGRESS_FILE)
 LOCAL_ASSESSMENTS: List[Dict[str, Any]] = []
 
 # OpenAI TTS: prefer direct OPENAI_API_KEY for local/dev, keep Emergent key as fallback.
@@ -98,6 +120,10 @@ EMERGENT_LLM_KEY = os.environ.get("EMERGENT_LLM_KEY", "").strip()
 TTS_VOICE = os.environ.get("TTS_VOICE", "nova")  # warm/encouraging default
 TTS_MODEL = os.environ.get("TTS_MODEL", "tts-1")
 ANALYSIS_WORKER_TOKEN = os.environ.get("ANALYSIS_WORKER_TOKEN", "").strip()
+LOCAL_GPU_WORKER_URL = os.environ.get("LOCAL_GPU_WORKER_URL", "").strip().rstrip("/")
+LOCAL_BACKEND_CALLBACK_URL = os.environ.get(
+    "LOCAL_BACKEND_CALLBACK_URL", "http://127.0.0.1:8001/api"
+).strip().rstrip("/")
 openai_tts_client = OpenAI(api_key=OPENAI_API_KEY) if (OpenAI and OPENAI_API_KEY) else None
 tts_client = OpenAITextToSpeech(api_key=EMERGENT_LLM_KEY) if (OpenAITextToSpeech and EMERGENT_LLM_KEY) else None
 
@@ -155,6 +181,20 @@ class AssessmentSubmit(BaseModel):
 class ModelResultSubmit(BaseModel):
     status: str
     per_task: List[Dict[str, Any]]
+
+
+class GPUStageResultSubmit(BaseModel):
+    status: str
+    device: str = ""
+    gpu_name: str = ""
+    torch_version: str = ""
+    cuda_runtime: Optional[str] = None
+    model_version: str = ""
+    stages: List[str] = Field(default_factory=list)
+    tasks: Dict[str, Any] = Field(default_factory=dict)
+    reporting_boundary: str = ""
+    error: Optional[str] = None
+    traceback: Optional[str] = None
 
 
 class FunctionalIssue(BaseModel):
@@ -1227,6 +1267,116 @@ async def list_task_videos(request: Request, package: str = "initial"):
     return {"videos": records}
 
 
+def _task_progress_key(user_id: str, package_id: str, task_id: str) -> str:
+    return f"{user_id}:{package_id}:{task_id}"
+
+
+def _valid_package_task_ids(package_id: str) -> List[str]:
+    package = ASSESSMENT_PACKAGES.get(package_id)
+    if not package:
+        raise HTTPException(status_code=404, detail="Assessment package not found")
+    return [str(task.get("id") or "") for task in package.get("tasks") or []]
+
+
+@api_router.post("/assessment/task-progress")
+async def save_task_progress(request: Request, package_id: str, task_id: str):
+    user = await _task_video_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Sign in required")
+    safe_package = _safe_video_token(package_id, "assessment")
+    valid_task_ids = _valid_package_task_ids(safe_package)
+    if task_id not in valid_task_ids:
+        raise HTTPException(status_code=422, detail="Task does not belong to this assessment package")
+    record = {
+        "user_id": user["id"],
+        "package_id": safe_package,
+        "task_id": task_id,
+        "completed_at": datetime.now(timezone.utc).isoformat(),
+    }
+    try:
+        await db.assessment_task_progress.delete_one(
+            {"user_id": user["id"], "package_id": safe_package, "task_id": "__reset__"}
+        )
+        await db.assessment_task_progress.update_one(
+            {"user_id": user["id"], "package_id": safe_package, "task_id": task_id},
+            {"$set": record},
+            upsert=True,
+        )
+    except Exception as exc:
+        logger.warning(f"Mongo unavailable for task progress; using local fallback: {str(exc)[:120]}")
+        LOCAL_TASK_PROGRESS.pop(_task_progress_key(user["id"], safe_package, "__reset__"), None)
+        LOCAL_TASK_PROGRESS[_task_progress_key(user["id"], safe_package, task_id)] = record
+        _persist_local_dict(LOCAL_TASK_PROGRESS_FILE, LOCAL_TASK_PROGRESS)
+    return {"ok": True, **record}
+
+
+@api_router.get("/assessment/task-progress")
+async def get_task_progress(request: Request, package: str = "initial"):
+    user = await _task_video_user(request)
+    if not user:
+        return {"completed_task_ids": []}
+    safe_package = _safe_video_token(package, "assessment")
+    valid_task_ids = _valid_package_task_ids(safe_package)
+    try:
+        docs = await db.assessment_task_progress.find(
+            {"user_id": user["id"], "package_id": safe_package},
+            {"_id": 0, "task_id": 1},
+        ).to_list(200)
+        reset_recorded = any(str(item.get("task_id") or "") == "__reset__" for item in docs)
+        completed = {str(item.get("task_id") or "") for item in docs}
+    except Exception as exc:
+        logger.warning(f"Mongo unavailable for task progress lookup; using local fallback: {str(exc)[:120]}")
+        reset_recorded = any(
+            item.get("user_id") == user["id"]
+            and item.get("package_id") == safe_package
+            and item.get("task_id") == "__reset__"
+            for item in LOCAL_TASK_PROGRESS.values()
+        )
+        completed = {
+            str(item.get("task_id") or "")
+            for item in LOCAL_TASK_PROGRESS.values()
+            if item.get("user_id") == user["id"] and item.get("package_id") == safe_package
+        }
+    if not completed.intersection(valid_task_ids) and not reset_recorded:
+        # One-time compatibility for task videos saved before explicit progress records existed.
+        completed.update((await _latest_task_videos(user["id"], safe_package, valid_task_ids)).keys())
+    return {"completed_task_ids": [task_id for task_id in valid_task_ids if task_id in completed]}
+
+
+@api_router.delete("/assessment/task-progress")
+async def reset_task_progress(request: Request, package: str = "initial"):
+    user = await _task_video_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Sign in required")
+    safe_package = _safe_video_token(package, "assessment")
+    _valid_package_task_ids(safe_package)
+    try:
+        await db.assessment_task_progress.delete_many({"user_id": user["id"], "package_id": safe_package})
+        await db.assessment_task_progress.insert_one({
+            "user_id": user["id"],
+            "package_id": safe_package,
+            "task_id": "__reset__",
+            "completed_at": datetime.now(timezone.utc).isoformat(),
+        })
+    except Exception as exc:
+        logger.warning(f"Mongo unavailable for task progress reset; using local fallback: {str(exc)[:120]}")
+        remove_keys = [
+            key for key, item in LOCAL_TASK_PROGRESS.items()
+            if item.get("user_id") == user["id"] and item.get("package_id") == safe_package
+        ]
+        for key in remove_keys:
+            LOCAL_TASK_PROGRESS.pop(key, None)
+        reset_record = {
+            "user_id": user["id"],
+            "package_id": safe_package,
+            "task_id": "__reset__",
+            "completed_at": datetime.now(timezone.utc).isoformat(),
+        }
+        LOCAL_TASK_PROGRESS[_task_progress_key(user["id"], safe_package, "__reset__")] = reset_record
+        _persist_local_dict(LOCAL_TASK_PROGRESS_FILE, LOCAL_TASK_PROGRESS)
+    return {"ok": True, "completed_task_ids": []}
+
+
 @api_router.get("/assessment/task-videos/file/{video_id}")
 async def get_task_video(video_id: str, request: Request, uid: str = ""):
     user = await _task_video_user(request, uid)
@@ -1376,6 +1526,10 @@ async def submit_assessment(payload: AssessmentSubmit, request: Request):
         task_ids,
     )
     model_analysis = build_model_analysis_manifest(assessment_id, task_ids, video_records)
+    model_analysis["gpu_stage"] = {
+        "status": "queued" if LOCAL_GPU_WORKER_URL else "not_configured",
+        "device": "cuda:0" if LOCAL_GPU_WORKER_URL else None,
+    }
     expected_task_count = len(ASSESSMENT_PACKAGES.get(payload.assessment_package, {}).get("tasks", []))
     collection_summary = patient_collection_summary(payload.task_results, expected_task_count)
     if payload.musculoskeletal_outputs:
@@ -1453,6 +1607,8 @@ async def submit_assessment(payload: AssessmentSubmit, request: Request):
     except Exception as e:
         logger.warning(f"Mongo unavailable for assessment insert; using local fallback: {str(e)[:120]}")
         LOCAL_ASSESSMENTS.append(doc.copy())
+    if LOCAL_GPU_WORKER_URL and ANALYSIS_WORKER_TOKEN and payload.motion_data:
+        asyncio.create_task(_queue_local_gpu_stage(assessment_id, payload.motion_data))
     return assessment
 
 
@@ -1516,12 +1672,112 @@ async def get_patient_assessment_summary(assessment_id: str):
     }
 
 
+@api_router.get("/assessment/{assessment_id}/analysis-status")
+async def get_assessment_analysis_status(assessment_id: str):
+    """Return processing state without exposing internal model predictions."""
+    try:
+        doc = await db.assessments.find_one({"id": assessment_id}, {"_id": 0})
+    except Exception as exc:
+        logger.warning(f"Mongo unavailable for analysis status; local fallback: {str(exc)[:120]}")
+        doc = next((item for item in LOCAL_ASSESSMENTS if item.get("id") == assessment_id), None)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Assessment not found")
+    model_analysis = doc.get("model_analysis") or {}
+    gpu_stage = model_analysis.get("gpu_stage") or {}
+    task_states = {
+        task_id: str(task.get("status") or "unknown")
+        for task_id, task in (gpu_stage.get("tasks") or {}).items()
+        if isinstance(task, dict)
+    }
+    return {
+        "assessment_id": assessment_id,
+        "model_status": model_analysis.get("status", "waiting_for_inputs"),
+        "gpu_stage": {
+            "status": gpu_stage.get("status", "not_configured"),
+            "device": gpu_stage.get("device"),
+            "gpu_name": gpu_stage.get("gpu_name"),
+            "model_version": gpu_stage.get("model_version"),
+            "tasks": task_states,
+            "error": gpu_stage.get("error"),
+        },
+    }
+
+
 def _require_analysis_worker(request: Request) -> None:
     if not ANALYSIS_WORKER_TOKEN:
         raise HTTPException(status_code=503, detail="Biomechanics worker ingestion is not configured")
     supplied = request.headers.get("x-analysis-worker-token", "")
     if supplied != ANALYSIS_WORKER_TOKEN:
         raise HTTPException(status_code=401, detail="Invalid analysis worker token")
+
+
+async def _set_gpu_stage(assessment_id: str, stage: Dict[str, Any]) -> None:
+    try:
+        await db.assessments.update_one(
+            {"id": assessment_id}, {"$set": {"model_analysis.gpu_stage": stage}}
+        )
+    except Exception as exc:
+        logger.warning(f"Mongo unavailable for GPU stage update; local fallback: {str(exc)[:120]}")
+        for item in LOCAL_ASSESSMENTS:
+            if item.get("id") == assessment_id:
+                item.setdefault("model_analysis", {})["gpu_stage"] = stage
+                break
+
+
+async def _queue_local_gpu_stage(assessment_id: str, motion_data: Dict[str, Any]) -> None:
+    job = {
+        "assessment_id": assessment_id,
+        "callback_url": LOCAL_BACKEND_CALLBACK_URL,
+        "motion_data": motion_data,
+    }
+    try:
+        async with httpx.AsyncClient(timeout=15) as http:
+            response = await http.post(
+                f"{LOCAL_GPU_WORKER_URL}/jobs",
+                json=job,
+                headers={"X-Analysis-Worker-Token": ANALYSIS_WORKER_TOKEN},
+            )
+            response.raise_for_status()
+    except Exception as exc:
+        logger.warning(f"Could not queue local CUDA analysis: {str(exc)[:160]}")
+        await _set_gpu_stage(assessment_id, {
+            "status": "failed_to_queue",
+            "device": "cuda:0",
+            "error": str(exc),
+        })
+
+
+@api_router.get("/analysis/local-gpu/status")
+async def local_gpu_status():
+    if not LOCAL_GPU_WORKER_URL:
+        return {"status": "not_configured", "cuda": False}
+    try:
+        async with httpx.AsyncClient(timeout=5) as http:
+            response = await http.get(f"{LOCAL_GPU_WORKER_URL}/health")
+            response.raise_for_status()
+            return response.json()
+    except Exception as exc:
+        return {"status": "unavailable", "cuda": False, "error": str(exc)}
+
+
+@api_router.post("/assessment/{assessment_id}/gpu-stage-results")
+async def save_gpu_stage_results(
+    assessment_id: str,
+    payload: GPUStageResultSubmit,
+    request: Request,
+):
+    """Store intermediate CUDA output without treating it as solver activation."""
+    _require_analysis_worker(request)
+    stage = payload.model_dump(exclude_none=True)
+    if stage["status"] == "completed":
+        if not stage.get("device", "").startswith("cuda"):
+            raise HTTPException(status_code=422, detail="Completed local GPU output must come from CUDA")
+        if not stage.get("model_version") or not stage.get("tasks"):
+            raise HTTPException(status_code=422, detail="GPU output is missing model provenance or task results")
+    elif stage["status"] != "failed":
+        raise HTTPException(status_code=422, detail="GPU stage status must be completed or failed")
+    await _set_gpu_stage(assessment_id, stage)
+    return {"assessment_id": assessment_id, "gpu_stage": stage["status"]}
 
 
 @api_router.post("/assessment/{assessment_id}/model-results")
@@ -1671,6 +1927,10 @@ POSE_RUNNER_HTML = r"""<!DOCTYPE html>
   #walkingCapture li{font-size:14px;line-height:1.4;margin:6px 0;color:#303632}
   #walkingCapture button{width:100%;border:none;border-radius:8px;padding:15px 16px;background:#4A7856;color:#fff;font-size:16px;font-weight:800;cursor:pointer}
   #walkingCapture button:disabled{background:#C9D2CB;color:#667068;cursor:not-allowed}
+  #walkingDesktopActions{position:relative;width:100%}
+  #walkingChooseVideoBtn{pointer-events:none}
+  #walkingVideoInput{position:absolute;inset:0;width:100%;height:100%;opacity:0;cursor:pointer;z-index:2;font-size:0}
+  #walkingDesktopActions.busy #walkingVideoInput{pointer-events:none;cursor:not-allowed}
   #walkingCaptureStatus{margin-top:12px;padding:11px 12px;border-radius:8px;background:#EEF0ED;color:#49504B;font-size:14px;line-height:1.4}
   #walkingCaptureStatus.good{background:#D9E5DC;color:#285C3A;font-weight:700}
   #walkingCaptureStatus.warn{background:#FFF0E6;color:#7A351E;font-weight:700}
@@ -1766,8 +2026,8 @@ POSE_RUNNER_HTML = r"""<!DOCTYPE html>
         <li>Do not zoom, walk backward, cross the patient's path, or film while providing hands-on support.</li>
       </ul>
       <div id="walkingDesktopActions" class="hidden" data-testid="walking-desktop-actions">
-        <input id="walkingVideoInput" type="file" accept="video/*" class="hidden" />
         <button id="walkingChooseVideoBtn" type="button" data-testid="walking-choose-video">Choose walking video</button>
+        <input id="walkingVideoInput" type="file" accept="video/*" aria-label="Choose walking video" data-testid="walking-video-input" />
       </div>
       <div id="walkingMobileActions" class="hidden" data-testid="walking-mobile-actions">
         <button id="walkingRecordBtn" type="button" data-testid="walking-start-recording">Start recording walking</button>
@@ -1822,6 +2082,15 @@ POSE_RUNNER_HTML = r"""<!DOCTYPE html>
   </div>
 </div>
 
+<script>
+window.__rehynStartRequested = false;
+const earlyStartButton = document.getElementById("startBtn");
+earlyStartButton.addEventListener("click", () => {
+  window.__rehynStartRequested = true;
+  earlyStartButton.textContent = "Opening camera...";
+  earlyStartButton.setAttribute("aria-busy", "true");
+});
+</script>
 <script type="module">
 import { PoseLandmarker, HandLandmarker, FilesetResolver, DrawingUtils } from "/vendor/mediapipe/vision_bundle.mjs";
 
@@ -2127,6 +2396,9 @@ const MAX_MOTION_FRAMES = 2400;
 const CURRENT_USER_ID = URL_PARAMS.get("uid") || "";
 const ASSESSMENT_PACKAGE = URL_PARAMS.get("package") || "upper_limb";
 const START_TASK_ID = URL_PARAMS.get("start_task") || "";
+const PREVIOUSLY_COMPLETED_TASK_IDS = new Set(
+  (URL_PARAMS.get("completed_tasks") || "").split(",").map(value => value.trim()).filter(Boolean)
+);
 const AFFECTED_SIDE = URL_PARAMS.get("affected_side") === "left" ? "left" : "right";
 const IS_MOBILE_CAPTURE_DEVICE = CAMERA_DEVICE_CLASS !== "web";
 const TASK_VIDEO_DB_NAME = "rehyn-task-videos-v1";
@@ -2134,6 +2406,7 @@ const TASK_VIDEO_STORE_NAME = "task-videos";
 let activeTaskRecorder = null;
 let activeTaskRecording = null;
 let pendingTaskVideoSaves = new Set();
+let pendingTaskProgressSaves = new Set();
 let recorderUnavailableReported = false;
 let walkingCaptureActive = false;
 let walkingCapturePromptPlayed = false;
@@ -2165,6 +2438,24 @@ function postRN(data){
   if(window.ReactNativeWebView){
     window.ReactNativeWebView.postMessage(JSON.stringify(data));
   }
+}
+
+function persistTaskProgress(taskId){
+  if(!CURRENT_USER_ID || !taskId) return Promise.resolve(null);
+  const query = new URLSearchParams({package_id: ASSESSMENT_PACKAGE, task_id: taskId});
+  const request = fetch(`${API_BASE}/assessment/task-progress?${query.toString()}`, {
+    method:"POST",
+    headers:{"X-User-Id": CURRENT_USER_ID},
+  }).then(response => {
+    if(!response.ok) throw new Error(`Task progress save failed (${response.status})`);
+    return response.json();
+  }).catch(error => {
+    postRN({type:"task_progress_error", package_id:ASSESSMENT_PACKAGE, task_id:taskId, message:String(error)});
+    return null;
+  });
+  pendingTaskProgressSaves.add(request);
+  request.finally(() => pendingTaskProgressSaves.delete(request));
+  return request;
 }
 
 function openTaskVideoDatabase(){
@@ -2405,6 +2696,17 @@ async function loadTasks(){
     const startIdx = tasks.findIndex((task) => task.id === START_TASK_ID);
     if(startIdx >= 0) currentTaskIdx = startIdx;
   }
+  tasks.forEach((task, index) => {
+    if(!PREVIOUSLY_COMPLETED_TASK_IDS.has(task.id)) return;
+    taskResults[index] = {
+      task_id: task.id,
+      completed_steps: task.steps.length,
+      total_steps: task.steps.length,
+      duration_ms: 0,
+      steps: [],
+      metrics: {resumed_from_saved_progress: true},
+    };
+  });
   renderDots();
 }
 
@@ -2430,16 +2732,30 @@ function renderDots(){
 
 async function setupCamera(){
   try{
+    if(!window.isSecureContext || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
+      throw new Error("Camera access requires a secure HTTPS connection on this device.");
+    }
     const videoSettings = (ASSESSMENT_PACKAGE === "hand" || ASSESSMENT_PACKAGE === "initial")
       ? responsiveVideoSettings(640, 480)
       : responsiveVideoSettings(480, 360);
-    const stream = await navigator.mediaDevices.getUserMedia({video:videoSettings, audio:false});
+    const stream = await Promise.race([
+      navigator.mediaDevices.getUserMedia({video:videoSettings, audio:false}),
+      new Promise((_, reject) => setTimeout(() => reject(new Error("Camera permission request timed out.")), 15000)),
+    ]);
     video.srcObject = stream;
-    await new Promise(r => video.onloadedmetadata = r);
+    await new Promise((resolve, reject) => {
+      if(video.readyState >= 1 && video.videoWidth > 0){ resolve(); return; }
+      const timeout = setTimeout(() => reject(new Error("Camera opened but no video frames arrived.")), 10000);
+      video.onloadedmetadata = () => {
+        clearTimeout(timeout);
+        resolve();
+      };
+    });
+    await video.play().catch(() => null);
     syncCameraViewport();
     return true;
   }catch(e){
-    captionEl.textContent = "Camera permission denied. Please allow camera access.";
+    captionEl.textContent = String(e && e.message ? e.message : "Camera permission denied. Please allow camera access.");
     postRN({type:"camera_error", message:String(e)});
     return false;
   }
@@ -2535,7 +2851,7 @@ async function showWalkingCapture(task){
   walkingMobileActions.classList.toggle("hidden", !IS_MOBILE_CAPTURE_DEVICE);
   setWalkingCaptureStatus(IS_MOBILE_CAPTURE_DEVICE
     ? "When everyone is safely positioned, tap Start recording walking."
-    : "Choose a 6 to 90 second video. Rehyn will check the patient, video quality, and full-body visibility on this device before uploading.");
+    : "Choose the walking video. Rehyn will confirm that it is the same patient before uploading; framing notes will not block the video.");
   walkingCapture.classList.remove("hidden");
   ui.classList.add("hidden");
   renderDots();
@@ -2768,11 +3084,8 @@ async function validateWalkingVideo(file, onProgress=()=>{}){
     const durationSeconds = Number(walkingReviewVideo.duration || 0);
     const width = Number(walkingReviewVideo.videoWidth || 0);
     const height = Number(walkingReviewVideo.videoHeight || 0);
-    if(durationSeconds < 6 || durationSeconds > 90){
-      return {ok:false, message:"Record between 6 and 90 seconds, including the two-second face check, several steps, and a safe stop."};
-    }
-    if(Math.min(width, height) < 360){
-      return {ok:false, message:"The video is too small. Please use standard phone video quality and try again."};
+    if(!Number.isFinite(durationSeconds) || durationSeconds <= 0){
+      return {ok:false, message:"This video has no readable duration. Please choose a playable walking video."};
     }
     onProgress({stage:"model", message:"Preparing the walking video check..."});
     validator = await getWalkingVideoValidator();
@@ -2782,7 +3095,12 @@ async function validateWalkingVideo(file, onProgress=()=>{}){
     }
     const timestampBase = performance.now() + 1000;
     let detectorIndex = 0;
-    const identityTimes = [0.20, 0.85, 1.50].filter(time => time < durationSeconds - 0.5);
+    const latestIdentityTime = Math.max(0, durationSeconds - 0.05);
+    const identityTimes = Array.from(new Set(
+      [0.05, durationSeconds * 0.18, durationSeconds * 0.38, durationSeconds * 0.55]
+        .map(time => Math.round(Math.min(time, latestIdentityTime) * 1000) / 1000)
+        .filter(time => time >= 0)
+    ));
     const identityScores = [];
     for(let index=0; index<identityTimes.length; index += 1){
       onProgress({
@@ -2798,17 +3116,17 @@ async function validateWalkingVideo(file, onProgress=()=>{}){
       const signature = normalizedFaceAppearance(walkingReviewVideo, pose);
       if(signature) identityScores.push(faceSignatureSimilarity(reference, signature));
     }
-    if(identityScores.length < 2){
-      return {ok:false, message:"Rehyn could not see the patient's face clearly at the start. Re-record with the patient facing the camera and holding still for two seconds before turning sideways to walk."};
+    if(identityScores.length < 1){
+      return {ok:false, message:"Rehyn could not confirm the patient in this video. Choose a clip where the patient's face is visible briefly at any point before or during the walk."};
     }
     const patientMatchScore = medianValue(identityScores);
     if(patientMatchScore < WALKING_FACE_MATCH_THRESHOLD){
       return {ok:false, message:"This video does not appear consistent with the patient who completed the seated assessment. Please choose the correct patient's video or restart the assessment with the intended patient."};
     }
 
-    const sampleCount = 10;
+    const sampleCount = Math.max(3, Math.min(8, Math.ceil(durationSeconds * 2)));
     const sampledFrames = [];
-    const walkingStartSeconds = Math.min(durationSeconds * 0.35, 2.15);
+    const walkingStartSeconds = 0;
     const walkingEndSeconds = durationSeconds * 0.94;
     for(let index=0; index<sampleCount; index += 1){
       onProgress({
@@ -2828,15 +3146,14 @@ async function validateWalkingVideo(file, onProgress=()=>{}){
     const poseFrameCount = sampledFrames.length;
     const fullBodyFrameCount = sampledFrames.filter(frame => frame.fullBody).length;
     const fullBodyRatio = poseFrameCount ? fullBodyFrameCount / poseFrameCount : 0;
-    if(poseFrameCount < 7){
-      return {ok:false, message:"Rehyn could not see the patient clearly enough. Improve lighting and keep other people out of the frame."};
-    }
-    if(fullBodyRatio < 0.70){
-      return {ok:false, message:"The patient's head or feet leave the frame too often. Re-record from farther away and keep the whole body visible."};
-    }
+    const qualityAdvisory = poseFrameCount < Math.ceil(sampleCount / 2)
+      ? " The patient was small or difficult to track in parts of the clip, so movement confidence may be lower."
+      : (fullBodyRatio < 0.50
+        ? " Some body parts leave the frame, so movement confidence may be lower."
+        : "");
     return {
       ok:true,
-      message:"Video check passed. The whole body is visible and the walking observation is ready for analysis.",
+      message:`Same-patient check passed. The walking video is accepted.${qualityAdvisory}`,
       durationMs:Math.round(durationSeconds * 1000),
       width,
       height,
@@ -3117,7 +3434,7 @@ async function startStep(){
   stepStartTime = performance.now();
   stepStartedAt = stepStartTime;
   voiceFinishedAt = 0;
-  arrivedAfterMovement = isHandTask() || step.movement_required === false;
+  arrivedAfterMovement = !movementGateRequired(step);
   stepStartWristXY = null;
   inTargetSince = null;
   lastInTargetTs = 0;
@@ -3740,6 +4057,17 @@ if(URL_PARAMS.get("test_mode") === "mouth_target"){
   };
 }
 
+if(URL_PARAMS.get("test_mode") === "upper_limb_endpoint"){
+  window.__rehynUpperLimbEndpointTest = {
+    affectedSide:AFFECTED_SIDE,
+    gateRequiredById:(stepId) => !["T1-S1", "T1-S2", "T3-S1", "T3-S2"].includes(stepId),
+    evaluateReachHit:(landmarks, target, radius=0.10) => {
+      const point = closestAffectedReachPointToTarget(landmarks, target);
+      return {point, distance:distXY(point, target), hit:distXY(point, target) < radius};
+    },
+  };
+}
+
 if(URL_PARAMS.get("test_mode") === "palm_projection"){
   window.__rehynPalmProjectionTest = {
     threshold:PALM_FACING_THRESHOLD,
@@ -3900,6 +4228,16 @@ function affectedPoseHandPoints(lm){
   return indices
     .map(index => lm[index])
     .filter(point => landmarkIsUsable(point, 0.20));
+}
+
+function affectedReachContactPoints(lm){
+  return affectedPoseHandPoints(lm).map(point => mirrorX(point));
+}
+
+function closestAffectedReachPointToTarget(lm, target){
+  const points = affectedReachContactPoints(lm);
+  if(!points.length || !target) return null;
+  return points.reduce((closest, point) => distXY(point, target) < distXY(closest, target) ? point : closest);
 }
 
 function affectedMouthContactPoints(lm){
@@ -4362,16 +4700,14 @@ function activeWrist(lm){
     return activeHandPoint();
   }
   if(!lm) return null;
+  const affectedWrist = sideLandmarks(lm, AFFECTED_SIDE).wrist;
   if(step && step.target && step.target.landmark === "MOUTH"){
-    return sideLandmarks(lm, AFFECTED_SIDE).wrist;
+    return affectedWrist;
   }
-  // pick the wrist closer to the current effective target
-  if(!step) return mirrorX(lm[15]);
-  const target = getEffectiveTargetXY(step);
-  const lW = mirrorX(lm[15]); const rW = mirrorX(lm[16]);
-  const dL = lW ? Math.hypot(lW.x - target.x, lW.y - target.y) : Infinity;
-  const dR = rW ? Math.hypot(rW.x - target.x, rW.y - target.y) : Infinity;
-  return dL < dR ? lW : rW;
+  // Upper-limb collection must stay on the survey-selected affected side.
+  // Switching to whichever wrist happens to be nearer can reset the movement
+  // gate midway through a correct first approach.
+  return affectedWrist ? mirrorX(affectedWrist) : null;
 }
 
 function activeControlPoint(lm){
@@ -4404,8 +4740,16 @@ function updateMovementGate(lm){
   // Required movement scales with shoulder-width to be size-invariant
   const requiredMove = (isLowerTask() || isBalanceTask())
     ? Math.max(0.035, shoulderWidth(lm) * 0.22)
-    : Math.max(0.12, shoulderWidth(lm) * 0.75);
+    : Math.max(0.035, shoulderWidth(lm) * 0.30);
   if(distXY(w, stepStartWristXY) >= requiredMove) arrivedAfterMovement = true;
+}
+
+function movementGateRequired(step){
+  if(!step || step.movement_required === false || isHandTask()) return false;
+  // These endpoints cannot be occupied by the affected hand in the preceding
+  // position. Contact after the voice gate is therefore sufficient proof of a
+  // deliberate first approach, even if the movement began during instruction.
+  return !["T1-S1", "T1-S2", "T3-S1", "T3-S2"].includes(step.id);
 }
 
 function targetAttemptGestureSnapshot(){
@@ -4480,7 +4824,7 @@ function nearMissCorrection(step, distance, radius, lm){
         : "Move your hand slightly farther toward the center of the circle, then keep it still there.",
     };
   }
-  if(!isHandTask() && !arrivedAfterMovement && step.movement_required !== false){
+  if(movementGateRequired(step) && !arrivedAfterMovement){
     return {
       reason:"movement_gate_not_met",
       guidance:"Move your hand slightly away, then deliberately reach back into the center of the circle and hold it there.",
@@ -4808,7 +5152,7 @@ function checkTarget(landmarks){
   // MOVEMENT GATE — wrist must have moved meaningfully from its position at
   // step-start before the target can fire. Stops "I didn't move and the next
   // circle counted because I was already inside it" bug.
-  if(!arrivedAfterMovement) return false;
+  if(movementGateRequired(step) && !arrivedAfterMovement) return false;
 
   const target = step.target;
   const which = target.landmark;
@@ -4816,11 +5160,12 @@ function checkTarget(landmarks){
   const R = effectiveRadius(step, landmarks);
 
   const wristDist = () => {
-    const lW = mirrorX(landmarks[15]);
-    const rW = mirrorX(landmarks[16]);
-    const dL = lW ? Math.hypot(lW.x - targetXY.x, lW.y - targetXY.y) : Infinity;
-    const dR = rW ? Math.hypot(rW.x - targetXY.x, rW.y - targetXY.y) : Infinity;
-    return Math.min(dL, dR);
+    const task = tasks[currentTaskIdx];
+    if(task && task.id === "T1"){
+      return distXY(closestAffectedReachPointToTarget(landmarks, targetXY), targetXY);
+    }
+    const affectedWrist = sideLandmarks(landmarks, AFFECTED_SIDE).wrist;
+    return distXY(affectedWrist ? mirrorX(affectedWrist) : null, targetXY);
   };
 
   if(which === "HAND_OPEN"){
@@ -4954,7 +5299,9 @@ function drawOverlay(landmarks){
   // Visual radius MATCHES the actual hit radius — so what the user sees == what triggers.
   const effR = effectiveRadius(step, landmarks);
   const tr = effR * Math.min(canvas.width, canvas.height);
-  const armed = (voiceFinishedAt > 0) && (performance.now() - voiceFinishedAt >= 350) && arrivedAfterMovement;
+  const armed = (voiceFinishedAt > 0)
+    && (performance.now() - voiceFinishedAt >= 350)
+    && (!movementGateRequired(step) || arrivedAfterMovement);
   const pulse = 1 + 0.08*Math.sin(performance.now()/250);
   // outer pulsing ring — dashed/dim when not yet armed (voice still playing or movement gate not met)
   ctx.save();
@@ -5131,6 +5478,7 @@ async function celebrateAndAdvance(){
   if(navigator.vibrate) navigator.vibrate([60, 40, 100]);
 
   stopAndSaveTaskRecording(finishedTask.id);
+  persistTaskProgress(finishedTask.id);
 
   postRN({type:"task_complete", package_id: ASSESSMENT_PACKAGE, task_id: finishedTask.id, task_index: currentTaskIdx});
 
@@ -5170,6 +5518,9 @@ async function finishAssessment(){
   try{
     if(pendingTaskVideoSaves.size){
       await Promise.allSettled(Array.from(pendingTaskVideoSaves));
+    }
+    if(pendingTaskProgressSaves.size){
+      await Promise.allSettled(Array.from(pendingTaskProgressSaves));
     }
     const res = await fetch(`${API_BASE}/assessment/submit`,{
       method:"POST", headers:{"Content-Type":"application/json", ...(CURRENT_USER_ID ? {"X-User-Id": CURRENT_USER_ID} : {})},
@@ -5232,6 +5583,13 @@ function loop(){
         : null;
       computeMetrics(landmarks);
       updateLapTargetCalibration(landmarks, now);
+      const activeTask = tasks[currentTaskIdx];
+      // Lock T3's mouth point while the affected hand is still at the chest.
+      // Waiting until the hand covers the mouth can pull facial landmarks and
+      // the target away from the anatomical mouth center.
+      if(activeTask && activeTask.id === "T3" && currentStepIdx === 0){
+        updateMouthTargetCalibration(landmarks, lastPoseScanTs);
+      }
       updateMovementGate(landmarks);
     }else{
       latestPoseLandmarks = null;
@@ -5304,11 +5662,26 @@ function loop(){
   requestAnimationFrame(loop);
 }
 
-startBtn.addEventListener("click", async () => {
+let startSetupInProgress = false;
+async function beginAssessmentSetup(){
+  if(startSetupInProgress) return;
+  startSetupInProgress = true;
+  startBtn.textContent = "Opening camera...";
+  startBtn.setAttribute("aria-busy", "true");
   const unlockPromise = unlockAudioPlayback();
   overlay.classList.add("hidden");
   startBtn.disabled = true;
-  await ensureTasksLoaded();
+  try{
+    await ensureTasksLoaded();
+  }catch(error){
+    overlay.classList.remove("hidden");
+    startBtn.disabled = false;
+    startBtn.textContent = "Try Camera Again";
+    startBtn.removeAttribute("aria-busy");
+    startSetupInProgress = false;
+    postRN({type:"camera_error", message:`Could not load assessment tasks: ${String(error)}`});
+    return;
+  }
   const firstStep = tasks[currentTaskIdx] && tasks[currentTaskIdx].steps && tasks[currentTaskIdx].steps[0];
   const firstVoicePromise = firstStep && firstStep.voice
     ? fetchVoiceAudio(firstStep.voice).catch(() => null)
@@ -5338,6 +5711,9 @@ startBtn.addEventListener("click", async () => {
     ui.classList.remove("hidden");
     overlay.classList.remove("hidden");
     startBtn.disabled = false;
+    startBtn.textContent = "Try Camera Again";
+    startBtn.removeAttribute("aria-busy");
+    startSetupInProgress = false;
     return;
   }
   try{
@@ -5348,6 +5724,9 @@ startBtn.addEventListener("click", async () => {
     ui.classList.remove("hidden");
     overlay.classList.remove("hidden");
     startBtn.disabled = false;
+    startBtn.textContent = "Try Camera Again";
+    startBtn.removeAttribute("aria-busy");
+    startSetupInProgress = false;
     postRN({type:"model_setup_error", message:String(error)});
     return;
   }
@@ -5362,30 +5741,44 @@ startBtn.addEventListener("click", async () => {
     return;
   }
   await startStep();
-});
+}
 
-walkingChooseVideoBtn.addEventListener("click", () => {
-  walkingVideoInput.click();
+startBtn.addEventListener("click", beginAssessmentSetup);
+if(window.__rehynStartRequested) void beginAssessmentSetup();
+
+walkingVideoInput.addEventListener("click", () => {
+  setWalkingCaptureStatus("Choose the walking video from this computer.");
 });
 
 walkingVideoInput.addEventListener("change", async () => {
   const file = walkingVideoInput.files && walkingVideoInput.files[0];
-  if(!file) return;
-  walkingChooseVideoBtn.disabled = true;
-  setWalkingCaptureStatus("Opening the walking video on this device...");
-  const validation = await validateWalkingVideo(file, progress => {
-    setWalkingCaptureStatus(progress.message || "Checking the walking video...");
-  });
-  if(!validation.ok){
-    setWalkingCaptureStatus(validation.message, "warn");
-    walkingChooseVideoBtn.disabled = false;
-    walkingVideoInput.value = "";
+  if(!file){
+    setWalkingCaptureStatus("No video was selected. Choose a walking video when ready.");
     return;
   }
-  setWalkingCaptureStatus(validation.message, "good");
-  await playVoice("The walking video passed the recording check. Thank you. Your assessment is now complete.");
-  setWalkingCaptureStatus("Video checks passed. Preparing secure save...", "good");
-  await completeUploadedWalkingTask(file, validation);
+  walkingChooseVideoBtn.disabled = true;
+  walkingDesktopActions.classList.add("busy");
+  setWalkingCaptureStatus("Opening the walking video on this device...");
+  try{
+    const validation = await validateWalkingVideo(file, progress => {
+      setWalkingCaptureStatus(progress.message || "Checking the walking video...");
+    });
+    if(!validation.ok){
+      setWalkingCaptureStatus(validation.message, "warn");
+      return;
+    }
+    setWalkingCaptureStatus(validation.message, "good");
+    await playVoice("The walking video passed the recording check. Thank you. Your assessment is now complete.");
+    setWalkingCaptureStatus("Video checks passed. Preparing secure save...", "good");
+    await completeUploadedWalkingTask(file, validation);
+  }catch(error){
+    setWalkingCaptureStatus(`The selected video could not be processed. ${String(error && error.message ? error.message : error)}`, "warn");
+    postRN({type:"walking_video_error", message:String(error)});
+  }finally{
+    walkingChooseVideoBtn.disabled = false;
+    walkingDesktopActions.classList.remove("busy");
+    walkingVideoInput.value = "";
+  }
 });
 
 walkingRecordBtn.addEventListener("click", async () => {
@@ -6699,7 +7092,8 @@ SUBSCRIPTION_UNLIMITED_ACTIONS = {"assessment", "rehab_plan", "guided_exercise"}
 
 
 async def get_or_create_user(email: str, name: str, role: str = "patient") -> Dict[str, Any]:
-    email = email.lower()
+    email = email.strip().lower()
+    name = name.strip() or email
     try:
         doc = await db.users.find_one({"email": email}, {"_id": 0})
         if doc:
@@ -6710,7 +7104,7 @@ async def get_or_create_user(email: str, name: str, role: str = "patient") -> Di
             if doc.get("email") == email:
                 return doc
     doc = {
-        "id": "u_" + str(uuid.uuid4())[:12],
+        "id": "u_" + uuid.uuid5(uuid.NAMESPACE_URL, f"rehyn:{email}").hex[:12],
         "email": email,
         "name": name,
         "role": role,
@@ -6722,6 +7116,7 @@ async def get_or_create_user(email: str, name: str, role: str = "patient") -> Di
     except Exception as e:
         logger.warning(f"Mongo unavailable for user insert; using local fallback: {str(e)[:120]}")
         LOCAL_USERS[doc["id"]] = doc.copy()
+        _persist_local_dict(LOCAL_USERS_FILE, LOCAL_USERS)
     doc.pop("_id", None)
     return doc
 
@@ -6769,6 +7164,7 @@ async def consume_credits(user_id: str, kind: str) -> Dict[str, Any]:
         logger.warning(f"Mongo unavailable for credit update; using local fallback: {str(e)[:120]}")
         user["credits"] = new_credits
         LOCAL_USERS[user_id] = user
+        _persist_local_dict(LOCAL_USERS_FILE, LOCAL_USERS)
     return {"credits": new_credits, "spent": cost}
 
 
@@ -6816,6 +7212,7 @@ async def submit_patient_onboarding(payload: PatientOnboarding, request: Request
         logger.warning(f"Mongo unavailable for onboarding update; using local fallback: {str(e)[:120]}")
         local_user = {**user, "profile": update, "onboarding_complete": True}
         LOCAL_USERS[user["id"]] = local_user
+        _persist_local_dict(LOCAL_USERS_FILE, LOCAL_USERS)
     return {"ok": True, "profile": update}
 
 
@@ -7446,7 +7843,14 @@ async def auth_google_session(request: Request):
     # Stash picture/google_id for the profile
     extras = {k: data.get(k) for k in ("picture", "id") if data.get(k)}
     if extras:
-        await db.users.update_one({"id": user["id"]}, {"$set": {"google": extras}})
+        try:
+            await db.users.update_one({"id": user["id"]}, {"$set": {"google": extras}})
+        except Exception as exc:
+            logger.warning(f"Mongo unavailable for Google profile update; using local fallback: {str(exc)[:120]}")
+            local_user = {**user, "google": extras}
+            LOCAL_USERS[user["id"]] = local_user
+            _persist_local_dict(LOCAL_USERS_FILE, LOCAL_USERS)
+            user = local_user
     return user
 
 

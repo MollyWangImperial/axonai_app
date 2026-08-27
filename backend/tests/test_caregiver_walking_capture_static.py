@@ -77,15 +77,36 @@ def test_walking_uses_device_specific_capture_controls_instead_of_target_circles
     assert 'if(isWalkingTask()){\n    lapStatus.classList.add("hidden");\n    return;' in source
 
 
-def test_desktop_walking_upload_is_quality_checked_before_collection_completes():
+def test_desktop_walking_upload_keeps_identity_blocking_but_framing_advisory():
     source = server.POSE_RUNNER_HTML
     assert "async function validateWalkingVideo(file, onProgress=()=>{})" in source
-    assert "durationSeconds < 6 || durationSeconds > 90" in source
-    assert "const sampleCount = 10;" in source
+    assert "durationSeconds < 6 || durationSeconds > 90" not in source
+    assert "Math.min(width, height) < 360" not in source
+    assert "const qualityAdvisory" in source
     assert "fullBodyVisibleForWalking(pose)" in source
-    assert "if(fullBodyRatio < 0.70)" in source
+    assert "if(fullBodyRatio < 0.70)" not in source
+    assert "patientMatchScore < WALKING_FACE_MATCH_THRESHOLD" in source
     assert "completeUploadedWalkingTask(file, validation)" in source
     assert 'capture_source:"uploaded_walking_video"' in source
+
+
+def test_desktop_video_picker_receives_the_user_gesture_directly():
+    source = server.POSE_RUNNER_HTML
+    assert 'id="walkingVideoInput" type="file" accept="video/*"' in source
+    assert '#walkingVideoInput{position:absolute;inset:0;width:100%;height:100%;opacity:0' in source
+    assert '#walkingChooseVideoBtn{pointer-events:none}' in source
+    assert 'walkingVideoInput.addEventListener("click"' in source
+    assert 'walkingChooseVideoBtn.addEventListener("click"' not in source
+    assert 'walkingVideoInput.click()' not in source
+
+
+def test_walking_video_picker_recovers_after_validation_errors():
+    source = server.POSE_RUNNER_HTML
+    change_handler = source[source.index('walkingVideoInput.addEventListener("change"') : source.index('walkingRecordBtn.addEventListener')]
+    assert 'walkingDesktopActions.classList.add("busy")' in change_handler
+    assert 'catch(error)' in change_handler
+    assert 'walkingDesktopActions.classList.remove("busy")' in change_handler
+    assert 'walkingVideoInput.value = ""' in change_handler
 
 
 def test_walking_upload_checks_same_patient_locally_before_accepting_video():
@@ -94,7 +115,7 @@ def test_walking_upload_checks_same_patient_locally_before_accepting_video():
         "function normalizedFaceAppearance(source, pose)",
         "function faceSignatureSimilarity(reference, candidate)",
         "function capturePatientFaceReference(source, pose",
-        "const identityTimes = [0.20, 0.85, 1.50]",
+        "const identityTimes = Array.from(new Set(",
         "const patientMatchScore = medianValue(identityScores);",
         "patientMatchScore < WALKING_FACE_MATCH_THRESHOLD",
         "samePatientConfirmed:true",

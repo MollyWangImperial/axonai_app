@@ -21,6 +21,10 @@ def test_pose_runner_records_and_saves_each_completed_task():
     assert "/assessment/task-videos?${query.toString()}" in source
     assert "await Promise.allSettled(Array.from(pendingTaskVideoSaves));" in source
     assert 'getUserMedia({video:videoSettings, audio:false})' in source
+    assert "window.__rehynStartRequested = true" in source
+    assert "if(window.__rehynStartRequested) void beginAssessmentSetup()" in source
+    assert "Camera access requires a secure HTTPS connection" in source
+    assert "Camera permission request timed out" in source
 
 
 def test_frontend_tracks_saved_video_events_without_showing_a_task_picker():
@@ -33,6 +37,8 @@ def test_frontend_tracks_saved_video_events_without_showing_a_task_picker():
     assert 'testID="saved-task-video-count"' in intro
     assert "tasks.map(" not in intro
     assert 'authedFetch(`/api/assessment/task-videos?package=' in api
+    assert "const serverCompleted = Object.fromEntries(" in intro
+    assert "const completed = { ...deviceCompleted, ...serverCompleted }" in intro
 
 
 def test_task_video_falls_back_to_persistent_local_storage(monkeypatch, tmp_path):
