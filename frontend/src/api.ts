@@ -55,6 +55,22 @@ export type TaskVideo = {
   storage: "gridfs" | "local";
 };
 
+export type PatientAssessmentSummary = {
+  id: string;
+  created_at: string;
+  assessment_package: AssessmentPackageId;
+  collection: {
+    tasks_collected: number;
+    tasks_expected: number;
+    completed_steps: number;
+    total_steps: number;
+    completion_percent: number;
+    duration_ms: number;
+    domains: { domain: string; label: string }[];
+  };
+  rehab_plan_ready: boolean;
+};
+
 export type FunctionalIssue = {
   code: string;
   label: string;
@@ -291,6 +307,12 @@ export async function fetchTaskVideos(packageId: AssessmentPackageId = "initial"
 
 export async function fetchAssessment(id: string): Promise<Assessment> {
   const res = await fetch(`${BASE}/api/assessment/${id}`);
+  return res.json();
+}
+
+export async function fetchPatientAssessmentSummary(id: string): Promise<PatientAssessmentSummary> {
+  const res = await fetch(`${BASE}/api/assessment/${id}/patient-summary`);
+  if (!res.ok) throw new Error(`Could not load assessment summary (${res.status})`);
   return res.json();
 }
 

@@ -32,6 +32,14 @@ try:
     )
     from backend.muscle_diagnosis import build_muscle_activation_diagnosis
     from backend.assessment_fusion import build_analysis_pipeline, build_survey_consistency
+    from backend.biomechanics_pipeline import (
+        aggregate_model_outputs,
+        build_model_analysis_manifest,
+        model_activation_report,
+        patient_collection_summary,
+        pending_model_activation_report,
+        validate_model_outputs,
+    )
 except ImportError:
     from rehab_assessment import (
         build_biomechanical_estimates,
@@ -48,6 +56,14 @@ except ImportError:
     )
     from muscle_diagnosis import build_muscle_activation_diagnosis
     from assessment_fusion import build_analysis_pipeline, build_survey_consistency
+    from biomechanics_pipeline import (
+        aggregate_model_outputs,
+        build_model_analysis_manifest,
+        model_activation_report,
+        patient_collection_summary,
+        pending_model_activation_report,
+        validate_model_outputs,
+    )
 
 try:
     from openai import OpenAI
@@ -81,6 +97,7 @@ OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "").strip()
 EMERGENT_LLM_KEY = os.environ.get("EMERGENT_LLM_KEY", "").strip()
 TTS_VOICE = os.environ.get("TTS_VOICE", "nova")  # warm/encouraging default
 TTS_MODEL = os.environ.get("TTS_MODEL", "tts-1")
+ANALYSIS_WORKER_TOKEN = os.environ.get("ANALYSIS_WORKER_TOKEN", "").strip()
 openai_tts_client = OpenAI(api_key=OPENAI_API_KEY) if (OpenAI and OPENAI_API_KEY) else None
 tts_client = OpenAITextToSpeech(api_key=EMERGENT_LLM_KEY) if (OpenAITextToSpeech and EMERGENT_LLM_KEY) else None
 
@@ -133,6 +150,11 @@ class AssessmentSubmit(BaseModel):
     patient_parameters: Dict[str, Any] = Field(default_factory=dict)
     musculoskeletal_outputs: Dict[str, Any] = Field(default_factory=dict)
     motion_data: Dict[str, Any] = Field(default_factory=dict)
+
+
+class ModelResultSubmit(BaseModel):
+    status: str
+    per_task: List[Dict[str, Any]]
 
 
 class FunctionalIssue(BaseModel):
@@ -1079,6 +1101,38 @@ async def _task_video_user(request: Request, uid: str = "") -> Optional[Dict[str
     return await _user_from_header(headers)
 
 
+async def _latest_task_videos(user_id: str, package_id: str, task_ids: List[str]) -> Dict[str, Dict[str, Any]]:
+    if not user_id or not task_ids:
+        return {}
+    wanted = set(task_ids)
+    records: List[Dict[str, Any]] = []
+    try:
+        docs = await db.task_videos.files.find({
+            "metadata.user_id": user_id,
+            "metadata.package_id": package_id,
+            "metadata.task_id": {"$in": list(wanted)},
+        }).sort("uploadDate", -1).to_list(100)
+        records = [
+            {"id": str(doc["_id"]), **(doc.get("metadata") or {})}
+            for doc in docs
+        ]
+    except Exception as e:
+        logger.warning(f"Mongo unavailable for analysis video lookup; using local fallback: {str(e)[:120]}")
+        records = [
+            item for item in _local_task_video_metadata()
+            if item.get("user_id") == user_id
+            and item.get("package_id") == package_id
+            and item.get("task_id") in wanted
+        ]
+        records.sort(key=lambda item: item.get("created_at", ""), reverse=True)
+    latest: Dict[str, Dict[str, Any]] = {}
+    for record in records:
+        task_id = str(record.get("task_id") or "")
+        if task_id and task_id not in latest:
+            latest[task_id] = record
+    return latest
+
+
 @api_router.post("/assessment/task-videos")
 async def save_task_video(
     request: Request,
@@ -1313,6 +1367,19 @@ async def submit_assessment(payload: AssessmentSubmit, request: Request):
         await consume_credits(user["id"], "assessment")
         await consume_credits(user["id"], "rehab_plan")
     patient_parameters = _assessment_patient_parameters(payload.patient_parameters, user)
+    assessment_id = str(uuid.uuid4())
+    task_ids = [task.task_id for task in payload.task_results]
+    video_records = await _latest_task_videos(
+        user["id"] if user else "",
+        payload.assessment_package,
+        task_ids,
+    )
+    model_analysis = build_model_analysis_manifest(assessment_id, task_ids, video_records)
+    expected_task_count = len(ASSESSMENT_PACKAGES.get(payload.assessment_package, {}).get("tasks", []))
+    collection_summary = patient_collection_summary(payload.task_results, expected_task_count)
+    if payload.musculoskeletal_outputs:
+        logger.warning("Ignoring client-supplied musculoskeletal outputs; trusted worker ingestion is required")
+    trusted_model_outputs: Dict[str, Any] = {}
     issues = derive_functional_issues(payload.task_results)
     plan = build_rehab_plan(issues, patient_parameters)
     domain_assessments = build_domain_assessments(payload.task_results)
@@ -1320,12 +1387,12 @@ async def submit_assessment(payload: AssessmentSubmit, request: Request):
     biomechanical_estimates = build_biomechanical_estimates(
         payload.task_results,
         patient_parameters,
-        payload.musculoskeletal_outputs,
+        trusted_model_outputs,
     )
     measurement_form = build_clinical_measurement_form(
         payload.task_results,
         patient_parameters,
-        payload.musculoskeletal_outputs,
+        trusted_model_outputs,
     )
     rehabilitation_goals = build_rehab_goals(
         payload.task_results,
@@ -1333,9 +1400,10 @@ async def submit_assessment(payload: AssessmentSubmit, request: Request):
         measurement_form,
         patient_parameters,
     )
-    muscle_activation_diagnosis = build_muscle_activation_diagnosis(
-        [t.dict() for t in payload.task_results],
+    movement_based_muscle_screening = build_muscle_activation_diagnosis(
+        [t.model_dump() for t in payload.task_results],
     )
+    muscle_activation_diagnosis = pending_model_activation_report()
     survey_consistency = build_survey_consistency(
         issues,
         patient_parameters,
@@ -1343,10 +1411,10 @@ async def submit_assessment(payload: AssessmentSubmit, request: Request):
     )
     analysis_pipeline = build_analysis_pipeline(
         payload.motion_data,
-        payload.musculoskeletal_outputs,
+        trusted_model_outputs,
     )
     assessment = Assessment(
-        id=str(uuid.uuid4()),
+        id=assessment_id,
         created_at=datetime.now(timezone.utc).isoformat(),
         affected_side=payload.affected_side,
         assessment_package=payload.assessment_package,
@@ -1362,9 +1430,13 @@ async def submit_assessment(payload: AssessmentSubmit, request: Request):
         survey_consistency=survey_consistency,
         analysis_pipeline=analysis_pipeline,
     )
-    doc = assessment.dict()
+    doc = assessment.model_dump()
     if payload.motion_data:
         doc["motion_data"] = payload.motion_data
+    doc["patient_parameters"] = patient_parameters
+    doc["patient_summary"] = collection_summary
+    doc["model_analysis"] = model_analysis
+    doc["movement_based_muscle_screening"] = movement_based_muscle_screening
     if user:
         doc["user_id"] = user["id"]
     try:
@@ -1412,10 +1484,91 @@ async def get_assessment(assessment_id: str):
     return Assessment(**doc)
 
 
+@api_router.get("/assessment/{assessment_id}/patient-summary")
+async def get_patient_assessment_summary(assessment_id: str):
+    """Return only the concise collection receipt intended for patients."""
+    try:
+        doc = await db.assessments.find_one({"id": assessment_id}, {"_id": 0})
+    except Exception as e:
+        logger.warning(f"Mongo unavailable for patient summary; local fallback: {str(e)[:120]}")
+        doc = next((item for item in LOCAL_ASSESSMENTS if item.get("id") == assessment_id), None)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Assessment not found")
+    package_id = str(doc.get("assessment_package") or "upper_limb")
+    expected = len(ASSESSMENT_PACKAGES.get(package_id, {}).get("tasks", []))
+    collection = doc.get("patient_summary") or patient_collection_summary(doc.get("task_results", []), expected)
+    return {
+        "id": doc["id"],
+        "created_at": doc["created_at"],
+        "assessment_package": package_id,
+        "collection": collection,
+        "rehab_plan_ready": bool(doc.get("rehab_plan")),
+    }
+
+
+def _require_analysis_worker(request: Request) -> None:
+    if not ANALYSIS_WORKER_TOKEN:
+        raise HTTPException(status_code=503, detail="Biomechanics worker ingestion is not configured")
+    supplied = request.headers.get("x-analysis-worker-token", "")
+    if supplied != ANALYSIS_WORKER_TOKEN:
+        raise HTTPException(status_code=401, detail="Invalid analysis worker token")
+
+
+@api_router.post("/assessment/{assessment_id}/model-results")
+async def save_model_results(assessment_id: str, payload: ModelResultSubmit, request: Request):
+    """Accept trusted, quality-gated per-task solver results from a separate worker."""
+    _require_analysis_worker(request)
+    try:
+        doc = await db.assessments.find_one({"id": assessment_id}, {"_id": 0})
+    except Exception as e:
+        logger.warning(f"Mongo unavailable for model result lookup; local fallback: {str(e)[:120]}")
+        doc = next((item for item in LOCAL_ASSESSMENTS if item.get("id") == assessment_id), None)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Assessment not found")
+
+    task_ids = [str(item.get("task_id")) for item in doc.get("task_results", [])]
+    manifest_tasks = (doc.get("model_analysis") or {}).get("tasks") or []
+    expected_videos = {str(item.get("task_id")): item.get("video_id") for item in manifest_tasks}
+    try:
+        validated = validate_model_outputs(payload.model_dump(), task_ids, expected_videos)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    outputs = aggregate_model_outputs(validated)
+    patient_parameters = doc.get("patient_parameters") or {}
+    task_results = doc.get("task_results") or []
+    updated_fields = {
+        "musculoskeletal_outputs": outputs,
+        "biomechanical_estimates": build_biomechanical_estimates(task_results, patient_parameters, outputs),
+        "measurement_form": build_clinical_measurement_form(task_results, patient_parameters, outputs),
+        "analysis_pipeline": build_analysis_pipeline(doc.get("motion_data") or {}, outputs),
+        "muscle_activation_diagnosis": model_activation_report(outputs),
+        "model_analysis.status": "completed",
+        "model_analysis.completed_at": datetime.now(timezone.utc).isoformat(),
+    }
+    try:
+        await db.assessments.update_one({"id": assessment_id}, {"$set": updated_fields})
+    except Exception as e:
+        logger.warning(f"Mongo unavailable for model result update; local fallback: {str(e)[:120]}")
+        for item in LOCAL_ASSESSMENTS:
+            if item.get("id") == assessment_id:
+                for key, value in updated_fields.items():
+                    if key.startswith("model_analysis."):
+                        item.setdefault("model_analysis", {})[key.split(".", 1)[1]] = value
+                    else:
+                        item[key] = value
+                break
+    return {
+        "assessment_id": assessment_id,
+        "status": "completed",
+        "tasks_modeled": len(outputs.get("per_task") or []),
+        "findings_ready": True,
+    }
+
+
 @api_router.get("/assessment/{assessment_id}/muscle-diagnosis")
 async def get_muscle_diagnosis(assessment_id: str):
-    """Recompute the four-anomaly muscle-activation diagnosis for a stored
-    assessment (also works for assessments saved before this feature)."""
+    """Return only validated model-estimated findings, never camera proxies."""
     try:
         doc = await db.assessments.find_one({"id": assessment_id}, {"_id": 0})
     except Exception as e:
@@ -1423,7 +1576,7 @@ async def get_muscle_diagnosis(assessment_id: str):
         doc = next((item for item in LOCAL_ASSESSMENTS if item.get("id") == assessment_id), None)
     if not doc:
         raise HTTPException(status_code=404, detail="Assessment not found")
-    return build_muscle_activation_diagnosis(doc.get("task_results", []))
+    return doc.get("muscle_activation_diagnosis") or pending_model_activation_report()
 
 
 # ============ Pose Runner HTML (served at /api/pose/runner) ============

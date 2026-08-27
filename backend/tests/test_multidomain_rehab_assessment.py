@@ -344,6 +344,17 @@ def test_routes_expose_packages_modeling_contract_and_multidomain_results():
         assert assessment["rehab_plan"][0]["targets_issue"] == "SIT_TO_STAND_IMPAIRED"
         assert assessment["rehabilitation_goals"]["method"] == "retrieval_augmented_rule_engine"
 
+        patient_summary = client.get(f"/api/assessment/{assessment['id']}/patient-summary")
+        assert patient_summary.status_code == 200
+        summary_payload = patient_summary.json()
+        assert set(summary_payload) == {
+            "id", "created_at", "assessment_package", "collection", "rehab_plan_ready"
+        }
+        assert summary_payload["collection"]["tasks_collected"] == 1
+        assert "analysis_pipeline" not in summary_payload
+        assert "muscle_activation_diagnosis" not in summary_payload
+        assert "measurement_form" not in summary_payload
+
 
 def test_initial_package_is_fixed_broad_and_guided_in_order():
     expected = ["T1", "T2", "T3", "H1", "H3", "H4", "L6"]
@@ -367,6 +378,67 @@ def test_initial_runner_switches_models_by_task_and_captures_2d_and_3d_trajector
     assert 'assessment_package: ASSESSMENT_PACKAGE' in source
     assert 'coordinate_space' in source
     assert 'if(which === "WALK_ACROSS")' in source
+
+
+def test_trusted_model_result_endpoint_rejects_proxies_and_stores_validated_outputs(monkeypatch):
+    assessment_id = "model-contract-test"
+    server.LOCAL_ASSESSMENTS.append({
+        "id": assessment_id,
+        "created_at": "2026-08-27T00:00:00+00:00",
+        "affected_side": "right",
+        "assessment_package": "initial",
+        "task_results": [{
+            "task_id": "T1", "completed_steps": 1, "total_steps": 1,
+            "duration_ms": 1000, "steps": [], "metrics": {},
+        }],
+        "functional_issues": [],
+        "rehab_plan": [],
+        "patient_parameters": {"height_cm": 170, "mass_kg": 70},
+        "model_analysis": {"status": "queued", "tasks": [{"task_id": "T1", "video_id": "video-t1"}]},
+        "motion_data": {"frames": []},
+    })
+    monkeypatch.setattr(server, "ANALYSIS_WORKER_TOKEN", "test-worker-token")
+    payload = {
+        "status": "completed",
+        "per_task": [{
+            "task_id": "T1",
+            "quality": {
+                "kinematics_valid": True,
+                "model_scaled": True,
+                "external_loads_valid": True,
+                "residuals_within_threshold": True,
+            },
+            "external_load_method": "gravity_only_seated_no_external_object",
+            "muscle_activations": {"anterior_deltoid": {"mean": 0.3, "peak": 0.6}},
+            "muscle_forces_n": {"anterior_deltoid": 110.0},
+            "joint_moments_nm": {"shoulder_flexion": 18.0},
+            "functional_findings": [{"code": "UL_REVIEW", "label": "Shoulder pattern for review"}],
+            "provenance": {
+                "solver": "OpenSim MocoInverse",
+                "model_version": "upper-extremity-1.0",
+                "source_video_id": "video-t1",
+                "code_version": "abc123",
+            },
+        }],
+    }
+    try:
+        with TestClient(server.app) as client:
+            unauthorized = client.post(f"/api/assessment/{assessment_id}/model-results", json=payload)
+            assert unauthorized.status_code == 401
+            accepted = client.post(
+                f"/api/assessment/{assessment_id}/model-results",
+                json=payload,
+                headers={"X-Analysis-Worker-Token": "test-worker-token"},
+            )
+            assert accepted.status_code == 200
+            assert accepted.json()["tasks_modeled"] == 1
+        stored = next(item for item in server.LOCAL_ASSESSMENTS if item.get("id") == assessment_id)
+        assert stored["muscle_activation_diagnosis"]["status"] == "model_complete"
+        assert stored["muscle_activation_diagnosis"]["findings"][0]["provenance"] == "validated_musculoskeletal_model"
+    finally:
+        server.LOCAL_ASSESSMENTS[:] = [
+            item for item in server.LOCAL_ASSESSMENTS if item.get("id") != assessment_id
+        ]
 
 
 def test_survey_and_camera_findings_are_reconciled_without_forcing_agreement():
