@@ -2027,6 +2027,10 @@ let affectedHandTrackSeenAt = 0;
 let latestPoseLandmarks = null;        // result.landmarks[0] from PoseLandmarker (33 points)
 let latestPoseWorldLandmarks = null;   // estimated 3D world landmarks from PoseLandmarker
 let dynamicTargetPos = null;           // {x,y} locked once a dynamic body target is calibrated
+function newMouthTargetCalibration(){
+  return {samples:[], target:null, locked:false, lastSampleKey:null};
+}
+let mouthTargetCalibration = newMouthTargetCalibration();
 function newLapTargetCalibration(){
   return {samples:[], target:null, ready:false, announced:false, lastCandidateAt:0};
 }
@@ -2888,6 +2892,7 @@ async function startStep(){
   thumbIndexMinDistanceRatio = Infinity;
   stepStartBodyState = null;
   dynamicTargetPos = null;
+  if(currentStepIdx === 0) mouthTargetCalibration = newMouthTargetCalibration();
   if(currentStepIdx === 0){
     affectedHandTrackWrist = null;
     affectedHandTrackSeenAt = 0;
@@ -3412,6 +3417,38 @@ if(URL_PARAMS.get("test_mode") === "lap_calibration"){
   };
 }
 
+if(URL_PARAMS.get("test_mode") === "mouth_target"){
+  window.__rehynMouthTargetTest = {
+    affectedSide:AFFECTED_SIDE,
+    runTargetSequence:(frames) => {
+      const savedCalibration = mouthTargetCalibration;
+      mouthTargetCalibration = newMouthTargetCalibration();
+      frames.forEach((landmarks, index) => updateMouthTargetCalibration(landmarks, index + 1));
+      const result = {
+        target:mouthTargetCalibration.target,
+        locked:mouthTargetCalibration.locked,
+        sampleCount:mouthTargetCalibration.samples.length,
+      };
+      mouthTargetCalibration = savedCalibration;
+      return result;
+    },
+    evaluatePoseHit:(landmarks, target, radius=0.10) => {
+      const savedHand = latestHandLandmarks;
+      latestHandLandmarks = null;
+      const point = closestAffectedHandPointToTarget(landmarks, target);
+      const distance = mouthContactDistance(landmarks, target);
+      const affectedWrist = mirrorX(sideLandmarks(landmarks, AFFECTED_SIDE).wrist);
+      latestHandLandmarks = savedHand;
+      return {
+        point,
+        distance,
+        wristDistance:distXY(affectedWrist, target),
+        hit:distance < radius,
+      };
+    },
+  };
+}
+
 if(URL_PARAMS.get("test_mode") === "hand_selection"){
   window.__rehynAffectedHandTest = {
     affectedSide:AFFECTED_SIDE,
@@ -3514,6 +3551,76 @@ function computeMetrics(landmarks){
 // Mirroring: user sees themselves mirrored — so on-screen X = (1 - landmark.x).
 function mirrorX(p){ return {x: 1 - p.x, y: p.y}; }
 
+function poseMouthTarget(lm){
+  if(!lm || lm.length < 11) return null;
+  const leftMouth = lm[9];
+  const rightMouth = lm[10];
+  if(!landmarkIsUsable(leftMouth, 0.25) || !landmarkIsUsable(rightMouth, 0.25)) return null;
+  return mirrorX(midpoint(leftMouth, rightMouth));
+}
+
+function updateMouthTargetCalibration(lm, sampleKey=(lastPoseScanTs || performance.now())){
+  if(mouthTargetCalibration.locked && mouthTargetCalibration.target) return mouthTargetCalibration.target;
+  const point = poseMouthTarget(lm);
+  if(!point) return mouthTargetCalibration.target;
+  if(mouthTargetCalibration.lastSampleKey === sampleKey) return mouthTargetCalibration.target;
+  mouthTargetCalibration.lastSampleKey = sampleKey;
+  const samples = mouthTargetCalibration.samples;
+  samples.push(point);
+  while(samples.length > 10) samples.shift();
+  let center = {
+    x:medianValue(samples.map(sample => sample.x)),
+    y:medianValue(samples.map(sample => sample.y)),
+  };
+  mouthTargetCalibration.target = center;
+  if(samples.length < 5) return center;
+  const maxJitter = Math.max(0.012, shoulderWidth(lm) * 0.08);
+  const stableSamples = samples.filter(sample => distXY(sample, center) <= maxJitter);
+  if(stableSamples.length < Math.ceil(samples.length * 0.8)) return center;
+  center = {
+    x:medianValue(stableSamples.map(sample => sample.x)),
+    y:medianValue(stableSamples.map(sample => sample.y)),
+  };
+  mouthTargetCalibration.target = center;
+  mouthTargetCalibration.locked = true;
+  return center;
+}
+
+function affectedPoseHandPoints(lm){
+  if(!lm || lm.length < 23) return [];
+  const left = AFFECTED_SIDE === "left";
+  const indices = left ? [15, 17, 19, 21] : [16, 18, 20, 22];
+  return indices
+    .map(index => lm[index])
+    .filter(point => landmarkIsUsable(point, 0.20))
+    .map(mirrorX);
+}
+
+function affectedMouthContactPoints(lm){
+  const points = affectedPoseHandPoints(lm);
+  if(latestHandLandmarks && latestHandLandmarks.length >= 21
+    && performance.now() - latestHandSeenAt <= handLandmarkFreshMs()){
+    const fingertips = [4, 8, 12, 16, 20]
+      .map(index => latestHandLandmarks[index])
+      .filter(point => point && Number.isFinite(point.x) && Number.isFinite(point.y))
+      .map(mirrorX);
+    points.push(...fingertips);
+    const palm = handPalmCenter();
+    if(palm) points.push(palm);
+  }
+  return points;
+}
+
+function closestAffectedHandPointToTarget(lm, target){
+  const points = affectedMouthContactPoints(lm);
+  if(!points.length || !target) return null;
+  return points.reduce((closest, point) => distXY(point, target) < distXY(closest, target) ? point : closest);
+}
+
+function mouthContactDistance(lm, target){
+  return distXY(closestAffectedHandPointToTarget(lm, target), target);
+}
+
 function handPalmCenter(){
   if(!latestHandLandmarks || latestHandLandmarks.length < 21) return null;
   const h = latestHandLandmarks;
@@ -3546,9 +3653,7 @@ function resolveLandmarkPoint(which){
     return mirrorX({x:(lm[15].x+lm[16].x)/2, y:(lm[15].y+lm[16].y)/2});
   }
   if(which === "MOUTH"){
-    // MediaPipe Pose: 9 = mouth_left, 10 = mouth_right
-    const m = {x:(lm[9].x+lm[10].x)/2, y:(lm[9].y+lm[10].y)/2};
-    return mirrorX(m);
+    return poseMouthTarget(lm);
   }
   if(which === "CHEST"){
     // mid-shoulder, drop slightly below for chest center
@@ -3582,7 +3687,11 @@ function getEffectiveTargetXY(step){
     }
     return dynamicTargetPos || {x: step.target.x, y: step.target.y};
   }
-  if(which === "MOUTH" || which === "CHEST"){
+  if(which === "MOUTH"){
+    const p = updateMouthTargetCalibration(latestPoseLandmarks);
+    return p ? {x:p.x, y:p.y} : {x:step.target.x, y:step.target.y};
+  }
+  if(which === "CHEST"){
     const p = resolveLandmarkPoint(which);
     return p ? {x: p.x, y: p.y} : {x: step.target.x, y: step.target.y};
   }
@@ -3695,6 +3804,7 @@ function needsHandLandmarks(){
     || landmark === "OBJECT_COUPLED"
     || landmark === "OBJECT_AT_TARGET"
     || landmark === "OBJECT_RELEASED"
+    || landmark === "MOUTH"
     || isAdvancedObjectMode()
     || measures.some((name) => HAND_METRIC_NAMES.has(name));
 }
@@ -3875,11 +3985,16 @@ function effectiveRadius(step, lm){
     return Math.min(Math.max(baseR, 0.12), 0.28);
   }
   const sw = shoulderWidth(lm);
-  // Tighter radius — about 0.55 × shoulder-width for most targets,
-  // 0.70 × for body-anchored targets (MOUTH/CHEST) since they're depth-tricky.
+  // Tighter radius — about 0.55 × shoulder-width for most targets.
+  // Mouth uses fingertip/palm contact, so its visible circle can stay centered
+  // and compact instead of expanding enough to admit the lower wrist.
   const which = step.target.landmark;
   let r = Math.max(baseR, sw * 0.55);
-  if(which === "MOUTH" || which === "CHEST"){
+  if(which === "MOUTH"){
+    r = Math.max(baseR, sw * 0.48);
+    return Math.min(r, 0.14);
+  }
+  if(which === "CHEST"){
     r = Math.max(r, sw * 0.70);
   }
   return Math.min(r, 0.18);
@@ -3916,6 +4031,9 @@ function activeWrist(lm){
     return activeHandPoint();
   }
   if(!lm) return null;
+  if(step && step.target && step.target.landmark === "MOUTH"){
+    return mirrorX(sideLandmarks(lm, AFFECTED_SIDE).wrist);
+  }
   // pick the wrist closer to the current effective target
   if(!step) return mirrorX(lm[15]);
   const target = getEffectiveTargetXY(step);
@@ -3972,6 +4090,9 @@ function targetAttemptPoint(lm, step){
   if(isHandTask()) return activeHandPoint();
   if(!lm || !step) return null;
   const which = step.target.landmark;
+  if(which === "MOUTH"){
+    return closestAffectedHandPointToTarget(lm, getEffectiveTargetXY(step));
+  }
   if(isAdvancedObjectMode() && latestMarker && ["OBJECT_AT_TARGET", "OBJECT_RELEASED"].includes(which)){
     return latestMarker.object_center;
   }
@@ -4391,7 +4512,10 @@ function checkTarget(landmarks){
     const gestureOk = handLandmarker ? pinchScore < 0.35 : true;
     return near && gestureOk;
   }
-  if(which === "MOUTH" || which === "CHEST"){
+  if(which === "MOUTH"){
+    return mouthContactDistance(landmarks, targetXY) < R;
+  }
+  if(which === "CHEST"){
     return wristDist() < R;
   }
   if(which === "WRIST_DYNAMIC"){
