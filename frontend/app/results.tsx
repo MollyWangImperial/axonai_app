@@ -20,13 +20,27 @@ export default function ResultsScreen() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    (async () => {
+    let cancelled = false;
+    let refreshTimer: ReturnType<typeof setTimeout> | undefined;
+    const load = async () => {
       try {
-        if (id) setData(await fetchPatientAssessmentSummary(id));
+        if (id) {
+          const next = await fetchPatientAssessmentSummary(id);
+          if (cancelled) return;
+          setData(next);
+          if (next.clinical_review_gate?.status === "awaiting_model_analysis") {
+            refreshTimer = setTimeout(load, 5000);
+          }
+        }
       } finally {
-        setLoading(false);
+        if (!cancelled) setLoading(false);
       }
-    })();
+    };
+    load();
+    return () => {
+      cancelled = true;
+      if (refreshTimer) clearTimeout(refreshTimer);
+    };
   }, [id]);
 
   const areaLabel = useMemo(() => {
@@ -38,6 +52,10 @@ export default function ResultsScreen() {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     router.push({ pathname: "/designing-plan", params: { id } });
   };
+
+  const reviewGate = data?.clinical_review_gate;
+  const rehabBlocked = reviewGate?.rehab_access === "blocked";
+  const awaitingAnalysis = reviewGate?.status === "awaiting_model_analysis";
 
   if (loading) {
     return (
@@ -74,7 +92,7 @@ export default function ResultsScreen() {
           <View style={styles.completeIcon}>
             <Ionicons name="checkmark" size={30} color={colors.onBrandPrimary} />
           </View>
-          <Text style={styles.heroTitle}>Your assessment is complete</Text>
+          <Text style={styles.heroTitle}>Your task collection is complete</Text>
           <Text style={styles.heroSub}>
             Your task recordings and movement data have been saved. We will use them with your survey answers to prepare your rehabilitation plan.
           </Text>
@@ -125,12 +143,33 @@ export default function ResultsScreen() {
             </Text>
           </View>
         </View>
+
+        {rehabBlocked && (
+          <View style={styles.reviewCard} testID="clinical-review-hold">
+            <View style={styles.reviewIcon}>
+              <Ionicons
+                name={awaitingAnalysis ? "hourglass-outline" : "people-outline"}
+                size={24}
+                color={colors.brandPrimary}
+              />
+            </View>
+            <View style={styles.nextCopy}>
+              <Text style={styles.reviewTitle}>{reviewGate?.patient_title}</Text>
+              <Text style={styles.reviewText}>{reviewGate?.patient_message}</Text>
+              <Text style={styles.reviewNext}>{reviewGate?.next_step}</Text>
+            </View>
+          </View>
+        )}
       </ScrollView>
 
       <View style={[styles.ctaBar, { paddingBottom: Math.max(insets.bottom, spacing.md) }]}>
-        <Pressable onPress={goPlan} style={styles.cta} testID="results-view-plan">
-          <Ionicons name="clipboard-outline" size={22} color={colors.onBrandPrimary} />
-          <Text style={styles.ctaText}>View Rehab Plan</Text>
+        <Pressable
+          onPress={rehabBlocked ? () => router.replace("/") : goPlan}
+          style={styles.cta}
+          testID={rehabBlocked ? "results-return-home" : "results-view-plan"}
+        >
+          <Ionicons name={rehabBlocked ? "home-outline" : "clipboard-outline"} size={22} color={colors.onBrandPrimary} />
+          <Text style={styles.ctaText}>{rehabBlocked ? "Return Home" : "View Rehab Plan"}</Text>
         </Pressable>
       </View>
     </View>
@@ -216,6 +255,27 @@ const styles = StyleSheet.create({
   nextCopy: { flex: 1 },
   nextTitle: { fontSize: 16, fontWeight: "700", color: colors.onSurface, marginBottom: 4 },
   nextText: { color: colors.onSurfaceSecondary, fontSize: 14, lineHeight: 20 },
+  reviewCard: {
+    flexDirection: "row",
+    gap: spacing.md,
+    borderWidth: 1,
+    borderColor: colors.brandPrimary,
+    backgroundColor: colors.brandTertiary,
+    borderRadius: radius.sm,
+    padding: spacing.md,
+    marginTop: spacing.lg,
+  },
+  reviewIcon: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: colors.surface,
+  },
+  reviewTitle: { fontSize: 17, fontWeight: "800", color: colors.onBrandTertiary, marginBottom: 6 },
+  reviewText: { color: colors.onBrandTertiary, fontSize: 14, lineHeight: 20 },
+  reviewNext: { color: colors.onBrandTertiary, fontSize: 14, lineHeight: 20, fontWeight: "700", marginTop: spacing.sm },
   ctaBar: {
     position: "absolute",
     left: 0,

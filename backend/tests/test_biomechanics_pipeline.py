@@ -116,3 +116,16 @@ def test_patient_results_screen_does_not_render_backend_diagnostics():
         "Movement and survey check",
     ):
         assert internal_label not in source
+
+
+def test_patient_results_and_direct_plan_route_enforce_clinical_review_hold():
+    root = Path(__file__).resolve().parents[2] / "frontend" / "app"
+    results = (root / "results.tsx").read_text(encoding="utf-8")
+    plan = (root / "rehab-plan.tsx").read_text(encoding="utf-8")
+    assert 'testID="clinical-review-hold"' in results
+    assert 'reviewGate?.rehab_access === "blocked"' in results
+    assert 'testID="plan-clinical-review-hold"' in plan
+    assert 'data.clinical_review_gate?.rehab_access === "blocked"' in plan
+    assert "Please confirm the results with your therapist" in (
+        Path(__file__).resolve().parents[1] / "assessment_fusion.py"
+    ).read_text(encoding="utf-8")

@@ -56,6 +56,107 @@ def _survey_domains(patient_parameters: Mapping[str, Any]) -> tuple[set[str], bo
     return domains, survey_is_explicit, evidence
 
 
+def _item_value(item: Any, key: str, default: Any = None) -> Any:
+    if isinstance(item, Mapping):
+        return item.get(key, default)
+    return getattr(item, key, default)
+
+
+def build_clinical_review_gate(
+    issues: Sequence[Any],
+    patient_parameters: Mapping[str, Any] | None,
+    task_results: Sequence[Any] | None,
+    musculoskeletal_outputs: Mapping[str, Any] | None,
+    expected_task_count: int = 0,
+) -> Dict[str, Any]:
+    """Gate automatic rehab when validated objective and survey evidence diverge.
+
+    Missing model output is never interpreted as normal. The discrepancy state
+    is reached only after complete task collection and quality-gated model output.
+    """
+    params = patient_parameters or {}
+    reported_domains, survey_is_explicit, _ = _survey_domains(params)
+    results = list(task_results or [])
+    outputs = dict(musculoskeletal_outputs or {})
+    quality = outputs.get("quality") if isinstance(outputs.get("quality"), Mapping) else {}
+    model_complete = outputs.get("status") == "completed" and all(
+        quality.get(key) is True
+        for key in (
+            "kinematics_valid",
+            "model_scaled",
+            "external_loads_valid",
+            "residuals_within_threshold",
+        )
+    )
+    collection_complete = bool(results) and all(
+        int(_item_value(item, "total_steps", 0) or 0) > 0
+        and int(_item_value(item, "completed_steps", 0) or 0)
+        >= int(_item_value(item, "total_steps", 0) or 0)
+        for item in results
+    )
+    if expected_task_count:
+        collection_complete = collection_complete and len(results) >= expected_task_count
+
+    camera_findings = [
+        item for item in issues
+        if str(_item_value(item, "code", "")) != "NO_ISSUES"
+    ]
+    model_findings = outputs.get("functional_findings") or []
+    explicit_report = survey_is_explicit and bool(reported_domains)
+
+    base = {
+        "version": "1.0",
+        "therapist_confirmation_required": False,
+        "reported_domains": sorted(reported_domains),
+        "objective_evidence": {
+            "task_collection_complete": collection_complete,
+            "validated_model_complete": model_complete,
+            "camera_findings_count": len(camera_findings),
+            "model_findings_count": len(model_findings),
+        },
+        "reporting_rule": (
+            "A missing or incomplete model is never treated as evidence of normal function. "
+            "Patient-reported symptoms are retained for clinical review even when they are not observed in the recorded tasks."
+        ),
+    }
+
+    if not explicit_report or camera_findings or model_findings:
+        return {
+            **base,
+            "status": "clear",
+            "rehab_access": "allowed",
+            "reason_code": "objective_survey_hold_not_required",
+            "patient_title": "Your plan can be prepared",
+            "patient_message": "Your recorded assessment can be used to prepare the next step in your rehabilitation plan.",
+            "next_step": "Review the plan with your therapist before beginning new rehabilitation activities.",
+        }
+
+    if not collection_complete or not model_complete:
+        return {
+            **base,
+            "status": "awaiting_model_analysis",
+            "rehab_access": "blocked",
+            "reason_code": "objective_review_incomplete",
+            "patient_title": "Your movement analysis is still in progress",
+            "patient_message": "Your recordings and survey answers have been saved. We will not prepare exercises until the movement and musculoskeletal analysis is complete.",
+            "next_step": "Return later to review the result. Do not begin a new rehabilitation plan from this assessment yet.",
+        }
+
+    return {
+        **base,
+        "status": "therapist_confirmation_required",
+        "rehab_access": "blocked",
+        "reason_code": "survey_objective_mismatch_no_observable_impairment",
+        "therapist_confirmation_required": True,
+        "patient_title": "Please confirm these results with your therapist",
+        "patient_message": (
+            "Your survey reports symptoms, but the completed movement assessment and validated musculoskeletal model "
+            "did not detect an observable functional impairment in these tasks. This does not mean your symptoms are not real."
+        ),
+        "next_step": "Please confirm the results with your therapist before starting any rehabilitation exercises.",
+    }
+
+
 def build_survey_consistency(
     issues: Sequence[Any],
     patient_parameters: Mapping[str, Any] | None,

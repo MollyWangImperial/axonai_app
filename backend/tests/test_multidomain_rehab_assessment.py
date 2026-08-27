@@ -27,7 +27,7 @@ from backend.rehab_assessment import build_biomechanical_estimates
 from backend.clinical_measurement_form import build_clinical_measurement_form
 from backend.rehab_goal_evidence import retrieve_goal_evidence
 from backend.rehab_goals import build_rehab_goals
-from backend.assessment_fusion import build_analysis_pipeline, build_survey_consistency
+from backend.assessment_fusion import build_analysis_pipeline, build_clinical_review_gate, build_survey_consistency
 
 
 def _failed_result(package_id: str, task_id: str, step_id: str):
@@ -348,7 +348,7 @@ def test_routes_expose_packages_modeling_contract_and_multidomain_results():
         assert patient_summary.status_code == 200
         summary_payload = patient_summary.json()
         assert set(summary_payload) == {
-            "id", "created_at", "assessment_package", "collection", "rehab_plan_ready"
+            "id", "created_at", "assessment_package", "collection", "rehab_plan_ready", "clinical_review_gate"
         }
         assert summary_payload["collection"]["tasks_collected"] == 1
         assert "analysis_pipeline" not in summary_payload
@@ -466,6 +466,104 @@ def test_survey_and_camera_findings_are_reconciled_without_forcing_agreement():
     assert by_code["GAIT_PROGRESSION_IMPAIRED"]["status"] == "discordant"
     assert fused["overall_status"] == "discordant_review_required"
     assert "not forced to agree" in fused["reporting_rule"]
+
+
+def test_clinical_review_gate_waits_for_model_then_requires_therapist_confirmation():
+    completed = [{"task_id": "T1", "completed_steps": 2, "total_steps": 2}]
+    no_camera_issues = [server.FunctionalIssue(
+        code="NO_ISSUES",
+        label="No failed movement steps identified",
+        description="All observed steps were completed.",
+        source="camera",
+        severity="mild",
+        related_task="ALL",
+    )]
+    survey = {"affected_areas": ["right_upper"]}
+
+    pending = build_clinical_review_gate(no_camera_issues, survey, completed, {}, 1)
+    assert pending["status"] == "awaiting_model_analysis"
+    assert pending["rehab_access"] == "blocked"
+    assert pending["objective_evidence"]["validated_model_complete"] is False
+
+    validated_normal = {
+        "status": "completed",
+        "quality": {
+            "kinematics_valid": True,
+            "model_scaled": True,
+            "external_loads_valid": True,
+            "residuals_within_threshold": True,
+        },
+        "functional_findings": [],
+    }
+    mismatch = build_clinical_review_gate(no_camera_issues, survey, completed, validated_normal, 1)
+    assert mismatch["status"] == "therapist_confirmation_required"
+    assert mismatch["therapist_confirmation_required"] is True
+    assert mismatch["rehab_access"] == "blocked"
+    assert "does not mean your symptoms are not real" in mismatch["patient_message"]
+
+    validated_with_finding = {**validated_normal, "functional_findings": [{"code": "UL_REVIEW"}]}
+    aligned = build_clinical_review_gate(no_camera_issues, survey, completed, validated_with_finding, 1)
+    assert aligned["status"] == "clear"
+    assert aligned["rehab_access"] == "allowed"
+
+
+def test_trusted_normal_model_result_removes_automatic_plan_when_survey_reports_symptoms(monkeypatch):
+    assessment_id = "survey-objective-hold-test"
+    server.LOCAL_ASSESSMENTS.append({
+        "id": assessment_id,
+        "created_at": "2026-08-27T00:00:00+00:00",
+        "affected_side": "right",
+        "assessment_package": "test_package",
+        "task_results": [{
+            "task_id": "T1", "completed_steps": 1, "total_steps": 1,
+            "duration_ms": 1000, "steps": [], "metrics": {},
+        }],
+        "functional_issues": [{
+            "code": "NO_ISSUES", "label": "No failed movement steps identified",
+            "description": "All observed steps were completed.", "source": "camera",
+            "severity": "mild", "related_task": "ALL",
+        }],
+        "rehab_plan": [{"id": "ex_maintenance"}],
+        "patient_parameters": {"affected_areas": ["right_upper"]},
+        "model_analysis": {"status": "queued", "tasks": [{"task_id": "T1", "video_id": "video-t1"}]},
+        "motion_data": {"frames": []},
+    })
+    monkeypatch.setattr(server, "ANALYSIS_WORKER_TOKEN", "test-worker-token")
+    payload = {
+        "status": "completed",
+        "per_task": [{
+            "task_id": "T1",
+            "quality": {
+                "kinematics_valid": True, "model_scaled": True,
+                "external_loads_valid": True, "residuals_within_threshold": True,
+            },
+            "external_load_method": "gravity_only_seated_no_external_object",
+            "muscle_activations": {"anterior_deltoid": {"mean": 0.3, "peak": 0.6}},
+            "functional_findings": [],
+            "provenance": {
+                "solver": "OpenSim MocoInverse", "model_version": "upper-extremity-1.0",
+                "source_video_id": "video-t1", "code_version": "abc123",
+            },
+        }],
+    }
+    try:
+        with TestClient(server.app) as client:
+            accepted = client.post(
+                f"/api/assessment/{assessment_id}/model-results",
+                json=payload,
+                headers={"X-Analysis-Worker-Token": "test-worker-token"},
+            )
+            assert accepted.status_code == 200
+            assert accepted.json()["clinical_review_status"] == "therapist_confirmation_required"
+            summary = client.get(f"/api/assessment/{assessment_id}/patient-summary").json()
+            assert summary["rehab_plan_ready"] is False
+            assert summary["clinical_review_gate"]["rehab_access"] == "blocked"
+        stored = next(item for item in server.LOCAL_ASSESSMENTS if item.get("id") == assessment_id)
+        assert stored["rehab_plan"] == []
+    finally:
+        server.LOCAL_ASSESSMENTS[:] = [
+            item for item in server.LOCAL_ASSESSMENTS if item.get("id") != assessment_id
+        ]
 
 
 def test_analysis_pipeline_does_not_claim_muscle_activation_without_solver_output():

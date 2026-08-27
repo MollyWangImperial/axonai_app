@@ -84,6 +84,34 @@ export default function RehabPlanScreen() {
     );
   }
 
+  if (data.clinical_review_gate?.rehab_access === "blocked") {
+    const gate = data.clinical_review_gate;
+    const awaiting = gate.status === "awaiting_model_analysis";
+    return (
+      <View style={styles.container}>
+        <View style={[styles.header, { paddingTop: insets.top + spacing.sm }]}>
+          <Pressable onPress={() => router.replace("/")} style={styles.backBtn} testID="plan-blocked-back">
+            <Ionicons name="chevron-back" size={24} color={colors.onSurface} />
+          </Pressable>
+          <Text style={styles.headerTitle}>Rehab Plan</Text>
+          <View style={{ width: 40 }} />
+        </View>
+        <View style={[styles.center, styles.blockedContent]} testID="plan-clinical-review-hold">
+          <View style={styles.blockedIcon}>
+            <Ionicons name={awaiting ? "hourglass-outline" : "people-outline"} size={30} color={colors.brandPrimary} />
+          </View>
+          <Text style={styles.blockedTitle}>{gate.patient_title}</Text>
+          <Text style={styles.blockedText}>{gate.patient_message}</Text>
+          <Text style={styles.blockedNext}>{gate.next_step}</Text>
+          <Pressable onPress={() => router.replace("/")} style={styles.blockedButton} testID="plan-blocked-home">
+            <Ionicons name="home-outline" size={20} color={colors.onBrandPrimary} />
+            <Text style={styles.guidedBtnText}>Return Home</Text>
+          </Pressable>
+        </View>
+      </View>
+    );
+  }
+
   return (
     <View style={styles.container}>
       <View style={[styles.header, { paddingTop: insets.top + spacing.sm }]}>
@@ -203,6 +231,12 @@ export default function RehabPlanScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.surface },
   center: { alignItems: "center", justifyContent: "center" },
+  blockedContent: { flex: 1, padding: spacing.xl },
+  blockedIcon: { width: 64, height: 64, borderRadius: 32, alignItems: "center", justifyContent: "center", backgroundColor: colors.brandTertiary, marginBottom: spacing.md },
+  blockedTitle: { fontSize: 22, fontWeight: "800", color: colors.onSurface, textAlign: "center", marginBottom: spacing.sm },
+  blockedText: { fontSize: 15, lineHeight: 22, color: colors.onSurfaceSecondary, textAlign: "center" },
+  blockedNext: { fontSize: 15, lineHeight: 22, fontWeight: "700", color: colors.onSurface, textAlign: "center", marginTop: spacing.md },
+  blockedButton: { flexDirection: "row", gap: spacing.sm, backgroundColor: colors.brandPrimary, borderRadius: radius.md, paddingHorizontal: spacing.xl, paddingVertical: spacing.md, alignItems: "center", marginTop: spacing.xl },
   header: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: spacing.md, paddingBottom: spacing.sm, borderBottomWidth: 1, borderBottomColor: colors.divider },
   backBtn: { width: 40, height: 40, alignItems: "center", justifyContent: "center" },
   headerTitle: { fontSize: 17, fontWeight: "700", color: colors.onSurface },

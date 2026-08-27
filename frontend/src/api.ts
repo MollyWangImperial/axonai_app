@@ -69,6 +69,26 @@ export type PatientAssessmentSummary = {
     domains: { domain: string; label: string }[];
   };
   rehab_plan_ready: boolean;
+  clinical_review_gate: ClinicalReviewGate;
+};
+
+export type ClinicalReviewGate = {
+  version?: string;
+  status: "clear" | "awaiting_model_analysis" | "therapist_confirmation_required";
+  rehab_access: "allowed" | "blocked";
+  reason_code?: string;
+  therapist_confirmation_required?: boolean;
+  patient_title?: string;
+  patient_message?: string;
+  next_step?: string;
+  reported_domains?: string[];
+  objective_evidence?: {
+    task_collection_complete: boolean;
+    validated_model_complete: boolean;
+    camera_findings_count: number;
+    model_findings_count: number;
+  };
+  reporting_rule?: string;
 };
 
 export type FunctionalIssue = {
@@ -174,6 +194,7 @@ export type Assessment = {
   muscle_activation_diagnosis?: MuscleActivationDiagnosis;
   survey_consistency?: SurveyConsistency;
   analysis_pipeline?: AnalysisPipeline;
+  clinical_review_gate?: ClinicalReviewGate;
   rehabilitation_goals?: {
     version: string;
     method: string;

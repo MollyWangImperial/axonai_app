@@ -31,7 +31,7 @@ try:
         attach_hand_failure_phenotypes,
     )
     from backend.muscle_diagnosis import build_muscle_activation_diagnosis
-    from backend.assessment_fusion import build_analysis_pipeline, build_survey_consistency
+    from backend.assessment_fusion import build_analysis_pipeline, build_clinical_review_gate, build_survey_consistency
     from backend.biomechanics_pipeline import (
         aggregate_model_outputs,
         build_model_analysis_manifest,
@@ -55,7 +55,7 @@ except ImportError:
         attach_hand_failure_phenotypes,
     )
     from muscle_diagnosis import build_muscle_activation_diagnosis
-    from assessment_fusion import build_analysis_pipeline, build_survey_consistency
+    from assessment_fusion import build_analysis_pipeline, build_clinical_review_gate, build_survey_consistency
     from biomechanics_pipeline import (
         aggregate_model_outputs,
         build_model_analysis_manifest,
@@ -198,6 +198,7 @@ class Assessment(BaseModel):
     muscle_activation_diagnosis: Dict[str, Any] = Field(default_factory=dict)
     survey_consistency: Dict[str, Any] = Field(default_factory=dict)
     analysis_pipeline: Dict[str, Any] = Field(default_factory=dict)
+    clinical_review_gate: Dict[str, Any] = Field(default_factory=dict)
 
 
 # ============ 7 Tasks: Step-by-step with voice prompts & on-screen target zones ============
@@ -1413,6 +1414,13 @@ async def submit_assessment(payload: AssessmentSubmit, request: Request):
         payload.motion_data,
         trusted_model_outputs,
     )
+    clinical_review_gate = build_clinical_review_gate(
+        issues,
+        patient_parameters,
+        payload.task_results,
+        trusted_model_outputs,
+        expected_task_count,
+    )
     assessment = Assessment(
         id=assessment_id,
         created_at=datetime.now(timezone.utc).isoformat(),
@@ -1429,6 +1437,7 @@ async def submit_assessment(payload: AssessmentSubmit, request: Request):
         muscle_activation_diagnosis=muscle_activation_diagnosis,
         survey_consistency=survey_consistency,
         analysis_pipeline=analysis_pipeline,
+        clinical_review_gate=clinical_review_gate,
     )
     doc = assessment.model_dump()
     if payload.motion_data:
@@ -1502,7 +1511,8 @@ async def get_patient_assessment_summary(assessment_id: str):
         "created_at": doc["created_at"],
         "assessment_package": package_id,
         "collection": collection,
-        "rehab_plan_ready": bool(doc.get("rehab_plan")),
+        "rehab_plan_ready": bool(doc.get("rehab_plan")) and (doc.get("clinical_review_gate") or {}).get("rehab_access", "allowed") == "allowed",
+        "clinical_review_gate": doc.get("clinical_review_gate") or {},
     }
 
 
@@ -1537,15 +1547,27 @@ async def save_model_results(assessment_id: str, payload: ModelResultSubmit, req
     outputs = aggregate_model_outputs(validated)
     patient_parameters = doc.get("patient_parameters") or {}
     task_results = doc.get("task_results") or []
+    issues = [FunctionalIssue(**item) for item in doc.get("functional_issues") or []]
+    expected_task_count = len(ASSESSMENT_PACKAGES.get(doc.get("assessment_package") or "upper_limb", {}).get("tasks", []))
+    clinical_review_gate = build_clinical_review_gate(
+        issues,
+        patient_parameters,
+        task_results,
+        outputs,
+        expected_task_count,
+    )
     updated_fields = {
         "musculoskeletal_outputs": outputs,
         "biomechanical_estimates": build_biomechanical_estimates(task_results, patient_parameters, outputs),
         "measurement_form": build_clinical_measurement_form(task_results, patient_parameters, outputs),
         "analysis_pipeline": build_analysis_pipeline(doc.get("motion_data") or {}, outputs),
         "muscle_activation_diagnosis": model_activation_report(outputs),
+        "clinical_review_gate": clinical_review_gate,
         "model_analysis.status": "completed",
         "model_analysis.completed_at": datetime.now(timezone.utc).isoformat(),
     }
+    if clinical_review_gate.get("status") == "therapist_confirmation_required":
+        updated_fields["rehab_plan"] = []
     try:
         await db.assessments.update_one({"id": assessment_id}, {"$set": updated_fields})
     except Exception as e:
@@ -1563,6 +1585,7 @@ async def save_model_results(assessment_id: str, payload: ModelResultSubmit, req
         "status": "completed",
         "tasks_modeled": len(outputs.get("per_task") or []),
         "findings_ready": True,
+        "clinical_review_status": clinical_review_gate.get("status"),
     }
 
 
