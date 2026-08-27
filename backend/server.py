@@ -1617,7 +1617,7 @@ POSE_RUNNER_HTML = r"""<!DOCTYPE html>
 <style>
   *{box-sizing:border-box;margin:0;padding:0}
   html,body{width:100%;height:100%;background:#0c100e;color:#fdfdfd;font-family:-apple-system,BlinkMacSystemFont,"Plus Jakarta Sans",sans-serif;overflow:hidden}
-  #stage{position:relative;width:100vw;height:100vh;background:#000}
+  #stage{position:relative;width:100vw;height:100vh;height:100dvh;background:#000}
   #cameraFrame{position:absolute;left:0;top:0;width:100%;height:100%;overflow:hidden;background:#000}
   #cameraFrame video,#cameraFrame canvas{position:absolute;inset:0;width:100%;height:100%;transform:scaleX(-1);transform-origin:center}
   #ui{position:absolute;inset:0;pointer-events:none;display:flex;flex-direction:column;justify-content:space-between;padding:env(safe-area-inset-top,24px) 16px env(safe-area-inset-bottom,24px) 16px}
@@ -1875,13 +1875,40 @@ const celebrateLabel = document.getElementById("celebrateLabel");
 const celebrateTitle = document.getElementById("celebrateTitle");
 const celebrateMsg = document.getElementById("celebrateMsg");
 const celebrateDots = document.getElementById("celebrateDots");
+const URL_PARAMS = new URLSearchParams(window.location.search);
 
-function fitCameraViewport(containerWidth, containerHeight, sourceWidth, sourceHeight){
+function classifyCameraDevice({
+  userAgent=navigator.userAgent || "",
+  userAgentDataMobile=navigator.userAgentData && navigator.userAgentData.mobile,
+  maxTouchPoints=navigator.maxTouchPoints || 0,
+  screenWidth=screen.width,
+  screenHeight=screen.height,
+  deviceMode=URL_PARAMS.get("device_mode"),
+}={}){
+  if(deviceMode === "mobile" || deviceMode === "phone") return "phone";
+  if(deviceMode === "tablet") return "tablet";
+  if(deviceMode === "desktop" || deviceMode === "web") return "web";
+  if(userAgentDataMobile === true || /iPhone|iPod/i.test(userAgent) || (/Android/i.test(userAgent) && /Mobile/i.test(userAgent))){
+    return "phone";
+  }
+  if(/iPad/i.test(userAgent) || (/Macintosh/i.test(userAgent) && maxTouchPoints > 1) || (/Android/i.test(userAgent) && !/Mobile/i.test(userAgent))){
+    return "tablet";
+  }
+  const shortScreenEdge = Math.min(Number(screenWidth) || Infinity, Number(screenHeight) || Infinity);
+  return maxTouchPoints > 0 && shortScreenEdge <= 600 ? "phone" : "web";
+}
+
+const CAMERA_DEVICE_CLASS = classifyCameraDevice();
+const CAMERA_FIT_MODE = CAMERA_DEVICE_CLASS === "phone" ? "cover" : "contain";
+
+function fitCameraViewport(containerWidth, containerHeight, sourceWidth, sourceHeight, fitMode=CAMERA_FIT_MODE){
   const safeContainerWidth = Math.max(1, Number(containerWidth) || 1);
   const safeContainerHeight = Math.max(1, Number(containerHeight) || 1);
   const safeSourceWidth = Math.max(1, Number(sourceWidth) || 1);
   const safeSourceHeight = Math.max(1, Number(sourceHeight) || 1);
-  const scale = Math.min(safeContainerWidth / safeSourceWidth, safeContainerHeight / safeSourceHeight);
+  const scale = fitMode === "cover"
+    ? Math.max(safeContainerWidth / safeSourceWidth, safeContainerHeight / safeSourceHeight)
+    : Math.min(safeContainerWidth / safeSourceWidth, safeContainerHeight / safeSourceHeight);
   const width = safeSourceWidth * scale;
   const height = safeSourceHeight * scale;
   return {
@@ -1889,6 +1916,7 @@ function fitCameraViewport(containerWidth, containerHeight, sourceWidth, sourceH
     top:(safeContainerHeight - height) / 2,
     width,
     height,
+    fit:fitMode,
   };
 }
 
@@ -1904,14 +1932,24 @@ function responsiveVideoSettings(longEdge, shortEdge, maxFrameRate=30){
 
 function syncCameraViewport(){
   if(!video.videoWidth || !video.videoHeight) return;
-  const rect = fitCameraViewport(stage.clientWidth, stage.clientHeight, video.videoWidth, video.videoHeight);
+  const rect = fitCameraViewport(stage.clientWidth, stage.clientHeight, video.videoWidth, video.videoHeight, CAMERA_FIT_MODE);
   cameraFrame.style.left = `${rect.left}px`;
   cameraFrame.style.top = `${rect.top}px`;
   cameraFrame.style.width = `${rect.width}px`;
   cameraFrame.style.height = `${rect.height}px`;
+  document.body.dataset.cameraDevice = CAMERA_DEVICE_CLASS;
+  document.body.dataset.cameraFit = rect.fit;
   if(canvas.width !== video.videoWidth) canvas.width = video.videoWidth;
   if(canvas.height !== video.videoHeight) canvas.height = video.videoHeight;
 }
+
+window.__rehynCameraViewportTest = {
+  classifyCameraDevice,
+  fitCameraViewport,
+  syncCameraViewport,
+  deviceClass:CAMERA_DEVICE_CLASS,
+  fitMode:CAMERA_FIT_MODE,
+};
 
 window.addEventListener("resize", syncCameraViewport, {passive:true});
 window.addEventListener("orientationchange", () => setTimeout(syncCameraViewport, 120), {passive:true});
@@ -2082,16 +2120,11 @@ let motionFrames = [];
 let lastMotionSampleTs = 0;
 const MOTION_SAMPLE_INTERVAL_MS = 100;
 const MAX_MOTION_FRAMES = 2400;
-const URL_PARAMS = new URLSearchParams(window.location.search);
 const CURRENT_USER_ID = URL_PARAMS.get("uid") || "";
 const ASSESSMENT_PACKAGE = URL_PARAMS.get("package") || "upper_limb";
 const START_TASK_ID = URL_PARAMS.get("start_task") || "";
 const AFFECTED_SIDE = URL_PARAMS.get("affected_side") === "left" ? "left" : "right";
-const DEVICE_MODE_OVERRIDE = URL_PARAMS.get("device_mode");
-const IS_MOBILE_CAPTURE_DEVICE = DEVICE_MODE_OVERRIDE === "mobile" || (DEVICE_MODE_OVERRIDE !== "desktop" && (
-  /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent)
-  || (navigator.maxTouchPoints > 1 && Math.min(screen.width, screen.height) < 1024)
-));
+const IS_MOBILE_CAPTURE_DEVICE = CAMERA_DEVICE_CLASS !== "web";
 const TASK_VIDEO_DB_NAME = "rehyn-task-videos-v1";
 const TASK_VIDEO_STORE_NAME = "task-videos";
 let activeTaskRecorder = null;
@@ -4894,7 +4927,8 @@ async function finishAssessment(){
             source_height: video.videoHeight,
             display_width: cameraFrame.clientWidth,
             display_height: cameraFrame.clientHeight,
-            fit: "contain",
+            fit: CAMERA_FIT_MODE,
+            device_class: CAMERA_DEVICE_CLASS,
             mirrored_for_patient: true,
           },
           sample_interval_ms: MOTION_SAMPLE_INTERVAL_MS,
@@ -5322,7 +5356,7 @@ REHAB_RUNNER_HTML_TEMPLATE = r"""<!DOCTYPE html>
 <style>
   *{box-sizing:border-box;margin:0;padding:0}
   html,body{width:100%;height:100%;background:#0c100e;color:#fdfdfd;font-family:-apple-system,BlinkMacSystemFont,"Plus Jakarta Sans",sans-serif;overflow:hidden}
-  #stage{position:relative;width:100vw;height:100vh;background:#000}
+  #stage{position:relative;width:100vw;height:100vh;height:100dvh;background:#000}
   #cameraFrame{position:absolute;left:0;top:0;width:100%;height:100%;overflow:hidden;background:#000}
   #cameraFrame video,#cameraFrame canvas{position:absolute;inset:0;width:100%;height:100%;transform:scaleX(-1);transform-origin:center}
   #ui{position:absolute;inset:0;pointer-events:none;display:flex;flex-direction:column;justify-content:space-between;padding:env(safe-area-inset-top,24px) 16px env(safe-area-inset-bottom,24px) 16px}
@@ -5448,13 +5482,40 @@ const fbConfirmBtn = document.getElementById("fbConfirmBtn");
 const fbReplay = document.getElementById("fbReplay");
 const checkYes = document.getElementById("checkYes");
 const checkUnderstand = document.getElementById("checkUnderstand");
+const URL_PARAMS = new URLSearchParams(window.location.search);
 
-function fitCameraViewport(containerWidth, containerHeight, sourceWidth, sourceHeight){
+function classifyCameraDevice({
+  userAgent=navigator.userAgent || "",
+  userAgentDataMobile=navigator.userAgentData && navigator.userAgentData.mobile,
+  maxTouchPoints=navigator.maxTouchPoints || 0,
+  screenWidth=screen.width,
+  screenHeight=screen.height,
+  deviceMode=URL_PARAMS.get("device_mode"),
+}={}){
+  if(deviceMode === "mobile" || deviceMode === "phone") return "phone";
+  if(deviceMode === "tablet") return "tablet";
+  if(deviceMode === "desktop" || deviceMode === "web") return "web";
+  if(userAgentDataMobile === true || /iPhone|iPod/i.test(userAgent) || (/Android/i.test(userAgent) && /Mobile/i.test(userAgent))){
+    return "phone";
+  }
+  if(/iPad/i.test(userAgent) || (/Macintosh/i.test(userAgent) && maxTouchPoints > 1) || (/Android/i.test(userAgent) && !/Mobile/i.test(userAgent))){
+    return "tablet";
+  }
+  const shortScreenEdge = Math.min(Number(screenWidth) || Infinity, Number(screenHeight) || Infinity);
+  return maxTouchPoints > 0 && shortScreenEdge <= 600 ? "phone" : "web";
+}
+
+const CAMERA_DEVICE_CLASS = classifyCameraDevice();
+const CAMERA_FIT_MODE = CAMERA_DEVICE_CLASS === "phone" ? "cover" : "contain";
+
+function fitCameraViewport(containerWidth, containerHeight, sourceWidth, sourceHeight, fitMode=CAMERA_FIT_MODE){
   const safeContainerWidth = Math.max(1, Number(containerWidth) || 1);
   const safeContainerHeight = Math.max(1, Number(containerHeight) || 1);
   const safeSourceWidth = Math.max(1, Number(sourceWidth) || 1);
   const safeSourceHeight = Math.max(1, Number(sourceHeight) || 1);
-  const scale = Math.min(safeContainerWidth / safeSourceWidth, safeContainerHeight / safeSourceHeight);
+  const scale = fitMode === "cover"
+    ? Math.max(safeContainerWidth / safeSourceWidth, safeContainerHeight / safeSourceHeight)
+    : Math.min(safeContainerWidth / safeSourceWidth, safeContainerHeight / safeSourceHeight);
   const width = safeSourceWidth * scale;
   const height = safeSourceHeight * scale;
   return {
@@ -5462,6 +5523,7 @@ function fitCameraViewport(containerWidth, containerHeight, sourceWidth, sourceH
     top:(safeContainerHeight - height) / 2,
     width,
     height,
+    fit:fitMode,
   };
 }
 
@@ -5477,14 +5539,24 @@ function responsiveVideoSettings(longEdge, shortEdge, maxFrameRate=30){
 
 function syncCameraViewport(){
   if(!video.videoWidth || !video.videoHeight) return;
-  const rect = fitCameraViewport(stage.clientWidth, stage.clientHeight, video.videoWidth, video.videoHeight);
+  const rect = fitCameraViewport(stage.clientWidth, stage.clientHeight, video.videoWidth, video.videoHeight, CAMERA_FIT_MODE);
   cameraFrame.style.left = `${rect.left}px`;
   cameraFrame.style.top = `${rect.top}px`;
   cameraFrame.style.width = `${rect.width}px`;
   cameraFrame.style.height = `${rect.height}px`;
+  document.body.dataset.cameraDevice = CAMERA_DEVICE_CLASS;
+  document.body.dataset.cameraFit = rect.fit;
   if(canvas.width !== video.videoWidth) canvas.width = video.videoWidth;
   if(canvas.height !== video.videoHeight) canvas.height = video.videoHeight;
 }
+
+window.__rehynCameraViewportTest = {
+  classifyCameraDevice,
+  fitCameraViewport,
+  syncCameraViewport,
+  deviceClass:CAMERA_DEVICE_CLASS,
+  fitMode:CAMERA_FIT_MODE,
+};
 
 window.addEventListener("resize", syncCameraViewport, {passive:true});
 window.addEventListener("orientationchange", () => setTimeout(syncCameraViewport, 120), {passive:true});
