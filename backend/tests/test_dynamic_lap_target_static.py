@@ -42,10 +42,10 @@ def test_lap_calibration_uses_stable_seated_anatomy_not_a_wrist_snapshot():
 def test_lap_calibration_starts_before_the_return_step_and_survives_brief_tracking_loss():
     source = server.POSE_RUNNER_HTML
     assert "function currentTaskLapStep()" in source
-    assert "const lapStep = currentTaskLapStep();" in source
+    assert "const lapStep = calibratingAssessment ? upcomingLapStep() : currentTaskLapStep();" in source
     assert "if(!lapStep || lapTargetCalibration.ready) return;" in source
     assert "now - lapTargetCalibration.lastCandidateAt <= 900" in source
-    assert "if(currentStepIdx === 0){\n    lapTargetCalibration = newLapTargetCalibration();" in source
+    assert "if(preservePreAssessmentLapCalibration && currentTaskLapStep()){" in source
 
 
 def test_hand_assessment_loads_pose_for_its_dynamic_lap_target():
@@ -60,6 +60,7 @@ def test_lap_calibration_has_a_browser_simulation_hook():
     assert 'URL_PARAMS.get("test_mode") === "lap_calibration"' in source
     assert "window.__rehynLapCalibrationTest" in source
     assert "updateLapTargetCalibration(landmarks, frame * frameMs);" in source
+    assert "applyCalibrationSequence:" in source
 
 
 def test_lap_circle_is_hidden_and_noninteractive_until_calibration_is_ready():

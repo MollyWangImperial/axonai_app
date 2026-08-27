@@ -1626,6 +1626,19 @@ POSE_RUNNER_HTML = r"""<!DOCTYPE html>
   #overlay h1{font-size:22px;font-weight:700}
   #overlay p{font-size:15px;color:#bcc2ba;line-height:1.5}
   #overlay button{background:#4A7856;color:#fff;border:none;padding:14px 28px;border-radius:16px;font-weight:700;font-size:16px}
+  #calibrationOverlay{position:absolute;inset:0;display:flex;align-items:flex-start;justify-content:center;background:linear-gradient(180deg,rgba(12,16,14,.62),rgba(12,16,14,.12));padding:calc(16px + env(safe-area-inset-top,0px)) 16px 16px;pointer-events:auto;z-index:12}
+  #calibrationOverlay .calibrationPanel{width:min(520px,100%);background:rgba(253,253,253,.96);color:#1C201D;border-radius:8px;padding:18px;box-shadow:0 18px 55px rgba(0,0,0,.30);backdrop-filter:blur(18px);-webkit-backdrop-filter:blur(18px)}
+  #calibrationOverlay h2{font-size:22px;line-height:1.2;margin-bottom:6px}
+  #calibrationOverlay .calibrationLead{font-size:15px;line-height:1.4;color:#49504B;margin-bottom:12px}
+  #calibrationChecklist{display:grid;gap:7px;margin:10px 0 14px}
+  .calibrationCheck{display:flex;align-items:center;gap:9px;font-size:14px;font-weight:650;color:#49504B}
+  .calibrationCheck .statusDot{display:grid;place-items:center;width:22px;height:22px;flex:0 0 22px;border-radius:50%;background:#E8ECE8;color:#69716B;font-size:13px}
+  .calibrationCheck.done{color:#285C3A}
+  .calibrationCheck.done .statusDot{background:#D9E5DC;color:#285C3A}
+  #calibrationProgress{height:6px;background:#E4E9E5;border-radius:3px;overflow:hidden;margin-bottom:14px}
+  #calibrationProgressFill{height:100%;width:0;background:#4A7856;transition:width .2s ease}
+  #calibrationBeginBtn{width:100%;border:none;border-radius:8px;padding:14px 16px;background:#4A7856;color:#fff;font-size:16px;font-weight:800;cursor:pointer}
+  #calibrationBeginBtn:disabled{background:#C9D2CB;color:#667068;cursor:not-allowed}
   #advancedMarkerGate{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:#0c100ef5;padding:20px;pointer-events:auto;z-index:11}
   #advancedMarkerGate .gateCard{width:min(520px,100%);max-height:92vh;overflow:auto;background:#FDFDFD;color:#1C201D;border-radius:24px;padding:22px;text-align:left;box-shadow:0 24px 80px rgba(0,0,0,.35)}
   #advancedMarkerGate .gateEyebrow{color:#4A7856;font-size:13px;font-weight:800;letter-spacing:.5px;text-transform:uppercase;margin-bottom:8px}
@@ -1688,8 +1701,22 @@ POSE_RUNNER_HTML = r"""<!DOCTYPE html>
   </div>
   <div id="overlay">
     <h1>Ready to begin?</h1>
-    <p>We will guide you through 7 short movement tasks using your camera. Move into the camera view, then tap Start.</p>
-    <button id="startBtn" data-testid="assessment-start">Start Assessment</button>
+    <p>We will guide you through 7 short movement tasks using your camera. Move into the camera view, then set up your seated position.</p>
+    <button id="startBtn" data-testid="assessment-start">Set Up Camera</button>
+  </div>
+  <div id="calibrationOverlay" class="hidden" data-testid="assessment-calibration">
+    <div class="calibrationPanel">
+      <h2 id="calibrationTitle">Let us find your seated position</h2>
+      <p class="calibrationLead" id="calibrationLead">Sit still with your affected hand resting on your lap. Keep your face, shoulders, affected arm, hips, and knees inside the camera view.</p>
+      <div id="calibrationChecklist">
+        <div class="calibrationCheck" id="calibrationCamera"><span class="statusDot">1</span><span>Camera is ready</span></div>
+        <div class="calibrationCheck" id="calibrationArm"><span class="statusDot">2</span><span>Face, shoulders, and affected arm are visible</span></div>
+        <div class="calibrationCheck" id="calibrationSeat"><span class="statusDot">3</span><span>Hips and affected knee are visible</span></div>
+        <div class="calibrationCheck" id="calibrationLap"><span class="statusDot">4</span><span>Hold still while your lap target is located</span></div>
+      </div>
+      <div id="calibrationProgress"><div id="calibrationProgressFill"></div></div>
+      <button id="calibrationBeginBtn" data-testid="calibration-begin" disabled>Keep still to continue</button>
+    </div>
   </div>
   <div id="advancedMarkerGate" class="hidden" data-testid="advanced-marker-gate">
     <div class="gateCard">
@@ -1752,8 +1779,18 @@ const stepTitle = document.getElementById("stepTitle");
 const captionEl = document.getElementById("caption");
 const voiceText = document.getElementById("voiceText");
 const lapStatus = document.getElementById("lapStatus");
+const ui = document.getElementById("ui");
 const overlay = document.getElementById("overlay");
 const startBtn = document.getElementById("startBtn");
+const calibrationOverlay = document.getElementById("calibrationOverlay");
+const calibrationTitle = document.getElementById("calibrationTitle");
+const calibrationLead = document.getElementById("calibrationLead");
+const calibrationCamera = document.getElementById("calibrationCamera");
+const calibrationArm = document.getElementById("calibrationArm");
+const calibrationSeat = document.getElementById("calibrationSeat");
+const calibrationLap = document.getElementById("calibrationLap");
+const calibrationProgressFill = document.getElementById("calibrationProgressFill");
+const calibrationBeginBtn = document.getElementById("calibrationBeginBtn");
 const skipBtn = document.getElementById("skipBtn");
 const exitBtn = document.getElementById("exitBtn");
 const advancedMarkerGate = document.getElementById("advancedMarkerGate");
@@ -1927,6 +1964,11 @@ function newLapTargetCalibration(){
 let lapTargetCalibration = newLapTargetCalibration();
 const LAP_CALIBRATION_MIN_SAMPLES = 8;
 const LAP_CALIBRATION_MIN_MS = 650;
+const CALIBRATION_INSTRUCTION = "Before we begin, sit still with your affected hand resting on your lap. Make sure your face, shoulders, affected arm, hips, and knees are visible. I will locate your lap target for the assessment.";
+let calibratingAssessment = false;
+let calibrationInstructionFinished = false;
+let preAssessmentCalibrationReady = false;
+let preservePreAssessmentLapCalibration = false;
 let handOpenScore = 0;                 // 0..1 — finger extension confidence
 let fistClosureScore = 0;              // 0..1 — mass finger flexion confidence
 let pinchScore = 0;                    // 0..1 — pinch confidence (1 = very close)
@@ -2170,7 +2212,7 @@ function compactLandmarks(points){
 }
 
 function captureMotionFrame(now){
-  if(!running || motionFrames.length >= MAX_MOTION_FRAMES) return;
+  if(!running || calibratingAssessment || motionFrames.length >= MAX_MOTION_FRAMES) return;
   if(now - lastMotionSampleTs < MOTION_SAMPLE_INTERVAL_MS) return;
   const task = tasks[currentTaskIdx];
   const step = getCurrentStep();
@@ -2539,7 +2581,11 @@ async function startStep(){
   stepStartBodyState = null;
   dynamicTargetPos = null;
   if(currentStepIdx === 0){
-    lapTargetCalibration = newLapTargetCalibration();
+    if(preservePreAssessmentLapCalibration && currentTaskLapStep()){
+      preservePreAssessmentLapCalibration = false;
+    }else if(!preservePreAssessmentLapCalibration){
+      lapTargetCalibration = newLapTargetCalibration();
+    }
   }else if(lapTargetCalibration.ready){
     dynamicTargetPos = lapTargetCalibration.target;
   }
@@ -2669,6 +2715,20 @@ function currentTaskLapStep(){
   return task.steps.find(isLapTarget) || null;
 }
 
+function upcomingLapStep(){
+  for(let taskIndex=currentTaskIdx; taskIndex<tasks.length; taskIndex += 1){
+    const task = tasks[taskIndex];
+    if(!task || !Array.isArray(task.steps)) continue;
+    const step = task.steps.find(isLapTarget);
+    if(step) return step;
+  }
+  return null;
+}
+
+function shouldRunSeatedCalibration(){
+  return !!upcomingLapStep();
+}
+
 function lapTargetCandidate(lm){
   if(!lm || lm.length < 33) return null;
   const affected = sideLandmarks(lm, AFFECTED_SIDE);
@@ -2716,7 +2776,7 @@ function lapTargetCandidate(lm){
 }
 
 function updateLapTargetCalibration(lm, now){
-  const lapStep = currentTaskLapStep();
+  const lapStep = calibratingAssessment ? upcomingLapStep() : currentTaskLapStep();
   if(!lapStep || lapTargetCalibration.ready) return;
   const candidate = lapTargetCandidate(lm);
   if(!candidate){
@@ -2772,6 +2832,63 @@ function updateLapTargetCalibration(lm, now){
   }
 }
 
+function calibrationLandmarkStatus(lm){
+  const cameraReady = video.readyState >= 2 && video.videoWidth > 0 && video.videoHeight > 0;
+  if(!lm || lm.length < 33){
+    return {cameraReady, armVisible:false, seatedAnchorsVisible:false, lapReady:false, ready:false};
+  }
+  const affected = sideLandmarks(lm, AFFECTED_SIDE);
+  const visibility = 0.35;
+  const faceVisible = [lm[0], lm[9], lm[10]].some(point => landmarkIsUsable(point, visibility));
+  const armVisible = faceVisible && [lm[11], lm[12], affected.elbow, affected.wrist]
+    .every(point => landmarkIsUsable(point, visibility));
+  const seatedAnchorsVisible = [lm[23], lm[24], affected.knee]
+    .every(point => landmarkIsUsable(point, visibility));
+  const lapReady = !!(lapTargetCalibration.ready && lapTargetCalibration.target);
+  return {
+    cameraReady,
+    armVisible,
+    seatedAnchorsVisible,
+    lapReady,
+    ready:cameraReady && armVisible && seatedAnchorsVisible && lapReady,
+  };
+}
+
+function setCalibrationCheck(element, complete){
+  element.classList.toggle("done", !!complete);
+  element.querySelector(".statusDot").textContent = complete ? "✓" : element === calibrationCamera ? "1" : element === calibrationArm ? "2" : element === calibrationSeat ? "3" : "4";
+}
+
+function updatePreAssessmentCalibrationUI(lm){
+  if(!calibratingAssessment) return;
+  const status = calibrationLandmarkStatus(lm);
+  if(status.ready) preAssessmentCalibrationReady = true;
+  if(preAssessmentCalibrationReady){
+    setCalibrationCheck(calibrationCamera, true);
+    setCalibrationCheck(calibrationArm, true);
+    setCalibrationCheck(calibrationSeat, true);
+    setCalibrationCheck(calibrationLap, true);
+    calibrationProgressFill.style.width = "100%";
+    calibrationTitle.textContent = "Calibration complete";
+    calibrationLead.textContent = "Your seated position and lap target are set. Keep the camera in this position for the assessment.";
+    calibrationBeginBtn.textContent = calibrationInstructionFinished ? "Begin assessment" : "Please finish listening";
+    calibrationBeginBtn.disabled = !calibrationInstructionFinished;
+  }else{
+    setCalibrationCheck(calibrationCamera, status.cameraReady);
+    setCalibrationCheck(calibrationArm, status.armVisible);
+    setCalibrationCheck(calibrationSeat, status.seatedAnchorsVisible);
+    setCalibrationCheck(calibrationLap, status.lapReady);
+    const completed = [status.cameraReady, status.armVisible, status.seatedAnchorsVisible, status.lapReady].filter(Boolean).length;
+    calibrationProgressFill.style.width = `${completed * 25}%`;
+    calibrationTitle.textContent = "Let us find your seated position";
+    calibrationLead.textContent = status.armVisible && !status.seatedAnchorsVisible
+      ? "Tilt the camera down slightly so your hips and affected knee remain visible."
+      : "Sit still with your affected hand resting on your lap. Keep your face, shoulders, affected arm, hips, and knees inside the camera view.";
+    calibrationBeginBtn.textContent = "Keep still to continue";
+    calibrationBeginBtn.disabled = true;
+  }
+}
+
 if(URL_PARAMS.get("test_mode") === "lap_calibration"){
   window.__rehynLapCalibrationTest = {
     candidate: (landmarks) => lapTargetCandidate(landmarks),
@@ -2790,6 +2907,22 @@ if(URL_PARAMS.get("test_mode") === "lap_calibration"){
       lapTargetCalibration = savedCalibration;
       dynamicTargetPos = savedDynamicTarget;
       return result;
+    },
+    applyCalibrationSequence: (landmarks, frameCount=12, frameMs=100) => {
+      lapTargetCalibration = newLapTargetCalibration();
+      calibratingAssessment = true;
+      calibrationInstructionFinished = true;
+      preAssessmentCalibrationReady = false;
+      for(let frame=0; frame<frameCount; frame += 1){
+        updateLapTargetCalibration(landmarks, frame * frameMs);
+      }
+      updatePreAssessmentCalibrationUI(landmarks);
+      return {
+        ready:preAssessmentCalibrationReady,
+        target:lapTargetCalibration.target,
+        beginEnabled:!calibrationBeginBtn.disabled,
+        title:calibrationTitle.textContent,
+      };
     },
   };
 }
@@ -3822,6 +3955,28 @@ function drawOverlay(landmarks){
     drawingUtils.drawConnectors(latestHandLandmarks, HAND_CONNECTIONS, {color:"rgba(127,229,163,0.88)", lineWidth:2});
     drawingUtils.drawLandmarks(latestHandLandmarks, {color:"rgba(217,229,220,0.72)", radius:1.4});
   }
+  if(calibratingAssessment){
+    lapStatus.classList.add("hidden");
+    if(lapTargetCalibration.ready && lapTargetCalibration.target){
+      const tx = lapTargetCalibration.target.x * canvas.width;
+      const ty = lapTargetCalibration.target.y * canvas.height;
+      const tr = 0.075 * Math.min(canvas.width, canvas.height);
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(tx, ty, tr, 0, Math.PI*2);
+      ctx.fillStyle = "rgba(74,120,86,.28)";
+      ctx.fill();
+      ctx.lineWidth = 6;
+      ctx.strokeStyle = "#7FE5A3";
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.arc(tx, ty, Math.max(5, tr*.16), 0, Math.PI*2);
+      ctx.fillStyle = "#FDFDFD";
+      ctx.fill();
+      ctx.restore();
+    }
+    return;
+  }
   const step = getCurrentStep();
   if(!step){
     lapStatus.classList.add("hidden");
@@ -4141,6 +4296,7 @@ function loop(){
     latestHandLandmarks = null;
     latestHandedness = "";
   }
+  if(calibratingAssessment) updatePreAssessmentCalibrationUI(landmarks);
   computeHandMetrics();
   updateTargetAttemptTracking(landmarks);
   captureMotionFrame(now);
@@ -4148,6 +4304,11 @@ function loop(){
   updateRuntimeDiagnostics(now);
 
   drawOverlay(landmarks);
+
+  if(calibratingAssessment){
+    requestAnimationFrame(loop);
+    return;
+  }
 
   // check target hit — with a small "grace period" so brief jitter doesn't reset the hold
   const inTarget = correctionVoicePlaying ? false : checkTarget(landmarks);
@@ -4183,12 +4344,63 @@ startBtn.addEventListener("click", async () => {
   const firstVoicePromise = firstStep && firstStep.voice
     ? fetchVoiceAudio(firstStep.voice).catch(() => null)
     : Promise.resolve(null);
+  calibratingAssessment = shouldRunSeatedCalibration();
+  calibrationInstructionFinished = false;
+  preAssessmentCalibrationReady = false;
+  lapTargetCalibration = newLapTargetCalibration();
+  if(calibratingAssessment){
+    ui.classList.add("hidden");
+    calibrationOverlay.classList.remove("hidden");
+    calibrationTitle.textContent = "Preparing your camera";
+    calibrationLead.textContent = "Sit still with your affected hand resting on your lap while the camera and movement model get ready.";
+    updatePreAssessmentCalibrationUI(null);
+    prefetchVoice(CALIBRATION_INSTRUCTION);
+  }
   const camOk = await setupCamera();
-  if(!camOk){ overlay.classList.remove("hidden"); return; }
-  await setupTrackingModels();
+  if(!camOk){
+    calibratingAssessment = false;
+    calibrationOverlay.classList.add("hidden");
+    ui.classList.remove("hidden");
+    overlay.classList.remove("hidden");
+    startBtn.disabled = false;
+    return;
+  }
+  try{
+    await setupTrackingModels();
+  }catch(error){
+    calibratingAssessment = false;
+    calibrationOverlay.classList.add("hidden");
+    ui.classList.remove("hidden");
+    overlay.classList.remove("hidden");
+    startBtn.disabled = false;
+    postRN({type:"model_setup_error", message:String(error)});
+    return;
+  }
   await Promise.allSettled([unlockPromise, firstVoicePromise]);
   running = true;
   requestAnimationFrame(loop);
+  if(calibratingAssessment){
+    await playVoice(CALIBRATION_INSTRUCTION);
+    calibrationInstructionFinished = true;
+    updatePreAssessmentCalibrationUI(latestPoseLandmarks);
+    return;
+  }
+  await startStep();
+});
+
+calibrationBeginBtn.addEventListener("click", async () => {
+  if(!calibratingAssessment || !preAssessmentCalibrationReady || !calibrationInstructionFinished) return;
+  calibrationBeginBtn.disabled = true;
+  preservePreAssessmentLapCalibration = true;
+  calibratingAssessment = false;
+  calibrationOverlay.classList.add("hidden");
+  ui.classList.remove("hidden");
+  postRN({
+    type:"assessment_calibrated",
+    affected_side:AFFECTED_SIDE,
+    lap_target:lapTargetCalibration.target,
+    sample_count:lapTargetCalibration.samples.length,
+  });
   await startStep();
 });
 
