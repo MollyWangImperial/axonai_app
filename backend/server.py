@@ -1931,6 +1931,8 @@ POSE_RUNNER_HTML = r"""<!DOCTYPE html>
   #walkingChooseVideoBtn{pointer-events:none}
   #walkingVideoInput{position:absolute;inset:0;width:100%;height:100%;opacity:0;cursor:pointer;z-index:2;font-size:0}
   #walkingDesktopActions.busy #walkingVideoInput{pointer-events:none;cursor:not-allowed}
+  #walkingProceedUnconfirmedBtn{margin-top:10px;background:#FDFDFD;color:#315D3D;border:2px solid #4A7856}
+  #walkingProceedUnconfirmedBtn:disabled{background:#EEF0ED;color:#667068;border-color:#C9D2CB}
   #walkingCaptureStatus{margin-top:12px;padding:11px 12px;border-radius:8px;background:#EEF0ED;color:#49504B;font-size:14px;line-height:1.4}
   #walkingCaptureStatus.good{background:#D9E5DC;color:#285C3A;font-weight:700}
   #walkingCaptureStatus.warn{background:#FFF0E6;color:#7A351E;font-weight:700}
@@ -2032,6 +2034,7 @@ POSE_RUNNER_HTML = r"""<!DOCTYPE html>
       <div id="walkingMobileActions" class="hidden" data-testid="walking-mobile-actions">
         <button id="walkingRecordBtn" type="button" data-testid="walking-start-recording">Start recording walking</button>
       </div>
+      <button id="walkingProceedUnconfirmedBtn" class="hidden" type="button" data-testid="walking-proceed-identity-unconfirmed">Use video and mark for review</button>
       <div id="walkingCaptureStatus" role="status">Preparing the walking capture...</div>
       <video id="walkingReviewVideo" class="hidden" playsinline muted preload="metadata"></video>
     </div>
@@ -2126,6 +2129,7 @@ const walkingMobileActions = document.getElementById("walkingMobileActions");
 const walkingChooseVideoBtn = document.getElementById("walkingChooseVideoBtn");
 const walkingVideoInput = document.getElementById("walkingVideoInput");
 const walkingRecordBtn = document.getElementById("walkingRecordBtn");
+const walkingProceedUnconfirmedBtn = document.getElementById("walkingProceedUnconfirmedBtn");
 const walkingCaptureStatus = document.getElementById("walkingCaptureStatus");
 const walkingReviewVideo = document.getElementById("walkingReviewVideo");
 const skipBtn = document.getElementById("skipBtn");
@@ -2411,7 +2415,10 @@ let recorderUnavailableReported = false;
 let walkingCaptureActive = false;
 let walkingCapturePromptPlayed = false;
 let walkingCameraSwitching = false;
+let pendingUnconfirmedWalkingVideo = null;
+let pendingUnconfirmedWalkingValidation = null;
 const FACE_SIGNATURE_SIZE = 12;
+const MIN_FACE_SIGNATURE_SPAN_PX = 32;
 const WALKING_FACE_MATCH_THRESHOLD = 0.58;
 const faceSignatureCanvas = document.createElement("canvas");
 faceSignatureCanvas.width = FACE_SIGNATURE_SIZE;
@@ -2841,6 +2848,9 @@ function setWalkingCaptureStatus(message, tone=""){
 
 async function showWalkingCapture(task){
   finalizePatientFaceReference();
+  pendingUnconfirmedWalkingVideo = null;
+  pendingUnconfirmedWalkingValidation = null;
+  walkingProceedUnconfirmedBtn.classList.add("hidden");
   walkingCaptureTitle.textContent = IS_MOBILE_CAPTURE_DEVICE
     ? "Record the walking test"
     : "Upload a walking video";
@@ -2885,6 +2895,8 @@ function normalizedFaceAppearance(source, pose){
   const maxX = Math.max(...points.map(point => point.x));
   const minY = Math.min(...points.map(point => point.y));
   const maxY = Math.max(...points.map(point => point.y));
+  const observedFaceSpanPx = Math.max((maxX - minX) * sourceWidth, (maxY - minY) * sourceHeight);
+  if(observedFaceSpanPx < MIN_FACE_SIGNATURE_SPAN_PX) return null;
   const centerX = (minX + maxX) / 2;
   const centerY = (minY + maxY) / 2;
   const faceSize = Math.min(0.85, Math.max(0.10, (maxX - minX) * 1.45, (maxY - minY) * 2.20));
@@ -3116,11 +3128,9 @@ async function validateWalkingVideo(file, onProgress=()=>{}){
       const signature = normalizedFaceAppearance(walkingReviewVideo, pose);
       if(signature) identityScores.push(faceSignatureSimilarity(reference, signature));
     }
-    if(identityScores.length < 1){
-      return {ok:false, message:"Rehyn could not confirm the patient in this video. Choose a clip where the patient's face is visible briefly at any point before or during the walk."};
-    }
-    const patientMatchScore = medianValue(identityScores);
-    if(patientMatchScore < WALKING_FACE_MATCH_THRESHOLD){
+    const identityUnconfirmed = identityScores.length < 1;
+    const patientMatchScore = identityUnconfirmed ? null : medianValue(identityScores);
+    if(!identityUnconfirmed && patientMatchScore < WALKING_FACE_MATCH_THRESHOLD){
       return {ok:false, message:"This video does not appear consistent with the patient who completed the seated assessment. Please choose the correct patient's video or restart the assessment with the intended patient."};
     }
 
@@ -3151,6 +3161,24 @@ async function validateWalkingVideo(file, onProgress=()=>{}){
       : (fullBodyRatio < 0.50
         ? " Some body parts leave the frame, so movement confidence may be lower."
         : "");
+    if(identityUnconfirmed){
+      return {
+        ok:false,
+        allowProceed:true,
+        reason:"identity_unconfirmed",
+        message:"The patient's face is too small or unclear for Rehyn to confirm the identity. You can choose another video, or use this video and mark it for therapist review.",
+        durationMs:Math.round(durationSeconds * 1000),
+        width,
+        height,
+        poseFrameCount,
+        fullBodyFrameCount,
+        fullBodyRatio,
+        patientMatchScore:null,
+        samePatientConfirmed:false,
+        identityStatus:"unconfirmed_patient_proceeded",
+        sampledFrames,
+      };
+    }
     return {
       ok:true,
       message:`Same-patient check passed. The walking video is accepted.${qualityAdvisory}`,
@@ -3162,6 +3190,7 @@ async function validateWalkingVideo(file, onProgress=()=>{}){
       fullBodyRatio,
       patientMatchScore,
       samePatientConfirmed:true,
+      identityStatus:"confirmed",
       sampledFrames,
     };
   }catch(error){
@@ -3200,7 +3229,9 @@ async function completeUploadedWalkingTask(file, validation){
     gait_full_body_visible_frame_count:validation.fullBodyFrameCount,
     gait_full_body_visibility_ratio:+validation.fullBodyRatio.toFixed(3),
     walking_same_patient_confirmed:validation.samePatientConfirmed === true,
-    walking_patient_match_score:+validation.patientMatchScore.toFixed(3),
+    walking_identity_status:validation.identityStatus || (validation.samePatientConfirmed ? "confirmed" : "unconfirmed_patient_proceeded"),
+    walking_identity_review_required:validation.samePatientConfirmed !== true,
+    walking_patient_match_score:Number.isFinite(validation.patientMatchScore) ? +validation.patientMatchScore.toFixed(3) : null,
   };
   const perStepDuration = Math.round(validation.durationMs / Math.max(1, task.steps.length));
   taskResults[currentTaskIdx] = {
@@ -3219,7 +3250,10 @@ async function completeUploadedWalkingTask(file, validation){
   }, file, {
     onUploadProgress:progress => {
       const percent = Math.round(progress * 100);
-      setWalkingCaptureStatus(`Video checks passed. Saving securely (${percent}%)...`, "good");
+      const prefix = validation.samePatientConfirmed
+        ? "Video checks passed. Saving securely"
+        : "Saving video for therapist review";
+      setWalkingCaptureStatus(`${prefix} (${percent}%)...`, "good");
     },
   });
   walkingCaptureActive = true;
@@ -5747,6 +5781,9 @@ startBtn.addEventListener("click", beginAssessmentSetup);
 if(window.__rehynStartRequested) void beginAssessmentSetup();
 
 walkingVideoInput.addEventListener("click", () => {
+  pendingUnconfirmedWalkingVideo = null;
+  pendingUnconfirmedWalkingValidation = null;
+  walkingProceedUnconfirmedBtn.classList.add("hidden");
   setWalkingCaptureStatus("Choose the walking video from this computer.");
 });
 
@@ -5764,6 +5801,11 @@ walkingVideoInput.addEventListener("change", async () => {
       setWalkingCaptureStatus(progress.message || "Checking the walking video...");
     });
     if(!validation.ok){
+      if(validation.allowProceed && validation.reason === "identity_unconfirmed"){
+        pendingUnconfirmedWalkingVideo = file;
+        pendingUnconfirmedWalkingValidation = validation;
+        walkingProceedUnconfirmedBtn.classList.remove("hidden");
+      }
       setWalkingCaptureStatus(validation.message, "warn");
       return;
     }
@@ -5778,6 +5820,39 @@ walkingVideoInput.addEventListener("change", async () => {
     walkingChooseVideoBtn.disabled = false;
     walkingDesktopActions.classList.remove("busy");
     walkingVideoInput.value = "";
+  }
+});
+
+walkingProceedUnconfirmedBtn.addEventListener("click", async () => {
+  const file = pendingUnconfirmedWalkingVideo;
+  const validation = pendingUnconfirmedWalkingValidation;
+  if(!file || !validation || validation.reason !== "identity_unconfirmed"){
+    walkingProceedUnconfirmedBtn.classList.add("hidden");
+    setWalkingCaptureStatus("Choose the walking video again so Rehyn can review it.", "warn");
+    return;
+  }
+  walkingProceedUnconfirmedBtn.disabled = true;
+  walkingChooseVideoBtn.disabled = true;
+  walkingDesktopActions.classList.add("busy");
+  setWalkingCaptureStatus("Using this video without identity confirmation. It will be marked for therapist review.", "good");
+  try{
+    await playVoice("We could not confirm the face in this video. The video will be included and marked for therapist review.");
+    await completeUploadedWalkingTask(file, {
+      ...validation,
+      ok:true,
+      samePatientConfirmed:false,
+      identityStatus:"unconfirmed_patient_proceeded",
+    });
+    pendingUnconfirmedWalkingVideo = null;
+    pendingUnconfirmedWalkingValidation = null;
+    walkingProceedUnconfirmedBtn.classList.add("hidden");
+  }catch(error){
+    setWalkingCaptureStatus(`The selected video could not be saved. ${String(error && error.message ? error.message : error)}`, "warn");
+    postRN({type:"walking_video_error", message:String(error)});
+  }finally{
+    walkingProceedUnconfirmedBtn.disabled = false;
+    walkingChooseVideoBtn.disabled = false;
+    walkingDesktopActions.classList.remove("busy");
   }
 });
 

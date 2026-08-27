@@ -77,7 +77,7 @@ def test_walking_uses_device_specific_capture_controls_instead_of_target_circles
     assert 'if(isWalkingTask()){\n    lapStatus.classList.add("hidden");\n    return;' in source
 
 
-def test_desktop_walking_upload_keeps_identity_blocking_but_framing_advisory():
+def test_desktop_walking_upload_keeps_mismatch_blocking_but_framing_advisory():
     source = server.POSE_RUNNER_HTML
     assert "async function validateWalkingVideo(file, onProgress=()=>{})" in source
     assert "durationSeconds < 6 || durationSeconds > 90" not in source
@@ -116,7 +116,7 @@ def test_walking_upload_checks_same_patient_locally_before_accepting_video():
         "function faceSignatureSimilarity(reference, candidate)",
         "function capturePatientFaceReference(source, pose",
         "const identityTimes = Array.from(new Set(",
-        "const patientMatchScore = medianValue(identityScores);",
+        "const patientMatchScore = identityUnconfirmed ? null : medianValue(identityScores);",
         "patientMatchScore < WALKING_FACE_MATCH_THRESHOLD",
         "samePatientConfirmed:true",
         "walking_same_patient_confirmed",
@@ -127,13 +127,39 @@ def test_walking_upload_checks_same_patient_locally_before_accepting_video():
     assert "body:patientFaceReference" not in source
 
 
+def test_unconfirmed_walking_identity_can_be_explicitly_accepted_for_review():
+    source = server.POSE_RUNNER_HTML
+    assert "const MIN_FACE_SIGNATURE_SPAN_PX = 32;" in source
+    assert "if(observedFaceSpanPx < MIN_FACE_SIGNATURE_SPAN_PX) return null;" in source
+    assert 'data-testid="walking-proceed-identity-unconfirmed"' in source
+    assert 'reason:"identity_unconfirmed"' in source
+    assert "allowProceed:true" in source
+    assert 'validation.reason === "identity_unconfirmed"' in source
+    assert 'walkingProceedUnconfirmedBtn.classList.remove("hidden")' in source
+    assert 'identityStatus:"unconfirmed_patient_proceeded"' in source
+    assert "walking_identity_review_required:validation.samePatientConfirmed !== true" in source
+    assert "walking_patient_match_score:Number.isFinite(validation.patientMatchScore)" in source
+
+
+def test_likely_walking_identity_mismatch_has_no_proceed_bypass():
+    source = server.POSE_RUNNER_HTML
+    validation = source[source.index("async function validateWalkingVideo") : source.index("async function completeUploadedWalkingTask")]
+    mismatch_start = validation.index("if(!identityUnconfirmed && patientMatchScore < WALKING_FACE_MATCH_THRESHOLD)")
+    mismatch_end = validation.index("const sampleCount", mismatch_start)
+    mismatch_branch = validation[mismatch_start:mismatch_end]
+    assert "does not appear consistent with the patient" in mismatch_branch
+    assert "allowProceed" not in mismatch_branch
+
+
 def test_walking_upload_rejects_oversize_early_and_reports_real_progress():
     source = server.POSE_RUNNER_HTML
     assert "file.size || 0) > 35 * 1024 * 1024" in source
     assert "function uploadTaskVideoToCloud" in source
     assert "request.upload.onprogress" in source
     assert "Promise.all([localSavePromise, cloudSavePromise])" in source
-    assert "Saving securely (${percent}%)" in source
+    assert 'const prefix = validation.samePatientConfirmed' in source
+    assert '"Saving video for therapist review"' in source
+    assert 'setWalkingCaptureStatus(`${prefix} (${percent}%)...`' in source
 
 
 def test_walking_validator_is_initialized_before_the_video_is_selected():
