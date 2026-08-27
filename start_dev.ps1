@@ -18,8 +18,8 @@ $backendPython = "D:\anaconda3\Anaconda3\python.exe"
 if (-not (Test-Path -LiteralPath $backendPython)) {
     throw "Backend Python was not found at $backendPython"
 }
-& $backendPython -c "import fastapi, motor, uvicorn"
-if ($LASTEXITCODE -ne 0) { throw "The backend Python environment is missing FastAPI, Motor, or Uvicorn." }
+& $backendPython -c "import fastapi, motor, uvicorn, opensim"
+if ($LASTEXITCODE -ne 0) { throw "The backend Python environment is missing FastAPI, Motor, Uvicorn, or OpenSim." }
 foreach ($port in 8001, 8003) {
     if (Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue) {
         throw "Port $port is already in use. Close the existing Rehyn local process and run this launcher again."
@@ -46,14 +46,14 @@ for ($attempt = 0; $attempt -lt 45; $attempt++) {
     Start-Sleep -Seconds 1
     try {
         $health = Invoke-RestMethod -Uri "http://127.0.0.1:8003/health" -TimeoutSec 2
-        if ($health.status -eq "ready" -and $health.cuda) {
+        if ($health.cuda.status -eq "ready" -and $health.cuda.cuda -and $health.musculoskeletal.configured) {
             $gpuReady = $true
             break
         }
     } catch {}
 }
 if (-not $gpuReady) { throw "The local CUDA worker did not become ready within 45 seconds." }
-Write-Host "CUDA models ready on $($health.gpu_name)" -ForegroundColor Green
+Write-Host "CUDA models ready on $($health.cuda.gpu_name); OpenSim/Moco runtime ready" -ForegroundColor Green
 
 # 3) 新窗口启动后端（Mongo 不可达时自动用内存回退，无需装 Mongo）
 Start-Process powershell -ArgumentList @(

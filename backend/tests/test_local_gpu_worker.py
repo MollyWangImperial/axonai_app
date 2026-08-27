@@ -31,11 +31,23 @@ def test_local_launcher_requires_cuda_and_starts_the_worker():
     assert "LOCAL_GPU_WORKER_URL='http://127.0.0.1:8003'" in source
     assert "ANALYSIS_WORKER_TOKEN" in source
     assert "D:\\anaconda3\\Anaconda3\\python.exe" in source
+    assert "import fastapi, motor, uvicorn, opensim" in source
     assert "The local CUDA worker did not become ready within 45 seconds" in source
 
 
 def test_gpu_stage_does_not_bypass_validated_model_result_route():
     source = (Path(__file__).resolve().parents[1] / "server.py").read_text(encoding="utf-8")
     assert '"/assessment/{assessment_id}/gpu-stage-results"' in source
+    assert source.count('@api_router.post("/assessment/{assessment_id}/gpu-stage-results")') == 1
     assert "Store intermediate CUDA output without treating it as solver activation" in source
     assert '"model_analysis.gpu_stage"' in source
+
+
+def test_local_worker_runs_cuda_and_moco_as_independent_callbacks():
+    source = (Path(__file__).resolve().parents[1] / "local_gpu_worker.py").read_text(encoding="utf-8")
+    assert 'callback(job, gpu_result, "gpu-stage-results")' in source
+    assert 'callback(job, model_result, "model-stage-results")' in source
+    assert "MOCO_RUNTIME.analyze(job)" in source
+    assert "OpenSim Moco patient-informed gait comparison" in source
+    assert '"model_scaled": False' in source
+    assert "not subject-scaled" in source

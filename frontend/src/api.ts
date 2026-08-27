@@ -52,7 +52,38 @@ export type TaskVideo = {
   created_at: string;
   filename: string;
   size_bytes: number;
-  storage: "gridfs" | "local";
+  storage: "gridfs" | "local" | "r2";
+};
+
+export type PatientInsightActivation = {
+  task_id: string;
+  domain: "upper_limb" | "hand" | "lower_limb";
+  muscle: string;
+  label: string;
+  mean: number;
+  peak: number;
+  template_mean: number | null;
+  delta_mean: number | null;
+};
+
+export type PatientInsights = {
+  version: string;
+  status: "processing" | "research_ready" | "validated" | "needs_review";
+  badge: string;
+  headline: string;
+  summary: string;
+  domain_metrics: {
+    domain: "upper_limb" | "hand" | "lower_limb";
+    label: string;
+    completion_percent: number;
+    findings_count: number;
+    status: string;
+  }[];
+  activation_profile: PatientInsightActivation[];
+  modeled_domains: string[];
+  observations: { title: string; detail: string }[];
+  analysis_order: string[];
+  reporting_rule: string;
 };
 
 export type PatientAssessmentSummary = {
@@ -77,6 +108,7 @@ export type PatientAssessmentSummary = {
   };
   rehab_plan_ready: boolean;
   clinical_review_gate: ClinicalReviewGate;
+  insights: PatientInsights;
 };
 
 export type BodyFunctionDomainSummary = {
@@ -214,6 +246,7 @@ export type Assessment = {
   survey_consistency?: SurveyConsistency;
   analysis_pipeline?: AnalysisPipeline;
   clinical_review_gate?: ClinicalReviewGate;
+  patient_insights?: PatientInsights;
   rehabilitation_goals?: {
     version: string;
     method: string;

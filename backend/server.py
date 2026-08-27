@@ -1,5 +1,5 @@
 from fastapi import FastAPI, APIRouter, HTTPException, Request
-from fastapi.responses import HTMLResponse, Response, StreamingResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, Response, StreamingResponse
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorGridFSBucket
@@ -44,6 +44,8 @@ try:
         pending_model_activation_report,
         validate_model_outputs,
     )
+    from backend.object_storage import task_video_object_storage
+    from backend.patient_insights import build_patient_insights
 except ImportError:
     from rehab_assessment import (
         build_biomechanical_estimates,
@@ -69,6 +71,8 @@ except ImportError:
         pending_model_activation_report,
         validate_model_outputs,
     )
+    from object_storage import task_video_object_storage
+    from patient_insights import build_patient_insights
 
 try:
     from openai import OpenAI
@@ -126,6 +130,8 @@ LOCAL_GPU_WORKER_URL = os.environ.get("LOCAL_GPU_WORKER_URL", "").strip().rstrip
 LOCAL_BACKEND_CALLBACK_URL = os.environ.get(
     "LOCAL_BACKEND_CALLBACK_URL", "http://127.0.0.1:8001/api"
 ).strip().rstrip("/")
+ANALYSIS_WORKER_CF_CLIENT_ID = os.environ.get("ANALYSIS_WORKER_CF_CLIENT_ID", "").strip()
+ANALYSIS_WORKER_CF_CLIENT_SECRET = os.environ.get("ANALYSIS_WORKER_CF_CLIENT_SECRET", "").strip()
 openai_tts_client = OpenAI(api_key=OPENAI_API_KEY) if (OpenAI and OPENAI_API_KEY) else None
 tts_client = OpenAITextToSpeech(api_key=EMERGENT_LLM_KEY) if (OpenAITextToSpeech and EMERGENT_LLM_KEY) else None
 
@@ -199,6 +205,26 @@ class GPUStageResultSubmit(BaseModel):
     traceback: Optional[str] = None
 
 
+class TaskVideoUploadComplete(BaseModel):
+    video_id: str
+    object_key: str
+    package_id: str
+    task_id: str
+    duration_ms: int = 0
+    content_type: str = "video/mp4"
+    size_bytes: int = 0
+
+
+class MusculoskeletalStageResultSubmit(BaseModel):
+    status: str
+    per_task: List[Dict[str, Any]] = Field(default_factory=list)
+    kinematics: Dict[str, Any] = Field(default_factory=dict)
+    solver_summary: Dict[str, Any] = Field(default_factory=dict)
+    reporting_boundary: str = ""
+    error: Optional[str] = None
+    traceback: Optional[str] = None
+
+
 class FunctionalIssue(BaseModel):
     code: str
     label: str
@@ -242,6 +268,7 @@ class Assessment(BaseModel):
     analysis_pipeline: Dict[str, Any] = Field(default_factory=dict)
     clinical_review_gate: Dict[str, Any] = Field(default_factory=dict)
     body_function_summary: Dict[str, Any] = Field(default_factory=dict)
+    patient_insights: Dict[str, Any] = Field(default_factory=dict)
 
 
 # ============ 7 Tasks: Step-by-step with voice prompts & on-screen target zones ============
@@ -1177,6 +1204,15 @@ def _write_local_task_video(data: bytes, metadata: Dict[str, Any]) -> Dict[str, 
     return record
 
 
+def _write_local_task_video_metadata(record: Dict[str, Any]) -> Dict[str, Any]:
+    TASK_VIDEO_FALLBACK_DIR.mkdir(parents=True, exist_ok=True)
+    video_id = str(record["id"])
+    (TASK_VIDEO_FALLBACK_DIR / f"{video_id}.json").write_text(
+        json.dumps(record, ensure_ascii=True), encoding="utf-8"
+    )
+    return record
+
+
 async def _task_video_user(request: Request, uid: str = "") -> Optional[Dict[str, Any]]:
     headers = dict(request.headers)
     if uid and not (headers.get("x-user-id") or headers.get("X-User-Id")):
@@ -1199,6 +1235,12 @@ async def _latest_task_videos(user_id: str, package_id: str, task_ids: List[str]
             {"id": str(doc["_id"]), **(doc.get("metadata") or {})}
             for doc in docs
         ]
+        object_docs = await db.task_video_objects.find({
+            "user_id": user_id,
+            "package_id": package_id,
+            "task_id": {"$in": list(wanted)},
+        }, {"_id": 0}).sort("created_at", -1).to_list(100)
+        records.extend(object_docs)
     except Exception as e:
         logger.warning(f"Mongo unavailable for analysis video lookup; using local fallback: {str(e)[:120]}")
         records = [
@@ -1214,6 +1256,106 @@ async def _latest_task_videos(user_id: str, package_id: str, task_ids: List[str]
         if task_id and task_id not in latest:
             latest[task_id] = record
     return latest
+
+
+@api_router.post("/assessment/task-videos/upload-ticket")
+async def create_task_video_upload_ticket(
+    request: Request,
+    package_id: str,
+    task_id: str,
+    duration_ms: int = 0,
+    content_type: str = "video/mp4",
+    size_bytes: int = 0,
+):
+    user = await _task_video_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Sign in required")
+    if not task_video_object_storage.configured:
+        raise HTTPException(status_code=503, detail="Direct object upload is not configured")
+    normalized_type = content_type.split(";", 1)[0].strip().lower()
+    if not normalized_type.startswith("video/"):
+        raise HTTPException(status_code=415, detail="A video content type is required")
+    if size_bytes <= 0 or size_bytes > TASK_VIDEO_MAX_BYTES:
+        raise HTTPException(status_code=413, detail="Task video size is outside the allowed range")
+    safe_package = _safe_video_token(package_id, "assessment")
+    safe_task = _safe_video_token(task_id, "task")
+    extension = "mp4" if normalized_type in {"video/mp4", "video/quicktime"} else "webm"
+    video_id = "r2_" + uuid.uuid4().hex
+    object_key = task_video_object_storage.object_key(
+        user["id"], safe_package, safe_task, video_id, extension
+    )
+    upload_url = await asyncio.to_thread(
+        task_video_object_storage.presign_put, object_key, normalized_type
+    )
+    return {
+        "video_id": video_id,
+        "object_key": object_key,
+        "upload_url": upload_url,
+        "content_type": normalized_type,
+        "duration_ms": max(0, int(duration_ms)),
+        "expires_seconds": 900,
+    }
+
+
+@api_router.post("/assessment/task-videos/complete")
+async def complete_task_video_upload(
+    payload: TaskVideoUploadComplete,
+    request: Request,
+):
+    user = await _task_video_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Sign in required")
+    if not task_video_object_storage.configured:
+        raise HTTPException(status_code=503, detail="Direct object upload is not configured")
+    safe_package = _safe_video_token(payload.package_id, "assessment")
+    safe_task = _safe_video_token(payload.task_id, "task")
+    expected_prefix = task_video_object_storage.object_key(
+        user["id"], safe_package, safe_task, payload.video_id, ""
+    ).rstrip(".")
+    if not payload.video_id.startswith("r2_") or not payload.object_key.startswith(expected_prefix):
+        raise HTTPException(status_code=422, detail="Upload ticket does not belong to this account and task")
+    try:
+        head = await asyncio.to_thread(task_video_object_storage.head, payload.object_key)
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail="Uploaded video could not be verified") from exc
+    actual_size = int(head.get("ContentLength") or 0)
+    if actual_size <= 0 or actual_size > TASK_VIDEO_MAX_BYTES:
+        raise HTTPException(status_code=413, detail="Task video size is outside the allowed range")
+    created_at = datetime.now(timezone.utc).isoformat()
+    record = {
+        "id": payload.video_id,
+        "user_id": user["id"],
+        "package_id": safe_package,
+        "task_id": safe_task,
+        "duration_ms": max(0, int(payload.duration_ms)),
+        "content_type": payload.content_type.split(";", 1)[0].strip().lower(),
+        "created_at": created_at,
+        "filename": payload.object_key.rsplit("/", 1)[-1],
+        "size_bytes": actual_size,
+        "storage": "r2",
+        "object_key": payload.object_key,
+    }
+    try:
+        previous = await db.task_video_objects.find({
+            "user_id": user["id"],
+            "package_id": safe_package,
+            "task_id": safe_task,
+            "id": {"$ne": payload.video_id},
+        }, {"_id": 0, "object_key": 1}).to_list(50)
+        await db.task_video_objects.delete_many({
+            "user_id": user["id"], "package_id": safe_package, "task_id": safe_task
+        })
+        await db.task_video_objects.insert_one(record.copy())
+        for item in previous:
+            if item.get("object_key"):
+                try:
+                    await asyncio.to_thread(task_video_object_storage.delete, item["object_key"])
+                except Exception:
+                    logger.warning("Could not delete replaced R2 task video %s", item["object_key"])
+    except Exception as exc:
+        logger.warning(f"Mongo unavailable for R2 video metadata; using local fallback: {str(exc)[:120]}")
+        _write_local_task_video_metadata(record)
+    return record
 
 
 @api_router.post("/assessment/task-videos")
@@ -1299,6 +1441,10 @@ async def list_task_videos(request: Request, package: str = "initial"):
             }
             for doc in docs
         ]
+        object_docs = await db.task_video_objects.find({
+            "user_id": user["id"], "package_id": safe_package
+        }, {"_id": 0}).sort("created_at", -1).to_list(100)
+        records.extend(object_docs)
     except Exception as e:
         logger.warning(f"Mongo unavailable for task video list; using local fallback: {str(e)[:120]}")
         records = [
@@ -1424,6 +1570,23 @@ async def get_task_video(video_id: str, request: Request, uid: str = ""):
     user = await _task_video_user(request, uid)
     if not user:
         raise HTTPException(status_code=401, detail="Sign in required")
+    if video_id.startswith("r2_"):
+        try:
+            record = await db.task_video_objects.find_one(
+                {"id": video_id, "user_id": user["id"]}, {"_id": 0}
+            )
+        except Exception:
+            record = next(
+                (
+                    item for item in _local_task_video_metadata()
+                    if item.get("id") == video_id and item.get("user_id") == user["id"]
+                ),
+                None,
+            )
+        if not record or not record.get("object_key") or not task_video_object_storage.configured:
+            raise HTTPException(status_code=404, detail="Task video not found")
+        url = await asyncio.to_thread(task_video_object_storage.presign_get, record["object_key"])
+        return RedirectResponse(url, status_code=307)
     if video_id.startswith("local_"):
         record = next((item for item in _local_task_video_metadata() if item.get("id") == video_id), None)
         path = TASK_VIDEO_FALLBACK_DIR / f"{video_id}.bin"
@@ -1457,6 +1620,42 @@ async def get_task_video(video_id: str, request: Request, uid: str = ""):
         chunks(),
         media_type=metadata.get("content_type", "video/webm"),
         headers={"Content-Disposition": f'inline; filename="{grid_out.filename or "task-video.webm"}"'},
+    )
+
+
+@api_router.get("/assessment/task-videos/worker/{video_id}")
+async def get_task_video_for_worker(video_id: str, request: Request):
+    """Give the authenticated analysis worker a saved video source."""
+    _require_analysis_worker(request)
+    if video_id.startswith("r2_"):
+        try:
+            record = await db.task_video_objects.find_one({"id": video_id}, {"_id": 0})
+        except Exception:
+            record = next((item for item in _local_task_video_metadata() if item.get("id") == video_id), None)
+        if not record or not record.get("object_key") or not task_video_object_storage.configured:
+            raise HTTPException(status_code=404, detail="Task video not found")
+        url = await asyncio.to_thread(task_video_object_storage.presign_get, record["object_key"])
+        return RedirectResponse(url, status_code=307)
+    if video_id.startswith("local_"):
+        record = next((item for item in _local_task_video_metadata() if item.get("id") == video_id), None)
+        path = TASK_VIDEO_FALLBACK_DIR / f"{video_id}.bin"
+        if not record or not path.exists():
+            raise HTTPException(status_code=404, detail="Task video not found")
+        return Response(content=path.read_bytes(), media_type=record.get("content_type", "video/webm"))
+    try:
+        grid_out = await task_video_bucket.open_download_stream(ObjectId(video_id))
+    except Exception as exc:
+        raise HTTPException(status_code=404, detail="Task video not found") from exc
+
+    async def worker_chunks():
+        while True:
+            chunk = await grid_out.read(256 * 1024)
+            if not chunk:
+                break
+            yield chunk
+
+    return StreamingResponse(
+        worker_chunks(), media_type=(grid_out.metadata or {}).get("content_type", "video/webm")
     )
 
 
@@ -1571,6 +1770,15 @@ async def submit_assessment(payload: AssessmentSubmit, request: Request):
         "status": "queued" if LOCAL_GPU_WORKER_URL else "not_configured",
         "device": "cuda:0" if LOCAL_GPU_WORKER_URL else None,
     }
+    walking_video_ready = bool((video_records.get("L6") or {}).get("id"))
+    model_analysis["musculoskeletal_stage"] = {
+        "status": (
+            "queued" if LOCAL_GPU_WORKER_URL and walking_video_ready
+            else "waiting_for_walking_video" if LOCAL_GPU_WORKER_URL
+            else "not_configured"
+        ),
+        "modeled_tasks": ["L6"] if walking_video_ready else [],
+    }
     expected_task_count = len(ASSESSMENT_PACKAGES.get(payload.assessment_package, {}).get("tasks", []))
     collection_summary = patient_collection_summary(payload.task_results, expected_task_count)
     if payload.musculoskeletal_outputs:
@@ -1651,6 +1859,9 @@ async def submit_assessment(payload: AssessmentSubmit, request: Request):
     doc["patient_summary"] = collection_summary
     doc["model_analysis"] = model_analysis
     doc["movement_based_muscle_screening"] = movement_based_muscle_screening
+    doc["patient_insights"] = build_patient_insights(
+        body_function_summary, {}, {}, model_analysis
+    )
     if user:
         doc["user_id"] = user["id"]
     try:
@@ -1658,8 +1869,14 @@ async def submit_assessment(payload: AssessmentSubmit, request: Request):
     except Exception as e:
         logger.warning(f"Mongo unavailable for assessment insert; using local fallback: {str(e)[:120]}")
         LOCAL_ASSESSMENTS.append(doc.copy())
-    if LOCAL_GPU_WORKER_URL and ANALYSIS_WORKER_TOKEN and payload.motion_data:
-        asyncio.create_task(_queue_local_gpu_stage(assessment_id, payload.motion_data))
+    if LOCAL_GPU_WORKER_URL and ANALYSIS_WORKER_TOKEN and (payload.motion_data or video_records):
+        asyncio.create_task(_queue_local_gpu_stage(
+            assessment_id,
+            payload.motion_data,
+            video_records,
+            payload.affected_side,
+            patient_parameters,
+        ))
     return assessment
 
 
@@ -1685,6 +1902,22 @@ async def get_assessment_history(request: Request):
         ]
         docs.sort(key=lambda item: item.get("created_at", ""), reverse=True)
         docs = docs[:50]
+    for doc in docs:
+        if not doc.get("patient_insights"):
+            package_id = str(doc.get("assessment_package") or "upper_limb")
+            expected_domains = ("upper_limb", "hand", "lower_limb") if package_id == "initial" else None
+            body_summary = doc.get("body_function_summary") or patient_body_function_summary(
+                doc.get("task_results", []),
+                doc.get("functional_issues", []),
+                doc.get("musculoskeletal_outputs", {}),
+                expected_domains,
+            )
+            doc["patient_insights"] = build_patient_insights(
+                body_summary,
+                doc.get("musculoskeletal_outputs") or {},
+                doc.get("musculoskeletal_research_stage") or {},
+                doc.get("model_analysis") or {},
+            )
     return [Assessment(**d) for d in docs]
 
 
@@ -1726,6 +1959,12 @@ async def get_patient_assessment_summary(assessment_id: str):
         "assessment_package": package_id,
         "collection": collection,
         "body_function_summary": body_function_summary,
+        "insights": doc.get("patient_insights") or build_patient_insights(
+            body_function_summary,
+            doc.get("musculoskeletal_outputs") or {},
+            doc.get("musculoskeletal_research_stage") or {},
+            doc.get("model_analysis") or {},
+        ),
         "rehab_plan_ready": bool(doc.get("rehab_plan")) and (doc.get("clinical_review_gate") or {}).get("rehab_access", "allowed") == "allowed",
         "clinical_review_gate": doc.get("clinical_review_gate") or {},
     }
@@ -1743,6 +1982,7 @@ async def get_assessment_analysis_status(assessment_id: str):
         raise HTTPException(status_code=404, detail="Assessment not found")
     model_analysis = doc.get("model_analysis") or {}
     gpu_stage = model_analysis.get("gpu_stage") or {}
+    musculoskeletal_stage = model_analysis.get("musculoskeletal_stage") or {}
     task_states = {
         task_id: str(task.get("status") or "unknown")
         for task_id, task in (gpu_stage.get("tasks") or {}).items()
@@ -1758,6 +1998,12 @@ async def get_assessment_analysis_status(assessment_id: str):
             "model_version": gpu_stage.get("model_version"),
             "tasks": task_states,
             "error": gpu_stage.get("error"),
+        },
+        "musculoskeletal_stage": {
+            "status": musculoskeletal_stage.get("status", "not_configured"),
+            "modeled_tasks": musculoskeletal_stage.get("modeled_tasks") or [],
+            "solver": musculoskeletal_stage.get("solver"),
+            "error": musculoskeletal_stage.get("error"),
         },
     }
 
@@ -1783,18 +2029,89 @@ async def _set_gpu_stage(assessment_id: str, stage: Dict[str, Any]) -> None:
                 break
 
 
-async def _queue_local_gpu_stage(assessment_id: str, motion_data: Dict[str, Any]) -> None:
+async def _set_musculoskeletal_stage(assessment_id: str, stage: Dict[str, Any]) -> None:
+    try:
+        doc = await db.assessments.find_one({"id": assessment_id}, {"_id": 0}) or {}
+        model_analysis = dict(doc.get("model_analysis") or {})
+        model_analysis["musculoskeletal_stage"] = stage
+        insights = build_patient_insights(
+            doc.get("body_function_summary") or {},
+            doc.get("musculoskeletal_outputs") or {},
+            doc.get("musculoskeletal_research_stage") or {},
+            model_analysis,
+        )
+        await db.assessments.update_one(
+            {"id": assessment_id},
+            {"$set": {
+                "model_analysis.musculoskeletal_stage": stage,
+                "patient_insights": insights,
+            }},
+        )
+    except Exception as exc:
+        logger.warning(f"Mongo unavailable for model stage update; local fallback: {str(exc)[:120]}")
+        for item in LOCAL_ASSESSMENTS:
+            if item.get("id") == assessment_id:
+                item.setdefault("model_analysis", {})["musculoskeletal_stage"] = stage
+                item["patient_insights"] = build_patient_insights(
+                    item.get("body_function_summary") or {},
+                    item.get("musculoskeletal_outputs") or {},
+                    item.get("musculoskeletal_research_stage") or {},
+                    item.get("model_analysis") or {},
+                )
+                break
+
+
+async def _worker_video_sources(video_records: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
+    sources: List[Dict[str, Any]] = []
+    for task_id, record in video_records.items():
+        video_id = str(record.get("id") or "")
+        if not video_id:
+            continue
+        headers: Dict[str, str] = {}
+        if record.get("storage") == "r2" and record.get("object_key") and task_video_object_storage.configured:
+            url = await asyncio.to_thread(
+                task_video_object_storage.presign_get, record["object_key"], 1800
+            )
+        else:
+            url = f"{LOCAL_BACKEND_CALLBACK_URL}/assessment/task-videos/worker/{video_id}"
+            headers["X-Analysis-Worker-Token"] = ANALYSIS_WORKER_TOKEN
+        sources.append({
+            "task_id": task_id,
+            "video_id": video_id,
+            "url": url,
+            "headers": headers,
+            "content_type": record.get("content_type") or "video/mp4",
+        })
+    return sources
+
+
+async def _queue_local_gpu_stage(
+    assessment_id: str,
+    motion_data: Dict[str, Any],
+    video_records: Dict[str, Dict[str, Any]],
+    affected_side: str,
+    patient_parameters: Dict[str, Any],
+) -> None:
     job = {
         "assessment_id": assessment_id,
         "callback_url": LOCAL_BACKEND_CALLBACK_URL,
         "motion_data": motion_data,
+        "video_sources": await _worker_video_sources(video_records),
+        "affected_side": affected_side,
+        "patient_parameters": patient_parameters,
     }
     try:
+        headers = {"X-Analysis-Worker-Token": ANALYSIS_WORKER_TOKEN}
+        if ANALYSIS_WORKER_CF_CLIENT_ID and ANALYSIS_WORKER_CF_CLIENT_SECRET:
+            headers.update({
+                "CF-Access-Client-Id": ANALYSIS_WORKER_CF_CLIENT_ID,
+                "CF-Access-Client-Secret": ANALYSIS_WORKER_CF_CLIENT_SECRET,
+            })
         async with httpx.AsyncClient(timeout=15) as http:
             response = await http.post(
                 f"{LOCAL_GPU_WORKER_URL}/jobs",
                 json=job,
-                headers={"X-Analysis-Worker-Token": ANALYSIS_WORKER_TOKEN},
+                headers=headers,
             )
             response.raise_for_status()
     except Exception as exc:
@@ -1804,6 +2121,12 @@ async def _queue_local_gpu_stage(assessment_id: str, motion_data: Dict[str, Any]
             "device": "cuda:0",
             "error": str(exc),
         })
+        await _set_musculoskeletal_stage(assessment_id, {
+            "status": "failed_to_queue",
+            "modeled_tasks": [],
+            "solver": "OpenSim Moco",
+            "error": str(exc),
+        })
 
 
 @api_router.get("/analysis/local-gpu/status")
@@ -1811,8 +2134,14 @@ async def local_gpu_status():
     if not LOCAL_GPU_WORKER_URL:
         return {"status": "not_configured", "cuda": False}
     try:
+        headers = {}
+        if ANALYSIS_WORKER_CF_CLIENT_ID and ANALYSIS_WORKER_CF_CLIENT_SECRET:
+            headers = {
+                "CF-Access-Client-Id": ANALYSIS_WORKER_CF_CLIENT_ID,
+                "CF-Access-Client-Secret": ANALYSIS_WORKER_CF_CLIENT_SECRET,
+            }
         async with httpx.AsyncClient(timeout=5) as http:
-            response = await http.get(f"{LOCAL_GPU_WORKER_URL}/health")
+            response = await http.get(f"{LOCAL_GPU_WORKER_URL}/health", headers=headers)
             response.raise_for_status()
             return response.json()
     except Exception as exc:
@@ -1837,6 +2166,96 @@ async def save_gpu_stage_results(
         raise HTTPException(status_code=422, detail="GPU stage status must be completed or failed")
     await _set_gpu_stage(assessment_id, stage)
     return {"assessment_id": assessment_id, "gpu_stage": stage["status"]}
+
+
+@api_router.post("/assessment/{assessment_id}/model-stage-results")
+async def save_musculoskeletal_stage_results(
+    assessment_id: str,
+    payload: MusculoskeletalStageResultSubmit,
+    request: Request,
+):
+    """Store genuine solver output without promoting unvalidated estimates."""
+    _require_analysis_worker(request)
+    try:
+        doc = await db.assessments.find_one({"id": assessment_id}, {"_id": 0})
+    except Exception as exc:
+        logger.warning(f"Mongo unavailable for model stage lookup; local fallback: {str(exc)[:120]}")
+        doc = next((item for item in LOCAL_ASSESSMENTS if item.get("id") == assessment_id), None)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Assessment not found")
+
+    stage = payload.model_dump(exclude_none=True)
+    if stage["status"] == "completed":
+        if not stage.get("per_task"):
+            raise HTTPException(status_code=422, detail="Completed model stage requires task outputs")
+        manifest = {
+            str(item.get("task_id")): str(item.get("video_id") or "")
+            for item in (doc.get("model_analysis") or {}).get("tasks") or []
+        }
+        for row in stage["per_task"]:
+            task_id = str(row.get("task_id") or "")
+            provenance = row.get("provenance") if isinstance(row.get("provenance"), dict) else {}
+            if task_id not in manifest or not manifest[task_id]:
+                raise HTTPException(status_code=422, detail=f"Task {task_id} has no saved source video")
+            if str(provenance.get("source_video_id") or "") != manifest[task_id]:
+                raise HTTPException(status_code=422, detail=f"Task {task_id} result does not match its source video")
+            if not all(str(provenance.get(key) or "").strip() for key in ("solver", "model_version", "code_version")):
+                raise HTTPException(status_code=422, detail=f"Task {task_id} is missing model provenance")
+            activations = row.get("muscle_activations")
+            if not isinstance(activations, dict) or not activations:
+                raise HTTPException(status_code=422, detail=f"Task {task_id} has no model activations")
+            for activation in activations.values():
+                value = activation.get("mean") if isinstance(activation, dict) else activation
+                if not isinstance(value, (int, float)) or isinstance(value, bool) or not 0 <= float(value) <= 1:
+                    raise HTTPException(status_code=422, detail=f"Task {task_id} activation is outside 0..1")
+        stage_status = {
+            "status": "completed",
+            "modeled_tasks": [str(item.get("task_id")) for item in stage["per_task"]],
+            "solver": "OpenSim Moco",
+            "validated_for_plan": False,
+            "completed_at": datetime.now(timezone.utc).isoformat(),
+        }
+    elif stage["status"] == "failed":
+        stage_status = {
+            "status": "failed",
+            "modeled_tasks": [],
+            "solver": "OpenSim Moco",
+            "validated_for_plan": False,
+            "error": str(stage.get("error") or "Musculoskeletal analysis failed")[:500],
+        }
+    else:
+        raise HTTPException(status_code=422, detail="Model stage status must be completed or failed")
+
+    body_summary = doc.get("body_function_summary") or {}
+    model_analysis = dict(doc.get("model_analysis") or {})
+    model_analysis["musculoskeletal_stage"] = stage_status
+    insights = build_patient_insights(
+        body_summary,
+        doc.get("musculoskeletal_outputs") or {},
+        stage,
+        model_analysis,
+    )
+    updates = {
+        "musculoskeletal_research_stage": stage,
+        "model_analysis.musculoskeletal_stage": stage_status,
+        "patient_insights": insights,
+    }
+    try:
+        await db.assessments.update_one({"id": assessment_id}, {"$set": updates})
+    except Exception as exc:
+        logger.warning(f"Mongo unavailable for model stage update; local fallback: {str(exc)[:120]}")
+        for item in LOCAL_ASSESSMENTS:
+            if item.get("id") == assessment_id:
+                item["musculoskeletal_research_stage"] = stage
+                item.setdefault("model_analysis", {})["musculoskeletal_stage"] = stage_status
+                item["patient_insights"] = insights
+                break
+    return {
+        "assessment_id": assessment_id,
+        "status": stage_status["status"],
+        "insights_ready": insights["status"] in {"research_ready", "validated"},
+        "rehab_plan_unlocked": False,
+    }
 
 
 @api_router.post("/assessment/{assessment_id}/model-results")
@@ -1897,7 +2316,18 @@ async def save_model_results(assessment_id: str, payload: ModelResultSubmit, req
         "muscle_activation_diagnosis": model_activation_report(outputs),
         "survey_consistency": build_survey_consistency(issues, patient_parameters, task_results),
         "clinical_review_gate": clinical_review_gate,
+        "patient_insights": build_patient_insights(
+            body_function_summary,
+            outputs,
+            doc.get("musculoskeletal_research_stage") or {},
+            {**(doc.get("model_analysis") or {}), "status": "completed"},
+        ),
         "model_analysis.status": "completed",
+        "model_analysis.musculoskeletal_stage": {
+            "status": "validated",
+            "modeled_tasks": [str(item.get("task_id")) for item in outputs.get("per_task") or []],
+            "validated_for_plan": True,
+        },
         "model_analysis.completed_at": datetime.now(timezone.utc).isoformat(),
     }
     try:
@@ -2620,7 +3050,7 @@ function beginTaskRecording(taskId){
   }
 }
 
-function uploadTaskVideoToCloud(recording, blob, durationMs, onUploadProgress=null){
+function uploadTaskVideoThroughBackend(recording, blob, durationMs, onUploadProgress=null){
   return new Promise((resolve, reject) => {
     const query = new URLSearchParams({
       package_id: ASSESSMENT_PACKAGE,
@@ -2654,6 +3084,73 @@ function uploadTaskVideoToCloud(recording, blob, durationMs, onUploadProgress=nu
     };
     request.send(blob);
   });
+}
+
+function putTaskVideoDirectly(uploadUrl, blob, contentType, onUploadProgress=null){
+  return new Promise((resolve, reject) => {
+    const request = new XMLHttpRequest();
+    request.open("PUT", uploadUrl);
+    request.setRequestHeader("Content-Type", contentType);
+    if(request.upload && typeof onUploadProgress === "function"){
+      request.upload.onprogress = event => {
+        if(event.lengthComputable && event.total > 0){
+          onUploadProgress(Math.max(0, Math.min(.97, .97 * event.loaded / event.total)));
+        }
+      };
+    }
+    request.onerror = () => reject(new Error("Direct video upload was interrupted."));
+    request.onabort = () => reject(new Error("Direct video upload was cancelled."));
+    request.onload = () => {
+      if(request.status < 200 || request.status >= 300){
+        reject(new Error(`Direct video upload failed (${request.status})`));
+        return;
+      }
+      resolve(true);
+    };
+    request.send(blob);
+  });
+}
+
+async function uploadTaskVideoToCloud(recording, blob, durationMs, onUploadProgress=null){
+  const contentType = (blob.type || recording.mimeType || "video/webm").split(";", 1)[0];
+  const ticketQuery = new URLSearchParams({
+    package_id: ASSESSMENT_PACKAGE,
+    task_id: recording.taskId,
+    duration_ms: String(durationMs),
+    content_type: contentType,
+    size_bytes: String(blob.size),
+  });
+  try{
+    const ticketResponse = await fetch(`${API_BASE}/assessment/task-videos/upload-ticket?${ticketQuery.toString()}`, {
+      method:"POST",
+      headers:{"X-User-Id":CURRENT_USER_ID},
+    });
+    if(ticketResponse.status === 503){
+      return uploadTaskVideoThroughBackend(recording, blob, durationMs, onUploadProgress);
+    }
+    if(!ticketResponse.ok) throw new Error(`Could not prepare direct upload (${ticketResponse.status})`);
+    const ticket = await ticketResponse.json();
+    await putTaskVideoDirectly(ticket.upload_url, blob, ticket.content_type, onUploadProgress);
+    const completed = await fetch(`${API_BASE}/assessment/task-videos/complete`, {
+      method:"POST",
+      headers:{"Content-Type":"application/json", "X-User-Id":CURRENT_USER_ID},
+      body:JSON.stringify({
+        video_id:ticket.video_id,
+        object_key:ticket.object_key,
+        package_id:ASSESSMENT_PACKAGE,
+        task_id:recording.taskId,
+        duration_ms:durationMs,
+        content_type:ticket.content_type,
+        size_bytes:blob.size,
+      }),
+    });
+    if(!completed.ok) throw new Error(`Could not finalize direct upload (${completed.status})`);
+    if(typeof onUploadProgress === "function") onUploadProgress(1);
+    return completed.json();
+  }catch(error){
+    postRN({type:"task_video_upload_fallback", task_id:recording.taskId, message:String(error)});
+    return uploadTaskVideoThroughBackend(recording, blob, durationMs, onUploadProgress);
+  }
 }
 
 async function persistTaskVideo(recording, blob, {onUploadProgress=null}={}){
@@ -2694,7 +3191,7 @@ async function persistTaskVideo(recording, blob, {onUploadProgress=null}={}){
       package_id:ASSESSMENT_PACKAGE,
       task_id:recording.taskId,
       local_saved:localSaved,
-      cloud_saved:!!cloudRecord && cloudRecord.storage === "gridfs",
+      cloud_saved:!!cloudRecord && (cloudRecord.storage === "gridfs" || cloudRecord.storage === "r2"),
       server_saved:!!cloudRecord,
       video:cloudRecord,
     });

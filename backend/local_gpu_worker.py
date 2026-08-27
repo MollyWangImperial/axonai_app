@@ -1,8 +1,10 @@
-"""Local CUDA feature worker for Rehyn development assessments.
+"""Local CUDA and OpenSim/Moco worker for Rehyn assessments.
 
-This worker is intentionally bound to loopback. It runs the learned WHAM
-motion-context and stroke functional-encoder stages, then reports their output
-back to the app backend. OpenSim/Moco remains a separate, quality-gated stage.
+The service stays on the user's computer and is published through an
+authenticated tunnel. CUDA creates learned motion constraints; the separate
+OpenSim/Moco subprocess analyzes the saved walking video. Research Moco output
+is never promoted to plan-unlocking evidence unless the backend's stricter
+validation contract is satisfied independently.
 """
 
 from __future__ import annotations
@@ -10,7 +12,11 @@ from __future__ import annotations
 import json
 import os
 import queue
+import csv
+import shutil
+import subprocess
 import sys
+import tempfile
 import threading
 import traceback
 import urllib.request
@@ -41,6 +47,19 @@ FEATURE_ROOT = Path(os.environ.get(
     "REHYN_FEATURE_ROOT",
     str(MODEL_ROOT / "processed" / "wham_motion_features_v1"),
 ))
+MOCO_ROOT = Path(os.environ.get(
+    "REHYN_MOCO_ROOT",
+    r"C:\Users\LENOVO\Documents\New project\moco_video_analysis",
+))
+MOCO_PYTHON = Path(os.environ.get(
+    "REHYN_MOCO_PYTHON",
+    r"D:\anaconda3\Anaconda3\python.exe",
+))
+WORK_ROOT = Path(os.environ.get(
+    "REHYN_ANALYSIS_WORK_ROOT",
+    str(Path(os.environ.get("TEMP", ".")) / "rehyn-analysis-jobs"),
+))
+WORKER_CODE_VERSION = os.environ.get("REHYN_WORKER_CODE_VERSION", "rehyn-local-worker-v2")
 
 
 def build_task_pose_payloads(motion_data: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -221,7 +240,171 @@ class CudaRuntime:
         }
 
 
+def _read_csv(path: Path) -> list[dict[str, str]]:
+    with path.open("r", encoding="utf-8-sig", newline="") as handle:
+        return list(csv.DictReader(handle))
+
+
+def _float(row: dict[str, str], key: str, default: float = 0.0) -> float:
+    try:
+        return float(row.get(key) or default)
+    except (TypeError, ValueError):
+        return default
+
+
+def _finding_code(value: str) -> str:
+    cleaned = "_".join(part for part in value.upper().replace("-", " ").split() if part)
+    return f"GAIT_{cleaned or 'MOVEMENT_PATTERN'}"
+
+
+class MocoRuntime:
+    def status(self) -> dict[str, Any]:
+        return {
+            "configured": (MOCO_ROOT / "run_video_pipeline.py").is_file() and MOCO_PYTHON.is_file(),
+            "root": str(MOCO_ROOT),
+            "python": str(MOCO_PYTHON),
+            "solver": "OpenSim Moco patient-informed gait comparison",
+        }
+
+    @staticmethod
+    def _download(source: dict[str, Any], destination: Path) -> None:
+        request = urllib.request.Request(
+            str(source["url"]),
+            headers={str(k): str(v) for k, v in (source.get("headers") or {}).items()},
+        )
+        with urllib.request.urlopen(request, timeout=180) as response, destination.open("wb") as output:
+            shutil.copyfileobj(response, output)
+
+    def analyze(self, job: dict[str, Any]) -> dict[str, Any] | None:
+        source = next(
+            (item for item in job.get("video_sources") or [] if item.get("task_id") == "L6"),
+            None,
+        )
+        if not source:
+            return None
+        if not self.status()["configured"]:
+            raise RuntimeError("OpenSim/Moco runtime paths are not configured")
+
+        WORK_ROOT.mkdir(parents=True, exist_ok=True)
+        job_dir = Path(tempfile.mkdtemp(prefix=f"{job['assessment_id'][:8]}-", dir=WORK_ROOT))
+        extension = ".webm" if "webm" in str(source.get("content_type") or "") else ".mp4"
+        video_path = job_dir / f"walking{extension}"
+        output_dir = job_dir / "moco"
+        try:
+            self._download(source, video_path)
+            command = [
+                str(MOCO_PYTHON),
+                str(MOCO_ROOT / "run_video_pipeline.py"),
+                "--video", str(video_path),
+                "--output-dir", str(output_dir),
+                "--mesh-intervals", os.environ.get("REHYN_MOCO_MESH_INTERVALS", "8"),
+            ]
+            completed = subprocess.run(
+                command,
+                cwd=MOCO_ROOT,
+                capture_output=True,
+                text=True,
+                timeout=int(os.environ.get("REHYN_MOCO_TIMEOUT_SECONDS", "1800")),
+            )
+            if completed.returncode != 0:
+                raise RuntimeError(
+                    "OpenSim/Moco pipeline failed: "
+                    + (completed.stderr or completed.stdout)[-1500:]
+                )
+
+            report_dir = output_dir / "report"
+            comparison = _read_csv(report_dir / "moco_patient_vs_template_summary.csv")
+            solve_rows = _read_csv(report_dir / "moco_solve_summary.csv")
+            kinematics_rows = _read_csv(report_dir / "moco_kinematic_comparison.csv")
+            phenotype_rows = _read_csv(report_dir / "phenotype_moco_explanations.csv")
+            solve_succeeded = bool(solve_rows) and all(
+                "succeeded" in str(row.get("status") or "").lower() for row in solve_rows
+            )
+            if not solve_succeeded:
+                raise RuntimeError("OpenSim/Moco did not report a successful solution")
+
+            activations: dict[str, Any] = {}
+            forces: dict[str, Any] = {}
+            for row in comparison:
+                muscle = str(row.get("right_muscle_group") or "muscle")
+                activations[muscle] = {
+                    "mean": _float(row, "patient_mean_activation"),
+                    "peak": _float(row, "patient_peak_activation"),
+                    "template_mean": _float(row, "template_mean_activation"),
+                    "template_peak": _float(row, "template_peak_activation"),
+                    "delta_mean": _float(row, "delta_mean_activation"),
+                }
+                forces[muscle] = {
+                    "mean": _float(row, "patient_mean_force_n"),
+                    "peak": _float(row, "patient_peak_force_n"),
+                    "template_mean": _float(row, "template_mean_force_n"),
+                    "delta_mean": _float(row, "delta_mean_force_n"),
+                }
+
+            findings = [
+                {
+                    "code": _finding_code(str(row.get("movement_phenotype") or "")),
+                    "label": str(row.get("movement_phenotype") or "Movement pattern").replace("_", " ").title(),
+                    "severity": str(row.get("confidence") or "review"),
+                    "domain": "lower_limb",
+                    "description": str(row.get("possible_explanation") or ""),
+                    "evidence": str(row.get("video_evidence") or ""),
+                    "clinical_claim": str(row.get("clinical_claim") or "screening_hypothesis_not_diagnosis"),
+                }
+                for row in phenotype_rows
+            ]
+            patient_kinematics = next(
+                (row for row in kinematics_rows if "video_informed" in str(row.get("condition") or "")),
+                {},
+            )
+            template_kinematics = next(
+                (row for row in kinematics_rows if "matched_template" in str(row.get("condition") or "")),
+                {},
+            )
+            return {
+                "status": "completed",
+                "per_task": [{
+                    "task_id": "L6",
+                    "domain": "lower_limb",
+                    "quality": {
+                        "kinematics_valid": True,
+                        "model_scaled": False,
+                        "external_loads_valid": False,
+                        "residuals_within_threshold": False,
+                    },
+                    "external_load_method": "2D model-internal foot-ground contact; no measured force plates",
+                    "muscle_activations": activations,
+                    "muscle_forces_n": forces,
+                    "joint_moments_nm": {},
+                    "functional_findings": findings,
+                    "provenance": {
+                        "solver": "OpenSim Moco patient-informed gait comparison",
+                        "model_version": "opensim-moco-2d-gait-video-informed",
+                        "source_video_id": str(source["video_id"]),
+                        "code_version": WORKER_CODE_VERSION,
+                    },
+                }],
+                "kinematics": {
+                    "patient_knee_excursion_deg": _float(patient_kinematics, "knee_excursion_deg"),
+                    "template_knee_excursion_deg": _float(template_kinematics, "knee_excursion_deg"),
+                },
+                "solver_summary": {
+                    "conditions": solve_rows,
+                    "stdout_tail": completed.stdout[-1000:],
+                },
+                "reporting_boundary": (
+                    "This is a genuine OpenSim Moco optimization using video-informed gait kinematics, "
+                    "but the current 2D generic model is not subject-scaled and does not use measured force plates. "
+                    "It is a research estimate, not EMG, measured strength, or a diagnosis."
+                ),
+            }
+        finally:
+            if os.environ.get("REHYN_KEEP_ANALYSIS_WORK", "0") != "1":
+                shutil.rmtree(job_dir, ignore_errors=True)
+
+
 RUNTIME: CudaRuntime | None = None
+MOCO_RUNTIME = MocoRuntime()
 JOBS: queue.Queue[dict[str, Any]] = queue.Queue()
 
 
@@ -232,8 +415,8 @@ def get_runtime() -> CudaRuntime:
     return RUNTIME
 
 
-def callback(job: dict[str, Any], result: dict[str, Any]) -> None:
-    url = f"{job['callback_url'].rstrip('/')}/assessment/{job['assessment_id']}/gpu-stage-results"
+def callback(job: dict[str, Any], result: dict[str, Any], stage_path: str) -> None:
+    url = f"{job['callback_url'].rstrip('/')}/assessment/{job['assessment_id']}/{stage_path}"
     request = urllib.request.Request(
         url,
         data=json.dumps(result).encode("utf-8"),
@@ -251,19 +434,35 @@ def run_jobs() -> None:
     while True:
         job = JOBS.get()
         try:
-            result = get_runtime().analyze(job.get("motion_data") or {})
-            callback(job, result)
-        except Exception as exc:
-            failure = {
-                "status": "failed",
-                "device": "cuda:0",
-                "error": str(exc),
-                "traceback": traceback.format_exc(limit=8),
-            }
             try:
-                callback(job, failure)
-            except Exception:
-                pass
+                gpu_result = get_runtime().analyze(job.get("motion_data") or {})
+                callback(job, gpu_result, "gpu-stage-results")
+            except Exception as exc:
+                gpu_failure = {
+                    "status": "failed",
+                    "device": "cuda:0",
+                    "error": str(exc),
+                    "traceback": traceback.format_exc(limit=8),
+                }
+                try:
+                    callback(job, gpu_failure, "gpu-stage-results")
+                except Exception:
+                    pass
+
+            try:
+                model_result = MOCO_RUNTIME.analyze(job)
+                if model_result is not None:
+                    callback(job, model_result, "model-stage-results")
+            except Exception as exc:
+                model_failure = {
+                    "status": "failed",
+                    "error": str(exc),
+                    "traceback": traceback.format_exc(limit=8),
+                }
+                try:
+                    callback(job, model_failure, "model-stage-results")
+                except Exception:
+                    pass
         finally:
             JOBS.task_done()
 
@@ -279,7 +478,11 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802
         if self.path == "/health":
-            self._json(200, get_runtime().status())
+            self._json(200, {
+                "cuda": get_runtime().status(),
+                "musculoskeletal": MOCO_RUNTIME.status(),
+                "queued_jobs": JOBS.qsize(),
+            })
         else:
             self._json(404, {"detail": "Not found"})
 
@@ -307,5 +510,5 @@ class Handler(BaseHTTPRequestHandler):
 if __name__ == "__main__":
     runtime = get_runtime()
     threading.Thread(target=run_jobs, daemon=True).start()
-    print(json.dumps(runtime.status()), flush=True)
+    print(json.dumps({"cuda": runtime.status(), "musculoskeletal": MOCO_RUNTIME.status()}), flush=True)
     ThreadingHTTPServer((HOST, PORT), Handler).serve_forever()

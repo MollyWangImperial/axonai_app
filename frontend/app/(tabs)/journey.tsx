@@ -13,6 +13,7 @@ function assessmentPlanLabel(item: Assessment) {
     return `${item.rehab_plan.length} recommended exercise${item.rehab_plan.length === 1 ? "" : "s"}`;
   }
   if (item.clinical_review_gate?.status === "no_rehab_needed") return "No rehab plan recommended";
+  if (["research_ready", "validated"].includes(item.patient_insights?.status || "")) return "Movement insights ready";
   if (item.clinical_review_gate?.status === "awaiting_model_analysis") return "Movement analysis in progress";
   return "Assessment summary ready";
 }
@@ -96,7 +97,13 @@ export default function JourneyScreen() {
           <Text style={styles.muted}>Your Initial Assessment will appear here when it is complete.</Text>
         ) : history.slice(0, 6).map((item) => (
           <Pressable key={item.id} testID={`assessment-history-${item.id}`} onPress={() => router.push({ pathname: "/results", params: { id: item.id } })} style={styles.historyRow}>
-            <View style={styles.historyIcon}><Ionicons name="checkmark" size={19} color={colors.onBrandPrimary} /></View>
+            <View style={styles.historyIcon}>
+              <Ionicons
+                name={["research_ready", "validated"].includes(item.patient_insights?.status || "") ? "analytics" : "checkmark"}
+                size={19}
+                color={colors.onBrandPrimary}
+              />
+            </View>
             <View style={{ flex: 1 }}>
               <Text style={styles.historyTitle}>{item.id === initialAssessmentId ? "Initial Assessment" : "Movement check-in"}</Text>
               <Text style={styles.historyMeta}>{new Date(item.created_at).toLocaleDateString()} · {assessmentPlanLabel(item)}</Text>

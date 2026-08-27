@@ -393,8 +393,10 @@ def test_routes_expose_packages_modeling_contract_and_multidomain_results():
         assert patient_summary.status_code == 200
         summary_payload = patient_summary.json()
         assert set(summary_payload) == {
-            "id", "created_at", "assessment_package", "collection", "body_function_summary", "rehab_plan_ready", "clinical_review_gate"
+            "id", "created_at", "assessment_package", "collection", "body_function_summary",
+            "rehab_plan_ready", "clinical_review_gate", "insights",
         }
+        assert summary_payload["insights"]["status"] == "processing"
         assert summary_payload["collection"]["tasks_collected"] == 1
         assert "analysis_pipeline" not in summary_payload
         assert "muscle_activation_diagnosis" not in summary_payload
@@ -557,6 +559,71 @@ def test_trusted_model_result_endpoint_rejects_proxies_and_stores_validated_outp
         stored = next(item for item in server.LOCAL_ASSESSMENTS if item.get("id") == assessment_id)
         assert stored["muscle_activation_diagnosis"]["status"] == "model_complete"
         assert stored["muscle_activation_diagnosis"]["findings"][0]["provenance"] == "validated_musculoskeletal_model"
+    finally:
+        server.LOCAL_ASSESSMENTS[:] = [
+            item for item in server.LOCAL_ASSESSMENTS if item.get("id") != assessment_id
+        ]
+
+
+def test_research_moco_result_builds_insights_without_unlocking_plan(monkeypatch):
+    assessment_id = "research-moco-insights-test"
+    server.LOCAL_ASSESSMENTS.append({
+        "id": assessment_id,
+        "created_at": "2026-08-27T00:00:00+00:00",
+        "affected_side": "right",
+        "assessment_package": "initial",
+        "task_results": [{
+            "task_id": "L6", "completed_steps": 1, "total_steps": 1,
+            "duration_ms": 6000, "steps": [], "metrics": {},
+        }],
+        "functional_issues": [],
+        "rehab_plan": [],
+        "body_function_summary": {
+            "domains": [{
+                "domain": "lower_limb", "label": "Lower limb", "step_completion_percent": 100,
+                "findings_count": 0, "status": "analysis_pending",
+            }],
+        },
+        "clinical_review_gate": {"status": "awaiting_model_analysis", "rehab_access": "blocked"},
+        "model_analysis": {"status": "queued", "tasks": [{"task_id": "L6", "video_id": "video-l6"}]},
+    })
+    monkeypatch.setattr(server, "ANALYSIS_WORKER_TOKEN", "test-worker-token")
+    payload = {
+        "status": "completed",
+        "per_task": [{
+            "task_id": "L6",
+            "domain": "lower_limb",
+            "quality": {
+                "kinematics_valid": True, "model_scaled": False,
+                "external_loads_valid": False, "residuals_within_threshold": False,
+            },
+            "muscle_activations": {
+                "hamstrings": {"mean": 0.18, "peak": 0.41, "template_mean": 0.22, "delta_mean": -0.04},
+            },
+            "provenance": {
+                "solver": "OpenSim Moco patient-informed gait comparison",
+                "model_version": "opensim-moco-2d-gait-video-informed",
+                "source_video_id": "video-l6",
+                "code_version": "worker-test",
+            },
+        }],
+        "kinematics": {"patient_knee_excursion_deg": 18.0, "template_knee_excursion_deg": 31.0},
+        "reporting_boundary": "Research estimate only.",
+    }
+    try:
+        with TestClient(server.app) as client:
+            response = client.post(
+                f"/api/assessment/{assessment_id}/model-stage-results",
+                json=payload,
+                headers={"X-Analysis-Worker-Token": "test-worker-token"},
+            )
+            assert response.status_code == 200
+            assert response.json()["insights_ready"] is True
+            assert response.json()["rehab_plan_unlocked"] is False
+            summary = client.get(f"/api/assessment/{assessment_id}/patient-summary").json()
+            assert summary["insights"]["status"] == "research_ready"
+            assert summary["insights"]["activation_profile"][0]["label"] == "Hamstrings"
+            assert summary["rehab_plan_ready"] is False
     finally:
         server.LOCAL_ASSESSMENTS[:] = [
             item for item in server.LOCAL_ASSESSMENTS if item.get("id") != assessment_id

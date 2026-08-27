@@ -16,3 +16,21 @@ services:
         value: nova
       - key: TTS_MODEL
         value: tts-1
+      - key: LOCAL_GPU_WORKER_URL
+        sync: false
+      - key: LOCAL_BACKEND_CALLBACK_URL
+        value: https://rehyn.onrender.com/api
+      - key: ANALYSIS_WORKER_TOKEN
+        sync: false
+      - key: ANALYSIS_WORKER_CF_CLIENT_ID
+        sync: false
+      - key: ANALYSIS_WORKER_CF_CLIENT_SECRET
+        sync: false
+      - key: R2_ACCOUNT_ID
+        sync: false
+      - key: R2_ACCESS_KEY_ID
+        sync: false
+      - key: R2_SECRET_ACCESS_KEY
+        sync: false
+      - key: R2_BUCKET_NAME
+        sync: false

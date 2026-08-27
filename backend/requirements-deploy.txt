@@ -7,3 +7,4 @@ pymongo==4.6.3
 python-dotenv==1.2.2
 stripe==14.4.1
 uvicorn[standard]==0.25.0
+boto3==1.40.41
