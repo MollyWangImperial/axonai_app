@@ -7,7 +7,7 @@ import { useRouter } from "expo-router";
 import * as Haptics from "expo-haptics";
 import * as WebBrowser from "expo-web-browser";
 import { colors, spacing, radius } from "@/src/theme";
-import { signIn, authedFetch, cachePatientOnboarding, USER_KEY, USER_OBJ } from "@/src/auth";
+import { signIn, authedFetch, cachePatientOnboarding, getCachedPatientProfile, USER_KEY, USER_OBJ } from "@/src/auth";
 import { storage } from "@/src/utils/storage";
 import { API_BASE as BASE } from "@/src/config";
 
@@ -20,6 +20,37 @@ export default function SignInScreen() {
   const [loading, setLoading] = useState(false);
   const [googleLoading, setGoogleLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+
+  const routePatientAfterLogin = async (user: { id: string }) => {
+    const cachedProfile = await getCachedPatientProfile(user.id);
+    try {
+      const response = await authedFetch("/api/users/onboarding");
+      const onboarding = await response.json();
+      if (onboarding.onboarding_complete) {
+        await cachePatientOnboarding(user.id, onboarding.profile);
+        router.replace("/");
+        return;
+      }
+      if (cachedProfile) {
+        const restore = await authedFetch("/api/users/onboarding", {
+          method: "POST",
+          body: JSON.stringify(cachedProfile),
+        });
+        if (restore.ok) {
+          const restored = await restore.json();
+          await cachePatientOnboarding(user.id, restored.profile || cachedProfile);
+          router.replace("/");
+          return;
+        }
+      }
+    } catch {
+      if (cachedProfile) {
+        router.replace("/");
+        return;
+      }
+    }
+    router.replace("/onboarding");
+  };
 
   // On web — if we just returned from Emergent's Google auth flow, the URL hash
   // will contain `session_id=...`. We exchange it for our app user.
@@ -56,14 +87,7 @@ export default function SignInScreen() {
       if (u.role === "therapist") {
         router.replace("/therapist");
       } else {
-        try {
-          const or = await authedFetch("/api/users/onboarding");
-          const oj = await or.json();
-          if (oj.onboarding_complete) {
-            await cachePatientOnboarding(u.id, oj.profile);
-            router.replace("/");
-          } else router.replace("/onboarding");
-        } catch { router.replace("/onboarding"); }
+        await routePatientAfterLogin(u);
       }
     } catch (e) {
       setErr("Google sign-in failed. Please try again.");
@@ -119,20 +143,7 @@ export default function SignInScreen() {
         router.replace("/therapist");
         return;
       }
-      // Patient — check whether onboarding is complete
-      try {
-        const r = await authedFetch("/api/users/onboarding");
-        const j = await r.json();
-        if (j.onboarding_complete) {
-          await cachePatientOnboarding(u.id, j.profile);
-          router.replace("/");
-        } else {
-          router.replace("/onboarding");
-        }
-      } catch {
-        // Fail-safe: go to onboarding for any new account flow
-        router.replace("/onboarding");
-      }
+      await routePatientAfterLogin(u);
     } catch (e) {
       setErr("Sign-in failed. Try again.");
     } finally { setLoading(false); }

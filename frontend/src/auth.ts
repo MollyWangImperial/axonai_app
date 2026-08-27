@@ -9,15 +9,38 @@ export const USER_OBJ = "active_user_obj_v1";
 export const onboardingCompleteKey = (userId: string) => `onboarding_complete_v2:${userId}`;
 export const preferredNameKey = (userId: string) => `preferred_name_v2:${userId}`;
 export const affectedSideKey = (userId: string) => `affected_side_v2:${userId}`;
+export const patientProfileKey = (userId: string) => `patient_profile_v2:${userId}`;
 export const completedTasksKey = (userId: string, packageId: string) => `assessment_completed_tasks_v2:${userId}:${packageId}`;
 export const savedTaskVideosKey = (userId: string, packageId: string) => `assessment_saved_task_videos_v2:${userId}:${packageId}`;
 
 export async function cachePatientOnboarding(userId: string, profile: Record<string, any> | null = null) {
   await storage.setItem(onboardingCompleteKey(userId), "1");
+  if (profile) await storage.setItem(patientProfileKey(userId), JSON.stringify(profile));
   if (profile?.preferred_name) await storage.setItem(preferredNameKey(userId), String(profile.preferred_name));
   if (profile?.side_affected === "left" || profile?.side_affected === "right") {
     await storage.setItem(affectedSideKey(userId), profile.side_affected);
   }
+}
+
+export async function getCachedPatientProfile(userId: string): Promise<Record<string, any> | null> {
+  const raw = await storage.getItem(patientProfileKey(userId), "");
+  if (raw) {
+    try {
+      const profile = JSON.parse(raw);
+      if (profile && typeof profile === "object") return profile;
+    } catch {
+      /* fall through to legacy account-scoped fields */
+    }
+  }
+  const [preferredName, affectedSide] = await Promise.all([
+    storage.getItem(preferredNameKey(userId), ""),
+    storage.getItem(affectedSideKey(userId), ""),
+  ]);
+  if (!preferredName && affectedSide !== "left" && affectedSide !== "right") return null;
+  return {
+    ...(preferredName ? { preferred_name: preferredName } : {}),
+    ...(affectedSide === "left" || affectedSide === "right" ? { side_affected: affectedSide } : {}),
+  };
 }
 
 export async function getUserId(): Promise<string | null> {

@@ -85,11 +85,15 @@ def test_task_progress_is_account_scoped_and_can_be_reset(monkeypatch, tmp_path)
 
 def test_frontend_resume_state_is_scoped_to_the_signed_in_account():
     auth = (server.ROOT_DIR.parent / "frontend" / "src" / "auth.ts").read_text(encoding="utf-8")
+    sign_in = (server.ROOT_DIR.parent / "frontend" / "app" / "sign-in.tsx").read_text(encoding="utf-8")
     intro = (server.ROOT_DIR.parent / "frontend" / "app" / "task-intro.tsx").read_text(encoding="utf-8")
     assessment = (server.ROOT_DIR.parent / "frontend" / "app" / "assessment.tsx").read_text(encoding="utf-8")
 
     assert "onboarding_complete_v2:${userId}" in auth
+    assert "patient_profile_v2:${userId}" in auth
     assert "assessment_completed_tasks_v2:${userId}:${packageId}" in auth
+    assert 'authedFetch("/api/users/onboarding", {' in sign_in
+    assert "JSON.stringify(cachedProfile)" in sign_in
     assert "fetchTaskProgress(packageId)" in intro
     assert 'testID="task-intro-start-over"' in intro
     assert 'query.set("completed_tasks", completedTasksParam)' in assessment
