@@ -62,3 +62,44 @@ def test_walking_evidence_does_not_accumulate_during_voice_instructions():
     source = server.POSE_RUNNER_HTML
     assert "const gaitCaptureActive = voiceFinishedAt > 0" in source
     assert "if(gaitCaptureActive){" in source
+
+
+def test_walking_uses_device_specific_capture_controls_instead_of_target_circles():
+    source = server.POSE_RUNNER_HTML
+    assert 'data-testid="walking-capture"' in source
+    assert 'data-testid="walking-desktop-actions"' in source
+    assert 'data-testid="walking-mobile-actions"' in source
+    assert 'data-testid="walking-choose-video"' in source
+    assert 'data-testid="walking-start-recording"' in source
+    assert "const IS_MOBILE_CAPTURE_DEVICE" in source
+    assert 'if(isWalkingTask()){\n    lapStatus.classList.add("hidden");\n    return;' in source
+
+
+def test_desktop_walking_upload_is_quality_checked_before_collection_completes():
+    source = server.POSE_RUNNER_HTML
+    assert "async function validateWalkingVideo(file)" in source
+    assert "durationSeconds < 4 || durationSeconds > 90" in source
+    assert "const sampleCount = 18;" in source
+    assert "fullBodyVisibleForWalking(pose)" in source
+    assert "if(fullBodyRatio < 0.70)" in source
+    assert "completeUploadedWalkingTask(file, validation)" in source
+    assert 'capture_source:"uploaded_walking_video"' in source
+
+
+def test_phone_walking_capture_uses_an_explicit_record_button_and_rear_camera_when_available():
+    source = server.POSE_RUNNER_HTML
+    assert "walkingRecordBtn.addEventListener" in source
+    assert 'facingMode:{ideal:"environment"}' in source
+    assert 'type:"walking_recording_started"' in source
+    assert 'device_mode:"mobile"' in source
+
+
+def test_camera_switch_waits_for_a_real_frame_before_pose_detection_resumes():
+    source = server.POSE_RUNNER_HTML
+    assert "async function waitForWalkingCameraFrame" in source
+    assert "video.videoWidth > 0 && video.videoHeight > 0" in source
+    assert "walkingCameraSwitching = true" in source
+    assert "walkingCameraSwitching = false" in source
+    assert "const cameraFrameReady = !walkingCameraSwitching" in source
+    assert "if(cameraFrameReady && landmarker" in source
+    assert "if(cameraFrameReady && handLandmarker" in source

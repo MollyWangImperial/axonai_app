@@ -76,8 +76,10 @@ def test_advanced_marker_tasks_keep_seven_task_contract():
     assert "fist_closure_score" in html_source
     assert "palmFacingScore" in html_source
     assert "latestHandedness" in html_source
-    assert "rawHandedness" in html_source
-    assert 'rawHandedness === "Right" ? "Left"' in html_source
+    assert "function anatomicalHandedness(rawCategory)" in html_source
+    assert 'rawCategory === "Right"' in html_source
+    assert "function selectAffectedHandDetection" in html_source
+    assert "sideLandmarks(latestPoseLandmarks, AFFECTED_SIDE).wrist" in html_source
     assert "signedPalmTowardCamera" in html_source
     assert "const angleDeg = (a,b,c)" in html_source
     assert "const handScale = Math.max(0.01, palmWidth, palmHeight * 0.9)" in html_source

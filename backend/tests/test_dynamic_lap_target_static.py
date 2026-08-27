@@ -35,6 +35,7 @@ def test_lap_calibration_uses_stable_seated_anatomy_not_a_wrist_snapshot():
         "const stable = samples.every",
         "Math.hypot(s.bodyX-bodyCenter.x, s.bodyY-bodyCenter.y) <= maxJitter",
         "if(kneeAngle > 168 && verticalThighRatio > 0.72) return null;",
+        "const screenPoint = anatomical;",
     ):
         assert marker in source
 
@@ -77,8 +78,17 @@ def test_lap_drawing_and_hit_testing_share_calibrated_coordinates():
     assert "return lapTargetCalibration.target || {x: step.target.x, y: step.target.y};" in source
     assert "const targetXY = getEffectiveTargetXY(step);" in source
     assert "const affectedWristRaw = sideLandmarks(landmarks, AFFECTED_SIDE).wrist;" in source
-    assert "return distXY(affectedWrist, targetXY) < effectiveRadius(step, landmarks);" in source
+    assert "return distXY(affectedWristRaw, targetXY) < effectiveRadius(step, landmarks);" in source
     assert "updateLapTargetCalibration(landmarks, now);" in source
+
+
+def test_lap_target_uses_the_survey_selected_anatomical_side_without_double_mirroring():
+    source = server.POSE_RUNNER_HTML
+    assert 'const AFFECTED_SIDE = URL_PARAMS.get("affected_side") === "left" ? "left" : "right";' in source
+    assert "const affected = sideLandmarks(lm, AFFECTED_SIDE);" in source
+    assert "const screenPoint = anatomical;" in source
+    assert "const screenPoint = mirrorX(anatomical);" not in source
+    assert "affectedSide:AFFECTED_SIDE" in source
 
 
 def test_hand_package_lap_step_is_not_forced_back_to_static_coordinates():

@@ -1639,6 +1639,19 @@ POSE_RUNNER_HTML = r"""<!DOCTYPE html>
   #calibrationProgressFill{height:100%;width:0;background:#4A7856;transition:width .2s ease}
   #calibrationAutoStatus{width:100%;border-radius:8px;padding:13px 16px;background:#E8ECE8;color:#56605A;font-size:15px;font-weight:750;text-align:center}
   #calibrationAutoStatus.ready{background:#4A7856;color:#fff}
+  #walkingCapture{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(12,16,14,.94);padding:20px;pointer-events:auto;z-index:13}
+  #walkingCapture .walkingCard{width:min(560px,100%);max-height:92vh;overflow:auto;background:#FDFDFD;color:#1C201D;border-radius:8px;padding:22px;box-shadow:0 24px 80px rgba(0,0,0,.38)}
+  #walkingCapture .walkingEyebrow{font-size:13px;font-weight:800;color:#4A7856;text-transform:uppercase;margin-bottom:8px}
+  #walkingCapture h2{font-size:24px;line-height:1.2;margin-bottom:10px}
+  #walkingCapture p{font-size:15px;line-height:1.45;color:#414843}
+  #walkingCapture ul{padding-left:20px;margin:14px 0}
+  #walkingCapture li{font-size:14px;line-height:1.4;margin:6px 0;color:#303632}
+  #walkingCapture button{width:100%;border:none;border-radius:8px;padding:15px 16px;background:#4A7856;color:#fff;font-size:16px;font-weight:800;cursor:pointer}
+  #walkingCapture button:disabled{background:#C9D2CB;color:#667068;cursor:not-allowed}
+  #walkingCaptureStatus{margin-top:12px;padding:11px 12px;border-radius:8px;background:#EEF0ED;color:#49504B;font-size:14px;line-height:1.4}
+  #walkingCaptureStatus.good{background:#D9E5DC;color:#285C3A;font-weight:700}
+  #walkingCaptureStatus.warn{background:#FFF0E6;color:#7A351E;font-weight:700}
+  body.walking-camera-unmirrored #cameraFrame video,body.walking-camera-unmirrored #cameraFrame canvas{transform:none}
   #advancedMarkerGate{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:#0c100ef5;padding:20px;pointer-events:auto;z-index:11}
   #advancedMarkerGate .gateCard{width:min(520px,100%);max-height:92vh;overflow:auto;background:#FDFDFD;color:#1C201D;border-radius:24px;padding:22px;text-align:left;box-shadow:0 24px 80px rgba(0,0,0,.35)}
   #advancedMarkerGate .gateEyebrow{color:#4A7856;font-size:13px;font-weight:800;letter-spacing:.5px;text-transform:uppercase;margin-bottom:8px}
@@ -1718,6 +1731,27 @@ POSE_RUNNER_HTML = r"""<!DOCTYPE html>
       <div id="calibrationAutoStatus" role="status" data-testid="calibration-auto-status">Keep still. Assessment will start automatically.</div>
     </div>
   </div>
+  <div id="walkingCapture" class="hidden" data-testid="walking-capture">
+    <div class="walkingCard">
+      <div class="walkingEyebrow">Final walking observation</div>
+      <h2 id="walkingCaptureTitle">Record a comfortable walk</h2>
+      <p id="walkingCaptureLead">Ask a carer or family member to record from the side while you walk at your usual comfortable pace.</p>
+      <ul>
+        <li>Keep the patient's head, trunk, hips, knees, feet, and walking aid visible for the entire recording.</li>
+        <li>Use a fixed side view when possible. Otherwise move smoothly parallel at a safe distance.</li>
+        <li>Do not zoom, walk backward, cross the patient's path, or film while providing hands-on support.</li>
+      </ul>
+      <div id="walkingDesktopActions" class="hidden" data-testid="walking-desktop-actions">
+        <input id="walkingVideoInput" type="file" accept="video/*" class="hidden" />
+        <button id="walkingChooseVideoBtn" type="button" data-testid="walking-choose-video">Choose walking video</button>
+      </div>
+      <div id="walkingMobileActions" class="hidden" data-testid="walking-mobile-actions">
+        <button id="walkingRecordBtn" type="button" data-testid="walking-start-recording">Start recording walking</button>
+      </div>
+      <div id="walkingCaptureStatus" role="status">Preparing the walking capture...</div>
+      <video id="walkingReviewVideo" class="hidden" playsinline muted preload="metadata"></video>
+    </div>
+  </div>
   <div id="advancedMarkerGate" class="hidden" data-testid="advanced-marker-gate">
     <div class="gateCard">
       <div class="gateEyebrow">AxonAI Hand Function Package</div>
@@ -1791,6 +1825,16 @@ const calibrationSeat = document.getElementById("calibrationSeat");
 const calibrationLap = document.getElementById("calibrationLap");
 const calibrationProgressFill = document.getElementById("calibrationProgressFill");
 const calibrationAutoStatus = document.getElementById("calibrationAutoStatus");
+const walkingCapture = document.getElementById("walkingCapture");
+const walkingCaptureTitle = document.getElementById("walkingCaptureTitle");
+const walkingCaptureLead = document.getElementById("walkingCaptureLead");
+const walkingDesktopActions = document.getElementById("walkingDesktopActions");
+const walkingMobileActions = document.getElementById("walkingMobileActions");
+const walkingChooseVideoBtn = document.getElementById("walkingChooseVideoBtn");
+const walkingVideoInput = document.getElementById("walkingVideoInput");
+const walkingRecordBtn = document.getElementById("walkingRecordBtn");
+const walkingCaptureStatus = document.getElementById("walkingCaptureStatus");
+const walkingReviewVideo = document.getElementById("walkingReviewVideo");
 const skipBtn = document.getElementById("skipBtn");
 const exitBtn = document.getElementById("exitBtn");
 const advancedMarkerGate = document.getElementById("advancedMarkerGate");
@@ -1953,8 +1997,10 @@ const voiceAudioCache = new Map();
 const voiceAudioInflight = new Map();
 let taskLoadPromise = null;
 let audioUnlockPromise = null;
-let latestHandLandmarks = null;        // result.landmarks[0] from HandLandmarker (21 points)
-let latestHandedness = "";             // "Left" / "Right" from MediaPipe, used for palm/back orientation
+let latestHandLandmarks = null;        // selected affected hand only (21 points)
+let latestHandedness = "";             // survey-selected anatomical side: "Left" / "Right"
+let affectedHandTrackWrist = null;
+let affectedHandTrackSeenAt = 0;
 let latestPoseLandmarks = null;        // result.landmarks[0] from PoseLandmarker (33 points)
 let latestPoseWorldLandmarks = null;   // estimated 3D world landmarks from PoseLandmarker
 let dynamicTargetPos = null;           // {x,y} locked once a dynamic body target is calibrated
@@ -2009,12 +2055,20 @@ const CURRENT_USER_ID = URL_PARAMS.get("uid") || "";
 const ASSESSMENT_PACKAGE = URL_PARAMS.get("package") || "upper_limb";
 const START_TASK_ID = URL_PARAMS.get("start_task") || "";
 const AFFECTED_SIDE = URL_PARAMS.get("affected_side") === "left" ? "left" : "right";
+const DEVICE_MODE_OVERRIDE = URL_PARAMS.get("device_mode");
+const IS_MOBILE_CAPTURE_DEVICE = DEVICE_MODE_OVERRIDE === "mobile" || (DEVICE_MODE_OVERRIDE !== "desktop" && (
+  /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent)
+  || (navigator.maxTouchPoints > 1 && Math.min(screen.width, screen.height) < 1024)
+));
 const TASK_VIDEO_DB_NAME = "rehyn-task-videos-v1";
 const TASK_VIDEO_STORE_NAME = "task-videos";
 let activeTaskRecorder = null;
 let activeTaskRecording = null;
 let pendingTaskVideoSaves = new Set();
 let recorderUnavailableReported = false;
+let walkingCaptureActive = false;
+let walkingCapturePromptPlayed = false;
+let walkingCameraSwitching = false;
 
 function taskDomain(task=tasks[currentTaskIdx]){
   const id = task && task.id ? task.id : "";
@@ -2027,6 +2081,7 @@ function taskDomain(task=tasks[currentTaskIdx]){
 function isHandTask(){ return taskDomain() === "hand"; }
 function isLowerTask(){ return taskDomain() === "lower_limb"; }
 function isBalanceTask(){ return taskDomain() === "balance"; }
+function isWalkingTask(task=tasks[currentTaskIdx]){ return !!(task && task.id === "L6"); }
 
 function postRN(data){
   if(window.ReactNativeWebView){
@@ -2114,7 +2169,9 @@ function beginTaskRecording(taskId){
 }
 
 async function persistTaskVideo(recording, blob){
-  const durationMs = Math.max(0, Math.round(performance.now() - recording.startedAt));
+  const durationMs = Number.isFinite(recording.durationMs)
+    ? Math.max(0, Math.round(recording.durationMs))
+    : Math.max(0, Math.round(performance.now() - recording.startedAt));
   const localKey = `${CURRENT_USER_ID || "anonymous"}:${ASSESSMENT_PACKAGE}:${recording.taskId}`;
   let localSaved = false;
   try{
@@ -2311,7 +2368,7 @@ async function setupHand(){
     handLandmarker = await HandLandmarker.createFromOptions(filesetResolver, {
       baseOptions:{ modelAssetPath: "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task" },
       runningMode: "VIDEO",
-      numHands: 1,
+      numHands: 2,
       minHandDetectionConfidence: 0.65,
       minHandPresenceConfidence: 0.65,
       minTrackingConfidence: 0.7,
@@ -2329,6 +2386,224 @@ async function setupTrackingModels(){
     await setupHand();
   }
   drawingUtils = new DrawingUtils(ctx);
+}
+
+function setWalkingCaptureStatus(message, tone=""){
+  walkingCaptureStatus.textContent = message;
+  walkingCaptureStatus.classList.toggle("good", tone === "good");
+  walkingCaptureStatus.classList.toggle("warn", tone === "warn");
+}
+
+async function showWalkingCapture(task){
+  walkingCaptureTitle.textContent = IS_MOBILE_CAPTURE_DEVICE
+    ? "Record the walking test"
+    : "Upload a walking video";
+  walkingCaptureLead.textContent = IS_MOBILE_CAPTURE_DEVICE
+    ? "Hand the phone to a carer or family member. They should record from the side and keep your whole body visible."
+    : "A computer should stay in place. Ask a carer or family member to record the walk on a phone, then upload that video here.";
+  walkingDesktopActions.classList.toggle("hidden", IS_MOBILE_CAPTURE_DEVICE);
+  walkingMobileActions.classList.toggle("hidden", !IS_MOBILE_CAPTURE_DEVICE);
+  setWalkingCaptureStatus(IS_MOBILE_CAPTURE_DEVICE
+    ? "When everyone is safely positioned, tap Start recording walking."
+    : "Choose a 4 to 90 second side-view video. Rehyn will check that the full body stays visible.");
+  walkingCapture.classList.remove("hidden");
+  ui.classList.add("hidden");
+  renderDots();
+  if(!walkingCapturePromptPlayed){
+    walkingCapturePromptPlayed = true;
+    const prompt = IS_MOBILE_CAPTURE_DEVICE
+      ? "For the walking test, hand the phone to a carer or family member. Keep your whole body visible from the side. Tap Start recording walking when everyone is safely positioned."
+      : "For the walking test, ask a carer or family member to record a side-view video on a phone. Keep your whole body visible, then upload the video here.";
+    await playVoice(prompt);
+  }
+}
+
+async function waitForWalkingCameraFrame(timeoutMs=5000){
+  try{ await video.play(); }catch(error){}
+  const deadline = performance.now() + timeoutMs;
+  while(performance.now() < deadline){
+    if(video.readyState >= 2 && video.videoWidth > 0 && video.videoHeight > 0) return true;
+    await new Promise(resolve => setTimeout(resolve, 50));
+  }
+  return false;
+}
+
+async function switchToWalkingCamera(){
+  walkingCameraSwitching = true;
+  latestPoseLandmarks = null;
+  latestPoseWorldLandmarks = null;
+  latestHandLandmarks = null;
+  const previousStream = video.srcObject;
+  if(previousStream && previousStream.getTracks){
+    previousStream.getTracks().forEach(track => track.stop());
+  }
+  const settings = responsiveVideoSettings(720, 480, 30);
+  try{
+    try{
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video:{...settings, facingMode:{ideal:"environment"}},
+        audio:false,
+      });
+      video.srcObject = stream;
+      if(!await waitForWalkingCameraFrame()) throw new Error("Rear camera did not produce a video frame");
+      document.body.classList.add("walking-camera-unmirrored");
+      syncCameraViewport();
+      return true;
+    }catch(error){
+      try{
+        const fallback = await navigator.mediaDevices.getUserMedia({video:settings, audio:false});
+        video.srcObject = fallback;
+        if(!await waitForWalkingCameraFrame()) throw new Error("Camera did not produce a video frame");
+        document.body.classList.remove("walking-camera-unmirrored");
+        syncCameraViewport();
+        return true;
+      }catch(fallbackError){
+        postRN({type:"camera_error", message:String(fallbackError || error)});
+        return false;
+      }
+    }
+  }finally{
+    walkingCameraSwitching = false;
+  }
+}
+
+function seekWalkingReviewVideo(timeSeconds){
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const requestedTime = Math.max(0, Math.min(timeSeconds, walkingReviewVideo.duration || timeSeconds));
+    const alreadyDecoded = walkingReviewVideo.readyState >= 2
+      && Math.abs(walkingReviewVideo.currentTime - requestedTime) < 0.01;
+    const finish = callback => {
+      if(settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      walkingReviewVideo.onseeked = null;
+      walkingReviewVideo.onerror = null;
+      callback();
+    };
+    const timeout = setTimeout(() => finish(() => reject(new Error("Could not inspect this part of the video"))), 5000);
+    walkingReviewVideo.onseeked = () => finish(resolve);
+    walkingReviewVideo.onerror = () => finish(() => reject(new Error("The selected video could not be read")));
+    walkingReviewVideo.currentTime = requestedTime;
+    if(alreadyDecoded) setTimeout(() => finish(resolve), 0);
+  });
+}
+
+async function validateWalkingVideo(file){
+  if(!file || !String(file.type || "").startsWith("video/")){
+    return {ok:false, message:"Please choose a video file."};
+  }
+  const objectUrl = URL.createObjectURL(file);
+  let validator = null;
+  try{
+    walkingReviewVideo.src = objectUrl;
+    await new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error("Video metadata timed out")), 8000);
+      walkingReviewVideo.onloadedmetadata = () => { clearTimeout(timeout); resolve(); };
+      walkingReviewVideo.onerror = () => { clearTimeout(timeout); reject(new Error("The selected video could not be opened")); };
+    });
+    const durationSeconds = Number(walkingReviewVideo.duration || 0);
+    const width = Number(walkingReviewVideo.videoWidth || 0);
+    const height = Number(walkingReviewVideo.videoHeight || 0);
+    if(durationSeconds < 4 || durationSeconds > 90){
+      return {ok:false, message:"Record between 4 and 90 seconds, including the start, several steps, and a safe stop."};
+    }
+    if(Math.min(width, height) < 360){
+      return {ok:false, message:"The video is too small. Please use standard phone video quality and try again."};
+    }
+    const filesetResolver = await getVisionFilesetResolver();
+    validator = await PoseLandmarker.createFromOptions(filesetResolver, {
+      baseOptions:{ modelAssetPath:"https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task" },
+      runningMode:"VIDEO",
+      numPoses:1,
+    });
+    const sampleCount = 18;
+    const sampledFrames = [];
+    const timestampBase = performance.now() + 1000;
+    for(let index=0; index<sampleCount; index += 1){
+      const time = durationSeconds * (0.04 + (0.92 * index / (sampleCount - 1)));
+      await seekWalkingReviewVideo(time);
+      const result = validator.detectForVideo(walkingReviewVideo, timestampBase + index * 1000);
+      const pose = result && result.landmarks && result.landmarks[0] ? result.landmarks[0] : null;
+      const world = result && result.worldLandmarks && result.worldLandmarks[0] ? result.worldLandmarks[0] : null;
+      if(pose) sampledFrames.push({time, pose, world, fullBody:fullBodyVisibleForWalking(pose)});
+    }
+    const poseFrameCount = sampledFrames.length;
+    const fullBodyFrameCount = sampledFrames.filter(frame => frame.fullBody).length;
+    const fullBodyRatio = poseFrameCount ? fullBodyFrameCount / poseFrameCount : 0;
+    if(poseFrameCount < 12){
+      return {ok:false, message:"Rehyn could not see the patient clearly enough. Improve lighting and keep other people out of the frame."};
+    }
+    if(fullBodyRatio < 0.70){
+      return {ok:false, message:"The patient's head or feet leave the frame too often. Re-record from farther away and keep the whole body visible."};
+    }
+    return {
+      ok:true,
+      message:"Video check passed. The whole body is visible and the walking observation is ready for analysis.",
+      durationMs:Math.round(durationSeconds * 1000),
+      width,
+      height,
+      poseFrameCount,
+      fullBodyFrameCount,
+      fullBodyRatio,
+      sampledFrames,
+    };
+  }catch(error){
+    return {ok:false, message:`Could not validate this video. ${String(error.message || error)}`};
+  }finally{
+    if(validator && typeof validator.close === "function") validator.close();
+    walkingReviewVideo.removeAttribute("src");
+    walkingReviewVideo.load();
+    URL.revokeObjectURL(objectUrl);
+  }
+}
+
+async function completeUploadedWalkingTask(file, validation){
+  const task = tasks[currentTaskIdx];
+  if(!task || !isWalkingTask(task)) return;
+  validation.sampledFrames.forEach((frame, index) => {
+    if(motionFrames.length >= MAX_MOTION_FRAMES) return;
+    motionFrames.push({
+      timestamp_ms:Math.round(frame.time * 1000),
+      task_id:task.id,
+      step_id:"L6-S2",
+      domain:"lower_limb",
+      pose_2d:compactLandmarks(frame.pose),
+      pose_world_3d:compactLandmarks(frame.world),
+      hand_2d:null,
+      hand_side:null,
+      capture_source:"uploaded_walking_video",
+      sample_index:index,
+    });
+  });
+  const metrics = {
+    walking_capture_mode:"uploaded_video",
+    uploaded_video_duration_ms:validation.durationMs,
+    uploaded_video_width:validation.width,
+    uploaded_video_height:validation.height,
+    gait_pose_frame_count:validation.poseFrameCount,
+    gait_full_body_visible_frame_count:validation.fullBodyFrameCount,
+    gait_full_body_visibility_ratio:+validation.fullBodyRatio.toFixed(3),
+  };
+  const perStepDuration = Math.round(validation.durationMs / Math.max(1, task.steps.length));
+  taskResults[currentTaskIdx] = {
+    task_id:task.id,
+    completed_steps:task.steps.length,
+    total_steps:task.steps.length,
+    duration_ms:validation.durationMs,
+    steps:task.steps.map(step => ({step_id:step.id, completed:true, failure_code:null, duration_ms:perStepDuration, metrics})),
+    metrics,
+  };
+  await persistTaskVideo({
+    taskId:task.id,
+    startedAt:performance.now(),
+    durationMs:validation.durationMs,
+    mimeType:file.type || "video/mp4",
+  }, file);
+  walkingCaptureActive = true;
+  walkingCapture.classList.add("hidden");
+  ui.classList.remove("hidden");
+  await celebrateAndAdvance();
 }
 
 function playBrowserVoice(text){
@@ -2521,6 +2796,10 @@ async function startStep(){
   const step = getCurrentStep();
   const task = tasks[currentTaskIdx];
   if(!step) return;
+  if(currentStepIdx === 0 && isWalkingTask(task) && !walkingCaptureActive){
+    await showWalkingCapture(task);
+    return;
+  }
   if(currentStepIdx === 0 && isAdvancedMarkerTask(task) && !advancedGateSeen[task.id]){
     showAdvancedMarkerGate(task);
     return;
@@ -2583,6 +2862,8 @@ async function startStep(){
   stepStartBodyState = null;
   dynamicTargetPos = null;
   if(currentStepIdx === 0){
+    affectedHandTrackWrist = null;
+    affectedHandTrackSeenAt = 0;
     if(preservePreAssessmentLapCalibration && currentTaskLapStep()){
       preservePreAssessmentLapCalibration = false;
     }else if(!preservePreAssessmentLapCalibration){
@@ -2633,6 +2914,57 @@ function sideLandmarks(lm, side=AFFECTED_SIDE){
     heel: lm[left ? 29 : 30],
     toe: lm[left ? 31 : 32],
   };
+}
+
+function anatomicalHandedness(rawCategory){
+  // MediaPipe handedness assumes mirrored selfie input. Inference receives the
+  // unmirrored camera pixels, so swap its label back to the patient's anatomy.
+  if(rawCategory === "Right") return "Left";
+  if(rawCategory === "Left") return "Right";
+  return "";
+}
+
+function selectAffectedHandDetection(result, now=performance.now()){
+  const landmarksList = result && Array.isArray(result.landmarks) ? result.landmarks : [];
+  if(!landmarksList.length) return null;
+  const expectedSide = AFFECTED_SIDE === "left" ? "Left" : "Right";
+  const poseWrist = latestPoseLandmarks && latestPoseLandmarks.length >= 33
+    ? sideLandmarks(latestPoseLandmarks, AFFECTED_SIDE).wrist
+    : null;
+  const shoulders = latestPoseLandmarks && latestPoseLandmarks.length >= 33
+    ? [latestPoseLandmarks[11], latestPoseLandmarks[12]]
+    : null;
+  const shoulderWidth = shoulders ? distance(shoulders[0], shoulders[1]) : 0.22;
+  const associationRadius = Math.max(0.14, Math.min(0.32, shoulderWidth * 0.85));
+  const trackIsFresh = affectedHandTrackWrist && now - affectedHandTrackSeenAt < 900;
+  const candidates = landmarksList.map((landmarks, index) => {
+    const category = result.handednesses && result.handednesses[index]
+      && result.handednesses[index][0] ? result.handednesses[index][0] : null;
+    const handedness = anatomicalHandedness(category && category.categoryName);
+    const confidence = category && Number.isFinite(category.score) ? category.score : 0;
+    const wrist = landmarks && landmarks[0];
+    const poseDistance = poseWrist && wrist ? distance(wrist, poseWrist) : Infinity;
+    const trackDistance = trackIsFresh && wrist ? distance(wrist, affectedHandTrackWrist) : Infinity;
+    const sidePenalty = handedness && handedness !== expectedSide ? 0.18 : 0;
+    const score = (Number.isFinite(poseDistance) ? poseDistance * 4 : 0)
+      + (Number.isFinite(trackDistance) ? trackDistance * 0.7 : 0)
+      + sidePenalty - confidence * 0.05;
+    return {landmarks, index, handedness, confidence, wrist, poseDistance, trackDistance, score};
+  }).filter(candidate => candidate.wrist);
+
+  let eligible;
+  if(poseWrist){
+    eligible = candidates.filter(candidate => candidate.poseDistance <= associationRadius);
+  }else{
+    eligible = candidates.filter(candidate => candidate.handedness === expectedSide
+      || (trackIsFresh && candidate.trackDistance <= 0.16));
+  }
+  if(!eligible.length) return null;
+  eligible.sort((a,b) => a.score - b.score);
+  const selected = eligible[0];
+  affectedHandTrackWrist = {x:selected.wrist.x, y:selected.wrist.y, z:selected.wrist.z || 0};
+  affectedHandTrackSeenAt = now;
+  return {...selected, handedness:expectedSide};
 }
 
 function bodyState(lm){
@@ -2773,7 +3105,9 @@ function lapTargetCandidate(lm){
     x: affected.hip.x * 0.58 + affected.knee.x * 0.42,
     y: affected.hip.y * 0.58 + affected.knee.y * 0.42 + Math.min(0.018, torsoLength * 0.06),
   };
-  const screenPoint = mirrorX(anatomical);
+  // The canvas itself is CSS-mirrored with the camera preview. Keep the target
+  // in raw camera coordinates so it appears over the affected anatomical lap.
+  const screenPoint = anatomical;
   return {
     x: Math.max(0.10, Math.min(0.90, screenPoint.x)),
     y: Math.max(0.50, Math.min(0.90, screenPoint.y)),
@@ -2958,6 +3292,25 @@ if(URL_PARAMS.get("test_mode") === "lap_calibration"){
         statusText:calibrationAutoStatus.textContent,
         title:calibrationTitle.textContent,
       };
+    },
+    affectedSide:AFFECTED_SIDE,
+  };
+}
+
+if(URL_PARAMS.get("test_mode") === "hand_selection"){
+  window.__rehynAffectedHandTest = {
+    affectedSide:AFFECTED_SIDE,
+    select:(result, poseLandmarks, now=1000) => {
+      latestPoseLandmarks = poseLandmarks;
+      affectedHandTrackWrist = null;
+      affectedHandTrackSeenAt = 0;
+      const selected = selectAffectedHandDetection(result, now);
+      return selected ? {
+        index:selected.index,
+        handedness:selected.handedness,
+        poseDistance:selected.poseDistance,
+        wrist:{x:selected.wrist.x, y:selected.wrist.y},
+      } : null;
     },
   };
 }
@@ -3840,8 +4193,7 @@ function checkTarget(landmarks){
     const affectedWristRaw = sideLandmarks(landmarks, AFFECTED_SIDE).wrist;
     if(!landmarkIsUsable(affectedWristRaw)) return false;
     const targetXY = getEffectiveTargetXY(step);
-    const affectedWrist = mirrorX(affectedWristRaw);
-    return distXY(affectedWrist, targetXY) < effectiveRadius(step, landmarks);
+    return distXY(affectedWristRaw, targetXY) < effectiveRadius(step, landmarks);
   }
   if(isHandTask()){
     const target = step.target;
@@ -4014,6 +4366,10 @@ function drawOverlay(landmarks){
   }
   const step = getCurrentStep();
   if(!step){
+    lapStatus.classList.add("hidden");
+    return;
+  }
+  if(isWalkingTask()){
     lapStatus.classList.add("hidden");
     return;
   }
@@ -4282,12 +4638,16 @@ async function finishAssessment(){
 function loop(){
   if(!running) return;
   const now = performance.now();
+  const cameraFrameReady = !walkingCameraSwitching
+    && video.readyState >= 2
+    && video.videoWidth > 0
+    && video.videoHeight > 0;
   let landmarks = latestPoseLandmarks;
   const handBackoff = isHandPerformanceBackoff();
   const poseScanInterval = isHandTask()
     ? (handBackoff ? HAND_BACKOFF_POSE_SCAN_INTERVAL_MS : HAND_PACKAGE_POSE_SCAN_INTERVAL_MS)
     : POSE_SCAN_INTERVAL_MS;
-  if(landmarker && (now - lastPoseScanTs) >= poseScanInterval){
+  if(cameraFrameReady && landmarker && (now - lastPoseScanTs) >= poseScanInterval){
     let result = null;
     try{
       result = landmarker.detectForVideo(video, now);
@@ -4313,14 +4673,14 @@ function loop(){
   // not block the UI thread on every animation frame.
   const handNeeded = needsHandLandmarks();
   const handScanInterval = handBackoff ? HAND_BACKOFF_SCAN_INTERVAL_MS : HAND_SCAN_INTERVAL_MS;
-  if(handLandmarker && handNeeded && (now - lastHandScanTs) >= handScanInterval){
+  if(cameraFrameReady && handLandmarker && handNeeded && (now - lastHandScanTs) >= handScanInterval){
     lastHandScanTs = now;
     try{
       const hr = handLandmarker.detectForVideo(video, now);
-      if(hr && hr.landmarks && hr.landmarks[0]){
-        latestHandLandmarks = hr.landmarks[0];
-        const rawHandedness = (hr.handednesses && hr.handednesses[0] && hr.handednesses[0][0] && hr.handednesses[0][0].categoryName) || "";
-        latestHandedness = rawHandedness === "Right" ? "Left" : (rawHandedness === "Left" ? "Right" : latestHandedness || "");
+      const affectedHand = selectAffectedHandDetection(hr, now);
+      if(affectedHand){
+        latestHandLandmarks = affectedHand.landmarks;
+        latestHandedness = affectedHand.handedness;
         latestHandSeenAt = now;
       }else{
         latestHandLandmarks = null;
@@ -4422,6 +4782,43 @@ startBtn.addEventListener("click", async () => {
     updatePreAssessmentCalibrationUI(latestPoseLandmarks);
     return;
   }
+  await startStep();
+});
+
+walkingChooseVideoBtn.addEventListener("click", () => {
+  walkingVideoInput.click();
+});
+
+walkingVideoInput.addEventListener("change", async () => {
+  const file = walkingVideoInput.files && walkingVideoInput.files[0];
+  if(!file) return;
+  walkingChooseVideoBtn.disabled = true;
+  setWalkingCaptureStatus("Checking video length, quality, and full-body visibility...");
+  const validation = await validateWalkingVideo(file);
+  if(!validation.ok){
+    setWalkingCaptureStatus(validation.message, "warn");
+    walkingChooseVideoBtn.disabled = false;
+    walkingVideoInput.value = "";
+    return;
+  }
+  setWalkingCaptureStatus(validation.message, "good");
+  await playVoice("The walking video passed the recording check. Thank you. Your assessment is now complete.");
+  await completeUploadedWalkingTask(file, validation);
+});
+
+walkingRecordBtn.addEventListener("click", async () => {
+  walkingRecordBtn.disabled = true;
+  setWalkingCaptureStatus("Opening the rear camera. Keep the patient safely in view...");
+  const cameraReady = await switchToWalkingCamera();
+  if(!cameraReady){
+    setWalkingCaptureStatus("The walking camera could not be opened. Check camera permission and try again.", "warn");
+    walkingRecordBtn.disabled = false;
+    return;
+  }
+  walkingCaptureActive = true;
+  walkingCapture.classList.add("hidden");
+  ui.classList.remove("hidden");
+  postRN({type:"walking_recording_started", task_id:"L6", device_mode:"mobile"});
   await startStep();
 });
 
