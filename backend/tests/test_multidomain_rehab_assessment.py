@@ -1,6 +1,7 @@
 import os
 import sys
 import types
+import uuid
 
 from fastapi.testclient import TestClient
 
@@ -299,6 +300,37 @@ def test_no_observed_issue_does_not_create_a_maintenance_rehab_plan():
     assert server.build_rehab_plan(issues) == []
 
 
+def test_every_plan_exercise_has_dedicated_stepwise_encouraging_voice_guidance():
+    library_ids = {exercise.id for exercise in server.EXERCISE_LIBRARY.values()}
+    assert set(server.REHAB_RUNNER_CONFIG) == library_ids
+    for exercise_id, config in server.REHAB_RUNNER_CONFIG.items():
+        assert config.get("setup_voice"), exercise_id
+        assert config.get("cycle"), exercise_id
+        assert config.get("feedback_rules"), exercise_id
+        assert any(rule.get("default") for rule in config["feedback_rules"]), exercise_id
+        for step in config["cycle"]:
+            assert step.get("caption"), (exercise_id, step)
+            assert step.get("voice"), (exercise_id, step)
+    guided_ids = {
+        "ex_lower_selective", "ex_ankle_dorsiflexion", "ex_sit_to_stand", "ex_supported_stand",
+        "ex_supported_step", "ex_weight_shift", "ex_sitting_balance", "ex_step_stance",
+    }
+    assert all(server.REHAB_RUNNER_CONFIG[item]["pose_mode"] == "guided" for item in guided_ids)
+    assert all(len(server.REHAB_RUNNER_CONFIG[item]["cycle"]) >= 3 for item in guided_ids)
+
+
+def test_rehab_runner_prefetches_voice_and_uses_prescribed_repetitions():
+    source = server.REHAB_RUNNER_HTML_TEMPLATE
+    assert "function prefetchVoice(text)" in source
+    assert "CFG.cycle.forEach(step => prefetchVoice(step.voice))" in source
+    assert 'CFG.pose_mode === "tap" || CFG.pose_mode === "guided"' in source
+    assert 'tapBtn.textContent = CFG.pose_mode === "guided" ? "I completed this step"' in source
+    assert 'const cameraScored = CFG.pose_mode === "body"' in source
+    html = server._rehab_runner_html("ex_sit_to_stand", 7)
+    assert '"name": "Assisted Sit-to-Stand Practice"' in html
+    assert '"reps": 7' in html
+
+
 def test_profile_goal_is_merged_into_assessment_parameters():
     merged = server._assessment_patient_parameters(
         {},
@@ -379,6 +411,48 @@ def test_initial_package_is_fixed_broad_and_guided_in_order():
         assert payload["package_id"] == "initial"
         assert [task["id"] for task in payload["tasks"]] == expected
         assert all(step.get("voice") and step.get("target") for task in payload["tasks"] for step in task["steps"])
+
+
+def test_completed_initial_assessment_is_saved_in_account_history():
+    with TestClient(server.app) as client:
+        login = client.post(
+            "/api/users/login",
+            json={
+                "email": f"history-{uuid.uuid4().hex}@example.com",
+                "name": "History Patient",
+                "role": "patient",
+            },
+        )
+        assert login.status_code == 200
+        headers = {"X-User-Id": login.json()["id"]}
+        task_results = []
+        for task in server.ASSESSMENT_PACKAGES["initial"]["tasks"]:
+            total_steps = len(task["steps"])
+            task_results.append({
+                "task_id": task["id"],
+                "completed_steps": total_steps,
+                "total_steps": total_steps,
+                "duration_ms": 10000,
+                "steps": [],
+                "metrics": {},
+            })
+        submitted = client.post(
+            "/api/assessment/submit",
+            headers=headers,
+            json={
+                "assessment_package": "initial",
+                "affected_side": "right",
+                "task_results": task_results,
+            },
+        )
+        assert submitted.status_code == 200
+        assessment_id = submitted.json()["id"]
+
+        history = client.get("/api/assessment/history", headers=headers)
+        assert history.status_code == 200
+        records = history.json()
+        assert records[0]["id"] == assessment_id
+        assert records[0]["assessment_package"] == "initial"
 
 
 def test_completed_initial_collection_returns_domain_metrics_without_a_normal_rehab_plan():

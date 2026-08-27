@@ -5660,7 +5660,12 @@ async function finishAssessment(){
         },
       })
     });
+    if(!res.ok){
+      const detail = await res.text();
+      throw new Error(`Assessment save failed (${res.status}): ${detail.slice(0, 160)}`);
+    }
     const data = await res.json();
+    if(!data || !data.id) throw new Error("Assessment save response did not include an assessment id");
     postRN({type:"assessment_complete", assessment: data});
   }catch(e){
     postRN({type:"assessment_error", message:String(e)});
@@ -6037,13 +6042,13 @@ REHAB_RUNNER_CONFIG: Dict[str, Dict[str, Any]] = {
         ],
     },
     "ex_wallslide": {
-        "name": "Wall Slides + Active Shoulder Flexion",
+        "name": "Supported Arm Elevation Practice",
         "reps": 5,
         "pose_mode": "body",
-        "setup_voice": "We will work on shoulder elevation. Stand or sit tall with your arms at your sides. Slowly raise your affected arm forward and up toward the target above. Let's begin.",
+        "setup_voice": "We will practise supported arm elevation. Sit tall with your affected forearm supported on a table or towel. Move only in a comfortable, pain-free range. Use a wall slide only if your therapist has confirmed that it is safe for you.",
         "cycle": [
-            {"caption": "Raise arm overhead", "voice": "Slowly raise your arm upward toward the target.", "target": {"x": 0.5, "y": 0.18, "r": 0.10}, "hold_ms": 1500},
-            {"caption": "Lower arm slowly", "voice": "Now lower your arm to your side, slowly and controlled.", "target": {"x": 0.5, "y": 0.85, "r": 0.10}, "hold_ms": 1500},
+            {"caption": "Slide toward the upper target", "voice": "Using the support, slowly slide your affected arm toward the upper target. Stop before pain and keep your shoulder relaxed.", "target": {"x": 0.5, "y": 0.24, "r": 0.10}, "hold_ms": 1500},
+            {"caption": "Return with support", "voice": "Now slide your arm back to the starting position, slowly and with control. Good work.", "target": {"x": 0.5, "y": 0.78, "r": 0.10}, "hold_ms": 1500},
         ],
         "feedback_rules": [
             {"if": "shoulder_hike", "say": "Your shoulder lifted toward your ear. Try keeping your shoulder relaxed and pressed down as you raise your arm."},
@@ -6086,11 +6091,11 @@ REHAB_RUNNER_CONFIG: Dict[str, Dict[str, Any]] = {
         "name": "Cylindrical Grasp & Transport",
         "reps": 5,
         "pose_mode": "body",
-        "setup_voice": "We will practice grasping and transporting a cup. Imagine a cup on the table to your side. Reach, grasp it, move it across your body, and release.",
+        "setup_voice": "We will practise grasping and transporting a soft, lightweight cup. Place it on a stable table within a comfortable reach. Do not use glass, hot liquid, or a heavy object.",
         "cycle": [
-            {"caption": "Reach and grasp", "voice": "Reach to the cup on your side and pretend to grasp it.", "target": {"x": 0.30, "y": 0.55, "r": 0.10}, "hold_ms": 1200},
-            {"caption": "Transport across", "voice": "Now move the cup across to the other side, controlled and steady.", "target": {"x": 0.70, "y": 0.55, "r": 0.10}, "hold_ms": 1500},
-            {"caption": "Release and return", "voice": "Release the cup and bring your hand back to your lap.", "target": {"x": 0.5, "y": 0.78, "r": 0.10}, "hold_ms": 1200},
+            {"caption": "Reach and grasp the cup", "voice": "Reach toward the cup, open your affected hand around it, and form a comfortable grasp.", "target": {"x": 0.30, "y": 0.55, "r": 0.10}, "hold_ms": 1200},
+            {"caption": "Transport the cup across", "voice": "Lift the cup only slightly and move it across the table with a slow, steady motion.", "target": {"x": 0.70, "y": 0.55, "r": 0.10}, "hold_ms": 1500},
+            {"caption": "Place, release, and return", "voice": "Place the cup securely, open your fingers to release it, then bring your empty hand back to your lap. Nicely done.", "target": {"x": 0.5, "y": 0.78, "r": 0.10}, "hold_ms": 1200},
         ],
         "feedback_rules": [
             {"if": "trunk_lean_deg > 18", "say": "I noticed your trunk twisted with the cup. On the next repetition, try keeping your shoulders square and let your arm cross the midline."},
@@ -6099,12 +6104,12 @@ REHAB_RUNNER_CONFIG: Dict[str, Dict[str, Any]] = {
         ],
     },
     "ex_handopen": {
-        "name": "Finger Extension with Rubber Band",
+        "name": "Active Hand Opening and Release",
         "reps": 8,
         "pose_mode": "tap",
-        "setup_voice": "We will work on opening your hand. Place a soft rubber band around your fingers and thumb. Slowly open your hand against the resistance, then relax. Tap I did one repetition each time you complete one.",
+        "setup_voice": "We will practise opening and relaxing your affected hand with your forearm supported on a table. Do not add a resistance band unless your therapist has specifically recommended one. Use your other hand for gentle assistance if needed.",
         "cycle": [
-            {"caption": "Open hand wide, then relax", "voice": "Slowly open your hand against the band, hold, then relax. Tap the button when you finish one repetition.", "target": None, "hold_ms": 0},
+            {"caption": "Open your hand, release, and relax", "voice": "Slowly open your affected hand as comfortably as you can, hold for a moment, then let the fingers relax. That effort counts even if the movement is small. Tap when you finish one repetition.", "target": None, "hold_ms": 0},
         ],
         "feedback_rules": [
             {"default": "Wonderful finger extension. On the next repetition, try to open your hand a little wider and hold for a full second before relaxing."},
@@ -6136,6 +6141,120 @@ REHAB_RUNNER_CONFIG: Dict[str, Dict[str, Any]] = {
             {"default": "Beautiful bilateral coordination. On the next repetition, try to make both arms perfectly mirror each other."},
         ],
     },
+    "ex_lower_selective": {
+        "name": "Supported Selective Lower-Limb Control",
+        "reps": 5,
+        "pose_mode": "guided",
+        "setup_voice": "Welcome. Sit in a stable chair with both feet supported. Keep a carer nearby if you need help with sitting balance. We will practise one slow knee movement at a time, and you can confirm each step when it is complete.",
+        "cycle": [
+            {"caption": "Set your starting position", "voice": "Sit tall and place both feet flat. Keep your affected thigh supported and your knee pointing forward. When you feel steady, tap completed step.", "target": None, "hold_ms": 0},
+            {"caption": "Straighten the affected knee", "voice": "Slowly straighten your affected knee within a comfortable range. Keep your thigh supported and breathe normally. Tap completed step when you reach your comfortable position.", "target": None, "hold_ms": 0},
+            {"caption": "Lower with control", "voice": "Gently bend the knee and lower your foot back to the floor. Excellent control. Tap completed step when your foot is settled.", "target": None, "hold_ms": 0},
+        ],
+        "feedback_rules": [
+            {"default": "Well done. You completed the knee movement with care. For the next repetition, keep the movement slow and let the affected leg do as much as it safely can."},
+        ],
+    },
+    "ex_ankle_dorsiflexion": {
+        "name": "Seated Toe-Lift Practice",
+        "reps": 6,
+        "pose_mode": "guided",
+        "setup_voice": "Sit securely with your affected foot flat and your heel supported on the floor. We will practise lifting the front of your foot without lifting the heel.",
+        "cycle": [
+            {"caption": "Keep your heel down", "voice": "Place your affected heel firmly on the floor and keep the knee pointing forward. Tap completed step when you are ready.", "target": None, "hold_ms": 0},
+            {"caption": "Lift your toes and forefoot", "voice": "Keeping the heel down, gently lift your toes and the front of your foot. Hold for a comfortable moment, then tap completed step.", "target": None, "hold_ms": 0},
+            {"caption": "Lower slowly", "voice": "Lower the front of your foot slowly until it rests on the floor. Nicely done. Tap completed step when it is settled.", "target": None, "hold_ms": 0},
+        ],
+        "feedback_rules": [
+            {"default": "Great effort. Keep the heel planted and aim for a smooth toe lift on the next repetition, even if the movement is small."},
+        ],
+    },
+    "ex_sit_to_stand": {
+        "name": "Assisted Sit-to-Stand Practice",
+        "reps": 3,
+        "pose_mode": "guided",
+        "setup_voice": "Only begin with a therapist or capable carer beside you and a stable chair that cannot roll. Keep your usual support within reach. Stop if you feel dizzy, unsafe, or in pain.",
+        "cycle": [
+            {"caption": "Position your feet safely", "voice": "Move toward the front of the chair. Place both feet securely under your knees and let your carer take the agreed guarding position. Tap completed step when everyone is ready.", "target": None, "hold_ms": 0},
+            {"caption": "Lean forward and stand", "voice": "Bring your nose gently over your toes, push through both feet, and stand with your carer's support. Take your time. Tap completed step only when you are safely upright.", "target": None, "hold_ms": 0},
+            {"caption": "Pause in supported standing", "voice": "Pause while standing tall with your support. Make sure you feel steady before continuing. Tap completed step when you are ready to sit.", "target": None, "hold_ms": 0},
+            {"caption": "Sit down with control", "voice": "Reach back for the chair if that is part of your therapist's method, bend at your hips and knees, and lower slowly with support. Excellent work. Tap completed step when you are safely seated.", "target": None, "hold_ms": 0},
+        ],
+        "feedback_rules": [
+            {"default": "Strong work. You completed the full stand and controlled return. Keep using the agreed assistance and a steady, unhurried rhythm."},
+        ],
+    },
+    "ex_supported_stand": {
+        "name": "Supported Standing Alignment",
+        "reps": 3,
+        "pose_mode": "guided",
+        "setup_voice": "Have a therapist or capable carer beside you and use a fixed support. Do not practise this alone if you have any risk of falling.",
+        "cycle": [
+            {"caption": "Prepare your support", "voice": "Place both feet securely, hold the fixed support as instructed, and ask your carer to guard you. Tap completed step when you are ready.", "target": None, "hold_ms": 0},
+            {"caption": "Stand tall and aligned", "voice": "Come into supported standing. Keep your chest tall, both knees comfortably aligned, and your weight through both feet. Tap completed step when you are steady.", "target": None, "hold_ms": 0},
+            {"caption": "Return to the chair", "voice": "With your carer's help, lower yourself back to the chair slowly and safely. Well done. Tap completed step when you are seated.", "target": None, "hold_ms": 0},
+        ],
+        "feedback_rules": [
+            {"default": "Excellent supported standing practice. On the next repetition, keep your body tall and share your weight as evenly as you safely can."},
+        ],
+    },
+    "ex_supported_step": {
+        "name": "Guarded Step Initiation",
+        "reps": 4,
+        "pose_mode": "guided",
+        "setup_voice": "Practise only with close guarding and a fixed support. Keep the floor clear, wear secure footwear, and use your usual walking aid if your therapist has advised it.",
+        "cycle": [
+            {"caption": "Find a steady starting stance", "voice": "Stand with your support and carer in position. Settle your weight through both feet. Tap completed step when you feel steady.", "target": None, "hold_ms": 0},
+            {"caption": "Shift and begin the step", "voice": "Shift your weight safely onto the supporting leg, then gently lift and move the affected foot forward. Tap completed step when the foot is placed securely.", "target": None, "hold_ms": 0},
+            {"caption": "Return to your starting stance", "voice": "Bring the affected foot back with control and regain an even, supported stance. Good work. Tap completed step when you are steady again.", "target": None, "hold_ms": 0},
+        ],
+        "feedback_rules": [
+            {"default": "Well done initiating the step. Keep the movement small, controlled, and fully supported on the next repetition."},
+        ],
+    },
+    "ex_weight_shift": {
+        "name": "Supported Affected-Side Weight Shift",
+        "reps": 5,
+        "pose_mode": "guided",
+        "setup_voice": "Use a fixed support with a therapist or capable carer guarding you. We will make a small, controlled shift toward your affected side and return to the middle.",
+        "cycle": [
+            {"caption": "Stand safely in the middle", "voice": "Set both feet securely and stand tall with your support. Tap completed step when your carer confirms you are steady.", "target": None, "hold_ms": 0},
+            {"caption": "Shift toward the affected side", "voice": "Move your pelvis gently toward your affected foot while keeping both feet down. Keep the movement small and comfortable. Tap completed step when you have paused there safely.", "target": None, "hold_ms": 0},
+            {"caption": "Return to the middle", "voice": "Slowly bring your weight back to the middle and settle evenly over both feet. Nicely controlled. Tap completed step when you are steady.", "target": None, "hold_ms": 0},
+        ],
+        "feedback_rules": [
+            {"default": "Great controlled weight shift. On the next repetition, stay tall and move from your pelvis rather than leaning your shoulders."},
+        ],
+    },
+    "ex_sitting_balance": {
+        "name": "Guarded Sitting Midline and Reach",
+        "reps": 5,
+        "pose_mode": "guided",
+        "setup_voice": "Sit in a stable chair with both feet supported and a carer guarding your affected side if needed. We will practise a small reach and a controlled return to the middle.",
+        "cycle": [
+            {"caption": "Find your upright middle", "voice": "Sit tall with your shoulders level and both feet supported. Tap completed step when you feel balanced in the middle.", "target": None, "hold_ms": 0},
+            {"caption": "Make a small safe reach", "voice": "Reach a short distance toward the affected side within your comfortable balance. Keep your hips on the chair. Tap completed step when you have paused safely.", "target": None, "hold_ms": 0},
+            {"caption": "Return to the middle", "voice": "Bring your trunk and hand back to the upright middle slowly. Excellent recovery. Tap completed step when you are balanced again.", "target": None, "hold_ms": 0},
+        ],
+        "feedback_rules": [
+            {"default": "Wonderful sitting control. Keep the next reach small and smooth, and finish each repetition fully back in the middle."},
+        ],
+    },
+    "ex_step_stance": {
+        "name": "Supported Step-Stance Control",
+        "reps": 3,
+        "pose_mode": "guided",
+        "setup_voice": "Use a fixed support and close guarding. Only practise this after supported standing has been confirmed as safe by your therapist.",
+        "cycle": [
+            {"caption": "Prepare a stable stance", "voice": "Stand with both feet secure, your support in hand, and your carer beside you. Tap completed step when you are ready.", "target": None, "hold_ms": 0},
+            {"caption": "Step into a short stance", "voice": "Move one foot a short distance forward as instructed by your therapist. Keep both knees comfortable and your body tall. Tap completed step when the stance is secure.", "target": None, "hold_ms": 0},
+            {"caption": "Hold with support", "voice": "Pause in the short step stance while keeping your support. Breathe normally. Tap completed step when you are ready to return.", "target": None, "hold_ms": 0},
+            {"caption": "Return to an even stance", "voice": "Bring the forward foot back slowly and settle your weight evenly. Excellent work. Tap completed step when you are steady.", "target": None, "hold_ms": 0},
+        ],
+        "feedback_rules": [
+            {"default": "Excellent step-stance control. Keep using close support and make the next step only as large as you can control safely."},
+        ],
+    },
     "ex_maintenance": {
         "name": "Maintenance Conditioning",
         "reps": 4,
@@ -6152,16 +6271,19 @@ REHAB_RUNNER_CONFIG: Dict[str, Dict[str, Any]] = {
 }
 
 
-def _rehab_runner_html(exercise_id: str) -> str:
+def _rehab_runner_html(exercise_id: str, prescribed_reps: Optional[int] = None) -> str:
+    import copy as _copy
     import json as _json
-    cfg = REHAB_RUNNER_CONFIG.get(exercise_id) or REHAB_RUNNER_CONFIG["ex_maintenance"]
+    cfg = _copy.deepcopy(REHAB_RUNNER_CONFIG.get(exercise_id) or REHAB_RUNNER_CONFIG["ex_maintenance"])
+    if prescribed_reps is not None:
+        cfg["reps"] = max(1, min(20, int(prescribed_reps)))
     cfg_json = _json.dumps(cfg)
     return REHAB_RUNNER_HTML_TEMPLATE.replace("__CFG_JSON__", cfg_json)
 
 
 @api_router.get("/rehab/runner", response_class=HTMLResponse)
-async def rehab_runner(exercise_id: str = "ex_maintenance"):
-    return HTMLResponse(content=_rehab_runner_html(exercise_id))
+async def rehab_runner(exercise_id: str = "ex_maintenance", reps: Optional[int] = None):
+    return HTMLResponse(content=_rehab_runner_html(exercise_id, reps))
 
 
 REHAB_RUNNER_HTML_TEMPLATE = r"""<!DOCTYPE html>
@@ -6194,6 +6316,7 @@ REHAB_RUNNER_HTML_TEMPLATE = r"""<!DOCTYPE html>
   @keyframes wave{0%,100%{transform:scaleY(0.5)}50%{transform:scaleY(1.2)}}
   #voiceText{font-size:13px;color:#D9E5DC}
   #tapBtn{margin-top:12px;background:#4A7856;color:#fff;border:none;width:100%;padding:14px;border-radius:16px;font-weight:700;font-size:16px;cursor:pointer}
+  #tapBtn:disabled{opacity:.45;cursor:default}
   #overlay{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:#0c100eee;text-align:center;padding:24px;flex-direction:column;gap:16px;pointer-events:auto;z-index:10}
   #overlay h1{font-size:22px;font-weight:700}
   #overlay p{font-size:15px;color:#bcc2ba;line-height:1.5}
@@ -6476,20 +6599,7 @@ async function playVoice(text){
   if(!text) return;
   try{
     voiceText.textContent = "Playing instruction…";
-    const key = `nova::${text}`;
-    let request = voiceAudioCache.get(key) ? Promise.resolve(voiceAudioCache.get(key)) : voiceAudioInflight.get(key);
-    if(!request){
-      request = fetch(`${API_BASE}/tts/generate`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({text})})
-        .then(async res => {
-          if(!res.ok) throw new Error("tts fail");
-          const data = await res.json();
-          voiceAudioCache.set(key, data.audio_b64);
-          return data.audio_b64;
-        })
-        .finally(() => voiceAudioInflight.delete(key));
-      voiceAudioInflight.set(key, request);
-    }
-    const audioB64 = await request;
+    const audioB64 = await fetchVoiceAudio(text);
     audioEl.pause();
     audioEl.src = "data:audio/mpeg;base64," + audioB64;
     await new Promise((resolve, reject) => {
@@ -6510,12 +6620,35 @@ async function playVoice(text){
         playback.catch(error => finish(() => reject(error)));
       }
     });
-    voiceText.textContent = "—";
+    voiceText.textContent = "Instruction ready";
   }catch(e){
     voiceText.textContent = "Using device voice";
     const spoke = await playBrowserVoice(text);
-    voiceText.textContent = spoke ? "—" : "Voice unavailable — follow on-screen text";
+    voiceText.textContent = spoke ? "Instruction ready" : "Voice unavailable — follow on-screen text";
   }
+}
+
+function fetchVoiceAudio(text){
+  const key = `nova::${text}`;
+  if(voiceAudioCache.has(key)) return Promise.resolve(voiceAudioCache.get(key));
+  if(voiceAudioInflight.has(key)) return voiceAudioInflight.get(key);
+  const request = fetch(`${API_BASE}/tts/generate`,{
+    method:"POST",
+    headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({text})
+  }).then(async res => {
+    if(!res.ok) throw new Error("tts fail");
+    const data = await res.json();
+    voiceAudioCache.set(key, data.audio_b64);
+    return data.audio_b64;
+  }).finally(() => voiceAudioInflight.delete(key));
+  voiceAudioInflight.set(key, request);
+  return request;
+}
+
+function prefetchVoice(text){
+  if(!text) return Promise.resolve(null);
+  return fetchVoiceAudio(text).catch(() => null);
 }
 
 async function setupCamera(){
@@ -6612,8 +6745,9 @@ async function startRep(){
     const fill = document.getElementById("repBarFill");
     if(fill) fill.style.width = pct + "%";
   }catch(e){}
-  if(CFG.pose_mode === "tap"){
+  if(CFG.pose_mode === "tap" || CFG.pose_mode === "guided"){
     tapBtn.classList.remove("hidden");
+    tapBtn.textContent = CFG.pose_mode === "guided" ? "I completed this step" : "I did one repetition";
   }else{
     tapBtn.classList.add("hidden");
   }
@@ -6625,7 +6759,10 @@ async function startSubStep(){
   captionEl.textContent = sub.caption;
   stepStartTime = performance.now();
   inTargetSince = null; stepCompleted = false;
+  tapBtn.disabled = true;
+  prefetchVoice(CFG.cycle[currentSubStep + 1] && CFG.cycle[currentSubStep + 1].voice);
   await playVoice(sub.voice);
+  tapBtn.disabled = false;
 }
 
 function pickFeedback(){
@@ -6734,10 +6871,11 @@ function scoreLabel(s){
 async function showFeedback(){
   const feedback = pickFeedback();
   lastFeedbackText = feedback;
-  lastRepScore = computeRepScore();
-  const label = scoreLabel(lastRepScore);
+  const cameraScored = CFG.pose_mode === "body";
+  lastRepScore = cameraScored ? computeRepScore() : null;
+  const label = cameraScored ? scoreLabel(lastRepScore) : "Well done";
   fbStep.textContent = `Repetition ${currentRep+1} of ${CFG.reps} complete · ${label}`;
-  fbTitle.textContent = `Your score: ${lastRepScore}/100`;
+  fbTitle.textContent = cameraScored ? `Your score: ${lastRepScore}/100` : "Repetition complete";
   fbBody.textContent = feedback;
   if(navigator.vibrate) navigator.vibrate([50, 30, 80]);
   fbEl.classList.remove("hidden");
@@ -6745,7 +6883,10 @@ async function showFeedback(){
   postRN({type:"rep_complete", rep: currentRep+1, total: CFG.reps, score: lastRepScore, feedback});
 
   // Voice: feedback + ask for "yes"
-  await playVoice(`Your score is ${lastRepScore} out of 100. ${label}. ${feedback} When you're ready, tap continue, or say yes to keep going.`);
+  const feedbackVoice = cameraScored
+    ? `Your score is ${lastRepScore} out of 100. ${label}. ${feedback} When you're ready, tap continue, or say yes to keep going.`
+    : `${label}. ${feedback} When you're ready, tap continue, or say yes to keep going.`;
+  await playVoice(feedbackVoice);
   startListening();
 }
 
@@ -6767,7 +6908,7 @@ async function finishExercise(){
   fbEl.classList.add("hidden");
   captionEl.textContent = "Exercise complete!";
   await playVoice("Magnificent work. You have finished this exercise. I'm so proud of you.");
-  postRN({type:"exercise_complete", exercise_id: location.search});
+  postRN({type:"exercise_complete", exercise_id: location.search, reps: CFG.reps});
 }
 
 function advanceSubStep(){
@@ -6783,8 +6924,17 @@ function advanceSubStep(){
 // Tap-based rep handler (for fine-motor exercises)
 tapBtn.addEventListener("click", () => {
   if(!running) return;
-  if(CFG.pose_mode !== "tap") return;
-  showFeedback();
+  if(CFG.pose_mode === "tap"){
+    showFeedback();
+    return;
+  }
+  if(CFG.pose_mode !== "guided" || tapBtn.disabled) return;
+  tapBtn.disabled = true;
+  if(currentSubStep + 1 >= CFG.cycle.length){
+    showFeedback();
+  }else{
+    advanceSubStep();
+  }
 });
 
 fbConfirmBtn.addEventListener("click", () => {
@@ -6831,15 +6981,8 @@ function loop(){
 
 startBtn.addEventListener("click", async () => {
   const unlockPromise = unlockAudioPlayback();
-  const setupVoicePromise = fetch(`${API_BASE}/tts/generate`,{
-    method:"POST",
-    headers:{"Content-Type":"application/json"},
-    body:JSON.stringify({text:CFG.setup_voice})
-  }).then(async res => {
-    if(!res.ok) throw new Error("tts prefetch failed");
-    const data = await res.json();
-    voiceAudioCache.set(`nova::${CFG.setup_voice}`, data.audio_b64);
-  }).catch(() => null);
+  const setupVoicePromise = prefetchVoice(CFG.setup_voice);
+  CFG.cycle.forEach(step => prefetchVoice(step.voice));
   overlay.classList.add("hidden");
   startBtn.disabled = true;
   const camOk = await setupCamera();

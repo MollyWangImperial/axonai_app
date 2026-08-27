@@ -85,8 +85,25 @@ export default function TaskIntro() {
     })();
   }, []);
 
-  const onBegin = () => {
-    if (!nextTaskId) {
+  const onBegin = async () => {
+    let taskToStart = nextTaskId;
+    let completedTaskIds = Object.keys(completedTasks).filter((taskId) => completedTasks[taskId]);
+    if (!isInitial && assessmentComplete && userId) {
+      setLoading(true);
+      try {
+        await resetTaskProgress(packageId);
+        await storage.removeItem(completedTasksKey(userId, packageId));
+        await storage.removeItem(savedTaskVideosKey(userId, packageId));
+        taskToStart = taskIds[0] || null;
+        completedTaskIds = [];
+      } catch (e: any) {
+        setError(String(e));
+        setLoading(false);
+        return;
+      }
+      setLoading(false);
+    }
+    if (!taskToStart) {
       router.replace("/");
       return;
     }
@@ -95,8 +112,8 @@ export default function TaskIntro() {
       pathname: "/assessment",
       params: {
         package: packageId,
-        start_task: nextTaskId,
-        completed_tasks: Object.keys(completedTasks).filter((taskId) => completedTasks[taskId]).join(","),
+        start_task: taskToStart,
+        completed_tasks: completedTaskIds.join(","),
         affected_side: affectedSide,
       },
     });
@@ -175,11 +192,15 @@ export default function TaskIntro() {
             </View>
             <View style={styles.sessionReadyCopy}>
               <Text style={styles.sessionReadyTitle}>
-                {assessmentComplete ? "Your Initial Assessment is complete" : completedCount > 0 ? "Continue where you left off" : "Your first guided task is ready"}
+                {assessmentComplete
+                  ? isInitial ? "Your Initial Assessment is complete" : "Your next assessment is ready"
+                  : completedCount > 0 ? "Continue where you left off" : isInitial ? "Your first guided task is ready" : "Your next guided task is ready"}
               </Text>
               <Text style={styles.sessionReadyText}>
                 {assessmentComplete
-                  ? "You do not need to repeat these tasks. Your saved results are ready from the Home screen."
+                  ? isInitial
+                    ? "You do not need to repeat these tasks. Your saved results are ready from the Home screen."
+                    : "Your previous results will remain in Assessment history. Starting now creates a new movement check-in for progress comparison."
                   : `Alira will launch your next guided task automatically and continue through the remaining assessment. ${completedCount} of ${taskIds.length} tasks are already complete.`}
               </Text>
               {savedVideoCount > 0 && (
@@ -196,15 +217,19 @@ export default function TaskIntro() {
       </ScrollView>
 
       <View style={[styles.cta, { paddingBottom: Math.max(insets.bottom, spacing.md) }]}>
-        {completedCount > 0 && (
+        {completedCount > 0 && (isInitial || !assessmentComplete) && (
           <Pressable testID="task-intro-start-over" disabled={loading} onPress={confirmStartOver} style={styles.startOverBtn}>
             <Ionicons name="refresh" size={18} color={colors.brandPrimary} />
             <Text style={styles.startOverText}>Start over</Text>
           </Pressable>
         )}
         <Pressable testID="task-intro-begin" disabled={loading} onPress={onBegin} style={[styles.ctaBtn, loading && { opacity: 0.4 }]}>
-          <Ionicons name={assessmentComplete ? "home" : "videocam"} size={21} color={colors.onBrandPrimary} />
-          <Text style={styles.ctaText}>{assessmentComplete ? "Return Home" : completedCount > 0 ? "Continue Assessment" : "Begin Initial Assessment"}</Text>
+          <Ionicons name={assessmentComplete && isInitial ? "home" : "videocam"} size={21} color={colors.onBrandPrimary} />
+          <Text style={styles.ctaText}>
+            {assessmentComplete
+              ? isInitial ? "Return Home" : "Start Next Assessment"
+              : completedCount > 0 ? "Continue Assessment" : isInitial ? "Begin Initial Assessment" : "Begin Movement Check-in"}
+          </Text>
         </Pressable>
       </View>
     </View>

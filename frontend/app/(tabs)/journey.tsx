@@ -25,6 +25,9 @@ export default function JourneyScreen() {
   const [loading, setLoading] = useState(true);
   const [showComposer, setShowComposer] = useState(false);
   const [draft, setDraft] = useState("");
+  const initialAssessmentId = [...history]
+    .reverse()
+    .find((item) => item.assessment_package === "initial")?.id ?? history[history.length - 1]?.id;
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -88,14 +91,14 @@ export default function JourneyScreen() {
           </View>
         ))}
 
-        <Text style={styles.sectionTitle}>Assessment history</Text>
+        <Text style={styles.sectionTitle} testID="assessment-history">Assessment history</Text>
         {loading ? <ActivityIndicator color={colors.brandPrimary} /> : history.length === 0 ? (
           <Text style={styles.muted}>Your Initial Assessment will appear here when it is complete.</Text>
-        ) : history.slice(0, 6).map((item, index) => (
-          <Pressable key={item.id} onPress={() => router.push({ pathname: "/results", params: { id: item.id } })} style={styles.historyRow}>
+        ) : history.slice(0, 6).map((item) => (
+          <Pressable key={item.id} testID={`assessment-history-${item.id}`} onPress={() => router.push({ pathname: "/results", params: { id: item.id } })} style={styles.historyRow}>
             <View style={styles.historyIcon}><Ionicons name="checkmark" size={19} color={colors.onBrandPrimary} /></View>
             <View style={{ flex: 1 }}>
-              <Text style={styles.historyTitle}>{index === history.length - 1 ? "Initial Assessment" : "Movement check-in"}</Text>
+              <Text style={styles.historyTitle}>{item.id === initialAssessmentId ? "Initial Assessment" : "Movement check-in"}</Text>
               <Text style={styles.historyMeta}>{new Date(item.created_at).toLocaleDateString()} · {assessmentPlanLabel(item)}</Text>
             </View>
             <Ionicons name="chevron-forward" size={20} color={colors.borderStrong} />

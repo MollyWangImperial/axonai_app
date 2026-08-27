@@ -36,24 +36,18 @@ export default function HomeScreen() {
   useFocusEffect(useCallback(() => { void load(); }, [load]));
 
   const latest = history[0];
-  const isInitialAssessment = history.length === 0;
-  const rehabReady = !!latest?.rehab_plan.length && latest?.clinical_review_gate?.rehab_access === "allowed";
-  const analysisPending = latest?.clinical_review_gate?.status === "awaiting_model_analysis";
-  const noRehabNeeded = latest?.clinical_review_gate?.status === "no_rehab_needed" || latest?.clinical_review_gate?.rehab_access === "not_needed";
+  const hasInitialAssessment = history.some((item) => item.assessment_package === "initial");
+  const isInitialAssessment = !hasInitialAssessment;
   const completedThisWeek = Math.min(7, history.length + Math.min(4, entries.length));
   const weeklyPercent = Math.round((completedThisWeek / 7) * 100);
 
   const startNextSession = () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    if (isInitialAssessment) {
-      router.push({ pathname: "/session-check" as any, params: { target: "assessment", mode: "initial" } });
-      return;
-    }
-    if (rehabReady) {
-      router.push({ pathname: "/session-check" as any, params: { target: "rehab", id: latest.id } });
-      return;
-    }
-    router.push({ pathname: "/results", params: { id: latest.id } });
+    router.push({ pathname: "/session-check" as any, params: { target: "assessment", mode: isInitialAssessment ? "initial" : "followup" } });
+  };
+
+  const viewLatestResults = () => {
+    if (latest) router.push({ pathname: "/results", params: { id: latest.id } });
   };
 
   return (
@@ -90,11 +84,7 @@ export default function HomeScreen() {
               <Text style={styles.goalSubtitle}>
                 {isInitialAssessment
                   ? "Begin with your Initial Assessment"
-                  : rehabReady
-                    ? "Keep your recovery routine moving"
-                    : analysisPending
-                      ? "Your movement analysis is in progress"
-                      : "Review your latest assessment summary"}
+                  : "Your next movement check-in is ready"}
               </Text>
               <View style={styles.goalMetaRow}>
                 <View style={styles.metaPill}><Ionicons name="checkmark" size={13} color={colors.brandPrimary} /><Text style={styles.metaText}>{completedThisWeek}/7 sessions</Text></View>
@@ -105,23 +95,25 @@ export default function HomeScreen() {
 
           <View style={styles.sessionCard}>
             <View style={styles.sessionTopRow}>
-              <Text style={styles.sessionBadge}>{isInitialAssessment ? "GET STARTED" : rehabReady ? "NEXT SESSION" : "ASSESSMENT SUMMARY"}</Text>
-              <View style={styles.duration}><Ionicons name="time-outline" size={15} color="#E8F0EA" /><Text style={styles.durationText}>{isInitialAssessment ? "15 mins" : "20 mins"}</Text></View>
+              <Text style={styles.sessionBadge}>{isInitialAssessment ? "GET STARTED" : "NEXT ASSESSMENT"}</Text>
+              <View style={styles.duration}><Ionicons name="time-outline" size={15} color="#E8F0EA" /><Text style={styles.durationText}>15 mins</Text></View>
             </View>
-            <Text style={styles.sessionTitle}>{isInitialAssessment ? "Initial Assessment" : rehabReady ? "Today's Rehabilitation" : "Your Movement Summary"}</Text>
+            <Text style={styles.sessionTitle}>{isInitialAssessment ? "Initial Assessment" : "Next Assessment"}</Text>
             <Text style={styles.sessionDescription}>
               {isInitialAssessment
                 ? "The same seven guided arm, hand, and walking observations for every new patient, so we can understand your movement broadly."
-                : rehabReady
-                  ? `${latest.rehab_plan.length} guided exercise${latest.rehab_plan.length === 1 ? "" : "s"} selected from your assessment.`
-                  : noRehabNeeded
-                    ? "No rehabilitation plan was recommended because no observable difficulty was detected in the assessed tasks."
-                    : "Review your upper-limb, hand, and lower-limb metrics while the validated analysis is completed."}
+                : "Complete the same guided movement collection again so changes in your upper limb, hand function, and walking can be compared over time."}
             </Text>
             <Pressable testID="home-start-next-session" onPress={startNextSession} style={styles.startButton}>
               <Ionicons name="play" size={18} color={colors.brandPrimary} />
-              <Text style={styles.startButtonText}>{isInitialAssessment ? "Start Initial Assessment" : rehabReady ? "Start Session" : "View Summary"}</Text>
+              <Text style={styles.startButtonText}>{isInitialAssessment ? "Start Initial Assessment" : "Start Next Assessment"}</Text>
             </Pressable>
+            {!isInitialAssessment && latest && (
+              <Pressable testID="home-view-latest-results" onPress={viewLatestResults} style={styles.resultsButton}>
+                <Ionicons name="analytics-outline" size={18} color={colors.onBrandPrimary} />
+                <Text style={styles.resultsButtonText}>View latest results</Text>
+              </Pressable>
+            )}
           </View>
 
           <View style={styles.sectionHeader}>
@@ -193,6 +185,8 @@ const styles = StyleSheet.create({
   sessionDescription: { color: "#E8F0EA", fontSize: 13, lineHeight: 19 },
   startButton: { minHeight: 48, marginTop: spacing.sm, borderRadius: radius.sm, backgroundColor: colors.surface, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: spacing.xs },
   startButtonText: { color: colors.brandPrimary, fontSize: 15, fontWeight: "800" },
+  resultsButton: { minHeight: 42, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: spacing.xs },
+  resultsButtonText: { color: colors.onBrandPrimary, fontSize: 14, fontWeight: "700" },
   sectionHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginTop: spacing.sm },
   sectionTitle: { fontSize: 17, fontWeight: "800", color: colors.onSurface },
   addEntry: { flexDirection: "row", alignItems: "center", gap: 3, minHeight: 40, paddingHorizontal: spacing.xs },

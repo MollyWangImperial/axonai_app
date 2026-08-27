@@ -24,19 +24,21 @@ def test_patient_tabs_are_home_journey_and_alira_only():
 def test_home_launches_standardized_initial_assessment():
     home = read("frontend/app/(tabs)/index.tsx")
     assert '"Initial Assessment"' in home
-    assert 'target: "assessment", mode: "initial"' in home
+    assert 'target: "assessment", mode: isInitialAssessment ? "initial" : "followup"' in home
     assert "same seven guided arm, hand, and walking observations" in home
     assert 'pathname: "/session-check"' in home
 
 
-def test_home_does_not_start_an_empty_or_unneeded_rehab_session():
+def test_home_becomes_next_assessment_after_initial_completion():
     home = read("frontend/app/(tabs)/index.tsx")
     journey = read("frontend/app/(tabs)/journey.tsx")
-    assert 'const rehabReady = !!latest?.rehab_plan.length' in home
-    assert 'latest?.clinical_review_gate?.rehab_access === "allowed"' in home
-    assert 'pathname: "/results"' in home
-    assert '"View Summary"' in home
-    assert "No rehabilitation plan was recommended" in home
+    assert 'history.some((item) => item.assessment_package === "initial")' in home
+    assert '"Next Assessment"' in home
+    assert '"Start Next Assessment"' in home
+    assert 'mode: isInitialAssessment ? "initial" : "followup"' in home
+    assert 'testID="home-view-latest-results"' in home
+    assert 'testID="assessment-history"' in journey
+    assert 'item.id === initialAssessmentId ? "Initial Assessment" : "Movement check-in"' in journey
     assert 'return "No rehab plan recommended"' in journey
     assert 'return "Movement analysis in progress"' in journey
 
@@ -49,6 +51,15 @@ def test_initial_assessment_has_no_package_or_task_choice():
     assert "task-row-" not in intro
     assert "Choose assessment package" not in intro
     assert "setSelectedTaskId" not in intro
+
+
+def test_followup_starts_fresh_without_removing_assessment_history():
+    intro = read("frontend/app/task-intro.tsx")
+    assert "if (!isInitial && assessmentComplete && userId)" in intro
+    assert "await resetTaskProgress(packageId)" in intro
+    assert "Your previous results will remain in Assessment history" in intro
+    assert '"Start Next Assessment"' in intro
+    assert "delete assessment" not in intro.lower()
 
 
 def test_web_assessment_shim_has_a_defined_full_size_container():

@@ -8,7 +8,7 @@ from backend import server
 
 def test_assessment_unlocks_audio_from_start_tap_and_prefetches_first_voice():
     source = server.POSE_RUNNER_HTML
-    start = source.index('startBtn.addEventListener("click", async () => {')
+    start = source.index("async function beginAssessmentSetup(){")
     unlock = source.index("const unlockPromise = unlockAudioPlayback();", start)
     camera = source.index("const camOk = await setupCamera();", start)
     assert unlock < camera
@@ -25,7 +25,8 @@ def test_rehab_runner_uses_the_same_mobile_audio_unlock_contract():
     unlock = source.index("const unlockPromise = unlockAudioPlayback();", start)
     camera = source.index("const camOk = await setupCamera();", start)
     assert unlock < camera
-    assert "const setupVoicePromise = fetch" in source
+    assert "const setupVoicePromise = prefetchVoice(CFG.setup_voice);" in source
+    assert "CFG.cycle.forEach(step => prefetchVoice(step.voice));" in source
     assert "await Promise.allSettled([unlockPromise, setupVoicePromise]);" in source
     assert "voiceAudioCache" in source
     assert "audioEl.play().catch(()=>{})" not in source

@@ -35,7 +35,8 @@ export default function ExerciseScreen() {
   const totalAll = totalSets * totalReps;
   const planId = plan_id || "default";
 
-  const url = `${BASE}/api/rehab/runner?exercise_id=${encodeURIComponent(exercise_id || "ex_maintenance")}`;
+  const guidedReps = Math.max(1, Math.min(20, totalReps));
+  const url = `${BASE}/api/rehab/runner?exercise_id=${encodeURIComponent(exercise_id || "ex_maintenance")}&reps=${guidedReps}`;
 
   const showRepToast = (rep: number, total: number, score: number) => {
     setRepToast({ rep, total, score });
