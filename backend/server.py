@@ -1706,6 +1706,8 @@ let gaitAffectedAnkleTravelMaxRatio = 0;
 let gaitUnaffectedAnkleTravelMaxRatio = 0;
 let gaitAlternationCount = 0;
 let lastGaitLead = 0;
+let gaitObservedFrameCount = 0;
+let gaitFullBodyVisibleFrameCount = 0;
 let running = false;
 let audioEl = new Audio();
 const voiceAudioCache = new Map();
@@ -2326,6 +2328,8 @@ async function startStep(){
   gaitUnaffectedAnkleTravelMaxRatio = 0;
   gaitAlternationCount = 0;
   lastGaitLead = 0;
+  gaitObservedFrameCount = 0;
+  gaitFullBodyVisibleFrameCount = 0;
   fingerTotalFlexionMaxDeg = 0;
   fingerAbductionMaxRatio = 0;
   thumbIndexMinDistanceRatio = Infinity;
@@ -2403,6 +2407,35 @@ function bodyState(lm){
     legLength,
     affectedLoadShare,
   };
+}
+
+function fullBodyVisibleForWalking(lm){
+  if(!lm || lm.length < 33) return false;
+  const mostVisible = (indices) => indices
+    .map(index => lm[index])
+    .sort((a,b) => (b.visibility == null ? 1 : b.visibility) - (a.visibility == null ? 1 : a.visibility))[0];
+  // In a side view, the far-side limb may be occluded even when the patient's
+  // complete body is framed. Require each anatomical region, not both sides.
+  const keypoints = [
+    lm[0],
+    mostVisible([11,12]),
+    mostVisible([23,24]),
+    mostVisible([25,26]),
+    mostVisible([27,28]),
+    mostVisible([31,32]),
+  ];
+  const allVisible = keypoints.every(point => landmarkIsUsable(point, 0.35));
+  if(!allVisible) return false;
+  const insideFrame = keypoints.every(point => point.x >= 0.025 && point.x <= 0.975 && point.y >= 0.015 && point.y <= 0.985);
+  if(!insideFrame) return false;
+  const headVisible = lm[0].y >= 0.015;
+  const visibleFoot = mostVisible([31,32]);
+  const feetVisible = visibleFoot.y <= 0.985;
+  return headVisible && feetVisible;
+}
+
+function gaitFullBodyVisibilityRatio(){
+  return gaitObservedFrameCount > 0 ? gaitFullBodyVisibleFrameCount / gaitObservedFrameCount : 0;
 }
 
 function landmarkIsUsable(point, minVisibility=0.45){
@@ -2570,13 +2603,21 @@ function computeMetrics(landmarks){
   toeClearanceMaxRatio = Math.max(toeClearanceMaxRatio, toeLift);
   circumductionMaxRatio = Math.max(circumductionMaxRatio, ankleMoveX);
   affectedStepLengthMaxRatio = Math.max(affectedStepLengthMaxRatio, ankleMove);
-  gaitPelvisTravelMaxRatio = Math.max(gaitPelvisTravelMaxRatio, pelvisTravel);
-  gaitAffectedAnkleTravelMaxRatio = Math.max(gaitAffectedAnkleTravelMaxRatio, ankleMove);
-  gaitUnaffectedAnkleTravelMaxRatio = Math.max(gaitUnaffectedAnkleTravelMaxRatio, unaffectedAnkleMove);
   const leadDelta = state.affected.ankle.x - state.unaffected.ankle.x;
   const lead = Math.abs(leadDelta) > Math.max(0.025, state.legLength * 0.08) ? (leadDelta > 0 ? 1 : -1) : 0;
-  if(lead && lastGaitLead && lead !== lastGaitLead) gaitAlternationCount += 1;
-  if(lead) lastGaitLead = lead;
+  const activeStep = getCurrentStep();
+  const gaitCaptureActive = voiceFinishedAt > 0
+    && activeStep
+    && ["WALK_READY", "WALK_ACROSS", "WALK_STOPPED"].includes(activeStep.target.landmark);
+  if(gaitCaptureActive){
+    gaitPelvisTravelMaxRatio = Math.max(gaitPelvisTravelMaxRatio, pelvisTravel);
+    gaitAffectedAnkleTravelMaxRatio = Math.max(gaitAffectedAnkleTravelMaxRatio, ankleMove);
+    gaitUnaffectedAnkleTravelMaxRatio = Math.max(gaitUnaffectedAnkleTravelMaxRatio, unaffectedAnkleMove);
+    if(lead && lastGaitLead && lead !== lastGaitLead) gaitAlternationCount += 1;
+    if(lead) lastGaitLead = lead;
+    gaitObservedFrameCount += 1;
+    if(fullBodyVisibleForWalking(landmarks)) gaitFullBodyVisibleFrameCount += 1;
+  }
   affectedWristMoveMaxRatio = Math.max(affectedWristMoveMaxRatio, wristMove);
   unaffectedWristMoveMaxRatio = Math.max(unaffectedWristMoveMaxRatio, unaffectedWristMove);
   handToMouthMinRatio = Math.min(handToMouthMinRatio, handToMouth);
@@ -3313,6 +3354,7 @@ function lowerBalanceMetricSnapshot(lm, step=null, durationMs=0, skipped=false){
     gait_affected_ankle_travel_leg_ratio: +gaitAffectedAnkleTravelMaxRatio.toFixed(3),
     gait_unaffected_ankle_travel_leg_ratio: +gaitUnaffectedAnkleTravelMaxRatio.toFixed(3),
     gait_step_alternation_count: gaitAlternationCount,
+    gait_full_body_visibility_ratio: +gaitFullBodyVisibilityRatio().toFixed(3),
   };
 }
 
@@ -3356,14 +3398,18 @@ function checkLowerBalanceTarget(landmarks, step){
   if(which === "TRUNK_SHIFT_AFFECTED") return trunkTowardAffected > 0.025 && affectedFootMove < 0.04 && unaffectedFootMove < 0.04;
   if(which === "WEIGHT_SHIFT_AFFECTED") return pelvisTowardAffected > 0.02 && affectedFootMove < 0.04 && unaffectedFootMove < 0.04;
   if(which === "STEP_STANCE_STABLE") return standing && state.footSeparation > 0.06 && lateralTrunkShiftMax < 0.06;
-  if(which === "WALK_READY") return standing;
+  if(which === "WALK_READY") return standing && fullBodyVisibleForWalking(landmarks);
   if(which === "WALK_ACROSS"){
-    return gaitPelvisTravelMaxRatio > 0.35
-      && gaitAffectedAnkleTravelMaxRatio > 0.16
+    const bilateralLegMotion = gaitAffectedAnkleTravelMaxRatio > 0.16
       && gaitUnaffectedAnkleTravelMaxRatio > 0.16
       && gaitAlternationCount >= 2;
+    const fixedCameraProgress = gaitPelvisTravelMaxRatio > 0.35;
+    const caregiverTrackedProgress = gaitAlternationCount >= 3;
+    return gaitFullBodyVisibilityRatio() >= 0.75
+      && bilateralLegMotion
+      && (fixedCameraProgress || caregiverTrackedProgress);
   }
-  if(which === "WALK_STOPPED") return standing && pelvisSwayForStop() < 0.08;
+  if(which === "WALK_STOPPED") return standing && fullBodyVisibleForWalking(landmarks) && pelvisSwayForStop() < 0.08;
   return false;
 }
 

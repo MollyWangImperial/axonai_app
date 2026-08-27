@@ -27,7 +27,7 @@ const PREPARATION_TIPS = [
   "Use a stable seat and clear a short, safe walking path",
   "Keep your phone propped up so your full body can be seen",
   "Use your usual walking aid and do not attempt walking if it is not normally safe",
-  "Have someone nearby for safety if you need support",
+  "Ask a carer or family member to film the walking task from the side and keep your full body visible",
 ];
 
 export default function TaskIntro() {
