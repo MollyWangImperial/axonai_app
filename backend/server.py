@@ -1710,6 +1710,8 @@ let running = false;
 let audioEl = new Audio();
 const voiceAudioCache = new Map();
 const voiceAudioInflight = new Map();
+let taskLoadPromise = null;
+let audioUnlockPromise = null;
 let latestHandLandmarks = null;        // result.landmarks[0] from HandLandmarker (21 points)
 let latestHandedness = "";             // "Left" / "Right" from MediaPipe, used for palm/back orientation
 let latestPoseLandmarks = null;        // result.landmarks[0] from PoseLandmarker (33 points)
@@ -1994,6 +1996,16 @@ async function loadTasks(){
   renderDots();
 }
 
+function ensureTasksLoaded(){
+  if(!taskLoadPromise){
+    taskLoadPromise = loadTasks().catch(error => {
+      taskLoadPromise = null;
+      throw error;
+    });
+  }
+  return taskLoadPromise;
+}
+
 function renderDots(){
   dotsEl.innerHTML = "";
   tasks.forEach((t, i) => {
@@ -2089,6 +2101,53 @@ function playBrowserVoice(text){
   });
 }
 
+function createSilentWavUrl(){
+  const sampleRate = 8000;
+  const sampleCount = 800;
+  const buffer = new ArrayBuffer(44 + sampleCount * 2);
+  const view = new DataView(buffer);
+  const writeText = (offset, value) => {
+    for(let i = 0; i < value.length; i++) view.setUint8(offset + i, value.charCodeAt(i));
+  };
+  writeText(0, "RIFF");
+  view.setUint32(4, 36 + sampleCount * 2, true);
+  writeText(8, "WAVE");
+  writeText(12, "fmt ");
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * 2, true);
+  view.setUint16(32, 2, true);
+  view.setUint16(34, 16, true);
+  writeText(36, "data");
+  view.setUint32(40, sampleCount * 2, true);
+  return URL.createObjectURL(new Blob([buffer], {type:"audio/wav"}));
+}
+
+function unlockAudioPlayback(){
+  if(audioUnlockPromise) return audioUnlockPromise;
+  const silentUrl = createSilentWavUrl();
+  audioEl.preload = "auto";
+  audioEl.setAttribute("playsinline", "true");
+  audioEl.src = silentUrl;
+  const playback = audioEl.play();
+  audioUnlockPromise = Promise.resolve(playback)
+    .then(() => {
+      audioEl.pause();
+      audioEl.currentTime = 0;
+      URL.revokeObjectURL(silentUrl);
+      return true;
+    })
+    .catch(error => {
+      URL.revokeObjectURL(silentUrl);
+      audioUnlockPromise = null;
+      postRN({type:"voice_unlock_error", message:String(error)});
+      return false;
+    });
+  return audioUnlockPromise;
+}
+
 function voiceCacheKey(text){
   return `${voiceId}::${text}`;
 }
@@ -2130,9 +2189,27 @@ async function playVoice(text){
   try{
     voiceText.textContent = "Playing instruction…";
     const audioB64 = await fetchVoiceAudio(text);
+    audioEl.pause();
     audioEl.src = "data:audio/mpeg;base64," + audioB64;
-    audioEl.play().catch(()=>{});
-    audioEl.onended = () => { voiceText.textContent = "Instruction ready · follow the target"; };
+    await new Promise((resolve, reject) => {
+      let settled = false;
+      const finish = (callback) => {
+        if(settled) return;
+        settled = true;
+        clearTimeout(timeout);
+        audioEl.onended = null;
+        audioEl.onerror = null;
+        callback();
+      };
+      const timeout = setTimeout(() => finish(resolve), 45000);
+      audioEl.onended = () => finish(resolve);
+      audioEl.onerror = () => finish(() => reject(new Error("Audio element could not play the instruction")));
+      const playback = audioEl.play();
+      if(playback && typeof playback.catch === "function"){
+        playback.catch(error => finish(() => reject(error)));
+      }
+    });
+    voiceText.textContent = "Instruction ready · follow the target";
   }catch(e){
     voiceText.textContent = "Using device voice";
     const spoke = await playBrowserVoice(text);
@@ -3428,15 +3505,21 @@ function loop(){
 }
 
 startBtn.addEventListener("click", async () => {
+  const unlockPromise = unlockAudioPlayback();
   overlay.classList.add("hidden");
   startBtn.disabled = true;
-  await loadTasks();
+  await ensureTasksLoaded();
+  const firstStep = tasks[currentTaskIdx] && tasks[currentTaskIdx].steps && tasks[currentTaskIdx].steps[0];
+  const firstVoicePromise = firstStep && firstStep.voice
+    ? fetchVoiceAudio(firstStep.voice).catch(() => null)
+    : Promise.resolve(null);
   const camOk = await setupCamera();
   if(!camOk){ overlay.classList.remove("hidden"); return; }
   await setupTrackingModels();
+  await Promise.allSettled([unlockPromise, firstVoicePromise]);
   running = true;
-  await startStep();
   requestAnimationFrame(loop);
+  await startStep();
 });
 
 markerConfirmBtn.addEventListener("click", () => {
@@ -3795,6 +3878,9 @@ let inTargetSince = null;
 let stepCompleted = false;
 let running = false;
 let audioEl = new Audio();
+const voiceAudioCache = new Map();
+const voiceAudioInflight = new Map();
+let audioUnlockPromise = null;
 
 // Per-rep accumulated metrics
 let trunkLeanMax = 0;
@@ -3806,6 +3892,53 @@ overlayTitle.textContent = CFG.name;
 overlayBody.textContent = CFG.setup_voice;
 
 function postRN(d){ if(window.ReactNativeWebView) window.ReactNativeWebView.postMessage(JSON.stringify(d)); }
+
+function createSilentWavUrl(){
+  const sampleRate = 8000;
+  const sampleCount = 800;
+  const buffer = new ArrayBuffer(44 + sampleCount * 2);
+  const view = new DataView(buffer);
+  const writeText = (offset, value) => {
+    for(let i = 0; i < value.length; i++) view.setUint8(offset + i, value.charCodeAt(i));
+  };
+  writeText(0, "RIFF");
+  view.setUint32(4, 36 + sampleCount * 2, true);
+  writeText(8, "WAVE");
+  writeText(12, "fmt ");
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * 2, true);
+  view.setUint16(32, 2, true);
+  view.setUint16(34, 16, true);
+  writeText(36, "data");
+  view.setUint32(40, sampleCount * 2, true);
+  return URL.createObjectURL(new Blob([buffer], {type:"audio/wav"}));
+}
+
+function unlockAudioPlayback(){
+  if(audioUnlockPromise) return audioUnlockPromise;
+  const silentUrl = createSilentWavUrl();
+  audioEl.preload = "auto";
+  audioEl.setAttribute("playsinline", "true");
+  audioEl.src = silentUrl;
+  const playback = audioEl.play();
+  audioUnlockPromise = Promise.resolve(playback)
+    .then(() => {
+      audioEl.pause();
+      audioEl.currentTime = 0;
+      URL.revokeObjectURL(silentUrl);
+      return true;
+    })
+    .catch(error => {
+      URL.revokeObjectURL(silentUrl);
+      audioUnlockPromise = null;
+      postRN({type:"voice_unlock_error", message:String(error)});
+      return false;
+    });
+  return audioUnlockPromise;
+}
 
 function playBrowserVoice(text){
   return new Promise((resolve) => {
@@ -3833,12 +3966,41 @@ async function playVoice(text){
   if(!text) return;
   try{
     voiceText.textContent = "Playing instruction…";
-    const res = await fetch(`${API_BASE}/tts/generate`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({text})});
-    if(!res.ok) throw new Error("tts fail");
-    const data = await res.json();
-    audioEl.src = "data:audio/mpeg;base64," + data.audio_b64;
-    await audioEl.play().catch(()=>{});
-    return new Promise(r => { audioEl.onended = () => { voiceText.textContent = "—"; r(); }; });
+    const key = `nova::${text}`;
+    let request = voiceAudioCache.get(key) ? Promise.resolve(voiceAudioCache.get(key)) : voiceAudioInflight.get(key);
+    if(!request){
+      request = fetch(`${API_BASE}/tts/generate`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({text})})
+        .then(async res => {
+          if(!res.ok) throw new Error("tts fail");
+          const data = await res.json();
+          voiceAudioCache.set(key, data.audio_b64);
+          return data.audio_b64;
+        })
+        .finally(() => voiceAudioInflight.delete(key));
+      voiceAudioInflight.set(key, request);
+    }
+    const audioB64 = await request;
+    audioEl.pause();
+    audioEl.src = "data:audio/mpeg;base64," + audioB64;
+    await new Promise((resolve, reject) => {
+      let settled = false;
+      const finish = callback => {
+        if(settled) return;
+        settled = true;
+        clearTimeout(timeout);
+        audioEl.onended = null;
+        audioEl.onerror = null;
+        callback();
+      };
+      const timeout = setTimeout(() => finish(resolve), 45000);
+      audioEl.onended = () => finish(resolve);
+      audioEl.onerror = () => finish(() => reject(new Error("Audio element could not play the instruction")));
+      const playback = audioEl.play();
+      if(playback && typeof playback.catch === "function"){
+        playback.catch(error => finish(() => reject(error)));
+      }
+    });
+    voiceText.textContent = "—";
   }catch(e){
     voiceText.textContent = "Using device voice";
     const spoke = await playBrowserVoice(text);
@@ -4159,11 +4321,22 @@ function loop(){
 }
 
 startBtn.addEventListener("click", async () => {
+  const unlockPromise = unlockAudioPlayback();
+  const setupVoicePromise = fetch(`${API_BASE}/tts/generate`,{
+    method:"POST",
+    headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({text:CFG.setup_voice})
+  }).then(async res => {
+    if(!res.ok) throw new Error("tts prefetch failed");
+    const data = await res.json();
+    voiceAudioCache.set(`nova::${CFG.setup_voice}`, data.audio_b64);
+  }).catch(() => null);
   overlay.classList.add("hidden");
   startBtn.disabled = true;
   const camOk = await setupCamera();
   if(!camOk){ overlay.classList.remove("hidden"); return; }
   await setupPose();
+  await Promise.allSettled([unlockPromise, setupVoicePromise]);
   running = true;
   await playVoice(CFG.setup_voice);
   await startRep();
