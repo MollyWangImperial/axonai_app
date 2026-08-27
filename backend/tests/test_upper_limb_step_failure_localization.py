@@ -173,4 +173,5 @@ def test_live_tasks_and_runner_routes_expose_step_failure_contract():
                 "phenotype_domain": "object_release",
             }
         ]
-        assert assessment["rehab_plan"][0]["targets_issue"] == "OBJECT_RELEASE_IMPAIRED"
+        assert assessment["rehab_plan"] == []
+        assert assessment["clinical_review_gate"]["status"] == "awaiting_model_analysis"

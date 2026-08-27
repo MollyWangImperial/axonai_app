@@ -84,9 +84,13 @@ export default function RehabPlanScreen() {
     );
   }
 
-  if (data.clinical_review_gate?.rehab_access === "blocked") {
+  if (data.clinical_review_gate?.rehab_access !== "allowed" || data.rehab_plan.length === 0) {
     const gate = data.clinical_review_gate;
-    const awaiting = gate.status === "awaiting_model_analysis";
+    const awaiting = gate?.status === "awaiting_model_analysis";
+    const noRehabNeeded = gate?.status === "no_rehab_needed" || gate?.rehab_access === "not_needed";
+    const title = gate?.patient_title || "No rehabilitation plan is available";
+    const message = gate?.patient_message || "This assessment did not produce exercises for automatic recommendation.";
+    const nextStep = gate?.next_step || "Return home and review the result with your therapist if you still have symptoms.";
     return (
       <View style={styles.container}>
         <View style={[styles.header, { paddingTop: insets.top + spacing.sm }]}>
@@ -96,13 +100,13 @@ export default function RehabPlanScreen() {
           <Text style={styles.headerTitle}>Rehab Plan</Text>
           <View style={{ width: 40 }} />
         </View>
-        <View style={[styles.center, styles.blockedContent]} testID="plan-clinical-review-hold">
+        <View style={[styles.center, styles.blockedContent]} testID={noRehabNeeded ? "plan-no-rehab-needed" : "plan-clinical-review-hold"}>
           <View style={styles.blockedIcon}>
-            <Ionicons name={awaiting ? "hourglass-outline" : "people-outline"} size={30} color={colors.brandPrimary} />
+            <Ionicons name={noRehabNeeded ? "checkmark-circle-outline" : awaiting ? "hourglass-outline" : "people-outline"} size={30} color={colors.brandPrimary} />
           </View>
-          <Text style={styles.blockedTitle}>{gate.patient_title}</Text>
-          <Text style={styles.blockedText}>{gate.patient_message}</Text>
-          <Text style={styles.blockedNext}>{gate.next_step}</Text>
+          <Text style={styles.blockedTitle}>{title}</Text>
+          <Text style={styles.blockedText}>{message}</Text>
+          <Text style={styles.blockedNext}>{nextStep}</Text>
           <Pressable onPress={() => router.replace("/")} style={styles.blockedButton} testID="plan-blocked-home">
             <Ionicons name="home-outline" size={20} color={colors.onBrandPrimary} />
             <Text style={styles.guidedBtnText}>Return Home</Text>

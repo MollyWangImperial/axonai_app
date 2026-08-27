@@ -8,6 +8,15 @@ import { Assessment, fetchHistory } from "@/src/api";
 import { addJournalEntry, JournalEntry, loadJournalEntries } from "@/src/journal";
 import { colors, radius, spacing } from "@/src/theme";
 
+function assessmentPlanLabel(item: Assessment) {
+  if (item.rehab_plan.length) {
+    return `${item.rehab_plan.length} recommended exercise${item.rehab_plan.length === 1 ? "" : "s"}`;
+  }
+  if (item.clinical_review_gate?.status === "no_rehab_needed") return "No rehab plan recommended";
+  if (item.clinical_review_gate?.status === "awaiting_model_analysis") return "Movement analysis in progress";
+  return "Assessment summary ready";
+}
+
 export default function JourneyScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
@@ -87,7 +96,7 @@ export default function JourneyScreen() {
             <View style={styles.historyIcon}><Ionicons name="checkmark" size={19} color={colors.onBrandPrimary} /></View>
             <View style={{ flex: 1 }}>
               <Text style={styles.historyTitle}>{index === history.length - 1 ? "Initial Assessment" : "Movement check-in"}</Text>
-              <Text style={styles.historyMeta}>{new Date(item.created_at).toLocaleDateString()} · {item.rehab_plan.length} recommended exercises</Text>
+              <Text style={styles.historyMeta}>{new Date(item.created_at).toLocaleDateString()} · {assessmentPlanLabel(item)}</Text>
             </View>
             <Ionicons name="chevron-forward" size={20} color={colors.borderStrong} />
           </Pressable>

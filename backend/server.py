@@ -39,6 +39,7 @@ try:
         aggregate_model_outputs,
         build_model_analysis_manifest,
         model_activation_report,
+        patient_body_function_summary,
         patient_collection_summary,
         pending_model_activation_report,
         validate_model_outputs,
@@ -63,6 +64,7 @@ except ImportError:
         aggregate_model_outputs,
         build_model_analysis_manifest,
         model_activation_report,
+        patient_body_function_summary,
         patient_collection_summary,
         pending_model_activation_report,
         validate_model_outputs,
@@ -239,6 +241,7 @@ class Assessment(BaseModel):
     survey_consistency: Dict[str, Any] = Field(default_factory=dict)
     analysis_pipeline: Dict[str, Any] = Field(default_factory=dict)
     clinical_review_gate: Dict[str, Any] = Field(default_factory=dict)
+    body_function_summary: Dict[str, Any] = Field(default_factory=dict)
 
 
 # ============ 7 Tasks: Step-by-step with voice prompts & on-screen target zones ============
@@ -1010,6 +1013,8 @@ def build_rehab_plan(
         priorities = [priorities]
     priority = str(priorities[0]).strip() if priorities else ""
     for issue in issues:
+        if issue.code == "NO_ISSUES":
+            continue
         rehab_code = PHENOTYPE_REHAB_ALIASES.get(issue.code, issue.code)
         ex = EXERCISE_LIBRARY.get(rehab_code)
         if ex and ex.id not in seen:
@@ -1046,6 +1051,43 @@ def build_rehab_plan(
             }))
             seen.add(ex.id)
     return plan
+
+
+def merge_validated_model_issues(
+    camera_issues: List[FunctionalIssue],
+    model_outputs: Dict[str, Any],
+) -> List[FunctionalIssue]:
+    """Merge trusted model findings without relabeling pending output as evidence."""
+    raw_findings = list(model_outputs.get("functional_findings") or [])
+    if not raw_findings:
+        return list(camera_issues)
+    merged = [issue for issue in camera_issues if issue.code != "NO_ISSUES"]
+    seen = {(issue.code, issue.related_task) for issue in merged}
+    for index, raw in enumerate(raw_findings):
+        if not isinstance(raw, dict):
+            continue
+        related_tasks = raw.get("related_tasks") or []
+        if isinstance(related_tasks, str):
+            related_tasks = [related_tasks]
+        related_task = str(related_tasks[0]) if related_tasks else str(raw.get("related_task") or "MODEL")
+        code = str(raw.get("code") or f"MODEL_FINDING_{index + 1}")
+        if (code, related_task) in seen:
+            continue
+        severity = str(raw.get("severity") or "moderate").lower()
+        if severity not in {"mild", "moderate", "severe"}:
+            severity = "moderate"
+        merged.append(FunctionalIssue(
+            code=code,
+            label=str(raw.get("label") or "Movement pattern requiring review"),
+            description=str(raw.get("description") or raw.get("interpretation") or "The validated musculoskeletal model identified a movement pattern requiring clinician review."),
+            source="Validated musculoskeletal model",
+            severity=severity,
+            related_task=related_task,
+            related_step=None,
+            phenotype_domain=str(raw.get("domain") or raw.get("package") or "model_finding"),
+        ))
+        seen.add((code, related_task))
+    return merged
 
 
 # ============ Routes ============
@@ -1516,7 +1558,6 @@ async def submit_assessment(payload: AssessmentSubmit, request: Request):
     user = await _user_from_header(dict(request.headers))
     if user:
         await consume_credits(user["id"], "assessment")
-        await consume_credits(user["id"], "rehab_plan")
     patient_parameters = _assessment_patient_parameters(payload.patient_parameters, user)
     assessment_id = str(uuid.uuid4())
     task_ids = [task.task_id for task in payload.task_results]
@@ -1536,8 +1577,14 @@ async def submit_assessment(payload: AssessmentSubmit, request: Request):
         logger.warning("Ignoring client-supplied musculoskeletal outputs; trusted worker ingestion is required")
     trusted_model_outputs: Dict[str, Any] = {}
     issues = derive_functional_issues(payload.task_results)
-    plan = build_rehab_plan(issues, patient_parameters)
     domain_assessments = build_domain_assessments(payload.task_results)
+    expected_summary_domains = ("upper_limb", "hand", "lower_limb") if payload.assessment_package == "initial" else None
+    body_function_summary = patient_body_function_summary(
+        payload.task_results,
+        issues,
+        trusted_model_outputs,
+        expected_summary_domains,
+    )
     clinician_measures = build_clinician_measure_summary(patient_parameters)
     biomechanical_estimates = build_biomechanical_estimates(
         payload.task_results,
@@ -1575,6 +1622,9 @@ async def submit_assessment(payload: AssessmentSubmit, request: Request):
         trusted_model_outputs,
         expected_task_count,
     )
+    plan = build_rehab_plan(issues, patient_parameters) if clinical_review_gate.get("rehab_access") == "allowed" else []
+    if user and plan:
+        await consume_credits(user["id"], "rehab_plan")
     assessment = Assessment(
         id=assessment_id,
         created_at=datetime.now(timezone.utc).isoformat(),
@@ -1592,6 +1642,7 @@ async def submit_assessment(payload: AssessmentSubmit, request: Request):
         survey_consistency=survey_consistency,
         analysis_pipeline=analysis_pipeline,
         clinical_review_gate=clinical_review_gate,
+        body_function_summary=body_function_summary,
     )
     doc = assessment.model_dump()
     if payload.motion_data:
@@ -1662,11 +1713,19 @@ async def get_patient_assessment_summary(assessment_id: str):
     package_id = str(doc.get("assessment_package") or "upper_limb")
     expected = len(ASSESSMENT_PACKAGES.get(package_id, {}).get("tasks", []))
     collection = doc.get("patient_summary") or patient_collection_summary(doc.get("task_results", []), expected)
+    expected_summary_domains = ("upper_limb", "hand", "lower_limb") if package_id == "initial" else None
+    body_function_summary = doc.get("body_function_summary") or patient_body_function_summary(
+        doc.get("task_results", []),
+        doc.get("functional_issues", []),
+        doc.get("musculoskeletal_outputs", {}),
+        expected_summary_domains,
+    )
     return {
         "id": doc["id"],
         "created_at": doc["created_at"],
         "assessment_package": package_id,
         "collection": collection,
+        "body_function_summary": body_function_summary,
         "rehab_plan_ready": bool(doc.get("rehab_plan")) and (doc.get("clinical_review_gate") or {}).get("rehab_access", "allowed") == "allowed",
         "clinical_review_gate": doc.get("clinical_review_gate") or {},
     }
@@ -1803,27 +1862,44 @@ async def save_model_results(assessment_id: str, payload: ModelResultSubmit, req
     outputs = aggregate_model_outputs(validated)
     patient_parameters = doc.get("patient_parameters") or {}
     task_results = doc.get("task_results") or []
-    issues = [FunctionalIssue(**item) for item in doc.get("functional_issues") or []]
+    camera_issues = [
+        FunctionalIssue(**item)
+        for item in doc.get("functional_issues") or []
+        if str(item.get("source") or "") != "Validated musculoskeletal model"
+    ]
+    issues = merge_validated_model_issues(camera_issues, outputs)
     expected_task_count = len(ASSESSMENT_PACKAGES.get(doc.get("assessment_package") or "upper_limb", {}).get("tasks", []))
     clinical_review_gate = build_clinical_review_gate(
-        issues,
+        camera_issues,
         patient_parameters,
         task_results,
         outputs,
         expected_task_count,
     )
+    plan = build_rehab_plan(issues, patient_parameters)
+    if clinical_review_gate.get("rehab_access") != "allowed":
+        plan = []
+    expected_summary_domains = ("upper_limb", "hand", "lower_limb") if doc.get("assessment_package") == "initial" else None
+    body_function_summary = patient_body_function_summary(
+        task_results,
+        issues,
+        outputs,
+        expected_summary_domains,
+    )
     updated_fields = {
+        "functional_issues": [issue.model_dump() for issue in issues],
+        "rehab_plan": [exercise.model_dump() for exercise in plan],
+        "body_function_summary": body_function_summary,
         "musculoskeletal_outputs": outputs,
         "biomechanical_estimates": build_biomechanical_estimates(task_results, patient_parameters, outputs),
         "measurement_form": build_clinical_measurement_form(task_results, patient_parameters, outputs),
         "analysis_pipeline": build_analysis_pipeline(doc.get("motion_data") or {}, outputs),
         "muscle_activation_diagnosis": model_activation_report(outputs),
+        "survey_consistency": build_survey_consistency(issues, patient_parameters, task_results),
         "clinical_review_gate": clinical_review_gate,
         "model_analysis.status": "completed",
         "model_analysis.completed_at": datetime.now(timezone.utc).isoformat(),
     }
-    if clinical_review_gate.get("status") == "therapist_confirmation_required":
-        updated_fields["rehab_plan"] = []
     try:
         await db.assessments.update_one({"id": assessment_id}, {"$set": updated_fields})
     except Exception as e:

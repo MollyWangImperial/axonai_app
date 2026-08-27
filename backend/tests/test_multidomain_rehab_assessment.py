@@ -287,6 +287,18 @@ def test_completed_upper_limb_task_still_reports_compensation_and_adapts_plan_to
     assert all("Eat independently" in exercise.selection_reason for exercise in plan)
 
 
+def test_no_observed_issue_does_not_create_a_maintenance_rehab_plan():
+    issues = [server.FunctionalIssue(
+        code="NO_ISSUES",
+        label="No failed movement steps identified",
+        description="All observed steps were completed.",
+        source="camera",
+        severity="mild",
+        related_task="ALL",
+    )]
+    assert server.build_rehab_plan(issues) == []
+
+
 def test_profile_goal_is_merged_into_assessment_parameters():
     merged = server._assessment_patient_parameters(
         {},
@@ -341,14 +353,15 @@ def test_routes_expose_packages_modeling_contract_and_multidomain_results():
             for row in domain["rows"]
         }
         assert measurement_rows["LE_MMT"]["value"] == "2/5"
-        assert assessment["rehab_plan"][0]["targets_issue"] == "SIT_TO_STAND_IMPAIRED"
+        assert assessment["rehab_plan"] == []
+        assert assessment["clinical_review_gate"]["status"] == "awaiting_model_analysis"
         assert assessment["rehabilitation_goals"]["method"] == "retrieval_augmented_rule_engine"
 
         patient_summary = client.get(f"/api/assessment/{assessment['id']}/patient-summary")
         assert patient_summary.status_code == 200
         summary_payload = patient_summary.json()
         assert set(summary_payload) == {
-            "id", "created_at", "assessment_package", "collection", "rehab_plan_ready", "clinical_review_gate"
+            "id", "created_at", "assessment_package", "collection", "body_function_summary", "rehab_plan_ready", "clinical_review_gate"
         }
         assert summary_payload["collection"]["tasks_collected"] == 1
         assert "analysis_pipeline" not in summary_payload
@@ -366,6 +379,41 @@ def test_initial_package_is_fixed_broad_and_guided_in_order():
         assert payload["package_id"] == "initial"
         assert [task["id"] for task in payload["tasks"]] == expected
         assert all(step.get("voice") and step.get("target") for task in payload["tasks"] for step in task["steps"])
+
+
+def test_completed_initial_collection_returns_domain_metrics_without_a_normal_rehab_plan():
+    task_ids = ["T1", "T2", "T3", "H1", "H3", "H4", "L6"]
+    with TestClient(server.app) as client:
+        submitted = client.post(
+            "/api/assessment/submit",
+            json={
+                "assessment_package": "initial",
+                "affected_side": "right",
+                "task_results": [
+                    {
+                        "task_id": task_id,
+                        "completed_steps": 1,
+                        "total_steps": 1,
+                        "duration_ms": 10000,
+                        "steps": [],
+                        "metrics": {},
+                    }
+                    for task_id in task_ids
+                ],
+            },
+        )
+        assert submitted.status_code == 200
+        assessment = submitted.json()
+        assert assessment["rehab_plan"] == []
+        assert assessment["clinical_review_gate"]["status"] == "awaiting_model_analysis"
+        assert assessment["body_function_summary"]["overall_status"] == "analysis_pending"
+
+        summary = client.get(f"/api/assessment/{assessment['id']}/patient-summary").json()
+        assert [item["domain"] for item in summary["body_function_summary"]["domains"]] == [
+            "upper_limb", "hand", "lower_limb"
+        ]
+        assert all(item["step_completion_percent"] == 100 for item in summary["body_function_summary"]["domains"])
+        assert summary["rehab_plan_ready"] is False
 
 
 def test_initial_runner_switches_models_by_task_and_captures_2d_and_3d_trajectories():
@@ -485,6 +533,18 @@ def test_clinical_review_gate_waits_for_model_then_requires_therapist_confirmati
     assert pending["rehab_access"] == "blocked"
     assert pending["objective_evidence"]["validated_model_complete"] is False
 
+    camera_finding = [server.FunctionalIssue(
+        code="UL_REACH_LIMITED",
+        label="Forward reach needs review",
+        description="The camera task identified a limited reach.",
+        source="camera",
+        severity="moderate",
+        related_task="T1",
+    )]
+    camera_only = build_clinical_review_gate(camera_finding, survey, completed, {}, 1)
+    assert camera_only["status"] == "awaiting_model_analysis"
+    assert camera_only["rehab_access"] == "blocked"
+
     validated_normal = {
         "status": "completed",
         "quality": {
@@ -505,6 +565,32 @@ def test_clinical_review_gate_waits_for_model_then_requires_therapist_confirmati
     aligned = build_clinical_review_gate(no_camera_issues, survey, completed, validated_with_finding, 1)
     assert aligned["status"] == "clear"
     assert aligned["rehab_access"] == "allowed"
+
+
+def test_validated_normal_result_without_reported_symptoms_needs_no_rehab_plan():
+    completed = [{"task_id": "T1", "completed_steps": 2, "total_steps": 2}]
+    no_camera_issues = [server.FunctionalIssue(
+        code="NO_ISSUES",
+        label="No failed movement steps identified",
+        description="All observed steps were completed.",
+        source="camera",
+        severity="mild",
+        related_task="ALL",
+    )]
+    validated_normal = {
+        "status": "completed",
+        "quality": {
+            "kinematics_valid": True,
+            "model_scaled": True,
+            "external_loads_valid": True,
+            "residuals_within_threshold": True,
+        },
+        "functional_findings": [],
+    }
+    gate = build_clinical_review_gate(no_camera_issues, {}, completed, validated_normal, 1)
+    assert gate["status"] == "no_rehab_needed"
+    assert gate["rehab_access"] == "not_needed"
+    assert "No rehabilitation plan" in gate["patient_title"]
 
 
 def test_trusted_normal_model_result_removes_automatic_plan_when_survey_reports_symptoms(monkeypatch):
@@ -558,6 +644,66 @@ def test_trusted_normal_model_result_removes_automatic_plan_when_survey_reports_
             summary = client.get(f"/api/assessment/{assessment_id}/patient-summary").json()
             assert summary["rehab_plan_ready"] is False
             assert summary["clinical_review_gate"]["rehab_access"] == "blocked"
+        stored = next(item for item in server.LOCAL_ASSESSMENTS if item.get("id") == assessment_id)
+        assert stored["rehab_plan"] == []
+    finally:
+        server.LOCAL_ASSESSMENTS[:] = [
+            item for item in server.LOCAL_ASSESSMENTS if item.get("id") != assessment_id
+        ]
+
+
+def test_trusted_normal_model_result_marks_rehab_not_needed_without_reported_symptoms(monkeypatch):
+    assessment_id = "normal-no-rehab-test"
+    server.LOCAL_ASSESSMENTS.append({
+        "id": assessment_id,
+        "created_at": "2026-08-27T00:00:00+00:00",
+        "affected_side": "right",
+        "assessment_package": "test_package",
+        "task_results": [{
+            "task_id": "T1", "completed_steps": 1, "total_steps": 1,
+            "duration_ms": 1000, "steps": [], "metrics": {},
+        }],
+        "functional_issues": [{
+            "code": "NO_ISSUES", "label": "No failed movement steps identified",
+            "description": "All observed steps were completed.", "source": "camera",
+            "severity": "mild", "related_task": "ALL",
+        }],
+        "rehab_plan": [],
+        "patient_parameters": {},
+        "model_analysis": {"status": "queued", "tasks": [{"task_id": "T1", "video_id": "video-t1"}]},
+        "motion_data": {"frames": []},
+    })
+    monkeypatch.setattr(server, "ANALYSIS_WORKER_TOKEN", "test-worker-token")
+    payload = {
+        "status": "completed",
+        "per_task": [{
+            "task_id": "T1",
+            "quality": {
+                "kinematics_valid": True, "model_scaled": True,
+                "external_loads_valid": True, "residuals_within_threshold": True,
+            },
+            "external_load_method": "gravity_only_seated_no_external_object",
+            "muscle_activations": {"anterior_deltoid": {"mean": 0.3, "peak": 0.6}},
+            "functional_findings": [],
+            "provenance": {
+                "solver": "OpenSim MocoInverse", "model_version": "upper-extremity-1.0",
+                "source_video_id": "video-t1", "code_version": "abc123",
+            },
+        }],
+    }
+    try:
+        with TestClient(server.app) as client:
+            accepted = client.post(
+                f"/api/assessment/{assessment_id}/model-results",
+                json=payload,
+                headers={"X-Analysis-Worker-Token": "test-worker-token"},
+            )
+            assert accepted.status_code == 200
+            assert accepted.json()["clinical_review_status"] == "no_rehab_needed"
+            summary = client.get(f"/api/assessment/{assessment_id}/patient-summary").json()
+            assert summary["rehab_plan_ready"] is False
+            assert summary["clinical_review_gate"]["rehab_access"] == "not_needed"
+            assert summary["body_function_summary"]["overall_status"] == "no_observable_difficulty"
         stored = next(item for item in server.LOCAL_ASSESSMENTS if item.get("id") == assessment_id)
         assert stored["rehab_plan"] == []
     finally:

@@ -120,17 +120,6 @@ def build_clinical_review_gate(
         ),
     }
 
-    if not explicit_report or camera_findings or model_findings:
-        return {
-            **base,
-            "status": "clear",
-            "rehab_access": "allowed",
-            "reason_code": "objective_survey_hold_not_required",
-            "patient_title": "Your plan can be prepared",
-            "patient_message": "Your recorded assessment can be used to prepare the next step in your rehabilitation plan.",
-            "next_step": "Review the plan with your therapist before beginning new rehabilitation activities.",
-        }
-
     if not collection_complete or not model_complete:
         return {
             **base,
@@ -142,18 +131,43 @@ def build_clinical_review_gate(
             "next_step": "Return later to review the result. Do not begin a new rehabilitation plan from this assessment yet.",
         }
 
+    if camera_findings or model_findings:
+        return {
+            **base,
+            "status": "clear",
+            "rehab_access": "allowed",
+            "reason_code": "objective_survey_hold_not_required",
+            "patient_title": "Your plan can be prepared",
+            "patient_message": "Your completed, validated assessment can be used to prepare the next step in your rehabilitation plan.",
+            "next_step": "Review the plan with your therapist before beginning new rehabilitation activities.",
+        }
+
+    if explicit_report:
+        return {
+            **base,
+            "status": "therapist_confirmation_required",
+            "rehab_access": "blocked",
+            "reason_code": "survey_objective_mismatch_no_observable_impairment",
+            "therapist_confirmation_required": True,
+            "patient_title": "Please confirm these results with your therapist",
+            "patient_message": (
+                "Your survey reports symptoms, but the completed movement assessment and validated musculoskeletal model "
+                "did not detect an observable functional impairment in these tasks. This does not mean your symptoms are not real."
+            ),
+            "next_step": "Please confirm the results with your therapist before starting any rehabilitation exercises.",
+        }
+
     return {
         **base,
-        "status": "therapist_confirmation_required",
-        "rehab_access": "blocked",
-        "reason_code": "survey_objective_mismatch_no_observable_impairment",
-        "therapist_confirmation_required": True,
-        "patient_title": "Please confirm these results with your therapist",
+        "status": "no_rehab_needed",
+        "rehab_access": "not_needed",
+        "reason_code": "no_observable_impairment_in_assessed_tasks",
+        "patient_title": "No rehabilitation plan is recommended from this assessment",
         "patient_message": (
-            "Your survey reports symptoms, but the completed movement assessment and validated musculoskeletal model "
-            "did not detect an observable functional impairment in these tasks. This does not mean your symptoms are not real."
+            "The completed tasks and quality-validated movement analysis did not detect an observable functional "
+            "difficulty in the areas assessed."
         ),
-        "next_step": "Please confirm the results with your therapist before starting any rehabilitation exercises.",
+        "next_step": "Continue your usual activities and speak with a therapist if you notice symptoms or a change in function.",
     }
 
 

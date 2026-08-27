@@ -68,14 +68,33 @@ export type PatientAssessmentSummary = {
     duration_ms: number;
     domains: { domain: string; label: string }[];
   };
+  body_function_summary: {
+    version: string;
+    overall_status: "analysis_pending" | "review_recommended" | "no_observable_difficulty";
+    model_analysis_complete: boolean;
+    domains: BodyFunctionDomainSummary[];
+    reporting_rule: string;
+  };
   rehab_plan_ready: boolean;
   clinical_review_gate: ClinicalReviewGate;
 };
 
+export type BodyFunctionDomainSummary = {
+  domain: "upper_limb" | "hand" | "lower_limb";
+  label: string;
+  status: "analysis_pending" | "review_recommended" | "no_observable_difficulty" | "not_observed";
+  tasks_completed: number;
+  tasks_observed: number;
+  step_completion_percent: number;
+  average_task_duration_ms: number;
+  findings_count: number;
+  summary: string;
+};
+
 export type ClinicalReviewGate = {
   version?: string;
-  status: "clear" | "awaiting_model_analysis" | "therapist_confirmation_required";
-  rehab_access: "allowed" | "blocked";
+  status: "clear" | "awaiting_model_analysis" | "therapist_confirmation_required" | "no_rehab_needed";
+  rehab_access: "allowed" | "blocked" | "not_needed";
   reason_code?: string;
   therapist_confirmation_required?: boolean;
   patient_title?: string;

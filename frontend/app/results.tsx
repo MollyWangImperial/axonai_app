@@ -12,6 +12,18 @@ function formatDuration(durationMs: number) {
   return `${totalMinutes} min`;
 }
 
+function formatAverageTaskTime(durationMs: number) {
+  if (durationMs < 60000) return `${Math.max(1, Math.round(durationMs / 1000))} sec`;
+  return `${Math.max(1, Math.round(durationMs / 60000))} min`;
+}
+
+function domainStatusLabel(status: string) {
+  if (status === "no_observable_difficulty") return "No difficulty observed";
+  if (status === "review_recommended") return "Review recommended";
+  if (status === "not_observed") return "Not observed";
+  return "Analysis in progress";
+}
+
 export default function ResultsScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
@@ -55,7 +67,9 @@ export default function ResultsScreen() {
 
   const reviewGate = data?.clinical_review_gate;
   const rehabBlocked = reviewGate?.rehab_access === "blocked";
+  const noRehabNeeded = reviewGate?.rehab_access === "not_needed" || reviewGate?.status === "no_rehab_needed";
   const awaitingAnalysis = reviewGate?.status === "awaiting_model_analysis";
+  const canViewPlan = data?.rehab_plan_ready === true && reviewGate?.rehab_access === "allowed";
 
   if (loading) {
     return (
@@ -94,8 +108,51 @@ export default function ResultsScreen() {
           </View>
           <Text style={styles.heroTitle}>Your task collection is complete</Text>
           <Text style={styles.heroSub}>
-            Your task recordings and movement data have been saved. We will use them with your survey answers to prepare your rehabilitation plan.
+            {noRehabNeeded
+              ? "Your movement summary is ready. No rehabilitation plan is recommended from this assessment."
+              : awaitingAnalysis
+                ? "Your recordings are saved. Your movement metrics are ready while the validated analysis finishes."
+                : "Your movement summary is ready. Review each area before opening your rehabilitation plan."}
           </Text>
+        </View>
+
+        <Text style={styles.sectionTitle}>Body function summary</Text>
+        <View style={styles.functionList} testID="body-function-summary">
+          {data.body_function_summary.domains.map((domain) => {
+            const normal = domain.status === "no_observable_difficulty";
+            const review = domain.status === "review_recommended";
+            return (
+              <View key={domain.domain} style={styles.functionCard} testID={`body-function-${domain.domain}`}>
+                <View style={styles.functionHeader}>
+                  <Text style={styles.functionTitle}>{domain.label}</Text>
+                  <View style={[styles.statusBadge, normal && styles.statusBadgeNormal, review && styles.statusBadgeReview]}>
+                    <Text style={[styles.statusText, normal && styles.statusTextNormal, review && styles.statusTextReview]}>
+                      {domainStatusLabel(domain.status)}
+                    </Text>
+                  </View>
+                </View>
+                <Text style={styles.functionSummary}>{domain.summary}</Text>
+                <View style={styles.functionMetrics}>
+                  <View style={styles.functionMetric}>
+                    <Text style={styles.functionMetricValue}>{domain.tasks_completed}/{domain.tasks_observed}</Text>
+                    <Text style={styles.functionMetricLabel}>Tasks completed</Text>
+                  </View>
+                  <View style={styles.functionMetric}>
+                    <Text style={styles.functionMetricValue}>{domain.step_completion_percent}%</Text>
+                    <Text style={styles.functionMetricLabel}>Guided steps</Text>
+                  </View>
+                  <View style={styles.functionMetric}>
+                    <Text style={styles.functionMetricValue}>{formatAverageTaskTime(domain.average_task_duration_ms)}</Text>
+                    <Text style={styles.functionMetricLabel}>Average task</Text>
+                  </View>
+                  <View style={styles.functionMetric}>
+                    <Text style={styles.functionMetricValue}>{domain.findings_count}</Text>
+                    <Text style={styles.functionMetricLabel}>Findings to review</Text>
+                  </View>
+                </View>
+              </View>
+            );
+          })}
         </View>
 
         <Text style={styles.sectionTitle}>Task collection</Text>
@@ -139,16 +196,20 @@ export default function ResultsScreen() {
           <View style={styles.nextCopy}>
             <Text style={styles.nextTitle}>What happens next</Text>
             <Text style={styles.nextText}>
-              Your detailed movement analysis stays behind the scenes. You will see clear, practical guidance in your plan rather than technical model information.
+              {noRehabNeeded
+                ? "No exercises are being generated because no observable difficulty was detected in the assessed tasks. Contact your therapist if symptoms continue or your function changes."
+                : awaitingAnalysis
+                  ? "We will not generate a rehabilitation plan until the validated movement analysis is complete."
+                  : "A rehabilitation plan is generated only for movement findings that need support."}
             </Text>
           </View>
         </View>
 
-        {rehabBlocked && (
-          <View style={styles.reviewCard} testID="clinical-review-hold">
+        {(rehabBlocked || noRehabNeeded) && (
+          <View style={styles.reviewCard} testID={noRehabNeeded ? "no-rehab-needed" : "clinical-review-hold"}>
             <View style={styles.reviewIcon}>
               <Ionicons
-                name={awaitingAnalysis ? "hourglass-outline" : "people-outline"}
+                name={noRehabNeeded ? "checkmark-circle-outline" : awaitingAnalysis ? "hourglass-outline" : "people-outline"}
                 size={24}
                 color={colors.brandPrimary}
               />
@@ -164,12 +225,12 @@ export default function ResultsScreen() {
 
       <View style={[styles.ctaBar, { paddingBottom: Math.max(insets.bottom, spacing.md) }]}>
         <Pressable
-          onPress={rehabBlocked ? () => router.replace("/") : goPlan}
+          onPress={canViewPlan ? goPlan : () => router.replace("/")}
           style={styles.cta}
-          testID={rehabBlocked ? "results-return-home" : "results-view-plan"}
+          testID={canViewPlan ? "results-view-plan" : "results-return-home"}
         >
-          <Ionicons name={rehabBlocked ? "home-outline" : "clipboard-outline"} size={22} color={colors.onBrandPrimary} />
-          <Text style={styles.ctaText}>{rehabBlocked ? "Return Home" : "View Rehab Plan"}</Text>
+          <Ionicons name={canViewPlan ? "clipboard-outline" : "home-outline"} size={22} color={colors.onBrandPrimary} />
+          <Text style={styles.ctaText}>{canViewPlan ? "View Rehab Plan" : "Return Home"}</Text>
         </Pressable>
       </View>
     </View>
@@ -212,6 +273,27 @@ const styles = StyleSheet.create({
   heroTitle: { fontSize: 23, fontWeight: "800", color: colors.onBrandTertiary, textAlign: "center" },
   heroSub: { color: colors.onBrandTertiary, fontSize: 15, textAlign: "center", lineHeight: 22, marginTop: spacing.sm },
   sectionTitle: { fontSize: 20, fontWeight: "800", color: colors.onSurface, marginBottom: spacing.md },
+  functionList: { gap: spacing.md, marginBottom: spacing.xl },
+  functionCard: {
+    backgroundColor: colors.surfaceSecondary,
+    borderRadius: radius.sm,
+    borderWidth: 1,
+    borderColor: colors.border,
+    padding: spacing.md,
+  },
+  functionHeader: { flexDirection: "row", alignItems: "flex-start", justifyContent: "space-between", gap: spacing.sm },
+  functionTitle: { flex: 1, fontSize: 18, fontWeight: "800", color: colors.onSurface },
+  statusBadge: { maxWidth: "55%", backgroundColor: colors.brandTertiary, borderRadius: radius.sm, paddingHorizontal: 9, paddingVertical: 5 },
+  statusBadgeNormal: { backgroundColor: colors.brandTertiary },
+  statusBadgeReview: { backgroundColor: "#FFF0E1" },
+  statusText: { color: colors.brandPrimary, fontSize: 11, lineHeight: 15, fontWeight: "700", textAlign: "center" },
+  statusTextNormal: { color: colors.success },
+  statusTextReview: { color: colors.warning },
+  functionSummary: { color: colors.onSurfaceSecondary, fontSize: 14, lineHeight: 20, marginTop: spacing.sm },
+  functionMetrics: { flexDirection: "row", flexWrap: "wrap", marginTop: spacing.md, rowGap: spacing.md },
+  functionMetric: { width: "50%", paddingRight: spacing.sm },
+  functionMetricValue: { color: colors.onSurface, fontSize: 18, lineHeight: 23, fontWeight: "800" },
+  functionMetricLabel: { color: colors.onSurfaceSecondary, fontSize: 12, lineHeight: 17, marginTop: 2 },
   metricsGrid: { flexDirection: "row", flexWrap: "wrap", gap: spacing.sm, marginBottom: spacing.lg },
   metricCard: {
     width: "48%",

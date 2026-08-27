@@ -37,6 +37,9 @@ export default function HomeScreen() {
 
   const latest = history[0];
   const isInitialAssessment = history.length === 0;
+  const rehabReady = !!latest?.rehab_plan.length && latest?.clinical_review_gate?.rehab_access === "allowed";
+  const analysisPending = latest?.clinical_review_gate?.status === "awaiting_model_analysis";
+  const noRehabNeeded = latest?.clinical_review_gate?.status === "no_rehab_needed" || latest?.clinical_review_gate?.rehab_access === "not_needed";
   const completedThisWeek = Math.min(7, history.length + Math.min(4, entries.length));
   const weeklyPercent = Math.round((completedThisWeek / 7) * 100);
 
@@ -46,7 +49,11 @@ export default function HomeScreen() {
       router.push({ pathname: "/session-check" as any, params: { target: "assessment", mode: "initial" } });
       return;
     }
-    router.push({ pathname: "/session-check" as any, params: { target: "rehab", id: latest.id } });
+    if (rehabReady) {
+      router.push({ pathname: "/session-check" as any, params: { target: "rehab", id: latest.id } });
+      return;
+    }
+    router.push({ pathname: "/results", params: { id: latest.id } });
   };
 
   return (
@@ -80,7 +87,15 @@ export default function HomeScreen() {
             </View>
             <View style={styles.goalCopy}>
               <Text style={styles.goalTitle}>Weekly active goal</Text>
-              <Text style={styles.goalSubtitle}>{isInitialAssessment ? "Begin with your Initial Assessment" : "Keep your recovery routine moving"}</Text>
+              <Text style={styles.goalSubtitle}>
+                {isInitialAssessment
+                  ? "Begin with your Initial Assessment"
+                  : rehabReady
+                    ? "Keep your recovery routine moving"
+                    : analysisPending
+                      ? "Your movement analysis is in progress"
+                      : "Review your latest assessment summary"}
+              </Text>
               <View style={styles.goalMetaRow}>
                 <View style={styles.metaPill}><Ionicons name="checkmark" size={13} color={colors.brandPrimary} /><Text style={styles.metaText}>{completedThisWeek}/7 sessions</Text></View>
                 <View style={styles.streakPill}><Ionicons name="flame-outline" size={13} color={colors.warning} /><Text style={styles.streakText}>{Math.max(1, entries.length)} day streak</Text></View>
@@ -90,18 +105,22 @@ export default function HomeScreen() {
 
           <View style={styles.sessionCard}>
             <View style={styles.sessionTopRow}>
-              <Text style={styles.sessionBadge}>{isInitialAssessment ? "GET STARTED" : "NEXT SESSION"}</Text>
+              <Text style={styles.sessionBadge}>{isInitialAssessment ? "GET STARTED" : rehabReady ? "NEXT SESSION" : "ASSESSMENT SUMMARY"}</Text>
               <View style={styles.duration}><Ionicons name="time-outline" size={15} color="#E8F0EA" /><Text style={styles.durationText}>{isInitialAssessment ? "15 mins" : "20 mins"}</Text></View>
             </View>
-            <Text style={styles.sessionTitle}>{isInitialAssessment ? "Initial Assessment" : "Today's Rehabilitation"}</Text>
+            <Text style={styles.sessionTitle}>{isInitialAssessment ? "Initial Assessment" : rehabReady ? "Today's Rehabilitation" : "Your Movement Summary"}</Text>
             <Text style={styles.sessionDescription}>
               {isInitialAssessment
                 ? "The same seven guided arm, hand, and walking observations for every new patient, so we can understand your movement broadly."
-                : `${latest.rehab_plan.length} guided exercise${latest.rehab_plan.length === 1 ? "" : "s"} selected from your assessment.`}
+                : rehabReady
+                  ? `${latest.rehab_plan.length} guided exercise${latest.rehab_plan.length === 1 ? "" : "s"} selected from your assessment.`
+                  : noRehabNeeded
+                    ? "No rehabilitation plan was recommended because no observable difficulty was detected in the assessed tasks."
+                    : "Review your upper-limb, hand, and lower-limb metrics while the validated analysis is completed."}
             </Text>
             <Pressable testID="home-start-next-session" onPress={startNextSession} style={styles.startButton}>
               <Ionicons name="play" size={18} color={colors.brandPrimary} />
-              <Text style={styles.startButtonText}>{isInitialAssessment ? "Start Initial Assessment" : "Start Session"}</Text>
+              <Text style={styles.startButtonText}>{isInitialAssessment ? "Start Initial Assessment" : rehabReady ? "Start Session" : "View Summary"}</Text>
             </Pressable>
           </View>
 

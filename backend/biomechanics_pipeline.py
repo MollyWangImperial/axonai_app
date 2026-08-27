@@ -17,6 +17,12 @@ DOMAIN_LABELS = {
     "balance": "Balance",
 }
 
+BODY_FUNCTION_LABELS = {
+    "upper_limb": "Upper limb",
+    "hand": "Hand function",
+    "lower_limb": "Lower limb",
+}
+
 TASK_MODEL_ROUTES: Dict[str, Dict[str, str]] = {
     "T1": {"domain": "upper_limb", "model_family": "upper_extremity", "solver": "OpenSim MocoInverse/static optimization"},
     "T2": {"domain": "upper_limb", "model_family": "upper_extremity", "solver": "OpenSim MocoInverse/static optimization"},
@@ -68,6 +74,132 @@ def patient_collection_summary(
         "completion_percent": round(100 * completed_steps / total_steps) if total_steps else 0,
         "duration_ms": duration_ms,
         "domains": domains,
+    }
+
+
+def _validated_model_complete(outputs: Mapping[str, Any]) -> bool:
+    quality = outputs.get("quality") if isinstance(outputs.get("quality"), Mapping) else {}
+    return outputs.get("status") == "completed" and all(
+        quality.get(key) is True
+        for key in (
+            "kinematics_valid",
+            "model_scaled",
+            "external_loads_valid",
+            "residuals_within_threshold",
+        )
+    )
+
+
+def _finding_domain(finding: Any) -> str | None:
+    explicit = str(_value(finding, "domain", "") or _value(finding, "package", "")).strip().lower()
+    aliases = {
+        "upper_limb": "upper_limb",
+        "upper limb": "upper_limb",
+        "hand": "hand",
+        "hand_function": "hand",
+        "lower_limb": "lower_limb",
+        "lower limb": "lower_limb",
+        "walking": "lower_limb",
+        "gait": "lower_limb",
+    }
+    if explicit in aliases:
+        return aliases[explicit]
+    related = _value(finding, "related_tasks", []) or []
+    if isinstance(related, str):
+        related = [related]
+    if related:
+        return task_model_route(str(related[0]))["domain"]
+    related_task = str(_value(finding, "related_task", "") or "")
+    if related_task and related_task != "ALL":
+        return task_model_route(related_task)["domain"]
+    code = str(_value(finding, "code", "") or "").upper()
+    if code.startswith(("HAND_", "PINCH_", "GRASP_")):
+        return "hand"
+    if code.startswith(("LE_", "GAIT_", "ANKLE_", "WALK_", "LOWER_")):
+        return "lower_limb"
+    if code.startswith(("UL_", "SHOULDER_", "REACH_", "H2M_", "TRUNK_")):
+        return "upper_limb"
+    return None
+
+
+def patient_body_function_summary(
+    task_results: Iterable[Any],
+    functional_issues: Iterable[Any],
+    musculoskeletal_outputs: Mapping[str, Any] | None = None,
+    expected_domains: Sequence[str] | None = None,
+) -> Dict[str, Any]:
+    """Build concise patient-facing metrics without overstating normality."""
+    tasks = list(task_results)
+    issues = [item for item in functional_issues if str(_value(item, "code", "")) != "NO_ISSUES"]
+    outputs = dict(musculoskeletal_outputs or {})
+    model_findings = list(outputs.get("functional_findings") or [])
+    model_complete = _validated_model_complete(outputs)
+    domain_order: List[str] = []
+    for domain in expected_domains or []:
+        if domain in BODY_FUNCTION_LABELS and domain not in domain_order:
+            domain_order.append(domain)
+    for task in tasks:
+        domain = task_model_route(str(_value(task, "task_id", "")))["domain"]
+        if domain in BODY_FUNCTION_LABELS and domain not in domain_order:
+            domain_order.append(domain)
+
+    domains: List[Dict[str, Any]] = []
+    for domain in domain_order:
+        domain_tasks = [
+            task for task in tasks
+            if task_model_route(str(_value(task, "task_id", "")))["domain"] == domain
+        ]
+        total_steps = sum(int(_value(task, "total_steps", 0) or 0) for task in domain_tasks)
+        completed_steps = sum(int(_value(task, "completed_steps", 0) or 0) for task in domain_tasks)
+        completed_tasks = sum(
+            int(_value(task, "total_steps", 0) or 0) > 0
+            and int(_value(task, "completed_steps", 0) or 0) >= int(_value(task, "total_steps", 0) or 0)
+            for task in domain_tasks
+        )
+        duration_ms = sum(max(0, int(_value(task, "duration_ms", 0) or 0)) for task in domain_tasks)
+        camera_findings = sum(_finding_domain(item) == domain for item in issues)
+        modeled_findings = sum(_finding_domain(item) == domain for item in model_findings)
+        finding_count = camera_findings + modeled_findings
+        if not domain_tasks:
+            status = "not_observed"
+            summary = "This area was not observed in the submitted task collection."
+        elif finding_count:
+            status = "review_recommended"
+            summary = "One or more movement findings in this area should be reviewed before exercises are selected."
+        elif model_complete:
+            status = "no_observable_difficulty"
+            summary = "No observable difficulty was detected in the assessed tasks for this area."
+        else:
+            status = "analysis_pending"
+            summary = "The guided-task metrics are ready while the validated movement analysis is still in progress."
+        domains.append({
+            "domain": domain,
+            "label": BODY_FUNCTION_LABELS[domain],
+            "status": status,
+            "tasks_completed": int(completed_tasks),
+            "tasks_observed": len(domain_tasks),
+            "step_completion_percent": round(100 * completed_steps / total_steps) if total_steps else 0,
+            "average_task_duration_ms": round(duration_ms / len(domain_tasks)) if domain_tasks else 0,
+            "findings_count": int(finding_count),
+            "summary": summary,
+        })
+
+    observed = [item for item in domains if item["status"] != "not_observed"]
+    if any(item["status"] == "review_recommended" for item in observed):
+        overall_status = "review_recommended"
+    elif observed and model_complete and all(item["status"] == "no_observable_difficulty" for item in observed):
+        overall_status = "no_observable_difficulty"
+    else:
+        overall_status = "analysis_pending"
+    return {
+        "version": "1.0",
+        "overall_status": overall_status,
+        "model_analysis_complete": model_complete,
+        "domains": domains,
+        "reporting_rule": (
+            "Completion metrics describe only the submitted tasks. No observable difficulty is reported only after "
+            "quality-validated musculoskeletal analysis and does not rule out symptoms or difficulties outside those tasks."
+        ),
     }
 
 

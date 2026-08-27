@@ -6,6 +6,7 @@ from backend.biomechanics_pipeline import (
     aggregate_model_outputs,
     build_model_analysis_manifest,
     model_activation_report,
+    patient_body_function_summary,
     patient_collection_summary,
     validate_model_outputs,
 )
@@ -67,6 +68,47 @@ def test_patient_summary_contains_collection_metrics_only():
     }
 
 
+def test_body_function_summary_separates_domains_and_waits_before_calling_results_normal():
+    tasks = [
+        {"task_id": "T1", "completed_steps": 2, "total_steps": 2, "duration_ms": 20000},
+        {"task_id": "H1", "completed_steps": 3, "total_steps": 3, "duration_ms": 12000},
+        {"task_id": "L6", "completed_steps": 3, "total_steps": 3, "duration_ms": 28000},
+    ]
+    pending = patient_body_function_summary(tasks, [], {}, ("upper_limb", "hand", "lower_limb"))
+    assert pending["overall_status"] == "analysis_pending"
+    assert [item["domain"] for item in pending["domains"]] == ["upper_limb", "hand", "lower_limb"]
+    assert all(item["status"] == "analysis_pending" for item in pending["domains"])
+    assert pending["domains"][0]["average_task_duration_ms"] == 20000
+
+    validated_normal = {
+        "status": "completed",
+        "quality": {
+            "kinematics_valid": True,
+            "model_scaled": True,
+            "external_loads_valid": True,
+            "residuals_within_threshold": True,
+        },
+        "functional_findings": [],
+    }
+    completed = patient_body_function_summary(tasks, [], validated_normal, ("upper_limb", "hand", "lower_limb"))
+    assert completed["overall_status"] == "no_observable_difficulty"
+    assert all(item["status"] == "no_observable_difficulty" for item in completed["domains"])
+    assert all(item["step_completion_percent"] == 100 for item in completed["domains"])
+
+
+def test_body_function_summary_counts_domain_findings():
+    summary = patient_body_function_summary(
+        [{"task_id": "H3", "completed_steps": 1, "total_steps": 2, "duration_ms": 10000}],
+        [{"code": "PINCH_IMPAIRED", "related_task": "H3"}],
+        {},
+        ("hand",),
+    )
+    hand = summary["domains"][0]
+    assert hand["status"] == "review_recommended"
+    assert hand["findings_count"] == 1
+    assert hand["step_completion_percent"] == 50
+
+
 def test_manifest_links_each_task_to_its_saved_video():
     manifest = build_model_analysis_manifest(
         "assessment-1",
@@ -105,6 +147,12 @@ def test_model_outputs_require_quality_provenance_and_matching_video():
 
 def test_patient_results_screen_does_not_render_backend_diagnostics():
     source = (Path(__file__).resolve().parents[2] / "frontend" / "app" / "results.tsx").read_text(encoding="utf-8")
+    assert "Body function summary" in source
+    assert 'testID={`body-function-${domain.domain}`}' in source
+    assert "Tasks completed" in source
+    assert "Guided steps" in source
+    assert "Average task" in source
+    assert "Findings to review" in source
     assert "Task collection" in source
     assert "Guided steps completed" in source
     for internal_label in (
@@ -122,10 +170,13 @@ def test_patient_results_and_direct_plan_route_enforce_clinical_review_hold():
     root = Path(__file__).resolve().parents[2] / "frontend" / "app"
     results = (root / "results.tsx").read_text(encoding="utf-8")
     plan = (root / "rehab-plan.tsx").read_text(encoding="utf-8")
-    assert 'testID="clinical-review-hold"' in results
+    assert '"clinical-review-hold"' in results
     assert 'reviewGate?.rehab_access === "blocked"' in results
-    assert 'testID="plan-clinical-review-hold"' in plan
-    assert 'data.clinical_review_gate?.rehab_access === "blocked"' in plan
+    assert '"plan-clinical-review-hold"' in plan
+    assert 'data.clinical_review_gate?.rehab_access !== "allowed"' in plan
+    assert 'data.rehab_plan.length === 0' in plan
+    assert '"plan-no-rehab-needed"' in plan
+    assert 'testID={canViewPlan ? "results-view-plan" : "results-return-home"}' in results
     assert "Please confirm the results with your therapist" in (
         Path(__file__).resolve().parents[1] / "assessment_fusion.py"
     ).read_text(encoding="utf-8")

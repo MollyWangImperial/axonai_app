@@ -29,6 +29,18 @@ def test_home_launches_standardized_initial_assessment():
     assert 'pathname: "/session-check"' in home
 
 
+def test_home_does_not_start_an_empty_or_unneeded_rehab_session():
+    home = read("frontend/app/(tabs)/index.tsx")
+    journey = read("frontend/app/(tabs)/journey.tsx")
+    assert 'const rehabReady = !!latest?.rehab_plan.length' in home
+    assert 'latest?.clinical_review_gate?.rehab_access === "allowed"' in home
+    assert 'pathname: "/results"' in home
+    assert '"View Summary"' in home
+    assert "No rehabilitation plan was recommended" in home
+    assert 'return "No rehab plan recommended"' in journey
+    assert 'return "Movement analysis in progress"' in journey
+
+
 def test_initial_assessment_has_no_package_or_task_choice():
     intro = read("frontend/app/task-intro.tsx")
     assert 'const packageId: AssessmentPackageId = "initial"' in intro
