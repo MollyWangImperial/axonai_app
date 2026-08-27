@@ -1646,6 +1646,7 @@ POSE_RUNNER_HTML = r"""<!DOCTYPE html>
   #diagnosticsBadge strong{display:block;color:#D9E5DC;font-size:12px;margin-bottom:2px}
   #diagnosticsBadge.good{border:1px solid rgba(127,229,163,.65)}
   #diagnosticsBadge.warn{border:1px solid rgba(225,142,109,.75)}
+  #lapStatus{position:absolute;left:50%;top:56%;transform:translate(-50%,-50%);z-index:4;width:min(340px,calc(100% - 40px));background:rgba(28,32,29,.82);color:#FDFDFD;border:1px solid rgba(217,229,220,.55);border-radius:16px;padding:10px 14px;text-align:center;font-size:14px;font-weight:650;line-height:1.35;backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);pointer-events:none}
   .hidden{display:none !important}
   /* Celebration overlay */
   #celebrate{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:linear-gradient(180deg, rgba(74,120,86,0.92), rgba(28,32,29,0.92));text-align:center;padding:24px;flex-direction:column;gap:14px;pointer-events:auto;z-index:9;opacity:0;transition:opacity .35s ease-out}
@@ -1668,6 +1669,7 @@ POSE_RUNNER_HTML = r"""<!DOCTYPE html>
     <video id="video" playsinline autoplay muted></video>
     <canvas id="canvas"></canvas>
   </div>
+  <div id="lapStatus" class="hidden" role="status">Keep your hips and knees in view while Rehyn locates your lap.</div>
   <div id="ui">
     <div id="top">
       <button id="exitBtn" data-testid="assessment-exit">Exit</button>
@@ -1749,6 +1751,7 @@ const taskLabel = document.getElementById("taskLabel");
 const stepTitle = document.getElementById("stepTitle");
 const captionEl = document.getElementById("caption");
 const voiceText = document.getElementById("voiceText");
+const lapStatus = document.getElementById("lapStatus");
 const overlay = document.getElementById("overlay");
 const startBtn = document.getElementById("startBtn");
 const skipBtn = document.getElementById("skipBtn");
@@ -1918,7 +1921,10 @@ let latestHandedness = "";             // "Left" / "Right" from MediaPipe, used 
 let latestPoseLandmarks = null;        // result.landmarks[0] from PoseLandmarker (33 points)
 let latestPoseWorldLandmarks = null;   // estimated 3D world landmarks from PoseLandmarker
 let dynamicTargetPos = null;           // {x,y} locked once a dynamic body target is calibrated
-let lapTargetCalibration = {samples:[], target:null, ready:false, announced:false};
+function newLapTargetCalibration(){
+  return {samples:[], target:null, ready:false, announced:false, lastCandidateAt:0};
+}
+let lapTargetCalibration = newLapTargetCalibration();
 const LAP_CALIBRATION_MIN_SAMPLES = 8;
 const LAP_CALIBRATION_MIN_MS = 650;
 let handOpenScore = 0;                 // 0..1 — finger extension confidence
@@ -2274,10 +2280,9 @@ async function setupHand(){
 }
 
 async function setupTrackingModels(){
+  await setupPose();
   if(ASSESSMENT_PACKAGE === "hand"){
     await setupHand();
-  }else{
-    await setupPose();
   }
   drawingUtils = new DrawingUtils(ctx);
 }
@@ -2533,7 +2538,11 @@ async function startStep(){
   thumbIndexMinDistanceRatio = Infinity;
   stepStartBodyState = null;
   dynamicTargetPos = null;
-  lapTargetCalibration = {samples:[], target:null, ready:false, announced:false};
+  if(currentStepIdx === 0){
+    lapTargetCalibration = newLapTargetCalibration();
+  }else if(lapTargetCalibration.ready){
+    dynamicTargetPos = lapTargetCalibration.target;
+  }
   if(currentStepIdx === 0) resetAdvancedTracking();
   stepTitle.textContent = `Task ${currentTaskIdx+1} of ${tasks.length} · ${task.title}`;
   captionEl.textContent = step.caption;
@@ -2654,6 +2663,12 @@ function isLapTarget(step){
   return !!step && step.target && step.target.landmark === "LAP_DYNAMIC";
 }
 
+function currentTaskLapStep(){
+  const task = tasks[currentTaskIdx];
+  if(!task || !Array.isArray(task.steps)) return null;
+  return task.steps.find(isLapTarget) || null;
+}
+
 function lapTargetCandidate(lm){
   if(!lm || lm.length < 33) return null;
   const affected = sideLandmarks(lm, AFFECTED_SIDE);
@@ -2661,12 +2676,13 @@ function lapTargetCandidate(lm){
   const rightShoulder = lm[12];
   const leftHip = lm[23];
   const rightHip = lm[24];
-  if(!landmarkIsUsable(affected.hip)
-    || !landmarkIsUsable(affected.knee)
-    || !landmarkIsUsable(leftShoulder)
-    || !landmarkIsUsable(rightShoulder)
-    || !landmarkIsUsable(leftHip)
-    || !landmarkIsUsable(rightHip)) return null;
+  const lapVisibility = 0.35;
+  if(!landmarkIsUsable(affected.hip, lapVisibility)
+    || !landmarkIsUsable(affected.knee, lapVisibility)
+    || !landmarkIsUsable(leftShoulder, lapVisibility)
+    || !landmarkIsUsable(rightShoulder, lapVisibility)
+    || !landmarkIsUsable(leftHip, lapVisibility)
+    || !landmarkIsUsable(rightHip, lapVisibility)) return null;
 
   const midShoulder = midpoint(leftShoulder, rightShoulder);
   const midHip = midpoint(leftHip, rightHip);
@@ -2674,11 +2690,13 @@ function lapTargetCandidate(lm){
   const thighLength = distance(affected.hip, affected.knee);
   if(torsoLength < 0.07 || thighLength < 0.045) return null;
 
-  // If the ankle is visible, reject a near-standing leg. Otherwise rely on
-  // stable torso/hip tracking so partial phone framing can still calibrate.
-  if(landmarkIsUsable(affected.ankle, 0.35)){
+  // Reject a clearly standing leg only when both the knee angle and the
+  // near-vertical thigh agree. This remains reliable in side-view projection
+  // and still permits patients who sit with a more extended knee.
+  if(landmarkIsUsable(affected.ankle, 0.45)){
     const kneeAngle = jointAngleDeg(affected.hip, affected.knee, affected.ankle);
-    if(kneeAngle > 158) return null;
+    const verticalThighRatio = Math.abs(affected.knee.y - affected.hip.y) / thighLength;
+    if(kneeAngle > 168 && verticalThighRatio > 0.72) return null;
   }
 
   // The upper surface of the affected thigh is a patient-specific lap anchor.
@@ -2698,15 +2716,17 @@ function lapTargetCandidate(lm){
 }
 
 function updateLapTargetCalibration(lm, now){
-  const step = getCurrentStep();
-  if(!isLapTarget(step) || lapTargetCalibration.ready) return;
+  const lapStep = currentTaskLapStep();
+  if(!lapStep || lapTargetCalibration.ready) return;
   const candidate = lapTargetCandidate(lm);
   if(!candidate){
+    if(lapTargetCalibration.lastCandidateAt && now - lapTargetCalibration.lastCandidateAt <= 900) return;
     lapTargetCalibration.samples = [];
     lapTargetCalibration.target = null;
     dynamicTargetPos = null;
     return;
   }
+  lapTargetCalibration.lastCandidateAt = now;
 
   const samples = lapTargetCalibration.samples;
   samples.push({
@@ -2744,12 +2764,34 @@ function updateLapTargetCalibration(lm, now){
     postRN({
       type:"lap_target_calibrated",
       task_id:tasks[currentTaskIdx].id,
-      step_id:step.id,
+      step_id:lapStep.id,
       x:+center.x.toFixed(4),
       y:+center.y.toFixed(4),
       sample_count:samples.length,
     });
   }
+}
+
+if(URL_PARAMS.get("test_mode") === "lap_calibration"){
+  window.__rehynLapCalibrationTest = {
+    candidate: (landmarks) => lapTargetCandidate(landmarks),
+    runStableSequence: (landmarks, frameCount=12, frameMs=100) => {
+      const savedCalibration = lapTargetCalibration;
+      const savedDynamicTarget = dynamicTargetPos;
+      lapTargetCalibration = newLapTargetCalibration();
+      for(let frame=0; frame<frameCount; frame += 1){
+        updateLapTargetCalibration(landmarks, frame * frameMs);
+      }
+      const result = {
+        ready:lapTargetCalibration.ready,
+        target:lapTargetCalibration.target,
+        sampleCount:lapTargetCalibration.samples.length,
+      };
+      lapTargetCalibration = savedCalibration;
+      dynamicTargetPos = savedDynamicTarget;
+      return result;
+    },
+  };
 }
 
 function computeMetrics(landmarks){
@@ -3781,8 +3823,15 @@ function drawOverlay(landmarks){
     drawingUtils.drawLandmarks(latestHandLandmarks, {color:"rgba(217,229,220,0.72)", radius:1.4});
   }
   const step = getCurrentStep();
-  if(!step) return;
-  if(isLapTarget(step) && !lapTargetCalibration.ready) return;
+  if(!step){
+    lapStatus.classList.add("hidden");
+    return;
+  }
+  if(isLapTarget(step) && !lapTargetCalibration.ready){
+    lapStatus.classList.remove("hidden");
+    return;
+  }
+  lapStatus.classList.add("hidden");
   const targetXY = getEffectiveTargetXY(step);
   const tx = targetXY.x * canvas.width;
   const ty = targetXY.y * canvas.height;

@@ -34,14 +34,38 @@ def test_lap_calibration_uses_stable_seated_anatomy_not_a_wrist_snapshot():
         "const center = {x:medianValue(samples.map(s => s.x)), y:medianValue(samples.map(s => s.y))};",
         "const stable = samples.every",
         "Math.hypot(s.bodyX-bodyCenter.x, s.bodyY-bodyCenter.y) <= maxJitter",
-        "if(kneeAngle > 158) return null;",
+        "if(kneeAngle > 168 && verticalThighRatio > 0.72) return null;",
     ):
         assert marker in source
 
 
+def test_lap_calibration_starts_before_the_return_step_and_survives_brief_tracking_loss():
+    source = server.POSE_RUNNER_HTML
+    assert "function currentTaskLapStep()" in source
+    assert "const lapStep = currentTaskLapStep();" in source
+    assert "if(!lapStep || lapTargetCalibration.ready) return;" in source
+    assert "now - lapTargetCalibration.lastCandidateAt <= 900" in source
+    assert "if(currentStepIdx === 0){\n    lapTargetCalibration = newLapTargetCalibration();" in source
+
+
+def test_hand_assessment_loads_pose_for_its_dynamic_lap_target():
+    source = server.POSE_RUNNER_HTML
+    setup = source[source.index("async function setupTrackingModels()") : source.index("function playBrowserVoice")]
+    assert setup.index("await setupPose();") < setup.index('if(ASSESSMENT_PACKAGE === "hand"){')
+    assert "await setupHand();" in setup
+
+
+def test_lap_calibration_has_a_browser_simulation_hook():
+    source = server.POSE_RUNNER_HTML
+    assert 'URL_PARAMS.get("test_mode") === "lap_calibration"' in source
+    assert "window.__rehynLapCalibrationTest" in source
+    assert "updateLapTargetCalibration(landmarks, frame * frameMs);" in source
+
+
 def test_lap_circle_is_hidden_and_noninteractive_until_calibration_is_ready():
     source = server.POSE_RUNNER_HTML
-    assert "if(isLapTarget(step) && !lapTargetCalibration.ready) return;" in source
+    assert "if(isLapTarget(step) && !lapTargetCalibration.ready){" in source
+    assert 'lapStatus.classList.remove("hidden");' in source
     assert "if(!lapTargetCalibration.ready || !landmarks || !arrivedAfterMovement) return false;" in source
     assert "if(isLapTarget(step) && !lapTargetCalibration.ready) return null;" in source
     assert 'type:"lap_target_calibrated"' in source

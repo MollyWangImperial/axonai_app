@@ -53,6 +53,7 @@ def test_advanced_marker_tasks_keep_seven_task_contract():
     assert "const HAND_SCAN_INTERVAL_MS = 0" in html_source
     assert "async function setupTrackingModels()" in html_source
     assert 'if(ASSESSMENT_PACKAGE === "hand"){' in html_source
+    assert 'await setupPose();' in html_source
     assert 'await setupHand();' in html_source
     assert '"id": "H1-S1"' in html_source
     assert '"landmark": "WRIST"' in html_source
