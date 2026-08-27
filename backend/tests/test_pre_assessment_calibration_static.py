@@ -37,6 +37,20 @@ def test_calibration_accepts_a_partial_lap_when_the_affected_hand_and_hip_are_vi
     assert ".every(point => landmarkIsInFrame(point, visibility))" in source
 
 
+def test_calibration_explains_why_a_visible_hand_has_not_passed():
+    source = server.POSE_RUNNER_HTML
+    for marker in (
+        "function lapTargetCandidateStatus(lm)",
+        'reason:"wrong_hand_on_lap"',
+        'reason:"affected_lap_not_visible"',
+        'return "hand_too_high"',
+        'return "hand_too_low"',
+        'return "hand_too_far_side"',
+        "status.lapGuidance",
+    ):
+        assert marker in source
+
+
 def test_calibration_runs_before_task_one_and_is_not_recorded_as_task_motion():
     source = server.POSE_RUNNER_HTML
     start_handler = source[source.index('startBtn.addEventListener("click"') : source.index('markerConfirmBtn.addEventListener')]

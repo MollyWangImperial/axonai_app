@@ -2031,6 +2031,10 @@ function newLapTargetCalibration(){
   return {samples:[], target:null, ready:false, announced:false, lastCandidateAt:0};
 }
 let lapTargetCalibration = newLapTargetCalibration();
+let lapCalibrationDiagnostic = {
+  reason:"waiting_for_pose",
+  guidance:"Keep your affected hand relaxed on the top of your same-side thigh."
+};
 const LAP_CALIBRATION_MIN_SAMPLES = 8;
 const LAP_CALIBRATION_MIN_MS = 650;
 const CALIBRATION_INSTRUCTION = "Before we begin, sit still with your affected hand resting on the visible part of your lap. Keep your face, shoulders, affected arm, and the top of your affected thigh in view. You do not need to show your knees or your full lap. I will locate your lap target for the assessment.";
@@ -3092,44 +3096,92 @@ function shouldRunSeatedCalibration(){
   return !!upcomingLapStep();
 }
 
-function lapTargetCandidate(lm){
-  if(!lm || lm.length < 33) return null;
+function lapWristZoneReason(wrist, hip, midShoulder, torsoLength){
+  const wristBelowHip = wrist.y - hip.y;
+  const wristFromHipX = Math.abs(wrist.x - hip.x);
+  const wristBelowShoulders = wrist.y - midShoulder.y;
+  if(wristBelowShoulders < torsoLength * 0.55 || wristBelowHip < -torsoLength * 0.12) return "hand_too_high";
+  if(wristBelowHip > torsoLength * 0.95) return "hand_too_low";
+  if(wristFromHipX > torsoLength * 0.90) return "hand_too_far_side";
+  return null;
+}
+
+function lapTargetCandidateStatus(lm){
+  const sideLabel = AFFECTED_SIDE === "left" ? "left" : "right";
+  if(!lm || lm.length < 33) return {
+    candidate:null,
+    reason:"pose_missing",
+    guidance:"Sit facing the camera and keep your face, shoulders, affected arm, and upper thigh visible."
+  };
   const affected = sideLandmarks(lm, AFFECTED_SIDE);
+  const unaffected = sideLandmarks(lm, AFFECTED_SIDE === "left" ? "right" : "left");
   const leftShoulder = lm[11];
   const rightShoulder = lm[12];
   const lapVisibility = 0.35;
-  if(!landmarkIsInFrame(affected.hip, lapVisibility)
-    || !landmarkIsInFrame(affected.wrist, lapVisibility)
-    || !landmarkIsInFrame(leftShoulder, lapVisibility)
-    || !landmarkIsInFrame(rightShoulder, lapVisibility)) return null;
+  if(!landmarkIsInFrame(leftShoulder, lapVisibility) || !landmarkIsInFrame(rightShoulder, lapVisibility)) return {
+    candidate:null,
+    reason:"shoulders_not_visible",
+    guidance:"Move the camera until both shoulders are clearly visible."
+  };
+  if(!landmarkIsInFrame(affected.hip, lapVisibility) || !landmarkIsInFrame(affected.wrist, lapVisibility)) return {
+    candidate:null,
+    reason:"affected_lap_not_visible",
+    guidance:`Tilt the camera down slightly so your ${sideLabel} hand and the top of your ${sideLabel} thigh are visible.`
+  };
 
   const midShoulder = midpoint(leftShoulder, rightShoulder);
   const torsoLength = distance(midShoulder, affected.hip);
-  if(torsoLength < 0.07) return null;
+  if(torsoLength < 0.07) return {
+    candidate:null,
+    reason:"body_too_small",
+    guidance:"Move slightly closer to the camera while keeping your face and upper thigh visible."
+  };
 
   // The patient places the affected hand on the visible upper thigh. This is
   // enough to locate the lap without forcing the knee or full thigh into view.
   // Keep a broad torso-relative zone so different seated postures remain valid,
   // while rejecting a hand held at the face, chest, or far beside the body.
-  const wristBelowHip = affected.wrist.y - affected.hip.y;
-  const wristFromHipX = Math.abs(affected.wrist.x - affected.hip.x);
-  const wristBelowShoulders = affected.wrist.y - midShoulder.y;
-  if(wristBelowHip < -torsoLength * 0.12
-    || wristBelowHip > torsoLength * 0.95
-    || wristFromHipX > torsoLength * 0.90
-    || wristBelowShoulders < torsoLength * 0.55) return null;
+  const zoneReason = lapWristZoneReason(affected.wrist, affected.hip, midShoulder, torsoLength);
+  if(zoneReason){
+    const unaffectedVisible = landmarkIsInFrame(unaffected.hip, lapVisibility)
+      && landmarkIsInFrame(unaffected.wrist, lapVisibility);
+    const unaffectedTorsoLength = unaffectedVisible ? distance(midShoulder, unaffected.hip) : 0;
+    const otherHandOnLap = unaffectedVisible && unaffectedTorsoLength >= 0.07
+      && !lapWristZoneReason(unaffected.wrist, unaffected.hip, midShoulder, unaffectedTorsoLength);
+    if(otherHandOnLap) return {
+      candidate:null,
+      reason:"wrong_hand_on_lap",
+      guidance:`Your other hand is on your lap. Place your ${sideLabel} hand on the top of your ${sideLabel} thigh.`
+    };
+    const guidanceByReason = {
+      hand_too_high:`Lower your ${sideLabel} hand from your chest or face and rest it on top of your ${sideLabel} thigh.`,
+      hand_too_low:`Place your ${sideLabel} hand on top of your upper thigh rather than beside the chair.`,
+      hand_too_far_side:`Move your ${sideLabel} hand inward so it rests on top of your ${sideLabel} thigh.`,
+    };
+    return {candidate:null, reason:zoneReason, guidance:guidanceByReason[zoneReason]};
+  }
 
   const anatomical = {x:affected.wrist.x, y:affected.wrist.y};
   // The canvas itself is CSS-mirrored with the camera preview. Keep the target
   // in raw camera coordinates so it appears over the affected anatomical lap.
   const screenPoint = anatomical;
   return {
-    x: Math.max(0.10, Math.min(0.90, screenPoint.x)),
-    y: Math.max(0.50, Math.min(0.90, screenPoint.y)),
-    shoulderWidth: Math.max(0.03, distance(leftShoulder, rightShoulder)),
-    bodyX:(midShoulder.x + affected.hip.x) / 2,
-    bodyY:(midShoulder.y + affected.hip.y) / 2,
+    candidate:{
+      x: Math.max(0.10, Math.min(0.90, screenPoint.x)),
+      y: Math.max(0.50, Math.min(0.90, screenPoint.y)),
+      shoulderWidth: Math.max(0.03, distance(leftShoulder, rightShoulder)),
+      bodyX:(midShoulder.x + affected.hip.x) / 2,
+      bodyY:(midShoulder.y + affected.hip.y) / 2,
+    },
+    reason:"stabilizing",
+    guidance:`Keep your ${sideLabel} hand relaxed and still on your upper thigh for one moment.`,
   };
+}
+
+function lapTargetCandidate(lm){
+  const status = lapTargetCandidateStatus(lm);
+  lapCalibrationDiagnostic = {reason:status.reason, guidance:status.guidance};
+  return status.candidate;
 }
 
 function updateLapTargetCalibration(lm, now){
@@ -3156,25 +3208,33 @@ function updateLapTargetCalibration(lm, now){
   });
   while(samples.length > 24 || (samples.length && now - samples[0].t > 1200)) samples.shift();
 
-  const center = {x:medianValue(samples.map(s => s.x)), y:medianValue(samples.map(s => s.y))};
+  let center = {x:medianValue(samples.map(s => s.x)), y:medianValue(samples.map(s => s.y))};
   lapTargetCalibration.target = center;
   dynamicTargetPos = center;
   if(samples.length < LAP_CALIBRATION_MIN_SAMPLES) return;
 
-  const duration = samples[samples.length-1].t - samples[0].t;
   const width = medianValue(samples.map(s => s.shoulderWidth)) || 0.03;
-  const maxJitter = Math.max(0.018, width * 0.12);
+  const maxJitter = Math.max(0.028, width * 0.18);
+  const maxBodyJitter = Math.max(0.035, width * 0.22);
   const bodyCenter = {
     x:medianValue(samples.map(s => s.bodyX)),
     y:medianValue(samples.map(s => s.bodyY)),
   };
-  const stable = samples.every(s =>
+  const stableSamples = samples.filter(s =>
     Math.hypot(s.x-center.x, s.y-center.y) <= maxJitter
-    && Math.hypot(s.bodyX-bodyCenter.x, s.bodyY-bodyCenter.y) <= maxJitter
+    && Math.hypot(s.bodyX-bodyCenter.x, s.bodyY-bodyCenter.y) <= maxBodyJitter
   );
-  if(!stable || duration < LAP_CALIBRATION_MIN_MS) return;
+  const requiredStableSamples = Math.max(LAP_CALIBRATION_MIN_SAMPLES, Math.ceil(samples.length * 0.70));
+  if(stableSamples.length < requiredStableSamples) return;
+  const stableDuration = stableSamples[stableSamples.length-1].t - stableSamples[0].t;
+  if(stableDuration < LAP_CALIBRATION_MIN_MS) return;
+  center = {
+    x:medianValue(stableSamples.map(s => s.x)),
+    y:medianValue(stableSamples.map(s => s.y)),
+  };
 
   lapTargetCalibration.ready = true;
+  lapTargetCalibration.target = center;
   dynamicTargetPos = center;
   if(!lapTargetCalibration.announced){
     lapTargetCalibration.announced = true;
@@ -3207,6 +3267,7 @@ function calibrationLandmarkStatus(lm){
     armVisible,
     seatedAnchorsVisible,
     lapReady,
+    lapGuidance:lapCalibrationDiagnostic.guidance,
     ready:cameraReady && armVisible && seatedAnchorsVisible && lapReady,
   };
 }
@@ -3243,9 +3304,13 @@ function updatePreAssessmentCalibrationUI(lm){
     calibrationTitle.textContent = "Let us find your seated position";
     calibrationLead.textContent = status.armVisible && !status.seatedAnchorsVisible
       ? "Tilt the camera down slightly until your affected hand and the top of your affected thigh are visible. You do not need to show your knees or full lap."
+      : status.armVisible && status.seatedAnchorsVisible && !status.lapReady
+        ? status.lapGuidance
       : "Sit still with your affected hand resting on the visible part of your lap. Keep your face, shoulders, affected arm, and the top of your affected thigh in view.";
     calibrationAutoStatus.classList.remove("ready");
-    calibrationAutoStatus.textContent = "Keep still. Assessment will start automatically.";
+    calibrationAutoStatus.textContent = status.armVisible && status.seatedAnchorsVisible && !status.lapReady
+      ? status.lapGuidance
+      : "Keep still. Assessment will start automatically.";
   }
 }
 
@@ -3272,15 +3337,48 @@ async function completePreAssessmentCalibration(){
 }
 
 if(URL_PARAMS.get("test_mode") === "lap_calibration"){
+  function withLapCalibrationTestContext(callback){
+    const savedTasks = tasks;
+    const savedCalibratingAssessment = calibratingAssessment;
+    if(!upcomingLapStep()){
+      tasks = [{id:"CALIBRATION_TEST", steps:[{id:"CALIBRATION_TEST_LAP", target:{landmark:"LAP_DYNAMIC"}}]}];
+    }
+    calibratingAssessment = true;
+    try{
+      return callback();
+    }finally{
+      tasks = savedTasks;
+      calibratingAssessment = savedCalibratingAssessment;
+    }
+  }
   window.__rehynLapCalibrationTest = {
     candidate: (landmarks) => lapTargetCandidate(landmarks),
+    diagnose: (landmarks) => lapTargetCandidateStatus(landmarks),
     runStableSequence: (landmarks, frameCount=12, frameMs=100) => {
       const savedCalibration = lapTargetCalibration;
       const savedDynamicTarget = dynamicTargetPos;
       lapTargetCalibration = newLapTargetCalibration();
-      for(let frame=0; frame<frameCount; frame += 1){
-        updateLapTargetCalibration(landmarks, frame * frameMs);
-      }
+      withLapCalibrationTestContext(() => {
+        for(let frame=0; frame<frameCount; frame += 1){
+          updateLapTargetCalibration(landmarks, frame * frameMs);
+        }
+      });
+      const result = {
+        ready:lapTargetCalibration.ready,
+        target:lapTargetCalibration.target,
+        sampleCount:lapTargetCalibration.samples.length,
+      };
+      lapTargetCalibration = savedCalibration;
+      dynamicTargetPos = savedDynamicTarget;
+      return result;
+    },
+    runSequence: (frames, frameMs=100) => {
+      const savedCalibration = lapTargetCalibration;
+      const savedDynamicTarget = dynamicTargetPos;
+      lapTargetCalibration = newLapTargetCalibration();
+      withLapCalibrationTestContext(() => {
+        frames.forEach((landmarks, frame) => updateLapTargetCalibration(landmarks, frame * frameMs));
+      });
       const result = {
         ready:lapTargetCalibration.ready,
         target:lapTargetCalibration.target,
@@ -3296,9 +3394,11 @@ if(URL_PARAMS.get("test_mode") === "lap_calibration"){
       calibrationInstructionFinished = true;
       preAssessmentCalibrationReady = false;
       calibrationAutoStartInProgress = false;
-      for(let frame=0; frame<frameCount; frame += 1){
-        updateLapTargetCalibration(landmarks, frame * frameMs);
-      }
+      withLapCalibrationTestContext(() => {
+        for(let frame=0; frame<frameCount; frame += 1){
+          updateLapTargetCalibration(landmarks, frame * frameMs);
+        }
+      });
       updatePreAssessmentCalibrationUI(landmarks);
       return {
         ready:preAssessmentCalibrationReady,

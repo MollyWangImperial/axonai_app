@@ -29,14 +29,16 @@ def test_lap_calibration_uses_a_stable_affected_hand_resting_on_the_visible_lap(
         "function lapTargetCandidate(lm)",
         "landmarkIsInFrame(affected.hip, lapVisibility)",
         "landmarkIsInFrame(affected.wrist, lapVisibility)",
-        "const wristBelowHip = affected.wrist.y - affected.hip.y;",
-        "const wristFromHipX = Math.abs(affected.wrist.x - affected.hip.x);",
+        "const wristBelowHip = wrist.y - hip.y;",
+        "const wristFromHipX = Math.abs(wrist.x - hip.x);",
         "const anatomical = {x:affected.wrist.x, y:affected.wrist.y};",
         "const LAP_CALIBRATION_MIN_SAMPLES = 8;",
         "const LAP_CALIBRATION_MIN_MS = 650;",
-        "const center = {x:medianValue(samples.map(s => s.x)), y:medianValue(samples.map(s => s.y))};",
-        "const stable = samples.every",
-        "Math.hypot(s.bodyX-bodyCenter.x, s.bodyY-bodyCenter.y) <= maxJitter",
+        "let center = {x:medianValue(samples.map(s => s.x)), y:medianValue(samples.map(s => s.y))};",
+        "const stableSamples = samples.filter",
+        "Math.hypot(s.bodyX-bodyCenter.x, s.bodyY-bodyCenter.y) <= maxBodyJitter",
+        "Math.ceil(samples.length * 0.70)",
+        "stableDuration < LAP_CALIBRATION_MIN_MS",
         "const screenPoint = anatomical;",
     ):
         assert marker in source
@@ -65,6 +67,9 @@ def test_lap_calibration_has_a_browser_simulation_hook():
     assert "window.__rehynLapCalibrationTest" in source
     assert "updateLapTargetCalibration(landmarks, frame * frameMs);" in source
     assert "applyCalibrationSequence:" in source
+    assert "runSequence: (frames, frameMs=100)" in source
+    assert "diagnose: (landmarks) => lapTargetCandidateStatus(landmarks)" in source
+    assert "function withLapCalibrationTestContext(callback)" in source
 
 
 def test_lap_circle_is_hidden_and_noninteractive_until_calibration_is_ready():
