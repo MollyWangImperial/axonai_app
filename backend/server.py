@@ -1637,8 +1637,8 @@ POSE_RUNNER_HTML = r"""<!DOCTYPE html>
   .calibrationCheck.done .statusDot{background:#D9E5DC;color:#285C3A}
   #calibrationProgress{height:6px;background:#E4E9E5;border-radius:3px;overflow:hidden;margin-bottom:14px}
   #calibrationProgressFill{height:100%;width:0;background:#4A7856;transition:width .2s ease}
-  #calibrationBeginBtn{width:100%;border:none;border-radius:8px;padding:14px 16px;background:#4A7856;color:#fff;font-size:16px;font-weight:800;cursor:pointer}
-  #calibrationBeginBtn:disabled{background:#C9D2CB;color:#667068;cursor:not-allowed}
+  #calibrationAutoStatus{width:100%;border-radius:8px;padding:13px 16px;background:#E8ECE8;color:#56605A;font-size:15px;font-weight:750;text-align:center}
+  #calibrationAutoStatus.ready{background:#4A7856;color:#fff}
   #advancedMarkerGate{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:#0c100ef5;padding:20px;pointer-events:auto;z-index:11}
   #advancedMarkerGate .gateCard{width:min(520px,100%);max-height:92vh;overflow:auto;background:#FDFDFD;color:#1C201D;border-radius:24px;padding:22px;text-align:left;box-shadow:0 24px 80px rgba(0,0,0,.35)}
   #advancedMarkerGate .gateEyebrow{color:#4A7856;font-size:13px;font-weight:800;letter-spacing:.5px;text-transform:uppercase;margin-bottom:8px}
@@ -1715,7 +1715,7 @@ POSE_RUNNER_HTML = r"""<!DOCTYPE html>
         <div class="calibrationCheck" id="calibrationLap"><span class="statusDot">4</span><span>Hold still while your lap target is located</span></div>
       </div>
       <div id="calibrationProgress"><div id="calibrationProgressFill"></div></div>
-      <button id="calibrationBeginBtn" data-testid="calibration-begin" disabled>Keep still to continue</button>
+      <div id="calibrationAutoStatus" role="status" data-testid="calibration-auto-status">Keep still. Assessment will start automatically.</div>
     </div>
   </div>
   <div id="advancedMarkerGate" class="hidden" data-testid="advanced-marker-gate">
@@ -1790,7 +1790,7 @@ const calibrationArm = document.getElementById("calibrationArm");
 const calibrationSeat = document.getElementById("calibrationSeat");
 const calibrationLap = document.getElementById("calibrationLap");
 const calibrationProgressFill = document.getElementById("calibrationProgressFill");
-const calibrationBeginBtn = document.getElementById("calibrationBeginBtn");
+const calibrationAutoStatus = document.getElementById("calibrationAutoStatus");
 const skipBtn = document.getElementById("skipBtn");
 const exitBtn = document.getElementById("exitBtn");
 const advancedMarkerGate = document.getElementById("advancedMarkerGate");
@@ -1965,10 +1965,12 @@ let lapTargetCalibration = newLapTargetCalibration();
 const LAP_CALIBRATION_MIN_SAMPLES = 8;
 const LAP_CALIBRATION_MIN_MS = 650;
 const CALIBRATION_INSTRUCTION = "Before we begin, sit still with your affected hand resting on your lap. Make sure your face, shoulders, affected arm, hips, and knees are visible. I will locate your lap target for the assessment.";
+const CALIBRATION_COMPLETE_INSTRUCTION = "Calibration complete. Stay seated in this position and do not move the camera. We will begin the assessment now.";
 let calibratingAssessment = false;
 let calibrationInstructionFinished = false;
 let preAssessmentCalibrationReady = false;
 let preservePreAssessmentLapCalibration = false;
+let calibrationAutoStartInProgress = false;
 let handOpenScore = 0;                 // 0..1 — finger extension confidence
 let fistClosureScore = 0;              // 0..1 — mass finger flexion confidence
 let pinchScore = 0;                    // 0..1 — pinch confidence (1 = very close)
@@ -2698,6 +2700,12 @@ function landmarkIsUsable(point, minVisibility=0.45){
     && (point.visibility == null || point.visibility >= minVisibility);
 }
 
+function landmarkIsInFrame(point, minVisibility=0.45, margin=0.025){
+  return landmarkIsUsable(point, minVisibility)
+    && point.x >= margin && point.x <= 1 - margin
+    && point.y >= margin && point.y <= 1 - margin;
+}
+
 function medianValue(values){
   if(!values.length) return null;
   const sorted = [...values].sort((a,b) => a-b);
@@ -2737,12 +2745,12 @@ function lapTargetCandidate(lm){
   const leftHip = lm[23];
   const rightHip = lm[24];
   const lapVisibility = 0.35;
-  if(!landmarkIsUsable(affected.hip, lapVisibility)
-    || !landmarkIsUsable(affected.knee, lapVisibility)
-    || !landmarkIsUsable(leftShoulder, lapVisibility)
-    || !landmarkIsUsable(rightShoulder, lapVisibility)
-    || !landmarkIsUsable(leftHip, lapVisibility)
-    || !landmarkIsUsable(rightHip, lapVisibility)) return null;
+  if(!landmarkIsInFrame(affected.hip, lapVisibility)
+    || !landmarkIsInFrame(affected.knee, lapVisibility)
+    || !landmarkIsInFrame(leftShoulder, lapVisibility)
+    || !landmarkIsInFrame(rightShoulder, lapVisibility)
+    || !landmarkIsInFrame(leftHip, lapVisibility)
+    || !landmarkIsInFrame(rightHip, lapVisibility)) return null;
 
   const midShoulder = midpoint(leftShoulder, rightShoulder);
   const midHip = midpoint(leftHip, rightHip);
@@ -2839,11 +2847,11 @@ function calibrationLandmarkStatus(lm){
   }
   const affected = sideLandmarks(lm, AFFECTED_SIDE);
   const visibility = 0.35;
-  const faceVisible = [lm[0], lm[9], lm[10]].some(point => landmarkIsUsable(point, visibility));
+  const faceVisible = [lm[0], lm[9], lm[10]].some(point => landmarkIsInFrame(point, visibility));
   const armVisible = faceVisible && [lm[11], lm[12], affected.elbow, affected.wrist]
-    .every(point => landmarkIsUsable(point, visibility));
+    .every(point => landmarkIsInFrame(point, visibility));
   const seatedAnchorsVisible = [lm[23], lm[24], affected.knee]
-    .every(point => landmarkIsUsable(point, visibility));
+    .every(point => landmarkIsInFrame(point, visibility));
   const lapReady = !!(lapTargetCalibration.ready && lapTargetCalibration.target);
   return {
     cameraReady,
@@ -2862,7 +2870,7 @@ function setCalibrationCheck(element, complete){
 function updatePreAssessmentCalibrationUI(lm){
   if(!calibratingAssessment) return;
   const status = calibrationLandmarkStatus(lm);
-  if(status.ready) preAssessmentCalibrationReady = true;
+  if(!calibrationAutoStartInProgress) preAssessmentCalibrationReady = status.ready;
   if(preAssessmentCalibrationReady){
     setCalibrationCheck(calibrationCamera, true);
     setCalibrationCheck(calibrationArm, true);
@@ -2870,9 +2878,12 @@ function updatePreAssessmentCalibrationUI(lm){
     setCalibrationCheck(calibrationLap, true);
     calibrationProgressFill.style.width = "100%";
     calibrationTitle.textContent = "Calibration complete";
-    calibrationLead.textContent = "Your seated position and lap target are set. Keep the camera in this position for the assessment.";
-    calibrationBeginBtn.textContent = calibrationInstructionFinished ? "Begin assessment" : "Please finish listening";
-    calibrationBeginBtn.disabled = !calibrationInstructionFinished;
+    calibrationLead.textContent = "Your seated position and lap target are set. Stay seated and do not move the camera.";
+    calibrationAutoStatus.classList.add("ready");
+    calibrationAutoStatus.textContent = calibrationInstructionFinished
+      ? "Calibration complete. Starting assessment..."
+      : "Calibration complete. Please finish listening.";
+    if(calibrationInstructionFinished) void completePreAssessmentCalibration();
   }else{
     setCalibrationCheck(calibrationCamera, status.cameraReady);
     setCalibrationCheck(calibrationArm, status.armVisible);
@@ -2884,9 +2895,31 @@ function updatePreAssessmentCalibrationUI(lm){
     calibrationLead.textContent = status.armVisible && !status.seatedAnchorsVisible
       ? "Tilt the camera down slightly so your hips and affected knee remain visible."
       : "Sit still with your affected hand resting on your lap. Keep your face, shoulders, affected arm, hips, and knees inside the camera view.";
-    calibrationBeginBtn.textContent = "Keep still to continue";
-    calibrationBeginBtn.disabled = true;
+    calibrationAutoStatus.classList.remove("ready");
+    calibrationAutoStatus.textContent = "Keep still. Assessment will start automatically.";
   }
+}
+
+async function completePreAssessmentCalibration(){
+  if(!calibratingAssessment || !preAssessmentCalibrationReady || !calibrationInstructionFinished || calibrationAutoStartInProgress) return;
+  calibrationAutoStartInProgress = true;
+  calibrationAutoStatus.classList.add("ready");
+  calibrationAutoStatus.textContent = "Calibration complete. Starting assessment...";
+  calibrationLead.textContent = "Stay seated in this position and do not move the camera. The assessment will begin automatically.";
+  await playVoice(CALIBRATION_COMPLETE_INSTRUCTION);
+  if(!calibratingAssessment) return;
+  preservePreAssessmentLapCalibration = true;
+  calibratingAssessment = false;
+  calibrationOverlay.classList.add("hidden");
+  ui.classList.remove("hidden");
+  postRN({
+    type:"assessment_calibrated",
+    affected_side:AFFECTED_SIDE,
+    lap_target:lapTargetCalibration.target,
+    sample_count:lapTargetCalibration.samples.length,
+    automatic:true,
+  });
+  await startStep();
 }
 
 if(URL_PARAMS.get("test_mode") === "lap_calibration"){
@@ -2913,6 +2946,7 @@ if(URL_PARAMS.get("test_mode") === "lap_calibration"){
       calibratingAssessment = true;
       calibrationInstructionFinished = true;
       preAssessmentCalibrationReady = false;
+      calibrationAutoStartInProgress = false;
       for(let frame=0; frame<frameCount; frame += 1){
         updateLapTargetCalibration(landmarks, frame * frameMs);
       }
@@ -2920,7 +2954,8 @@ if(URL_PARAMS.get("test_mode") === "lap_calibration"){
       return {
         ready:preAssessmentCalibrationReady,
         target:lapTargetCalibration.target,
-        beginEnabled:!calibrationBeginBtn.disabled,
+        autoStarting:calibrationAutoStartInProgress,
+        statusText:calibrationAutoStatus.textContent,
         title:calibrationTitle.textContent,
       };
     },
@@ -4347,6 +4382,7 @@ startBtn.addEventListener("click", async () => {
   calibratingAssessment = shouldRunSeatedCalibration();
   calibrationInstructionFinished = false;
   preAssessmentCalibrationReady = false;
+  calibrationAutoStartInProgress = false;
   lapTargetCalibration = newLapTargetCalibration();
   if(calibratingAssessment){
     ui.classList.add("hidden");
@@ -4355,6 +4391,7 @@ startBtn.addEventListener("click", async () => {
     calibrationLead.textContent = "Sit still with your affected hand resting on your lap while the camera and movement model get ready.";
     updatePreAssessmentCalibrationUI(null);
     prefetchVoice(CALIBRATION_INSTRUCTION);
+    prefetchVoice(CALIBRATION_COMPLETE_INSTRUCTION);
   }
   const camOk = await setupCamera();
   if(!camOk){
@@ -4385,22 +4422,6 @@ startBtn.addEventListener("click", async () => {
     updatePreAssessmentCalibrationUI(latestPoseLandmarks);
     return;
   }
-  await startStep();
-});
-
-calibrationBeginBtn.addEventListener("click", async () => {
-  if(!calibratingAssessment || !preAssessmentCalibrationReady || !calibrationInstructionFinished) return;
-  calibrationBeginBtn.disabled = true;
-  preservePreAssessmentLapCalibration = true;
-  calibratingAssessment = false;
-  calibrationOverlay.classList.add("hidden");
-  ui.classList.remove("hidden");
-  postRN({
-    type:"assessment_calibrated",
-    affected_side:AFFECTED_SIDE,
-    lap_target:lapTargetCalibration.target,
-    sample_count:lapTargetCalibration.samples.length,
-  });
   await startStep();
 });
 

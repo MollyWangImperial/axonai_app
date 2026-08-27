@@ -14,9 +14,9 @@ def test_runner_has_a_patient_facing_seated_calibration_gate():
         "Sit still with your affected hand resting on your lap",
         "Face, shoulders, and affected arm are visible",
         "Hips and affected knee are visible",
-        'data-testid="calibration-begin" disabled',
-        "Keep still to continue",
-        "Begin assessment",
+        'data-testid="calibration-auto-status"',
+        "Assessment will start automatically",
+        "Calibration complete. Starting assessment",
     ):
         assert marker in source
 
@@ -29,7 +29,10 @@ def test_calibration_requires_visible_arm_seated_anchors_and_a_stable_lap():
     assert "[lm[23], lm[24], affected.knee]" in source
     assert "lapTargetCalibration.ready && lapTargetCalibration.target" in source
     assert "cameraReady && armVisible && seatedAnchorsVisible && lapReady" in source
-    assert "calibrationBeginBtn.disabled = !calibrationInstructionFinished;" in source
+    assert "function landmarkIsInFrame(point" in source
+    assert "point.x >= margin && point.x <= 1 - margin" in source
+    assert "point.y >= margin && point.y <= 1 - margin" in source
+    assert ".every(point => landmarkIsInFrame(point, visibility))" in source
 
 
 def test_calibration_runs_before_task_one_and_is_not_recorded_as_task_motion():
@@ -38,8 +41,20 @@ def test_calibration_runs_before_task_one_and_is_not_recorded_as_task_motion():
     assert "calibratingAssessment = shouldRunSeatedCalibration();" in start_handler
     assert start_handler.index("requestAnimationFrame(loop);") < start_handler.index("await playVoice(CALIBRATION_INSTRUCTION);")
     assert "await startStep();" in start_handler
+    assert "prefetchVoice(CALIBRATION_COMPLETE_INSTRUCTION);" in start_handler
     assert "if(!running || calibratingAssessment || motionFrames.length >= MAX_MOTION_FRAMES) return;" in source
     assert "if(calibratingAssessment){\n    requestAnimationFrame(loop);\n    return;" in source
+
+
+def test_calibration_auto_starts_with_a_position_hold_instruction():
+    source = server.POSE_RUNNER_HTML
+    assert "function completePreAssessmentCalibration()" in source
+    assert "if(calibrationInstructionFinished) void completePreAssessmentCalibration();" in source
+    assert "await playVoice(CALIBRATION_COMPLETE_INSTRUCTION);" in source
+    assert "Stay seated in this position and do not move the camera" in source
+    assert "automatic:true" in source
+    assert 'calibrationBeginBtn.addEventListener("click"' not in source
+    assert 'data-testid="calibration-begin"' not in source
 
 
 def test_calibrated_lap_is_drawn_live_and_preserved_for_first_task():
@@ -63,4 +78,5 @@ def test_browser_hook_can_drive_the_real_calibration_gate():
     source = server.POSE_RUNNER_HTML
     assert "applyCalibrationSequence:" in source
     assert "updatePreAssessmentCalibrationUI(landmarks);" in source
-    assert "beginEnabled:!calibrationBeginBtn.disabled" in source
+    assert "autoStarting:calibrationAutoStartInProgress" in source
+    assert "statusText:calibrationAutoStatus.textContent" in source
