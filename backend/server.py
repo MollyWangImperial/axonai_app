@@ -218,7 +218,7 @@ TASKS_DATA: List[Dict[str, Any]] = [
             {
                 "id": "T1-S4",
                 "voice": "Wonderful effort. Slowly bring your affected hand back to your lap.",
-                "target": {"x": 0.5, "y": 0.78, "r": 0.10, "landmark": "WRIST"},
+                "target": {"x": 0.5, "y": 0.78, "r": 0.10, "landmark": "LAP_DYNAMIC"},
                 "hold_ms": 1500,
                 "caption": "Return to lap",
                 "failure_phenotype": {"code": "REACH_RETURN_CONTROL_IMPAIRED", "domain": "reach_return_control", "label": "Difficulty controlling the return from a reach", "description": "The affected arm did not complete the controlled return from the forward target to the lap.", "severity": "mild", "source": "Task-specific movement observation", "rehab_code": "REACH_INCOMPLETE"},
@@ -302,7 +302,7 @@ TASKS_DATA: List[Dict[str, Any]] = [
             {
                 "id": "T3-S4",
                 "voice": "Great job. Lower your affected hand back to your lap.",
-                "target": {"x": 0.5, "y": 0.78, "r": 0.10, "landmark": "WRIST"},
+                "target": {"x": 0.5, "y": 0.78, "r": 0.10, "landmark": "LAP_DYNAMIC"},
                 "hold_ms": 1500,
                 "caption": "Return to lap",
                 "failure_phenotype": {"code": "HAND_TO_MOUTH_RETURN_IMPAIRED", "domain": "hand_to_mouth_return_control", "label": "Difficulty returning the hand from the mouth", "description": "The affected hand did not complete the controlled return from the mouth to the lap.", "severity": "mild", "source": "Task-specific movement observation", "rehab_code": "H2M_IMPAIRED"},
@@ -534,7 +534,7 @@ HAND_TASKS_DATA: List[Dict[str, Any]] = [
         "steps": [
             {"id": "H1-S1", "voice": "We will begin the hand function package. Bring your affected hand up in front of your chest, with your palm facing the camera. Keep your fingers relaxed for now. Please do not open your hand yet.", "target": {"x": 0.5, "y": 0.45, "r": 0.12, "landmark": "WRIST"}, "hold_ms": 1200, "caption": "Hand up, palm facing camera, fingers relaxed"},
             {"id": "H1-S2", "voice": "Now slowly open your fingers as wide as you comfortably can. Take your time, then hold your palm open and steady.", "target": {"x": 0.5, "y": 0.45, "r": 0.12, "landmark": "HAND_OPEN"}, "hold_ms": 1300, "caption": "Slowly open hand wide", "measure": ["finger_extension", "palm_openness", "thumb_index_spread"]},
-            {"id": "H1-S3", "voice": "Good. Relax your hand and lower it to your lap.", "target": {"x": 0.5, "y": 0.82, "r": 0.20, "landmark": "WRIST"}, "hold_ms": 1200, "caption": "Lower hand to lap"},
+            {"id": "H1-S3", "voice": "Good. Relax your hand and lower it to your lap.", "target": {"x": 0.5, "y": 0.82, "r": 0.20, "landmark": "LAP_DYNAMIC"}, "hold_ms": 1200, "caption": "Lower hand to lap"},
         ],
     },
     {
@@ -1716,7 +1716,10 @@ let latestHandLandmarks = null;        // result.landmarks[0] from HandLandmarke
 let latestHandedness = "";             // "Left" / "Right" from MediaPipe, used for palm/back orientation
 let latestPoseLandmarks = null;        // result.landmarks[0] from PoseLandmarker (33 points)
 let latestPoseWorldLandmarks = null;   // estimated 3D world landmarks from PoseLandmarker
-let dynamicTargetPos = null;           // {x,y} captured once per step for WRIST_DYNAMIC
+let dynamicTargetPos = null;           // {x,y} locked once a dynamic body target is calibrated
+let lapTargetCalibration = {samples:[], target:null, ready:false, announced:false};
+const LAP_CALIBRATION_MIN_SAMPLES = 8;
+const LAP_CALIBRATION_MIN_MS = 650;
 let handOpenScore = 0;                 // 0..1 — finger extension confidence
 let fistClosureScore = 0;              // 0..1 — mass finger flexion confidence
 let pinchScore = 0;                    // 0..1 — pinch confidence (1 = very close)
@@ -2328,6 +2331,7 @@ async function startStep(){
   thumbIndexMinDistanceRatio = Infinity;
   stepStartBodyState = null;
   dynamicTargetPos = null;
+  lapTargetCalibration = {samples:[], target:null, ready:false, announced:false};
   if(currentStepIdx === 0) resetAdvancedTracking();
   stepTitle.textContent = `Task ${currentTaskIdx+1} of ${tasks.length} · ${task.title}`;
   captionEl.textContent = step.caption;
@@ -2399,6 +2403,122 @@ function bodyState(lm){
     legLength,
     affectedLoadShare,
   };
+}
+
+function landmarkIsUsable(point, minVisibility=0.45){
+  return !!point
+    && Number.isFinite(point.x)
+    && Number.isFinite(point.y)
+    && (point.visibility == null || point.visibility >= minVisibility);
+}
+
+function medianValue(values){
+  if(!values.length) return null;
+  const sorted = [...values].sort((a,b) => a-b);
+  const middle = Math.floor(sorted.length / 2);
+  return sorted.length % 2 ? sorted[middle] : (sorted[middle-1] + sorted[middle]) / 2;
+}
+
+function isLapTarget(step){
+  return !!step && step.target && step.target.landmark === "LAP_DYNAMIC";
+}
+
+function lapTargetCandidate(lm){
+  if(!lm || lm.length < 33) return null;
+  const affected = sideLandmarks(lm, AFFECTED_SIDE);
+  const leftShoulder = lm[11];
+  const rightShoulder = lm[12];
+  const leftHip = lm[23];
+  const rightHip = lm[24];
+  if(!landmarkIsUsable(affected.hip)
+    || !landmarkIsUsable(affected.knee)
+    || !landmarkIsUsable(leftShoulder)
+    || !landmarkIsUsable(rightShoulder)
+    || !landmarkIsUsable(leftHip)
+    || !landmarkIsUsable(rightHip)) return null;
+
+  const midShoulder = midpoint(leftShoulder, rightShoulder);
+  const midHip = midpoint(leftHip, rightHip);
+  const torsoLength = distance(midShoulder, midHip);
+  const thighLength = distance(affected.hip, affected.knee);
+  if(torsoLength < 0.07 || thighLength < 0.045) return null;
+
+  // If the ankle is visible, reject a near-standing leg. Otherwise rely on
+  // stable torso/hip tracking so partial phone framing can still calibrate.
+  if(landmarkIsUsable(affected.ankle, 0.35)){
+    const kneeAngle = jointAngleDeg(affected.hip, affected.knee, affected.ankle);
+    if(kneeAngle > 158) return null;
+  }
+
+  // The upper surface of the affected thigh is a patient-specific lap anchor.
+  // Bias slightly toward the hip so the target remains comfortably reachable.
+  const anatomical = {
+    x: affected.hip.x * 0.58 + affected.knee.x * 0.42,
+    y: affected.hip.y * 0.58 + affected.knee.y * 0.42 + Math.min(0.018, torsoLength * 0.06),
+  };
+  const screenPoint = mirrorX(anatomical);
+  return {
+    x: Math.max(0.10, Math.min(0.90, screenPoint.x)),
+    y: Math.max(0.50, Math.min(0.90, screenPoint.y)),
+    shoulderWidth: Math.max(0.03, distance(leftShoulder, rightShoulder)),
+    bodyX:(midShoulder.x + midHip.x) / 2,
+    bodyY:(midShoulder.y + midHip.y) / 2,
+  };
+}
+
+function updateLapTargetCalibration(lm, now){
+  const step = getCurrentStep();
+  if(!isLapTarget(step) || lapTargetCalibration.ready) return;
+  const candidate = lapTargetCandidate(lm);
+  if(!candidate){
+    lapTargetCalibration.samples = [];
+    lapTargetCalibration.target = null;
+    dynamicTargetPos = null;
+    return;
+  }
+
+  const samples = lapTargetCalibration.samples;
+  samples.push({
+    x:candidate.x,
+    y:candidate.y,
+    bodyX:candidate.bodyX,
+    bodyY:candidate.bodyY,
+    t:now,
+    shoulderWidth:candidate.shoulderWidth,
+  });
+  while(samples.length > 24 || (samples.length && now - samples[0].t > 1200)) samples.shift();
+
+  const center = {x:medianValue(samples.map(s => s.x)), y:medianValue(samples.map(s => s.y))};
+  lapTargetCalibration.target = center;
+  dynamicTargetPos = center;
+  if(samples.length < LAP_CALIBRATION_MIN_SAMPLES) return;
+
+  const duration = samples[samples.length-1].t - samples[0].t;
+  const width = medianValue(samples.map(s => s.shoulderWidth)) || 0.03;
+  const maxJitter = Math.max(0.018, width * 0.12);
+  const bodyCenter = {
+    x:medianValue(samples.map(s => s.bodyX)),
+    y:medianValue(samples.map(s => s.bodyY)),
+  };
+  const stable = samples.every(s =>
+    Math.hypot(s.x-center.x, s.y-center.y) <= maxJitter
+    && Math.hypot(s.bodyX-bodyCenter.x, s.bodyY-bodyCenter.y) <= maxJitter
+  );
+  if(!stable || duration < LAP_CALIBRATION_MIN_MS) return;
+
+  lapTargetCalibration.ready = true;
+  dynamicTargetPos = center;
+  if(!lapTargetCalibration.announced){
+    lapTargetCalibration.announced = true;
+    postRN({
+      type:"lap_target_calibrated",
+      task_id:tasks[currentTaskIdx].id,
+      step_id:step.id,
+      x:+center.x.toFixed(4),
+      y:+center.y.toFixed(4),
+      sample_count:samples.length,
+    });
+  }
 }
 
 function computeMetrics(landmarks){
@@ -2500,7 +2620,7 @@ function resolveLandmarkPoint(which){
   }
   const lm = latestPoseLandmarks;
   if(!lm) return null;
-  if(which === "WRIST" || which === "WRIST_DYNAMIC"){
+  if(which === "WRIST" || which === "WRIST_DYNAMIC" || which === "LAP_DYNAMIC"){
     // pick the wrist that is lower (relaxed) as the "affected" reference,
     // or the higher one if user is actively reaching.
     return mirrorX(lm[15].y > lm[16].y ? lm[15] : lm[16]);
@@ -2528,10 +2648,13 @@ function resolveLandmarkPoint(which){
 }
 
 function getEffectiveTargetXY(step){
+  if(isLapTarget(step)){
+    return lapTargetCalibration.target || {x: step.target.x, y: step.target.y};
+  }
   if(isHandTask()){
     return {x: step.target.x, y: step.target.y};
   }
-  // For WRIST_DYNAMIC, MOUTH, CHEST, HAND_OPEN, PINCH the target follows the body.
+  // Dynamic body targets use the same calibrated coordinates for drawing and hit testing.
   // Otherwise use the static configured x/y.
   const which = step.target.landmark;
   if(which === "WRIST_DYNAMIC"){
@@ -2870,12 +2993,13 @@ const NEAR_MISS_MAX_COACHING_PER_STEP = 2;
 function distXY(a,b){ if(!a||!b) return Infinity; return Math.hypot(a.x-b.x, a.y-b.y); }
 
 function activeWrist(lm){
+  const step = getCurrentStep();
+  if(isLapTarget(step) && lm) return mirrorX(sideLandmarks(lm, AFFECTED_SIDE).wrist);
   if(isHandTask()){
     return activeHandPoint();
   }
   if(!lm) return null;
   // pick the wrist closer to the current effective target
-  const step = getCurrentStep();
   if(!step) return mirrorX(lm[15]);
   const target = getEffectiveTargetXY(step);
   const lW = mirrorX(lm[15]); const rW = mirrorX(lm[16]);
@@ -3059,6 +3183,7 @@ function qualifiesAsNearTargetAttempt(distance, radius, intentional){
 function getTargetNearMiss(lm){
   const step = getCurrentStep();
   if(!step || isLowerTask() || isBalanceTask()) return null;
+  if(isLapTarget(step) && !lapTargetCalibration.ready) return null;
   if(voiceFinishedAt === 0 || performance.now() - voiceFinishedAt < 350) return null;
   const point = targetAttemptPoint(lm, step);
   if(!point) return null;
@@ -3256,6 +3381,14 @@ function checkTarget(landmarks){
   // accidentally triggering the step while Aria is still explaining it.
   if(voiceFinishedAt === 0) return false;
   if(performance.now() - voiceFinishedAt < 350) return false;
+  if(isLapTarget(step)){
+    if(!lapTargetCalibration.ready || !landmarks || !arrivedAfterMovement) return false;
+    const affectedWristRaw = sideLandmarks(landmarks, AFFECTED_SIDE).wrist;
+    if(!landmarkIsUsable(affectedWristRaw)) return false;
+    const targetXY = getEffectiveTargetXY(step);
+    const affectedWrist = mirrorX(affectedWristRaw);
+    return distXY(affectedWrist, targetXY) < effectiveRadius(step, landmarks);
+  }
   if(isHandTask()){
     const target = step.target;
     const which = target.landmark;
@@ -3405,6 +3538,7 @@ function drawOverlay(landmarks){
   }
   const step = getCurrentStep();
   if(!step) return;
+  if(isLapTarget(step) && !lapTargetCalibration.ready) return;
   const targetXY = getEffectiveTargetXY(step);
   const tx = targetXY.x * canvas.width;
   const ty = targetXY.y * canvas.height;
@@ -3675,6 +3809,7 @@ function loop(){
         ? result.worldLandmarks[0]
         : null;
       computeMetrics(landmarks);
+      updateLapTargetCalibration(landmarks, now);
       updateMovementGate(landmarks);
     }else{
       latestPoseLandmarks = null;
