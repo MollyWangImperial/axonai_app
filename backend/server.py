@@ -1695,7 +1695,7 @@ POSE_RUNNER_HTML = r"""<!DOCTYPE html>
     <video id="video" playsinline autoplay muted></video>
     <canvas id="canvas"></canvas>
   </div>
-  <div id="lapStatus" class="hidden" role="status">Keep your hips and knees in view while Rehyn locates your lap.</div>
+  <div id="lapStatus" class="hidden" role="status">Keep your affected hand resting on the visible part of your lap while Rehyn locates the target.</div>
   <div id="ui">
     <div id="top">
       <button id="exitBtn" data-testid="assessment-exit">Exit</button>
@@ -1724,7 +1724,7 @@ POSE_RUNNER_HTML = r"""<!DOCTYPE html>
       <div id="calibrationChecklist">
         <div class="calibrationCheck" id="calibrationCamera"><span class="statusDot">1</span><span>Camera is ready</span></div>
         <div class="calibrationCheck" id="calibrationArm"><span class="statusDot">2</span><span>Face, shoulders, and affected arm are visible</span></div>
-        <div class="calibrationCheck" id="calibrationSeat"><span class="statusDot">3</span><span>Hips and affected knee are visible</span></div>
+        <div class="calibrationCheck" id="calibrationSeat"><span class="statusDot">3</span><span>Affected hand and part of your lap are visible</span></div>
         <div class="calibrationCheck" id="calibrationLap"><span class="statusDot">4</span><span>Hold still while your lap target is located</span></div>
       </div>
       <div id="calibrationProgress"><div id="calibrationProgressFill"></div></div>
@@ -2010,7 +2010,7 @@ function newLapTargetCalibration(){
 let lapTargetCalibration = newLapTargetCalibration();
 const LAP_CALIBRATION_MIN_SAMPLES = 8;
 const LAP_CALIBRATION_MIN_MS = 650;
-const CALIBRATION_INSTRUCTION = "Before we begin, sit still with your affected hand resting on your lap. Make sure your face, shoulders, affected arm, hips, and knees are visible. I will locate your lap target for the assessment.";
+const CALIBRATION_INSTRUCTION = "Before we begin, sit still with your affected hand resting on the visible part of your lap. Keep your face, shoulders, affected arm, and the top of your affected thigh in view. You do not need to show your knees or your full lap. I will locate your lap target for the assessment.";
 const CALIBRATION_COMPLETE_INSTRUCTION = "Calibration complete. Stay seated in this position and do not move the camera. We will begin the assessment now.";
 let calibratingAssessment = false;
 let calibrationInstructionFinished = false;
@@ -3074,37 +3074,29 @@ function lapTargetCandidate(lm){
   const affected = sideLandmarks(lm, AFFECTED_SIDE);
   const leftShoulder = lm[11];
   const rightShoulder = lm[12];
-  const leftHip = lm[23];
-  const rightHip = lm[24];
   const lapVisibility = 0.35;
   if(!landmarkIsInFrame(affected.hip, lapVisibility)
-    || !landmarkIsInFrame(affected.knee, lapVisibility)
+    || !landmarkIsInFrame(affected.wrist, lapVisibility)
     || !landmarkIsInFrame(leftShoulder, lapVisibility)
-    || !landmarkIsInFrame(rightShoulder, lapVisibility)
-    || !landmarkIsInFrame(leftHip, lapVisibility)
-    || !landmarkIsInFrame(rightHip, lapVisibility)) return null;
+    || !landmarkIsInFrame(rightShoulder, lapVisibility)) return null;
 
   const midShoulder = midpoint(leftShoulder, rightShoulder);
-  const midHip = midpoint(leftHip, rightHip);
-  const torsoLength = distance(midShoulder, midHip);
-  const thighLength = distance(affected.hip, affected.knee);
-  if(torsoLength < 0.07 || thighLength < 0.045) return null;
+  const torsoLength = distance(midShoulder, affected.hip);
+  if(torsoLength < 0.07) return null;
 
-  // Reject a clearly standing leg only when both the knee angle and the
-  // near-vertical thigh agree. This remains reliable in side-view projection
-  // and still permits patients who sit with a more extended knee.
-  if(landmarkIsUsable(affected.ankle, 0.45)){
-    const kneeAngle = jointAngleDeg(affected.hip, affected.knee, affected.ankle);
-    const verticalThighRatio = Math.abs(affected.knee.y - affected.hip.y) / thighLength;
-    if(kneeAngle > 168 && verticalThighRatio > 0.72) return null;
-  }
+  // The patient places the affected hand on the visible upper thigh. This is
+  // enough to locate the lap without forcing the knee or full thigh into view.
+  // Keep a broad torso-relative zone so different seated postures remain valid,
+  // while rejecting a hand held at the face, chest, or far beside the body.
+  const wristBelowHip = affected.wrist.y - affected.hip.y;
+  const wristFromHipX = Math.abs(affected.wrist.x - affected.hip.x);
+  const wristBelowShoulders = affected.wrist.y - midShoulder.y;
+  if(wristBelowHip < -torsoLength * 0.12
+    || wristBelowHip > torsoLength * 0.95
+    || wristFromHipX > torsoLength * 0.90
+    || wristBelowShoulders < torsoLength * 0.55) return null;
 
-  // The upper surface of the affected thigh is a patient-specific lap anchor.
-  // Bias slightly toward the hip so the target remains comfortably reachable.
-  const anatomical = {
-    x: affected.hip.x * 0.58 + affected.knee.x * 0.42,
-    y: affected.hip.y * 0.58 + affected.knee.y * 0.42 + Math.min(0.018, torsoLength * 0.06),
-  };
+  const anatomical = {x:affected.wrist.x, y:affected.wrist.y};
   // The canvas itself is CSS-mirrored with the camera preview. Keep the target
   // in raw camera coordinates so it appears over the affected anatomical lap.
   const screenPoint = anatomical;
@@ -3112,8 +3104,8 @@ function lapTargetCandidate(lm){
     x: Math.max(0.10, Math.min(0.90, screenPoint.x)),
     y: Math.max(0.50, Math.min(0.90, screenPoint.y)),
     shoulderWidth: Math.max(0.03, distance(leftShoulder, rightShoulder)),
-    bodyX:(midShoulder.x + midHip.x) / 2,
-    bodyY:(midShoulder.y + midHip.y) / 2,
+    bodyX:(midShoulder.x + affected.hip.x) / 2,
+    bodyY:(midShoulder.y + affected.hip.y) / 2,
   };
 }
 
@@ -3184,7 +3176,7 @@ function calibrationLandmarkStatus(lm){
   const faceVisible = [lm[0], lm[9], lm[10]].some(point => landmarkIsInFrame(point, visibility));
   const armVisible = faceVisible && [lm[11], lm[12], affected.elbow, affected.wrist]
     .every(point => landmarkIsInFrame(point, visibility));
-  const seatedAnchorsVisible = [lm[23], lm[24], affected.knee]
+  const seatedAnchorsVisible = [affected.hip, affected.wrist]
     .every(point => landmarkIsInFrame(point, visibility));
   const lapReady = !!(lapTargetCalibration.ready && lapTargetCalibration.target);
   return {
@@ -3227,8 +3219,8 @@ function updatePreAssessmentCalibrationUI(lm){
     calibrationProgressFill.style.width = `${completed * 25}%`;
     calibrationTitle.textContent = "Let us find your seated position";
     calibrationLead.textContent = status.armVisible && !status.seatedAnchorsVisible
-      ? "Tilt the camera down slightly so your hips and affected knee remain visible."
-      : "Sit still with your affected hand resting on your lap. Keep your face, shoulders, affected arm, hips, and knees inside the camera view.";
+      ? "Tilt the camera down slightly until your affected hand and the top of your affected thigh are visible. You do not need to show your knees or full lap."
+      : "Sit still with your affected hand resting on the visible part of your lap. Keep your face, shoulders, affected arm, and the top of your affected thigh in view.";
     calibrationAutoStatus.classList.remove("ready");
     calibrationAutoStatus.textContent = "Keep still. Assessment will start automatically.";
   }

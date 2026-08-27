@@ -11,9 +11,10 @@ def test_runner_has_a_patient_facing_seated_calibration_gate():
     for marker in (
         'id="calibrationOverlay"',
         'data-testid="assessment-calibration"',
-        "Sit still with your affected hand resting on your lap",
+        "affected hand resting on the visible part of your lap",
         "Face, shoulders, and affected arm are visible",
-        "Hips and affected knee are visible",
+        "Affected hand and part of your lap are visible",
+        "You do not need to show your knees or your full lap",
         'data-testid="calibration-auto-status"',
         "Assessment will start automatically",
         "Calibration complete. Starting assessment",
@@ -21,12 +22,13 @@ def test_runner_has_a_patient_facing_seated_calibration_gate():
         assert marker in source
 
 
-def test_calibration_requires_visible_arm_seated_anchors_and_a_stable_lap():
+def test_calibration_accepts_a_partial_lap_when_the_affected_hand_and_hip_are_visible():
     source = server.POSE_RUNNER_HTML
     assert "function calibrationLandmarkStatus(lm)" in source
     assert "const faceVisible = [lm[0], lm[9], lm[10]].some" in source
     assert "[lm[11], lm[12], affected.elbow, affected.wrist]" in source
-    assert "[lm[23], lm[24], affected.knee]" in source
+    assert "[affected.hip, affected.wrist]" in source
+    assert "[lm[23], lm[24], affected.knee]" not in source
     assert "lapTargetCalibration.ready && lapTargetCalibration.target" in source
     assert "cameraReady && armVisible && seatedAnchorsVisible && lapReady" in source
     assert "function landmarkIsInFrame(point" in source

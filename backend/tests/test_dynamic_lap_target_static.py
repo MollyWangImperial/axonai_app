@@ -23,21 +23,24 @@ def test_true_lap_return_steps_use_patient_specific_dynamic_targets():
         assert "lap" in (step["voice"] + " " + step["caption"]).lower()
 
 
-def test_lap_calibration_uses_stable_seated_anatomy_not_a_wrist_snapshot():
+def test_lap_calibration_uses_a_stable_affected_hand_resting_on_the_visible_lap():
     source = server.POSE_RUNNER_HTML
     for marker in (
         "function lapTargetCandidate(lm)",
-        "affected.hip.x * 0.58 + affected.knee.x * 0.42",
-        "affected.hip.y * 0.58 + affected.knee.y * 0.42",
+        "landmarkIsInFrame(affected.hip, lapVisibility)",
+        "landmarkIsInFrame(affected.wrist, lapVisibility)",
+        "const wristBelowHip = affected.wrist.y - affected.hip.y;",
+        "const wristFromHipX = Math.abs(affected.wrist.x - affected.hip.x);",
+        "const anatomical = {x:affected.wrist.x, y:affected.wrist.y};",
         "const LAP_CALIBRATION_MIN_SAMPLES = 8;",
         "const LAP_CALIBRATION_MIN_MS = 650;",
         "const center = {x:medianValue(samples.map(s => s.x)), y:medianValue(samples.map(s => s.y))};",
         "const stable = samples.every",
         "Math.hypot(s.bodyX-bodyCenter.x, s.bodyY-bodyCenter.y) <= maxJitter",
-        "if(kneeAngle > 168 && verticalThighRatio > 0.72) return null;",
         "const screenPoint = anatomical;",
     ):
         assert marker in source
+    assert "landmarkIsInFrame(affected.knee, lapVisibility)" not in source
 
 
 def test_lap_calibration_starts_before_the_return_step_and_survives_brief_tracking_loss():
