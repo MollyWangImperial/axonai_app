@@ -1,4 +1,4 @@
-const CACHE_NAME = "rehyn-shell-v2";
+const CACHE_NAME = "rehyn-shell-v3";
 const SHELL_FILES = [
   "/",
   "/manifest.json",
@@ -19,7 +19,12 @@ const MODEL_FILES = [
 self.addEventListener("install", (event) => {
   event.waitUntil(
     caches.open(CACHE_NAME).then(async (cache) => {
-      await cache.addAll(SHELL_FILES);
+      await Promise.all(
+        SHELL_FILES.map(async (file) => {
+          const response = await fetch(new Request(file, { cache: "reload" }));
+          if (response.ok) await cache.put(file, response);
+        }),
+      );
       await Promise.allSettled(MODEL_FILES.map((file) => cache.add(file)));
     }),
   );
@@ -28,11 +33,18 @@ self.addEventListener("install", (event) => {
 
 self.addEventListener("activate", (event) => {
   event.waitUntil(
-    caches
-      .keys()
-      .then((keys) => Promise.all(keys.filter((key) => key !== CACHE_NAME).map((key) => caches.delete(key)))),
+    (async () => {
+      const keys = await caches.keys();
+      const staleShellExists = keys.some((key) => key.startsWith("rehyn-shell-") && key !== CACHE_NAME);
+      await Promise.all(keys.filter((key) => key !== CACHE_NAME).map((key) => caches.delete(key)));
+      await self.clients.claim();
+
+      if (staleShellExists) {
+        const windows = await self.clients.matchAll({ type: "window" });
+        await Promise.all(windows.map((client) => client.navigate(client.url)));
+      }
+    })(),
   );
-  self.clients.claim();
 });
 
 self.addEventListener("fetch", (event) => {
@@ -44,7 +56,7 @@ self.addEventListener("fetch", (event) => {
 
   if (request.mode === "navigate") {
     event.respondWith(
-      fetch(request)
+      fetch(request, { cache: "no-store" })
         .then((response) => {
           const copy = response.clone();
           caches.open(CACHE_NAME).then((cache) => cache.put("/", copy));

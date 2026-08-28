@@ -18,7 +18,10 @@ const PWA_TAGS = `
     <link rel="apple-touch-icon" sizes="180x180" href="/icons/apple-touch-icon.png" />
     <script>
       if ("serviceWorker" in navigator) {
-        window.addEventListener("load", () => navigator.serviceWorker.register("/sw.js"));
+        window.addEventListener("load", async () => {
+          const registration = await navigator.serviceWorker.register("/sw.js", { updateViaCache: "none" });
+          registration.update();
+        });
       }
     </script>
 `;
