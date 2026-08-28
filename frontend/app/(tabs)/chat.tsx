@@ -12,6 +12,7 @@ import TypingIndicator from "@/src/components/TypingIndicator";
 import { API_BASE as BASE } from "@/src/config";
 import { authedFetch } from "@/src/auth";
 import { fetchHistory } from "@/src/api";
+import { useDisplayPreferences } from "@/src/displayPreferences";
 
 type Turn = { role: "user" | "assistant"; text: string; ts: string };
 
@@ -32,6 +33,7 @@ function formatTime(ts: string) {
 export default function ChatScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
+  const { palette, preferences } = useDisplayPreferences();
   const { width } = useWindowDimensions();
   const { prompt } = useLocalSearchParams<{ prompt?: string }>();
   const [sessionId, setSessionId] = useState<string | null>(null);
@@ -143,41 +145,41 @@ export default function ChatScreen() {
 
   const conversationTurns = turns.length === 1 && turns[0]?.role === "assistant" ? [] : turns;
   const actions = [
-    { id: "progress", icon: "trending-up-outline" as const, text: "Check My Progress", tone: "#EFF6F4", onPress: () => router.push("/progress") },
-    { id: "exercise", icon: "walk-outline" as const, text: "Start Guided Exercise", tone: "#F1F4EC", onPress: () => void startGuidedExercise() },
-    { id: "pain", icon: "heart" as const, text: "Pain Check-in", tone: "#F5F0FA", onPress: () => void sendMessage("Please guide me through a gentle pain check-in. Ask me one short question at a time, beginning with where I feel pain and how strong it is from zero to ten.", true) },
-    { id: "reflect", icon: "book-outline" as const, text: "Reflect on Today", tone: "#FAF3EA", onPress: () => void sendMessage("Please guide me through a short reflection on today's recovery. Ask me one encouraging question at a time and help me notice one small win.", true) },
+    { id: "progress", icon: "trending-up-outline" as const, text: "Check My Progress", tone: preferences.darkMode ? palette.soft : "#EFF6F4", onPress: () => router.push("/progress") },
+    { id: "exercise", icon: "walk-outline" as const, text: "Start Guided Exercise", tone: preferences.darkMode ? palette.soft : "#F1F4EC", onPress: () => void startGuidedExercise() },
+    { id: "pain", icon: "heart" as const, text: "Pain Check-in", tone: preferences.darkMode ? palette.soft : "#F5F0FA", onPress: () => void sendMessage("Please guide me through a gentle pain check-in. Ask me one short question at a time, beginning with where I feel pain and how strong it is from zero to ten.", true) },
+    { id: "reflect", icon: "book-outline" as const, text: "Reflect on Today", tone: preferences.darkMode ? palette.soft : "#FAF3EA", onPress: () => void sendMessage("Please guide me through a short reflection on today's recovery. Ask me one encouraging question at a time and help me notice one small win.", true) },
   ];
 
   return (
-    <View style={[styles.container, { paddingTop: insets.top }]}>
+    <View style={[styles.container, { paddingTop: insets.top, backgroundColor: palette.page }]}>
       <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} keyboardVerticalOffset={Platform.OS === "ios" ? 84 : 0} style={styles.keyboard}>
         <ScrollView ref={scrollRef} contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
           <View style={styles.page}>
-            <View style={styles.header}>
+            <View style={[styles.header, { borderBottomColor: palette.border }]}>
               <View style={styles.headerAvatar}><Ionicons name="heart" size={25} color="#FFFFFF" /></View>
               <View style={styles.headerCopy}>
-                <Text style={styles.headerTitle}>Alira</Text>
+                <Text style={[styles.headerTitle, { color: palette.text }]}>Alira</Text>
                 <Text style={styles.headerSub}>Your recovery companion</Text>
               </View>
-              <Pressable onPress={() => startPrompt("What should I focus on today?")} style={styles.sparkleButton} accessibilityLabel="Ask Alira for today's focus">
-                <Ionicons name="sparkles" size={22} color={colors.brandPrimary} />
+              <Pressable onPress={() => startPrompt("What should I focus on today?")} style={[styles.sparkleButton, { backgroundColor: palette.soft }]} accessibilityLabel="Ask Alira for today's focus">
+                <Ionicons name="sparkles" size={22} color={palette.brand} />
               </Pressable>
             </View>
 
             <View style={[styles.hero, wide && styles.heroWide]}>
               <View style={styles.heroCopy}>
-                <Text style={styles.heroTitle}>Hi, I’m Alira.{"\n"}I’m here for you.</Text>
-                <Text style={styles.heroSub}>We’ll take this recovery journey one step at a time, together.</Text>
+                <Text style={[styles.heroTitle, { color: palette.text }]}>Hi, I’m Alira.{"\n"}I’m here for you.</Text>
+                <Text style={[styles.heroSub, { color: palette.muted }]}>We’ll take this recovery journey one step at a time, together.</Text>
               </View>
               <Image source={companionImage} resizeMode="contain" style={styles.companionImage} />
             </View>
 
-            <View style={styles.callCard}>
-              <View style={styles.callIcon}><Ionicons name="call" size={24} color={colors.brandPrimary} /></View>
+            <View style={[styles.callCard, { backgroundColor: palette.surface, borderColor: palette.border }]}>
+              <View style={[styles.callIcon, { backgroundColor: palette.soft }]}><Ionicons name="call" size={24} color={palette.brand} /></View>
               <View style={styles.callCopy}>
-                <Text style={styles.callTitle}>Talk to Alira now</Text>
-                <Text style={styles.callSub}>Speak naturally and hear Alira reply</Text>
+                <Text style={[styles.callTitle, { color: palette.text }]}>Talk to Alira now</Text>
+                <Text style={[styles.callSub, { color: palette.muted }]}>Speak naturally and hear Alira reply</Text>
               </View>
               <Pressable testID="alira-call" onPress={() => router.push("/alira-call" as never)} style={styles.callButton}>
                 <Ionicons name="call" size={19} color="#FFFFFF" />
@@ -189,19 +191,19 @@ export default function ChatScreen() {
               {actions.map((action) => (
                 <Pressable key={action.text} testID={`alira-action-${action.id}`} disabled={sending || (["pain", "reflect"].includes(action.id) && !sessionId)} onPress={action.onPress} style={[styles.actionCard, wide && styles.actionCardWide, { backgroundColor: action.tone }, (sending || (["pain", "reflect"].includes(action.id) && !sessionId)) && { opacity: 0.6 }]} accessibilityLabel={action.text}>
                   <View style={styles.actionIcon}>{openingAction === action.id ? <ActivityIndicator color={colors.brandPrimary} /> : <Ionicons name={action.icon} size={24} color={colors.brandPrimary} />}</View>
-                  <Text style={styles.actionText}>{openingAction === action.id ? "Opening your plan..." : action.text}</Text>
+                  <Text style={[styles.actionText, { color: palette.text }]}>{openingAction === action.id ? "Opening your plan..." : action.text}</Text>
                 </Pressable>
               ))}
             </View>
 
             {turns.length === 0 && <ActivityIndicator color={colors.brandPrimary} style={styles.loading} />}
-            {conversationTurns.length > 0 && <Text style={styles.conversationTitle}>Your conversation</Text>}
+            {conversationTurns.length > 0 && <Text style={[styles.conversationTitle, { color: palette.text }]}>Your conversation</Text>}
             {conversationTurns.map((item, index) => (
               <View key={`${item.ts}-${index}`} style={[styles.messageRow, item.role === "user" && styles.userRow]}>
                 {item.role === "assistant" && <View style={styles.messageAvatar}><Ionicons name="heart" size={17} color="#FFFFFF" /></View>}
-                <View style={[styles.bubble, item.role === "user" ? styles.userBubble : styles.assistantBubble]}>
-                  <Text style={styles.bubbleText}>{item.text}</Text>
-                  <Text style={styles.timeText}>{formatTime(item.ts)}</Text>
+                <View style={[styles.bubble, item.role === "user" ? styles.userBubble : styles.assistantBubble, { backgroundColor: item.role === "user" ? palette.soft : palette.surface, borderColor: palette.border }]}>
+                  <Text style={[styles.bubbleText, { color: palette.text }]}>{item.text}</Text>
+                  <Text style={[styles.timeText, { color: palette.muted }]}>{formatTime(item.ts)}</Text>
                 </View>
               </View>
             ))}
@@ -209,12 +211,12 @@ export default function ChatScreen() {
           </View>
         </ScrollView>
 
-        <View style={[styles.inputBar, { paddingBottom: Math.max(insets.bottom, spacing.sm) }]}>
+        <View style={[styles.inputBar, { paddingBottom: Math.max(insets.bottom, spacing.sm), backgroundColor: palette.surface, borderTopColor: palette.border }]}>
           <View style={styles.inputInner}>
-            <Pressable onPress={() => playAliraVoice("I'm listening. Tell me how I can help.")} style={styles.micButton} accessibilityLabel="Hear Alira">
+            <Pressable onPress={() => playAliraVoice("I'm listening. Tell me how I can help.")} style={[styles.micButton, { backgroundColor: palette.surface, borderColor: palette.border }]} accessibilityLabel="Hear Alira">
               <Ionicons name="mic" size={23} color={colors.brandPrimary} />
             </Pressable>
-            <TextInput ref={inputRef} value={input} onChangeText={setInput} placeholder="Message Alira..." placeholderTextColor="#98A09A" style={styles.input} multiline maxLength={500} testID="chat-input" />
+            <TextInput ref={inputRef} value={input} onChangeText={setInput} placeholder="Message Alira..." placeholderTextColor={palette.muted} style={[styles.input, { backgroundColor: palette.surface, borderColor: palette.border, color: palette.text }]} multiline maxLength={500} testID="chat-input" />
             <Pressable onPress={send} disabled={sending || !input.trim()} style={[styles.sendBtn, (sending || !input.trim()) && styles.sendBtnDisabled]} testID="chat-send">
               <Ionicons name="send" size={21} color="#FFFFFF" />
             </Pressable>

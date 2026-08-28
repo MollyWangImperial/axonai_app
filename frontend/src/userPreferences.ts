@@ -7,6 +7,7 @@ export const SHARE_ASSESSMENTS_KEY = "rehyn_share_assessments_v1";
 export const SHARE_CARE_CIRCLE_KEY = "rehyn_share_care_circle_v1";
 export const USAGE_ANALYTICS_KEY = "rehyn_usage_analytics_v1";
 export const DEMO_MODE_KEY = "rehyn_demo_mode_v1";
+export const BRIGHTNESS_KEY = "rehyn_brightness_v1";
 
 export const TEXT_SIZES = ["Comfortable", "Large", "Extra large"] as const;
 export type TextSizePreference = (typeof TEXT_SIZES)[number];
@@ -19,6 +20,7 @@ export type UserPreferences = {
   shareCareCircle: boolean;
   usageAnalytics: boolean;
   demoMode: boolean;
+  brightness: number;
 };
 
 export const DEFAULT_USER_PREFERENCES: UserPreferences = {
@@ -29,10 +31,18 @@ export const DEFAULT_USER_PREFERENCES: UserPreferences = {
   shareCareCircle: false,
   usageAnalytics: false,
   demoMode: false,
+  brightness: 94,
 };
 
+const preferenceListeners = new Set<(preferences: UserPreferences) => void>();
+
+export function subscribeUserPreferences(listener: (preferences: UserPreferences) => void) {
+  preferenceListeners.add(listener);
+  return () => preferenceListeners.delete(listener);
+}
+
 export async function loadUserPreferences(): Promise<UserPreferences> {
-  const [darkMode, textSize, voiceGuidance, shareAssessments, shareCareCircle, usageAnalytics, demoMode] = await Promise.all([
+  const [darkMode, textSize, voiceGuidance, shareAssessments, shareCareCircle, usageAnalytics, demoMode, brightness] = await Promise.all([
     storage.getItem(DARK_MODE_KEY, DEFAULT_USER_PREFERENCES.darkMode),
     storage.getItem(TEXT_SIZE_KEY, DEFAULT_USER_PREFERENCES.textSize),
     storage.getItem(VOICE_GUIDANCE_KEY, DEFAULT_USER_PREFERENCES.voiceGuidance),
@@ -40,6 +50,7 @@ export async function loadUserPreferences(): Promise<UserPreferences> {
     storage.getItem(SHARE_CARE_CIRCLE_KEY, DEFAULT_USER_PREFERENCES.shareCareCircle),
     storage.getItem(USAGE_ANALYTICS_KEY, DEFAULT_USER_PREFERENCES.usageAnalytics),
     storage.getItem(DEMO_MODE_KEY, DEFAULT_USER_PREFERENCES.demoMode),
+    storage.getItem(BRIGHTNESS_KEY, DEFAULT_USER_PREFERENCES.brightness),
   ]);
   return {
     darkMode: Boolean(darkMode),
@@ -49,6 +60,7 @@ export async function loadUserPreferences(): Promise<UserPreferences> {
     shareCareCircle: Boolean(shareCareCircle),
     usageAnalytics: Boolean(usageAnalytics),
     demoMode: Boolean(demoMode),
+    brightness: Math.max(70, Math.min(100, Number(brightness) || DEFAULT_USER_PREFERENCES.brightness)),
   };
 }
 
@@ -61,8 +73,11 @@ export async function saveUserPreference<K extends keyof UserPreferences>(key: K
     shareCareCircle: SHARE_CARE_CIRCLE_KEY,
     usageAnalytics: USAGE_ANALYTICS_KEY,
     demoMode: DEMO_MODE_KEY,
+    brightness: BRIGHTNESS_KEY,
   };
-  return storage.setItem(storageKeys[key], value);
+  await storage.setItem(storageKeys[key], value);
+  const preferences = await loadUserPreferences();
+  preferenceListeners.forEach((listener) => listener(preferences));
 }
 
 export function textScaleFor(size: TextSizePreference) {

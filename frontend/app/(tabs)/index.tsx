@@ -18,6 +18,7 @@ import { Assessment, fetchHistory } from "@/src/api";
 import { getCachedUser, preferredNameKey } from "@/src/auth";
 import { colors, radius, spacing } from "@/src/theme";
 import { storage } from "@/src/utils/storage";
+import { useDisplayPreferences } from "@/src/displayPreferences";
 
 const assessmentBenefits = [
   {
@@ -43,6 +44,7 @@ const assessmentBenefits = [
 export default function HomeScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
+  const { palette } = useDisplayPreferences();
   const { width } = useWindowDimensions();
   const isWide = width >= 760;
   const [history, setHistory] = useState<Assessment[]>([]);
@@ -81,7 +83,7 @@ export default function HomeScreen() {
   };
 
   return (
-    <View style={styles.container}>
+    <View style={[styles.container, { backgroundColor: palette.page }]}>
       <ScrollView
         contentContainerStyle={[styles.page, { paddingTop: insets.top + spacing.sm }]}
         showsVerticalScrollIndicator={false}
@@ -92,24 +94,24 @@ export default function HomeScreen() {
               <View style={styles.brandIcon}>
                 <Ionicons name="pulse" size={20} color={colors.onBrandPrimary} />
               </View>
-              <Text style={styles.brand}>Rehyn</Text>
+              <Text style={[styles.brand, { color: palette.text }]}>Rehyn</Text>
             </View>
             <View style={styles.headerActions}>
               <Pressable
                 testID="home-open-settings"
                 accessibilityLabel="Settings"
                 onPress={() => router.push("/settings" as any)}
-                style={({ pressed }) => [styles.iconButton, pressed && styles.pressed]}
+                style={({ pressed }) => [styles.iconButton, { backgroundColor: palette.surface, borderColor: palette.border }, pressed && styles.pressed]}
               >
-                <Ionicons name="settings-outline" size={21} color={colors.onSurfaceSecondary} />
+                <Ionicons name="settings-outline" size={21} color={palette.muted} />
               </Pressable>
               <Pressable
                 testID="home-open-profile"
                 accessibilityLabel="Profile"
                 onPress={() => router.push("/profile" as any)}
-                style={({ pressed }) => [styles.avatar, pressed && styles.pressed]}
+                style={({ pressed }) => [styles.avatar, { backgroundColor: palette.soft }, pressed && styles.pressed]}
               >
-                <Text style={styles.avatarText}>{greetName.slice(0, 1).toUpperCase()}</Text>
+                <Text style={[styles.avatarText, { color: palette.text }]}>{greetName.slice(0, 1).toUpperCase()}</Text>
               </Pressable>
             </View>
           </View>
@@ -120,17 +122,17 @@ export default function HomeScreen() {
             </View>
           ) : (
             <>
-              <View style={[styles.hero, isWide && styles.heroWide]}>
+              <View style={[styles.hero, { backgroundColor: palette.surface }, isWide && styles.heroWide]}>
                 <View style={[styles.heroCopy, isWide && styles.heroCopyWide]}>
                   {!isInitialAssessment && (
-                    <Text style={styles.eyebrow}>{`WELCOME BACK, ${greetName.toUpperCase()}`}</Text>
+                    <Text style={[styles.eyebrow, { color: palette.brand }]}>{`WELCOME BACK, ${greetName.toUpperCase()}`}</Text>
                   )}
-                  <Text style={[styles.heroTitle, isWide && styles.heroTitleWide]}>
+                  <Text style={[styles.heroTitle, { color: palette.text }, isWide && styles.heroTitleWide]}>
                     {isInitialAssessment
                       ? "See where your recovery stands today"
                       : "See how your recovery looks today"}
                   </Text>
-                  <Text style={styles.heroBody}>
+                  <Text style={[styles.heroBody, { color: palette.muted }]}>
                     {assessmentDescription}
                   </Text>
 
@@ -147,7 +149,7 @@ export default function HomeScreen() {
                     </Pressable>
                     <View style={styles.durationRow}>
                       <Ionicons name="time-outline" size={18} color={colors.onSurfaceTertiary} />
-                      <Text style={styles.durationText}>About 3 minutes</Text>
+                      <Text style={[styles.durationText, { color: palette.muted }]}>About 3 minutes</Text>
                     </View>
                   </View>
 
@@ -175,8 +177,8 @@ export default function HomeScreen() {
               </View>
 
               <View style={styles.discoverySection}>
-                <Text style={styles.discoveryHeading}>{"What you'll get after every assessment"}</Text>
-                <View style={[styles.discoveryRow, !isWide && styles.discoveryRowCompact]}>
+                <Text style={[styles.discoveryHeading, { color: palette.text }]}>{"What you'll get after every assessment"}</Text>
+                <View style={[styles.discoveryRow, { backgroundColor: palette.surface, borderColor: palette.border }, !isWide && styles.discoveryRowCompact]}>
                   {assessmentBenefits.map((benefit, index) => (
                     <View
                       key={benefit.title}
@@ -194,9 +196,9 @@ export default function HomeScreen() {
                         <View style={styles.discoveryIcon}>
                           <MaterialCommunityIcons name={benefit.icon} size={isWide ? 58 : 46} color="#15543C" />
                         </View>
-                        <Text style={styles.discoveryTitle}>{benefit.title}</Text>
+                        <Text style={[styles.discoveryTitle, { color: palette.text }]}>{benefit.title}</Text>
                       </View>
-                      <Text style={[styles.discoveryDetail, !isWide && styles.discoveryDetailCompact]}>{benefit.detail}</Text>
+                      <Text style={[styles.discoveryDetail, { color: palette.muted }, !isWide && styles.discoveryDetailCompact]}>{benefit.detail}</Text>
                     </View>
                   ))}
                 </View>

@@ -9,6 +9,7 @@ import { addJournalEntry, JournalEntry, loadJournalEntries } from "@/src/journal
 import { colors, radius, spacing } from "@/src/theme";
 import { DEMO_ASSESSMENT_ID } from "@/src/demoAssessment";
 import { loadUserPreferences } from "@/src/userPreferences";
+import { useDisplayPreferences } from "@/src/displayPreferences";
 
 const brainImage = require("@/assets/images/journey-stroke-brain.png");
 const familyImage = require("@/assets/images/journey-family-support.png");
@@ -24,6 +25,7 @@ function assessmentPlanLabel(item: Assessment) {
 export default function JourneyScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
+  const { palette } = useDisplayPreferences();
   const { width } = useWindowDimensions();
   const wide = width >= 760;
   const [history, setHistory] = useState<Assessment[]>([]);
@@ -56,104 +58,104 @@ export default function JourneyScreen() {
   const askAlira = (prompt: string) => router.push({ pathname: "/chat", params: { prompt } });
 
   return (
-    <View style={styles.container}>
+    <View style={[styles.container, { backgroundColor: palette.page }]}>
       <ScrollView contentContainerStyle={[styles.content, { paddingTop: insets.top + spacing.md }]} showsVerticalScrollIndicator={false}>
         <View style={styles.page}>
           <View style={styles.headerRow}>
-            <Text style={styles.title}>Journey</Text>
+            <Text style={[styles.title, { color: palette.text }]}>Journey</Text>
             <Pressable testID="journey-add-entry" onPress={() => setShowComposer(true)} style={styles.addButton}>
               <Ionicons name="add" size={20} color={colors.onBrandPrimary} />
               <Text style={styles.addButtonText}>Add entry</Text>
             </Pressable>
           </View>
 
-          <Pressable onPress={() => router.push("/progress")} style={styles.summaryCard}>
-            <View style={styles.summaryIcon}><Ionicons name="trending-up" size={27} color={colors.brandPrimary} /></View>
+          <Pressable onPress={() => router.push("/progress")} style={[styles.summaryCard, { backgroundColor: palette.surface, borderColor: palette.border }]}>
+            <View style={[styles.summaryIcon, { backgroundColor: palette.soft }]}><Ionicons name="trending-up" size={27} color={palette.brand} /></View>
             <View style={styles.summaryCopy}>
-              <Text style={styles.summaryTitle}>Your progress at a glance</Text>
-              <View style={styles.progressTrack}><View style={[styles.progressFill, { width: progressWidth }]} /></View>
-              <Text style={styles.summaryBody}>{history.length} assessment{history.length === 1 ? "" : "s"} completed · {entries.length} journal entr{entries.length === 1 ? "y" : "ies"}</Text>
+              <Text style={[styles.summaryTitle, { color: palette.text }]}>Your progress at a glance</Text>
+              <View style={[styles.progressTrack, { backgroundColor: palette.soft }]}><View style={[styles.progressFill, { width: progressWidth, backgroundColor: palette.brand }]} /></View>
+              <Text style={[styles.summaryBody, { color: palette.muted }]}>{history.length} assessment{history.length === 1 ? "" : "s"} completed · {entries.length} journal entr{entries.length === 1 ? "y" : "ies"}</Text>
             </View>
-            <Ionicons name="chevron-forward" size={22} color={colors.brandPrimary} />
+            <Ionicons name="chevron-forward" size={22} color={palette.brand} />
           </Pressable>
 
-          <Text style={styles.sectionTitle}>Learn about stroke recovery</Text>
-          <View style={[styles.articleGrid, wide && styles.articleGridWide]}>
-            <Pressable onPress={() => askAlira("Can you explain what happens after a stroke in simple language?")} style={[styles.articleCard, wide && styles.articleCardWide]}>
-              <Image source={brainImage} resizeMode="cover" style={styles.articleImage} />
-              <View style={styles.articleFooter}>
-                <View style={styles.articleIcon}><Ionicons name="book-outline" size={23} color={colors.brandPrimary} /></View>
-                <Text style={styles.articleTitle}>What happens after a stroke?</Text>
-                <Ionicons name="chevron-forward" size={19} color={colors.onSurfaceTertiary} />
-              </View>
-            </Pressable>
-            <Pressable onPress={() => askAlira("How can family members support stroke recovery day to day?")} style={[styles.articleCard, wide && styles.articleCardWide]}>
-              <Image source={familyImage} resizeMode="cover" style={styles.articleImage} />
-              <View style={styles.articleFooter}>
-                <View style={styles.articleIcon}><Ionicons name="heart" size={22} color={colors.brandPrimary} /></View>
-                <Text style={styles.articleTitle}>How family support helps</Text>
-                <Ionicons name="chevron-forward" size={19} color={colors.onSurfaceTertiary} />
-              </View>
-            </Pressable>
-          </View>
-
-          <Text style={styles.sectionTitle}>Journal & milestones</Text>
+          <Text style={[styles.sectionTitle, { color: palette.text }]}>Journal & milestones</Text>
           {entries.length === 0 ? (
-            <Pressable onPress={() => setShowComposer(true)} style={styles.journalPrompt}>
-              <View style={styles.sectionIcon}><Ionicons name="book-outline" size={24} color={colors.brandPrimary} /></View>
-              <Text style={styles.journalPromptText}>Capture a small win</Text>
+            <Pressable onPress={() => setShowComposer(true)} style={[styles.journalPrompt, { backgroundColor: palette.surface, borderColor: palette.border }]}>
+              <View style={[styles.sectionIcon, { backgroundColor: palette.soft }]}><Ionicons name="book-outline" size={24} color={palette.brand} /></View>
+              <Text style={[styles.journalPromptText, { color: palette.text }]}>Capture a small win</Text>
               <View style={styles.smallAddButton}><Ionicons name="add" size={19} color={colors.onBrandPrimary} /><Text style={styles.smallAddText}>Add entry</Text></View>
             </Pressable>
           ) : entries.map((entry) => (
-            <View key={entry.id} style={styles.entryCard}>
+            <View key={entry.id} style={[styles.entryCard, { backgroundColor: palette.surface, borderColor: palette.border }]}>
               <View style={styles.entryTop}>
                 <Text style={styles.entryTag}>{entry.tag}</Text>
-                <Text style={styles.entryDate}>{new Date(entry.createdAt).toLocaleDateString(undefined, { month: "short", day: "numeric" })}</Text>
+                <Text style={[styles.entryDate, { color: palette.muted }]}>{new Date(entry.createdAt).toLocaleDateString(undefined, { month: "short", day: "numeric" })}</Text>
               </View>
-              <Text style={styles.entryBody}>{entry.body}</Text>
+              <Text style={[styles.entryBody, { color: palette.muted }]}>{entry.body}</Text>
             </View>
           ))}
 
-          <Text style={styles.sectionTitle} testID="assessment-history">Assessment history</Text>
+          <Text style={[styles.sectionTitle, { color: palette.text }]} testID="assessment-history">Assessment history</Text>
           {loading ? <ActivityIndicator color={colors.brandPrimary} /> : history.length === 0 && !demoMode ? (
-            <View style={styles.historyEmpty}>
-              <View style={styles.sectionIcon}><Ionicons name="clipboard-outline" size={24} color={colors.brandPrimary} /></View>
-              <Text style={styles.historyEmptyText}>Your assessments will appear here</Text>
+            <View style={[styles.historyEmpty, { backgroundColor: palette.surface, borderColor: palette.border }]}>
+              <View style={[styles.sectionIcon, { backgroundColor: palette.soft }]}><Ionicons name="clipboard-outline" size={24} color={palette.brand} /></View>
+              <Text style={[styles.historyEmptyText, { color: palette.muted }]}>Your assessments will appear here</Text>
               <Ionicons name="sparkles" size={18} color="#78A87E" />
             </View>
           ) : <>
             {demoMode && (
-              <Pressable testID="assessment-history-demo" onPress={() => router.push({ pathname: "/function-summary" as never, params: { id: DEMO_ASSESSMENT_ID } })} style={[styles.historyRow, styles.demoHistoryRow]}>
+              <Pressable testID="assessment-history-demo" onPress={() => router.push({ pathname: "/function-summary" as never, params: { id: DEMO_ASSESSMENT_ID } })} style={[styles.historyRow, styles.demoHistoryRow, { backgroundColor: palette.surface }]}>
                 <View style={[styles.historyIcon, styles.demoHistoryIcon]}><Ionicons name="sparkles" size={21} color="#7B5EA7" /></View>
                 <View style={styles.historyCopy}>
-                  <View style={styles.demoTitleRow}><Text style={styles.historyTitle}>Demo assessment summary</Text><Text style={styles.demoBadge}>SAMPLE</Text></View>
-                  <Text style={styles.historyMeta}>Explore a sample function summary, movement story and map</Text>
+                  <View style={styles.demoTitleRow}><Text style={[styles.historyTitle, { color: palette.text }]}>Demo assessment summary</Text><Text style={styles.demoBadge}>SAMPLE</Text></View>
+                  <Text style={[styles.historyMeta, { color: palette.muted }]}>Explore a sample function summary, movement story and map</Text>
                 </View>
                 <Ionicons name="chevron-forward" size={20} color={colors.borderStrong} />
               </Pressable>
             )}
             {history.slice(0, 6).map((item) => (
-              <Pressable key={item.id} testID={`assessment-history-${item.id}`} onPress={() => router.push({ pathname: "/function-summary" as never, params: { id: item.id } })} style={styles.historyRow}>
-              <View style={styles.historyIcon}><Ionicons name="analytics-outline" size={21} color={colors.brandPrimary} /></View>
+              <Pressable key={item.id} testID={`assessment-history-${item.id}`} onPress={() => router.push({ pathname: "/function-summary" as never, params: { id: item.id } })} style={[styles.historyRow, { backgroundColor: palette.surface, borderColor: palette.border }]}>
+              <View style={[styles.historyIcon, { backgroundColor: palette.soft }]}><Ionicons name="analytics-outline" size={21} color={palette.brand} /></View>
               <View style={styles.historyCopy}>
-                <Text style={styles.historyTitle}>{item.id === initialAssessmentId ? "Initial Assessment" : "Movement check-in"}</Text>
-                <Text style={styles.historyMeta}>{new Date(item.created_at).toLocaleDateString()} · {assessmentPlanLabel(item)}</Text>
+                <Text style={[styles.historyTitle, { color: palette.text }]}>{item.id === initialAssessmentId ? "Initial Assessment" : "Movement check-in"}</Text>
+                <Text style={[styles.historyMeta, { color: palette.muted }]}>{new Date(item.created_at).toLocaleDateString()} · {assessmentPlanLabel(item)}</Text>
               </View>
               <Ionicons name="chevron-forward" size={20} color={colors.borderStrong} />
               </Pressable>
             ))}
           </>}
+
+          <Text style={[styles.sectionTitle, { color: palette.text }]}>Learn about stroke recovery</Text>
+          <View style={[styles.articleGrid, wide && styles.articleGridWide]}>
+            <Pressable onPress={() => askAlira("Can you explain what happens after a stroke in simple language?")} style={[styles.articleCard, wide && styles.articleCardWide, { backgroundColor: palette.surface, borderColor: palette.border }]}>
+              <Image source={brainImage} resizeMode="cover" style={styles.articleImage} />
+              <View style={[styles.articleFooter, { backgroundColor: palette.surface }]}>
+                <View style={[styles.articleIcon, { backgroundColor: palette.soft }]}><Ionicons name="book-outline" size={23} color={palette.brand} /></View>
+                <Text style={[styles.articleTitle, { color: palette.text }]}>What happens after a stroke?</Text>
+                <Ionicons name="chevron-forward" size={19} color={palette.muted} />
+              </View>
+            </Pressable>
+            <Pressable onPress={() => askAlira("How can family members support stroke recovery day to day?")} style={[styles.articleCard, wide && styles.articleCardWide, { backgroundColor: palette.surface, borderColor: palette.border }]}>
+              <Image source={familyImage} resizeMode="cover" style={styles.articleImage} />
+              <View style={[styles.articleFooter, { backgroundColor: palette.surface }]}>
+                <View style={[styles.articleIcon, { backgroundColor: palette.soft }]}><Ionicons name="heart" size={22} color={palette.brand} /></View>
+                <Text style={[styles.articleTitle, { color: palette.text }]}>How family support helps</Text>
+                <Ionicons name="chevron-forward" size={19} color={palette.muted} />
+              </View>
+            </Pressable>
+          </View>
         </View>
       </ScrollView>
 
       <Modal visible={showComposer} transparent animationType="slide" onRequestClose={() => setShowComposer(false)}>
         <View style={styles.modalScrim}>
-          <View style={[styles.composer, { paddingBottom: Math.max(insets.bottom, spacing.lg) }]}>
+          <View style={[styles.composer, { paddingBottom: Math.max(insets.bottom, spacing.lg), backgroundColor: palette.surface }]}>
             <View style={styles.composerHeader}>
-              <Text style={styles.composerTitle}>New journal entry</Text>
-              <Pressable onPress={() => setShowComposer(false)}><Ionicons name="close" size={26} color={colors.onSurface} /></Pressable>
+              <Text style={[styles.composerTitle, { color: palette.text }]}>New journal entry</Text>
+              <Pressable onPress={() => setShowComposer(false)}><Ionicons name="close" size={26} color={palette.text} /></Pressable>
             </View>
-            <TextInput testID="journey-entry-input" value={draft} onChangeText={setDraft} multiline autoFocus placeholder="What felt different today?" placeholderTextColor={colors.onSurfaceTertiary} style={styles.input} />
+            <TextInput testID="journey-entry-input" value={draft} onChangeText={setDraft} multiline autoFocus placeholder="What felt different today?" placeholderTextColor={palette.muted} style={[styles.input, { backgroundColor: palette.soft, color: palette.text }]} />
             <Pressable testID="journey-save-entry" disabled={!draft.trim()} onPress={saveEntry} style={[styles.saveButton, !draft.trim() && { opacity: 0.4 }]}>
               <Text style={styles.saveButtonText}>Save entry</Text>
             </Pressable>

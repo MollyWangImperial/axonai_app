@@ -1783,7 +1783,9 @@ def _assessment_patient_parameters(
             priorities = []
             if str(profile.get("primary_goal") or "").strip():
                 priorities.append(str(profile["primary_goal"]).strip())
-            priorities.extend(str(item).strip() for item in profile.get("secondary_goals") or [] if str(item).strip())
+            priorities.extend(str(item).strip() for item in profile.get("secondary_goals") or [] if str(item).strip() and str(item).strip() != "other")
+            if str(profile.get("secondary_goals_other") or "").strip():
+                priorities.append(str(profile["secondary_goals_other"]).strip())
             if priorities:
                 merged["patient_priorities"] = priorities
     return merged
@@ -8029,6 +8031,7 @@ class PatientOnboarding(BaseModel):
     mobility_level: Optional[str] = None   # "wheelchair" | "walker" | "cane" | "independent"
     primary_goal: Optional[str] = None     # free text
     secondary_goals: Optional[List[str]] = None
+    secondary_goals_other: Optional[str] = None
     medical_conditions: Optional[List[str]] = None
     medical_conditions_other: Optional[str] = None
     has_caregiver: Optional[bool] = None

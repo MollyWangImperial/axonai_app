@@ -41,6 +41,7 @@ const PROFILE_FIELDS = [
   "mobility_level",
   "primary_goal",
   "secondary_goals",
+  "secondary_goals_other",
   "medical_conditions",
   "medical_conditions_other",
   "has_caregiver",

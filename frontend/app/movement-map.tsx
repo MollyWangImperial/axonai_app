@@ -38,7 +38,6 @@ export default function MovementMapScreen() {
   const [data, setData] = useState<PatientAssessmentSummary | null>(null);
   const [assessment, setAssessment] = useState<Assessment | null>(null);
   const [selected, setSelected] = useState<DomainId>("upper_limb");
-  const [view, setView] = useState<"front" | "back">("front");
   const [loading, setLoading] = useState(true);
   const [profileAgeBand, setProfileAgeBand] = useState<string | null>(null);
 
@@ -135,14 +134,6 @@ export default function MovementMapScreen() {
           <View style={[styles.mapPanel, !isWide && styles.mapPanelNarrow]}>
             <View style={[styles.panelLead, !isWide && styles.panelLeadNarrow]}>
               <Text style={styles.panelInstruction}>Select a highlighted area to view its details.</Text>
-              <View style={styles.segmented} testID="movement-map-view-toggle">
-                <Pressable onPress={() => setView("front")} style={[styles.segment, view === "front" && styles.segmentActive]} testID="movement-map-front">
-                  <Text style={[styles.segmentText, view === "front" && styles.segmentTextActive]}>Front</Text>
-                </Pressable>
-                <Pressable onPress={() => setView("back")} style={[styles.segment, view === "back" && styles.segmentActive]} testID="movement-map-back-view">
-                  <Text style={[styles.segmentText, view === "back" && styles.segmentTextActive]}>Back</Text>
-                </Pressable>
-              </View>
             </View>
 
             <View style={[styles.legend, isWide && styles.legendWide]}>
@@ -162,8 +153,7 @@ export default function MovementMapScreen() {
 
             <View style={styles.panelDivider} />
 
-            {view === "front" ? (
-              <View style={[styles.workspace, isWide && styles.workspaceWide]}>
+            <View style={[styles.workspace, isWide && styles.workspaceWide]}>
                 <View style={[styles.anatomyColumn, isWide && styles.anatomyColumnWide]}>
                   <View style={[styles.mapCanvas, { height: anatomyHeight }]}>
                     <Image source={ageAnatomy.source} resizeMode="contain" style={styles.anatomyImage} accessibilityLabel={ageAnatomy.viewLabel} />
@@ -241,15 +231,7 @@ export default function MovementMapScreen() {
                     <Text style={styles.selectButtonText}>Select another area</Text>
                   </Pressable>
                 </View>
-              </View>
-            ) : (
-              <View style={styles.backUnavailable} testID="movement-map-back-unavailable">
-                <View style={styles.backIcon}><Ionicons name="body-outline" size={52} color={colors.brandPrimary} /></View>
-                <Text style={styles.backTitle}>Front-view map available</Text>
-                <Text style={styles.backText}>This assessment did not collect a clinical back view, so Rehyn will not infer one. Use the Front view for the captured findings.</Text>
-                <Pressable onPress={() => setView("front")} style={styles.frontButton}><Text style={styles.frontButtonText}>Return to Front</Text></Pressable>
-              </View>
-            )}
+            </View>
           </View>
 
           <View style={styles.planSection}>
@@ -285,11 +267,6 @@ const styles = StyleSheet.create({
   panelLead: { minHeight: 58, flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: spacing.lg },
   panelLeadNarrow: { flexDirection: "column", alignItems: "stretch", gap: spacing.md },
   panelInstruction: { flex: 1, fontSize: 17, lineHeight: 24, fontWeight: "800", color: "#174833" },
-  segmented: { alignSelf: "flex-end", flexDirection: "row", borderWidth: 1, borderColor: "#C8CEC9", borderRadius: radius.pill, padding: 4, backgroundColor: "#FFFFFF" },
-  segment: { minWidth: 112, minHeight: 48, alignItems: "center", justifyContent: "center", borderRadius: radius.pill },
-  segmentActive: { backgroundColor: "#07543B" },
-  segmentText: { color: "#244738", fontSize: 16, fontWeight: "700" },
-  segmentTextActive: { color: "#FFFFFF" },
   legend: { flexDirection: "row", flexWrap: "wrap", gap: spacing.md, marginTop: spacing.md },
   legendWide: { justifyContent: "space-between", paddingRight: 80 },
   legendItem: { minWidth: 180, flexDirection: "row", alignItems: "center", gap: spacing.sm },
@@ -330,12 +307,6 @@ const styles = StyleSheet.create({
   selectButton: { minHeight: 54, marginTop: spacing.xl, borderWidth: 1, borderColor: colors.brandPrimary, borderRadius: radius.sm, alignItems: "center", justifyContent: "center" },
   selectButtonWide: { marginTop: "auto" },
   selectButtonText: { color: colors.brandPrimary, fontSize: 16, fontWeight: "800" },
-  backUnavailable: { minHeight: 600, alignItems: "center", justifyContent: "center", paddingHorizontal: spacing.xl },
-  backIcon: { width: 92, height: 92, borderRadius: 46, alignItems: "center", justifyContent: "center", backgroundColor: "#EDF4EF" },
-  backTitle: { marginTop: spacing.md, fontSize: 24, fontWeight: "800", color: "#164631", textAlign: "center" },
-  backText: { maxWidth: 560, marginTop: spacing.sm, fontSize: 15, lineHeight: 23, color: colors.onSurfaceSecondary, textAlign: "center" },
-  frontButton: { marginTop: spacing.lg, minHeight: 48, borderWidth: 1, borderColor: colors.brandPrimary, borderRadius: radius.sm, paddingHorizontal: spacing.xl, alignItems: "center", justifyContent: "center" },
-  frontButtonText: { color: colors.brandPrimary, fontWeight: "800" },
   planSection: { marginTop: spacing.xl, borderWidth: 1, borderColor: "#BFD2C4", borderRadius: radius.sm, backgroundColor: "#F7FAF7", padding: spacing.xl },
   planEyebrow: { fontSize: 13, fontWeight: "900", color: colors.brandPrimary },
   planTitle: { marginTop: spacing.sm, fontSize: 31, lineHeight: 38, fontWeight: "800", color: "#164631" },

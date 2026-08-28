@@ -23,7 +23,7 @@ def test_patient_tabs_are_home_journey_and_alira_only():
 
 def test_home_launches_standardized_initial_assessment():
     home = read("frontend/app/(tabs)/index.tsx")
-    assert '"Initial Assessment"' in home
+    assert '"Start Initial Assessment"' in home
     assert 'target: "assessment", mode: isInitialAssessment ? "initial" : "followup"' in home
     assert "same seven guided arm, hand, and walking observations" in home
     assert 'pathname: "/session-check"' in home
@@ -33,7 +33,6 @@ def test_home_becomes_next_assessment_after_initial_completion():
     home = read("frontend/app/(tabs)/index.tsx")
     journey = read("frontend/app/(tabs)/journey.tsx")
     assert 'history.some((item) => item.assessment_package === "initial")' in home
-    assert '"Next Assessment"' in home
     assert '"Start Next Assessment"' in home
     assert 'mode: isInitialAssessment ? "initial" : "followup"' in home
     assert 'testID="home-view-latest-results"' in home
@@ -80,11 +79,15 @@ def test_onboarding_collects_pdf_feedback_fields():
     assert 'label: "Right lower limb (hip, leg or foot)"' in onboarding
     assert 'testID="onb-other-area-input"' in onboarding
     assert 'testID="onb-other-area-save"' in onboarding
+    assert 'label: "Other"' in onboarding
+    assert 'testID="onb-other-goal-input"' in onboarding
+    assert 'testID="onb-other-goal-save"' in onboarding
     assert 'key: "medical_conditions"' in onboarding
     assert 'testID="onb-other-condition-input"' in onboarding
     assert 'testID="onb-other-condition-save"' in onboarding
     assert "affected_areas: Optional[List[str]]" in server
     assert "affected_areas_other: Optional[str]" in server
+    assert "secondary_goals_other: Optional[str]" in server
     assert "medical_conditions: Optional[List[str]]" in server
     assert "medical_conditions_other: Optional[str]" in server
 
@@ -98,6 +101,28 @@ def test_onboarding_finish_recovers_stale_session_and_reports_failures():
     assert 'testID="onb-save-error"' in onboarding
     assert "router.replace(\"/\")" in onboarding
     assert 'uid && !headers.has("X-User-Id")' in auth
+
+
+def test_journey_prioritizes_patient_story_and_map_uses_captured_view_only():
+    journey = read("frontend/app/(tabs)/journey.tsx")
+    movement_map = read("frontend/app/movement-map.tsx")
+    assert journey.index("Journal & milestones") < journey.index("Learn about stroke recovery")
+    assert journey.index("Assessment history") < journey.index("Learn about stroke recovery")
+    assert 'testID="movement-map-back-view"' not in movement_map
+    assert "Front-view map available" not in movement_map
+
+
+def test_display_preferences_are_shared_and_brightness_is_adjustable():
+    root_layout = read("frontend/app/_layout.tsx")
+    display = read("frontend/src/displayPreferences.tsx")
+    settings = read("frontend/app/(tabs)/settings.tsx")
+    preferences = read("frontend/src/userPreferences.ts")
+    assert "DisplayPreferencesProvider" in root_layout
+    assert "subscribeUserPreferences" in display
+    assert 'testID="display-brightness-overlay"' in display
+    assert 'testID="settings-brightness-slider"' in settings
+    assert 'title="Dark mode"' in settings
+    assert "brightness: 94" in preferences
 
 
 def test_each_home_session_confirms_patient_or_carer():

@@ -64,6 +64,7 @@ const STEPS: Step[] = [
       { value: "cook", label: "Cook", emoji: "🍳" },
       { value: "play_music", label: "Play music", emoji: "🎸" },
       { value: "exercise", label: "Exercise / sports", emoji: "🏃" },
+      { value: "other", label: "Other" },
     ], optional: true },
   { key: "medical_conditions", question: "Do you have any pre-existing medical conditions?", helper: "Select all that apply. This helps us keep guidance appropriate and safe.", type: "multi",
     options: [
@@ -90,6 +91,8 @@ export default function OnboardingScreen() {
   const [textInput, setTextInput] = useState("");
   const [otherAreaText, setOtherAreaText] = useState("");
   const [showOtherArea, setShowOtherArea] = useState(false);
+  const [otherGoalText, setOtherGoalText] = useState("");
+  const [showOtherGoal, setShowOtherGoal] = useState(false);
   const [otherConditionText, setOtherConditionText] = useState("");
   const [showOtherCondition, setShowOtherCondition] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -245,6 +248,16 @@ export default function OnboardingScreen() {
                     }
                     return;
                   }
+                  if (step.key === "secondary_goals" && o.value === "other") {
+                    if (active) {
+                      setVal(step.key, selected.filter((s) => s !== "other"));
+                      setVal("secondary_goals_other", undefined);
+                      setOtherGoalText("");
+                    } else {
+                      setShowOtherGoal(true);
+                    }
+                    return;
+                  }
                   let next: string[];
                   if (o.value === "none") {
                     next = active ? [] : ["none"];
@@ -359,6 +372,63 @@ export default function OnboardingScreen() {
                   setShowOtherArea(false);
                 }}
                 style={[styles.modalSave, !otherAreaText.trim() && styles.modalSaveDisabled]}
+              >
+                <Text style={styles.modalSaveText}>Save</Text>
+              </Pressable>
+            </View>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
+
+      <Modal
+        visible={showOtherGoal}
+        transparent
+        animationType="fade"
+        onRequestClose={() => {
+          setShowOtherGoal(false);
+          setOtherGoalText("");
+        }}
+      >
+        <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={styles.modalBackdrop}>
+          <View style={styles.modalPanel}>
+            <Text style={styles.modalTitle}>Tell us about your other goal</Text>
+            <Text style={styles.modalHelper}>Describe something you would like to be able to do again.</Text>
+            <TextInput
+              testID="onb-other-goal-input"
+              value={otherGoalText}
+              onChangeText={setOtherGoalText}
+              placeholder="Type your goal"
+              placeholderTextColor={colors.onSurfaceTertiary}
+              multiline
+              autoFocus
+              style={styles.modalInput}
+            />
+            <View style={styles.modalActions}>
+              <Pressable
+                testID="onb-other-goal-cancel"
+                onPress={() => {
+                  setShowOtherGoal(false);
+                  setOtherGoalText("");
+                }}
+                style={styles.modalCancel}
+              >
+                <Text style={styles.modalCancelText}>Cancel</Text>
+              </Pressable>
+              <Pressable
+                testID="onb-other-goal-save"
+                disabled={!otherGoalText.trim()}
+                onPress={() => {
+                  const description = otherGoalText.trim();
+                  if (!description) return;
+                  const selected: string[] = values.secondary_goals || [];
+                  setValues((prev) => ({
+                    ...prev,
+                    secondary_goals: [...selected.filter((item) => item !== "other"), "other"],
+                    secondary_goals_other: description,
+                  }));
+                  setShowOtherGoal(false);
+                }}
+                style={[styles.modalSave, !otherGoalText.trim() && styles.modalSaveDisabled]}
               >
                 <Text style={styles.modalSaveText}>Save</Text>
               </Pressable>

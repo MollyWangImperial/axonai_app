@@ -9,6 +9,7 @@ import { useIconFonts } from "@/src/hooks/use-icon-fonts";
 import { getCachedUser, authedFetch, cachePatientOnboarding, onboardingCompleteKey, recoverSingleAccountCache } from "@/src/auth";
 import { preloadAssessmentMediaPipe } from "@/src/assessmentPreload";
 import { storage } from "@/src/utils/storage";
+import { DisplayPreferencesProvider, useDisplayPreferences } from "@/src/displayPreferences";
 
 LogBox.ignoreAllLogs(true);
 SplashScreen.preventAutoHideAsync();
@@ -73,9 +74,20 @@ export default function RootLayout() {
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
       <SafeAreaProvider>
-        <AuthGate />
-        <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: "#FDFDFD" } }} />
+        <DisplayPreferencesProvider>
+          <AppStack />
+        </DisplayPreferencesProvider>
       </SafeAreaProvider>
     </GestureHandlerRootView>
+  );
+}
+
+function AppStack() {
+  const { palette } = useDisplayPreferences();
+  return (
+    <>
+      <AuthGate />
+      <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: palette.page } }} />
+    </>
   );
 }

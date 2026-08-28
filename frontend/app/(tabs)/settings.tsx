@@ -1,5 +1,5 @@
-import { useCallback, useMemo, useState } from "react";
-import { Appearance, Modal, Platform, Pressable, ScrollView, StyleSheet, Switch, Text, View } from "react-native";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Modal, Platform, Pressable, ScrollView, StyleSheet, Switch, Text, View } from "react-native";
 import { useFocusEffect, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
@@ -7,8 +7,9 @@ import { Ionicons } from "@expo/vector-icons";
 import { colors, radius, spacing } from "@/src/theme";
 import { DEFAULT_SETTINGS, ensurePermission, loadSettings, rescheduleReminders, saveSettings } from "@/src/utils/notifications";
 import { loadUserPreferences, saveUserPreference, TEXT_SIZES, textScaleFor, TextSizePreference, UserPreferences } from "@/src/userPreferences";
+import { DisplayPalette, useDisplayPreferences } from "@/src/displayPreferences";
 
-type Palette = { page: string; surface: string; soft: string; text: string; muted: string; border: string };
+type Palette = DisplayPalette;
 
 export default function SettingsScreen() {
   const insets = useSafeAreaInsets();
@@ -17,6 +18,7 @@ export default function SettingsScreen() {
   const [preferences, setPreferences] = useState<UserPreferences | null>(null);
   const [showTextSizes, setShowTextSizes] = useState(false);
   const [notice, setNotice] = useState("");
+  const { palette } = useDisplayPreferences();
 
   useFocusEffect(useCallback(() => {
     void (async () => {
@@ -26,16 +28,7 @@ export default function SettingsScreen() {
     })();
   }, []));
 
-  const dark = Boolean(preferences?.darkMode);
   const scale = textScaleFor(preferences?.textSize || "Comfortable");
-  const palette = useMemo<Palette>(() => ({
-    page: dark ? "#10201B" : "#F8FAF9",
-    surface: dark ? "#193028" : "#FFFFFF",
-    soft: dark ? "#213A32" : "#ECF5F2",
-    text: dark ? "#F3F8F6" : "#173D35",
-    muted: dark ? "#B8C9C3" : colors.onSurfaceTertiary,
-    border: dark ? "#355047" : colors.divider,
-  }), [dark]);
   const openSection = (section: string) => router.push({ pathname: "/account-center" as never, params: { section } });
 
   const toggleReminders = async (enabled: boolean) => {
@@ -69,11 +62,6 @@ export default function SettingsScreen() {
   };
 
   const toggleDarkMode = async (enabled: boolean) => {
-    if (Platform.OS === "web") {
-      document.documentElement.style.colorScheme = enabled ? "dark" : "light";
-    } else {
-      Appearance.setColorScheme(enabled ? "dark" : "light");
-    }
     await updatePreference("darkMode", enabled, enabled ? "Dark mode is on." : "Light mode is on.");
   };
 
@@ -105,6 +93,13 @@ export default function SettingsScreen() {
             <SettingsToggle testID="settings-reminders" icon="notifications-outline" title="Reminders" subtitle="Sessions and gentle check-ins" value={reminders} onValueChange={toggleReminders} palette={palette} scale={scale} />
             <Divider palette={palette} />
             <SettingsToggle testID="settings-dark-mode" icon="moon-outline" title="Dark mode" subtitle="Reduce brightness in low light" value={preferences.darkMode} onValueChange={toggleDarkMode} palette={palette} scale={scale} />
+            <Divider palette={palette} />
+            <BrightnessSetting
+              value={preferences.brightness}
+              onCommit={(value) => updatePreference("brightness", value, `App brightness is ${value}%.`)}
+              palette={palette}
+              scale={scale}
+            />
             <Divider palette={palette} />
             <SettingsLink testID="settings-text-size" icon="reorder-three-outline" title="Text size" subtitle={preferences.textSize} onPress={() => setShowTextSizes(true)} palette={palette} scale={scale} />
             <Divider palette={palette} />
@@ -162,6 +157,69 @@ function SettingsLink({ icon, title, subtitle, onPress, testID, palette, scale }
 
 function Divider({ palette }: { palette: Palette }) { return <View style={[styles.divider, { backgroundColor: palette.border }]} />; }
 
+function BrightnessSetting({ value, onCommit, palette, scale }: { value: number; onCommit: (value: number) => void; palette: Palette; scale: number }) {
+  const [draft, setDraft] = useState(value);
+  const trackWidth = useRef(1);
+  const draftRef = useRef(value);
+
+  useEffect(() => {
+    setDraft(value);
+    draftRef.current = value;
+  }, [value]);
+
+  const setFromPosition = (x: number, commit: boolean) => {
+    const ratio = Math.max(0, Math.min(1, x / trackWidth.current));
+    const next = Math.round((70 + ratio * 30) / 2) * 2;
+    draftRef.current = next;
+    setDraft(next);
+    if (commit) onCommit(next);
+  };
+
+  const adjust = (amount: number) => {
+    const next = Math.max(70, Math.min(100, draftRef.current + amount));
+    draftRef.current = next;
+    setDraft(next);
+    onCommit(next);
+  };
+
+  const ratio = (draft - 70) / 30;
+  return (
+    <View style={styles.brightnessSetting}>
+      <View style={styles.brightnessHeading}>
+        <View style={[styles.settingIcon, { backgroundColor: palette.soft }]}><Ionicons name="sunny-outline" size={22} color={palette.brand} /></View>
+        <View style={styles.settingCopy}>
+          <Text style={[styles.settingTitle, { color: palette.text, fontSize: 16 * scale }]}>App brightness</Text>
+          <Text style={[styles.settingSubtitle, { color: palette.muted, fontSize: 12 * scale, lineHeight: 17 * scale }]}>Choose a softer or brighter screen</Text>
+        </View>
+        <Text testID="settings-brightness-value" style={[styles.brightnessValue, { color: palette.text }]}>{draft}%</Text>
+      </View>
+      <View style={styles.brightnessControls}>
+        <Pressable accessibilityLabel="Reduce brightness" onPress={() => adjust(-4)} style={styles.brightnessIconButton}><Ionicons name="sunny-outline" size={17} color={palette.muted} /></Pressable>
+        <View
+          testID="settings-brightness-slider"
+          accessible
+          accessibilityRole="adjustable"
+          accessibilityLabel="App brightness"
+          accessibilityValue={{ min: 70, max: 100, now: draft, text: `${draft}%` }}
+          accessibilityActions={[{ name: "increment" }, { name: "decrement" }]}
+          onAccessibilityAction={(event) => adjust(event.nativeEvent.actionName === "increment" ? 4 : -4)}
+          onLayout={(event) => { trackWidth.current = Math.max(1, event.nativeEvent.layout.width); }}
+          onStartShouldSetResponder={() => true}
+          onMoveShouldSetResponder={() => true}
+          onResponderGrant={(event) => setFromPosition(event.nativeEvent.locationX, false)}
+          onResponderMove={(event) => setFromPosition(event.nativeEvent.locationX, false)}
+          onResponderRelease={(event) => setFromPosition(event.nativeEvent.locationX, true)}
+          style={[styles.brightnessTrack, { backgroundColor: palette.soft }]}
+        >
+          <View style={[styles.brightnessFill, { width: `${ratio * 100}%`, backgroundColor: palette.brand }]} />
+          <View style={[styles.brightnessThumb, { left: `${ratio * 100}%`, backgroundColor: palette.surface, borderColor: palette.brand }]} />
+        </View>
+        <Pressable accessibilityLabel="Increase brightness" onPress={() => adjust(4)} style={styles.brightnessIconButton}><Ionicons name="sunny" size={23} color={palette.brand} /></Pressable>
+      </View>
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
   container: { flex: 1 }, center: { flex: 1, alignItems: "center", justifyContent: "center" },
   page: { paddingHorizontal: spacing.md, paddingBottom: 36 }, inner: { width: "100%", maxWidth: 620, alignSelf: "center", gap: spacing.md },
@@ -172,6 +230,14 @@ const styles = StyleSheet.create({
   group: { borderRadius: radius.md, borderWidth: 1, paddingHorizontal: spacing.md, paddingBottom: spacing.xs }, groupLabel: { fontSize: 11, fontWeight: "800", paddingTop: spacing.sm, paddingBottom: 2 },
   settingRow: { minHeight: 82, flexDirection: "row", alignItems: "center", gap: spacing.sm }, settingIcon: { width: 44, height: 44, borderRadius: radius.sm, alignItems: "center", justifyContent: "center" },
   settingCopy: { flex: 1, minWidth: 0 }, settingTitle: { fontWeight: "800" }, settingSubtitle: { marginTop: 2 }, divider: { height: 1, marginLeft: 56 }, version: { textAlign: "center", marginVertical: spacing.sm },
+  brightnessSetting: { minHeight: 112, justifyContent: "center", gap: spacing.sm, paddingVertical: spacing.sm },
+  brightnessHeading: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
+  brightnessValue: { minWidth: 44, textAlign: "right", fontSize: 14, fontWeight: "800" },
+  brightnessControls: { flexDirection: "row", alignItems: "center", gap: spacing.sm, paddingLeft: 56 },
+  brightnessIconButton: { width: 34, height: 34, alignItems: "center", justifyContent: "center" },
+  brightnessTrack: { flex: 1, height: 12, borderRadius: 6, position: "relative" },
+  brightnessFill: { height: "100%", borderRadius: 6 },
+  brightnessThumb: { position: "absolute", top: -6, width: 24, height: 24, marginLeft: -12, borderRadius: 12, borderWidth: 2 },
   modalScrim: { flex: 1, backgroundColor: "rgba(8,18,14,0.58)", alignItems: "center", justifyContent: "center", padding: spacing.lg },
   modalCard: { width: "100%", maxWidth: 430, borderRadius: radius.md, borderWidth: 1, padding: spacing.lg, gap: spacing.sm }, modalTitle: { fontWeight: "800" }, modalBody: { lineHeight: 20, marginBottom: spacing.xs },
   sizeOption: { minHeight: 58, borderWidth: 1, borderRadius: radius.sm, flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: spacing.md }, sizeOptionSelected: { borderColor: colors.brandPrimary, borderWidth: 2 }, sizeLabel: { fontWeight: "700" },

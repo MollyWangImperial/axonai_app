@@ -1,28 +1,29 @@
 import { Tabs } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { Platform } from "react-native";
-import { colors } from "@/src/theme";
+import { useDisplayPreferences } from "@/src/displayPreferences";
 
 export default function TabsLayout() {
   const isWeb = Platform.OS === "web";
+  const { palette, scale } = useDisplayPreferences();
 
   return (
     <Tabs
       screenOptions={{
         headerShown: false,
-        tabBarActiveTintColor: colors.brandPrimary,
-        tabBarInactiveTintColor: colors.onSurfaceTertiary,
+        tabBarActiveTintColor: palette.brand,
+        tabBarInactiveTintColor: palette.muted,
         tabBarStyle: {
-          backgroundColor: colors.surface,
-          borderTopColor: colors.divider,
+          backgroundColor: palette.surface,
+          borderTopColor: palette.border,
           height: isWeb ? 80 : Platform.OS === "ios" ? 88 : 64,
           paddingBottom: isWeb ? 14 : Platform.OS === "ios" ? 28 : 8,
           paddingTop: isWeb ? 7 : 8,
         },
         tabBarItemStyle: { minHeight: 58 },
         tabBarLabelStyle: {
-          fontSize: 11,
-          lineHeight: 16,
+          fontSize: 11 * scale,
+          lineHeight: 16 * scale,
           fontWeight: "600",
           marginBottom: isWeb ? 2 : 0,
         },
