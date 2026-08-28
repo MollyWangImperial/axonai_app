@@ -869,6 +869,190 @@ def test_analysis_pipeline_does_not_claim_muscle_activation_without_solver_outpu
     assert report["model_outputs"]["activation_available"] is False
 
 
+def test_shadow_video_disagreement_blocks_plan_without_overwriting_architecture(monkeypatch):
+    assessment_id = "shadow-review-disagreement-test"
+    therapist_id = "u_shadow_review_therapist"
+    server.LOCAL_USERS[therapist_id] = {
+        "id": therapist_id,
+        "email": "shadow-review-therapist@example.test",
+        "name": "Review Therapist",
+        "role": "therapist",
+        "clinical_review_approved": True,
+        "credits": 100,
+        "created_at": "2026-08-28T00:00:00+00:00",
+    }
+    server.LOCAL_ASSESSMENTS.append({
+        "id": assessment_id,
+        "created_at": "2026-08-28T00:00:00+00:00",
+        "affected_side": "right",
+        "assessment_package": "test_package",
+        "task_results": [{
+            "task_id": "T1", "completed_steps": 1, "total_steps": 1,
+            "duration_ms": 1000, "steps": [], "metrics": {},
+        }],
+        "functional_issues": [{
+            "code": "NO_ISSUES", "label": "No failed movement steps identified",
+            "description": "All observed steps were completed.", "source": "camera",
+            "severity": "mild", "related_task": "ALL",
+        }],
+        "rehab_plan": [],
+        "patient_parameters": {},
+        "clinical_review_gate": {"status": "awaiting_model_analysis", "rehab_access": "blocked"},
+        "model_analysis": {"status": "queued", "tasks": [{"task_id": "T1", "video_id": "video-t1"}]},
+        "motion_data": {"frames": []},
+    })
+    monkeypatch.setattr(server, "ANALYSIS_WORKER_TOKEN", "test-worker-token")
+    model_payload = {
+        "status": "completed",
+        "per_task": [{
+            "task_id": "T1",
+            "quality": {
+                "kinematics_valid": True, "model_scaled": True,
+                "external_loads_valid": True, "residuals_within_threshold": True,
+            },
+            "external_load_method": "gravity_only_seated_no_external_object",
+            "muscle_activations": {"anterior_deltoid": {"mean": 0.3, "peak": 0.6}},
+            "functional_findings": [],
+            "provenance": {
+                "solver": "OpenSim MocoInverse", "model_version": "upper-extremity-1.0",
+                "source_video_id": "video-t1", "code_version": "abc123",
+            },
+        }],
+    }
+    shadow_payload = {
+        "status": "completed",
+        "reviewer": {"provider": "test", "model": "vision-reviewer"},
+        "tasks_reviewed": ["T1"],
+        "observations": [{
+            "finding_code": "UPPER_LIMB_LIMITATION",
+            "label": "Reach looked limited",
+            "domain": "upper_limb",
+            "severity": "moderate",
+            "confidence": 0.91,
+            "task_ids": ["T1"],
+            "evidence": "Forward progression stopped early in the sampled sequence.",
+        }],
+    }
+    try:
+        with TestClient(server.app) as client:
+            model_response = client.post(
+                f"/api/assessment/{assessment_id}/model-results",
+                json=model_payload,
+                headers={"X-Analysis-Worker-Token": "test-worker-token"},
+            )
+            assert model_response.status_code == 200
+            assert model_response.json()["architecture_comparison_status"] == "reviewer_unavailable"
+            review_response = client.post(
+                f"/api/assessment/{assessment_id}/shadow-review-results",
+                json=shadow_payload,
+                headers={"X-Analysis-Worker-Token": "test-worker-token"},
+            )
+            assert review_response.status_code == 200
+            assert review_response.json()["comparison_status"] == "disagreement"
+            assert review_response.json()["automatic_change_applied"] is False
+            patient_adjudication = client.post(
+                f"/api/assessment/{assessment_id}/clinical-review-adjudication",
+                json={"verdict": "reviewer_correct", "notes": "Visible reach limitation confirmed."},
+            )
+            assert patient_adjudication.status_code == 403
+            therapist_adjudication = client.post(
+                f"/api/assessment/{assessment_id}/clinical-review-adjudication",
+                json={"verdict": "reviewer_correct", "notes": "Visible reach limitation confirmed."},
+                headers={"X-User-Id": therapist_id},
+            )
+            assert therapist_adjudication.status_code == 200
+            assert therapist_adjudication.json()["candidate_status"] == "adjudicated_needs_cohort_validation"
+            assert therapist_adjudication.json()["automatic_change_applied"] is False
+        stored = next(item for item in server.LOCAL_ASSESSMENTS if item.get("id") == assessment_id)
+        assert stored["clinical_review_gate"]["rehab_access"] == "blocked"
+        assert stored["improvement_candidate"]["status"] == "adjudicated_needs_cohort_validation"
+        assert stored["musculoskeletal_outputs"]["functional_findings"] == []
+    finally:
+        server.LOCAL_ASSESSMENTS[:] = [
+            item for item in server.LOCAL_ASSESSMENTS if item.get("id") != assessment_id
+        ]
+        server.LOCAL_USERS.pop(therapist_id, None)
+
+
+def test_shadow_review_waits_for_trusted_model_then_records_agreement(monkeypatch):
+    assessment_id = "shadow-review-before-model-test"
+    server.LOCAL_ASSESSMENTS.append({
+        "id": assessment_id,
+        "created_at": "2026-08-28T00:00:00+00:00",
+        "affected_side": "right",
+        "assessment_package": "test_package",
+        "task_results": [{
+            "task_id": "T1", "completed_steps": 1, "total_steps": 1,
+            "duration_ms": 1000, "steps": [], "metrics": {},
+        }],
+        "functional_issues": [{
+            "code": "NO_ISSUES", "label": "No failed movement steps identified",
+            "description": "All observed steps were completed.", "source": "camera",
+            "severity": "mild", "related_task": "ALL",
+        }],
+        "rehab_plan": [],
+        "patient_parameters": {},
+        "clinical_review_gate": {"status": "awaiting_model_analysis", "rehab_access": "blocked"},
+        "model_analysis": {"status": "queued", "tasks": [{"task_id": "T1", "video_id": "video-t1"}]},
+        "motion_data": {"frames": []},
+    })
+    monkeypatch.setattr(server, "ANALYSIS_WORKER_TOKEN", "test-worker-token")
+    shadow_payload = {
+        "status": "completed",
+        "reviewer": {"provider": "test", "model": "vision-reviewer"},
+        "tasks_reviewed": ["T1"],
+        "observations": [{
+            "finding_code": "UPPER_LIMB_LIMITATION", "label": "Reach looked limited",
+            "domain": "upper_limb", "severity": "moderate", "confidence": 0.9,
+            "task_ids": ["T1"], "evidence": "Reach progression appeared limited.",
+        }],
+    }
+    model_payload = {
+        "status": "completed",
+        "per_task": [{
+            "task_id": "T1",
+            "quality": {
+                "kinematics_valid": True, "model_scaled": True,
+                "external_loads_valid": True, "residuals_within_threshold": True,
+            },
+            "external_load_method": "gravity_only_seated_no_external_object",
+            "muscle_activations": {"anterior_deltoid": {"mean": 0.5, "peak": 0.8}},
+            "functional_findings": [{
+                "code": "UL_REVIEW", "label": "Reach pattern for review",
+                "domain": "upper_limb", "severity": "moderate",
+            }],
+            "provenance": {
+                "solver": "OpenSim MocoInverse", "model_version": "upper-extremity-1.0",
+                "source_video_id": "video-t1", "code_version": "abc123",
+            },
+        }],
+    }
+    try:
+        with TestClient(server.app) as client:
+            review_response = client.post(
+                f"/api/assessment/{assessment_id}/shadow-review-results",
+                json=shadow_payload,
+                headers={"X-Analysis-Worker-Token": "test-worker-token"},
+            )
+            assert review_response.status_code == 200
+            assert review_response.json()["comparison_status"] == "awaiting_trusted_architecture"
+            model_response = client.post(
+                f"/api/assessment/{assessment_id}/model-results",
+                json=model_payload,
+                headers={"X-Analysis-Worker-Token": "test-worker-token"},
+            )
+            assert model_response.status_code == 200
+            assert model_response.json()["architecture_comparison_status"] == "agreement"
+        stored = next(item for item in server.LOCAL_ASSESSMENTS if item.get("id") == assessment_id)
+        assert stored["architecture_comparison"]["status"] == "agreement"
+        assert stored["improvement_candidate"]["status"] == "not_created"
+        assert stored["clinical_review_gate"]["rehab_access"] == "allowed"
+    finally:
+        server.LOCAL_ASSESSMENTS[:] = [
+            item for item in server.LOCAL_ASSESSMENTS if item.get("id") != assessment_id
+        ]
+
+
 def test_analysis_pipeline_accepts_only_quality_validated_solver_activation():
     report = build_analysis_pipeline(
         {},

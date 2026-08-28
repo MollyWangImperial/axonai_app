@@ -26,6 +26,11 @@ from typing import Any
 
 import numpy as np
 
+try:
+    from backend.video_shadow_reviewer import SHADOW_REVIEWER
+except ImportError:
+    from video_shadow_reviewer import SHADOW_REVIEWER
+
 
 HOST = os.environ.get("REHYN_GPU_WORKER_HOST", "127.0.0.1")
 PORT = int(os.environ.get("REHYN_GPU_WORKER_PORT", "8003"))
@@ -463,6 +468,21 @@ def run_jobs() -> None:
                     callback(job, model_failure, "model-stage-results")
                 except Exception:
                     pass
+
+            try:
+                shadow_result = SHADOW_REVIEWER.analyze(job)
+                callback(job, shadow_result, "shadow-review-results")
+            except Exception as exc:
+                shadow_failure = {
+                    "status": "failed",
+                    "reviewer": {"model": SHADOW_REVIEWER.model},
+                    "error": str(exc),
+                    "traceback": traceback.format_exc(limit=8),
+                }
+                try:
+                    callback(job, shadow_failure, "shadow-review-results")
+                except Exception:
+                    pass
         finally:
             JOBS.task_done()
 
@@ -481,6 +501,7 @@ class Handler(BaseHTTPRequestHandler):
             self._json(200, {
                 "cuda": get_runtime().status(),
                 "musculoskeletal": MOCO_RUNTIME.status(),
+                "clinical_shadow_review": SHADOW_REVIEWER.status(),
                 "queued_jobs": JOBS.qsize(),
             })
         else:
@@ -510,5 +531,9 @@ class Handler(BaseHTTPRequestHandler):
 if __name__ == "__main__":
     runtime = get_runtime()
     threading.Thread(target=run_jobs, daemon=True).start()
-    print(json.dumps({"cuda": runtime.status(), "musculoskeletal": MOCO_RUNTIME.status()}), flush=True)
+    print(json.dumps({
+        "cuda": runtime.status(),
+        "musculoskeletal": MOCO_RUNTIME.status(),
+        "clinical_shadow_review": SHADOW_REVIEWER.status(),
+    }), flush=True)
     ThreadingHTTPServer((HOST, PORT), Handler).serve_forever()

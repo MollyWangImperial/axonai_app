@@ -47,7 +47,9 @@ def test_local_worker_runs_cuda_and_moco_as_independent_callbacks():
     source = (Path(__file__).resolve().parents[1] / "local_gpu_worker.py").read_text(encoding="utf-8")
     assert 'callback(job, gpu_result, "gpu-stage-results")' in source
     assert 'callback(job, model_result, "model-stage-results")' in source
+    assert 'callback(job, shadow_result, "shadow-review-results")' in source
     assert "MOCO_RUNTIME.analyze(job)" in source
+    assert "SHADOW_REVIEWER.analyze(job)" in source
     assert "OpenSim Moco patient-informed gait comparison" in source
     assert '"model_scaled": False' in source
     assert "not subject-scaled" in source

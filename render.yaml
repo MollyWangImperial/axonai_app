@@ -26,6 +26,8 @@ services:
         sync: false
       - key: ANALYSIS_WORKER_CF_CLIENT_SECRET
         sync: false
+      - key: CLINICAL_REVIEW_APPROVER_IDS
+        sync: false
       - key: R2_ACCOUNT_ID
         sync: false
       - key: R2_ACCESS_KEY_ID

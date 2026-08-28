@@ -46,6 +46,12 @@ try:
     )
     from backend.object_storage import task_video_object_storage
     from backend.patient_insights import build_patient_insights
+    from backend.clinical_shadow_review import (
+        apply_shadow_review_hold,
+        build_improvement_candidate,
+        compare_architecture_to_shadow_review,
+        normalize_shadow_review,
+    )
 except ImportError:
     from rehab_assessment import (
         build_biomechanical_estimates,
@@ -73,6 +79,12 @@ except ImportError:
     )
     from object_storage import task_video_object_storage
     from patient_insights import build_patient_insights
+    from clinical_shadow_review import (
+        apply_shadow_review_hold,
+        build_improvement_candidate,
+        compare_architecture_to_shadow_review,
+        normalize_shadow_review,
+    )
 
 try:
     from openai import OpenAI
@@ -225,6 +237,22 @@ class MusculoskeletalStageResultSubmit(BaseModel):
     reporting_boundary: str = ""
     error: Optional[str] = None
     traceback: Optional[str] = None
+
+
+class ShadowReviewResultSubmit(BaseModel):
+    status: str
+    reviewer: Dict[str, Any] = Field(default_factory=dict)
+    tasks_reviewed: List[str] = Field(default_factory=list)
+    observations: List[Dict[str, Any]] = Field(default_factory=list)
+    quality_concerns: List[Dict[str, Any]] = Field(default_factory=list)
+    urgent_review_flags: List[Dict[str, Any]] = Field(default_factory=list)
+    created_at: Optional[str] = None
+    error: Optional[str] = None
+
+
+class ShadowReviewAdjudicationSubmit(BaseModel):
+    verdict: str
+    notes: str = ""
 
 
 class FunctionalIssue(BaseModel):
@@ -1776,7 +1804,7 @@ def _assessment_patient_parameters(
     merged = dict(submitted or {})
     profile = user.get("profile") if isinstance(user, dict) and isinstance(user.get("profile"), dict) else {}
     if profile:
-        for key in ("age_band", "months_since_stroke", "side_affected", "affected_areas", "affected_areas_other", "dominant_hand", "mobility_level", "medical_conditions", "medical_conditions_other", "has_caregiver"):
+        for key in ("age_band", "months_since_stroke", "side_affected", "affected_areas", "affected_areas_other", "dominant_hand", "mobility_level", "medical_conditions", "medical_conditions_other", "has_caregiver", "ai_video_review_consent"):
             if profile.get(key) is not None:
                 merged.setdefault(key, profile[key])
         if not merged.get("patient_priorities"):
@@ -1818,6 +1846,15 @@ async def submit_assessment(payload: AssessmentSubmit, request: Request):
         ),
         "modeled_tasks": ["L6"] if walking_video_ready else [],
     }
+    shadow_review_status = "queued" if LOCAL_GPU_WORKER_URL and video_records else (
+        "waiting_for_video" if LOCAL_GPU_WORKER_URL else "not_configured"
+    )
+    model_analysis["clinical_shadow_review"] = {
+        "status": shadow_review_status,
+        "authoritative": False,
+        "can_change_patient_result": False,
+    }
+    clinical_shadow_review = normalize_shadow_review({"status": shadow_review_status})
     expected_task_count = len(ASSESSMENT_PACKAGES.get(payload.assessment_package, {}).get("tasks", []))
     collection_summary = patient_collection_summary(payload.task_results, expected_task_count)
     if payload.musculoskeletal_outputs:
@@ -1892,6 +1929,7 @@ async def submit_assessment(payload: AssessmentSubmit, request: Request):
         body_function_summary=body_function_summary,
     )
     doc = assessment.model_dump()
+    doc["clinical_shadow_review"] = clinical_shadow_review
     if payload.motion_data:
         doc["motion_data"] = payload.motion_data
     doc["patient_parameters"] = patient_parameters
@@ -2022,6 +2060,7 @@ async def get_assessment_analysis_status(assessment_id: str):
     model_analysis = doc.get("model_analysis") or {}
     gpu_stage = model_analysis.get("gpu_stage") or {}
     musculoskeletal_stage = model_analysis.get("musculoskeletal_stage") or {}
+    shadow_review_stage = model_analysis.get("clinical_shadow_review") or {}
     task_states = {
         task_id: str(task.get("status") or "unknown")
         for task_id, task in (gpu_stage.get("tasks") or {}).items()
@@ -2043,6 +2082,11 @@ async def get_assessment_analysis_status(assessment_id: str):
             "modeled_tasks": musculoskeletal_stage.get("modeled_tasks") or [],
             "solver": musculoskeletal_stage.get("solver"),
             "error": musculoskeletal_stage.get("error"),
+        },
+        "clinical_shadow_review": {
+            "status": shadow_review_stage.get("status", "not_configured"),
+            "authoritative": False,
+            "can_change_patient_result": False,
         },
     }
 
@@ -2098,6 +2142,44 @@ async def _set_musculoskeletal_stage(assessment_id: str, stage: Dict[str, Any]) 
                     item.get("model_analysis") or {},
                 )
                 break
+
+
+async def _assessment_document(assessment_id: str) -> Optional[Dict[str, Any]]:
+    try:
+        return await db.assessments.find_one({"id": assessment_id}, {"_id": 0})
+    except Exception as exc:
+        logger.warning(f"Mongo unavailable for assessment lookup; local fallback: {str(exc)[:120]}")
+        return next((item for item in LOCAL_ASSESSMENTS if item.get("id") == assessment_id), None)
+
+
+async def _update_assessment_fields(assessment_id: str, updates: Dict[str, Any]) -> None:
+    try:
+        await db.assessments.update_one({"id": assessment_id}, {"$set": updates})
+    except Exception as exc:
+        logger.warning(f"Mongo unavailable for assessment update; local fallback: {str(exc)[:120]}")
+        for item in LOCAL_ASSESSMENTS:
+            if item.get("id") != assessment_id:
+                continue
+            for key, value in updates.items():
+                if "." not in key:
+                    item[key] = value
+                    continue
+                root, child = key.split(".", 1)
+                item.setdefault(root, {})[child] = value
+            break
+
+
+def _trusted_architecture_complete(outputs: Dict[str, Any]) -> bool:
+    quality = outputs.get("quality") if isinstance(outputs.get("quality"), dict) else {}
+    return outputs.get("status") == "completed" and all(
+        quality.get(key) is True
+        for key in (
+            "kinematics_valid",
+            "model_scaled",
+            "external_loads_valid",
+            "residuals_within_threshold",
+        )
+    )
 
 
 async def _worker_video_sources(video_records: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -2297,6 +2379,174 @@ async def save_musculoskeletal_stage_results(
     }
 
 
+@api_router.post("/assessment/{assessment_id}/shadow-review-results")
+async def save_shadow_review_results(
+    assessment_id: str,
+    payload: ShadowReviewResultSubmit,
+    request: Request,
+):
+    """Store a non-authoritative video audit and triage architecture mismatches."""
+    _require_analysis_worker(request)
+    doc = await _assessment_document(assessment_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Assessment not found")
+
+    review = normalize_shadow_review(payload.model_dump(exclude_none=True))
+    outputs = doc.get("musculoskeletal_outputs") or {}
+    comparison = compare_architecture_to_shadow_review(
+        doc.get("functional_issues") or [],
+        outputs,
+        review,
+        architecture_complete=_trusted_architecture_complete(outputs),
+    )
+    candidate = build_improvement_candidate(assessment_id, comparison)
+    clinical_gate = apply_shadow_review_hold(
+        doc.get("clinical_review_gate") or {},
+        comparison,
+    )
+    updates: Dict[str, Any] = {
+        "clinical_shadow_review": review,
+        "architecture_comparison": comparison,
+        "improvement_candidate": candidate,
+        "clinical_review_gate": clinical_gate,
+        "model_analysis.clinical_shadow_review": {
+            "status": review.get("status"),
+            "reviewer": review.get("reviewer") or {},
+            "authoritative": False,
+            "can_change_patient_result": False,
+        },
+    }
+    if clinical_gate.get("rehab_access") == "blocked":
+        updates["rehab_plan"] = []
+    await _update_assessment_fields(assessment_id, updates)
+
+    if candidate.get("status") == "pending_clinical_adjudication":
+        case = {
+            **candidate,
+            "user_id": doc.get("user_id"),
+            "assessment_package": doc.get("assessment_package"),
+            "reviewer": review.get("reviewer") or {},
+        }
+        try:
+            await db.architecture_improvement_cases.update_one(
+                {"candidate_id": candidate["candidate_id"]},
+                {"$set": case},
+                upsert=True,
+            )
+        except Exception as exc:
+            logger.warning(f"Could not persist architecture review case: {str(exc)[:120]}")
+    return {
+        "assessment_id": assessment_id,
+        "review_status": review.get("status"),
+        "comparison_status": comparison.get("status"),
+        "rehab_plan_unlocked": clinical_gate.get("rehab_access") == "allowed",
+        "automatic_change_applied": False,
+    }
+
+
+@api_router.get("/assessment/{assessment_id}/clinical-review-audit")
+async def get_clinical_review_audit(assessment_id: str, request: Request):
+    user = await _user_from_header(dict(request.headers))
+    doc = await _assessment_document(assessment_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Assessment not found")
+    if not user or (user.get("role") != "therapist" and doc.get("user_id") != user.get("id")):
+        raise HTTPException(status_code=403, detail="This review is not available to this account")
+    return {
+        "assessment_id": assessment_id,
+        "clinical_shadow_review": doc.get("clinical_shadow_review") or {},
+        "architecture_comparison": doc.get("architecture_comparison") or {},
+        "improvement_candidate": doc.get("improvement_candidate") or {},
+    }
+
+
+def _is_approved_clinical_reviewer(user: Optional[Dict[str, Any]]) -> bool:
+    if not user or user.get("role") != "therapist":
+        return False
+    configured_ids = {
+        item.strip()
+        for item in os.environ.get("CLINICAL_REVIEW_APPROVER_IDS", "").split(",")
+        if item.strip()
+    }
+    return user.get("clinical_review_approved") is True or user.get("id") in configured_ids
+
+
+@api_router.post("/assessment/{assessment_id}/clinical-review-adjudication")
+async def adjudicate_clinical_review(
+    assessment_id: str,
+    payload: ShadowReviewAdjudicationSubmit,
+    request: Request,
+):
+    user = await _user_from_header(dict(request.headers))
+    if not _is_approved_clinical_reviewer(user):
+        raise HTTPException(status_code=403, detail="An approved clinical reviewer account is required")
+    verdict = payload.verdict.strip().lower()
+    allowed = {"architecture_correct", "reviewer_correct", "mixed", "insufficient_evidence"}
+    if verdict not in allowed:
+        raise HTTPException(status_code=422, detail=f"Verdict must be one of {sorted(allowed)}")
+    doc = await _assessment_document(assessment_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Assessment not found")
+    comparison = doc.get("architecture_comparison") or {}
+    if comparison.get("status") not in {"partial_disagreement", "disagreement", "urgent_review_required"}:
+        raise HTTPException(status_code=409, detail="This assessment has no disagreement to adjudicate")
+
+    adjudication = {
+        "verdict": verdict,
+        "notes": payload.notes.strip()[:2000],
+        "reviewed_by": user["id"],
+        "reviewed_at": datetime.now(timezone.utc).isoformat(),
+        "ground_truth_source": "clinician_adjudication",
+    }
+    candidate = dict(doc.get("improvement_candidate") or {})
+    if verdict == "architecture_correct":
+        candidate["status"] = "closed_architecture_confirmed"
+    elif verdict == "insufficient_evidence":
+        candidate["status"] = "needs_more_evidence"
+    else:
+        candidate["status"] = "adjudicated_needs_cohort_validation"
+    candidate["adjudication"] = adjudication
+    updates: Dict[str, Any] = {
+        "improvement_candidate": candidate,
+        "architecture_comparison.clinician_adjudication": adjudication,
+    }
+    if verdict == "architecture_correct":
+        outputs = doc.get("musculoskeletal_outputs") or {}
+        camera_issues = [
+            FunctionalIssue(**item)
+            for item in doc.get("functional_issues") or []
+            if str(item.get("source") or "") != "Validated musculoskeletal model"
+        ]
+        issues = merge_validated_model_issues(camera_issues, outputs)
+        expected_count = len(ASSESSMENT_PACKAGES.get(doc.get("assessment_package") or "upper_limb", {}).get("tasks", []))
+        clinical_gate = build_clinical_review_gate(
+            camera_issues,
+            doc.get("patient_parameters") or {},
+            doc.get("task_results") or [],
+            outputs,
+            expected_count,
+        )
+        plan = build_rehab_plan(issues, doc.get("patient_parameters") or {})
+        if clinical_gate.get("rehab_access") != "allowed":
+            plan = []
+        updates["clinical_review_gate"] = clinical_gate
+        updates["rehab_plan"] = [item.model_dump() for item in plan]
+    await _update_assessment_fields(assessment_id, updates)
+    try:
+        await db.architecture_improvement_cases.update_one(
+            {"candidate_id": candidate.get("candidate_id")},
+            {"$set": candidate},
+            upsert=True,
+        )
+    except Exception as exc:
+        logger.warning(f"Could not persist adjudicated architecture case: {str(exc)[:120]}")
+    return {
+        "assessment_id": assessment_id,
+        "candidate_status": candidate.get("status"),
+        "automatic_change_applied": False,
+    }
+
+
 @api_router.post("/assessment/{assessment_id}/model-results")
 async def save_model_results(assessment_id: str, payload: ModelResultSubmit, request: Request):
     """Accept trusted, quality-gated per-task solver results from a separate worker."""
@@ -2334,6 +2584,21 @@ async def save_model_results(assessment_id: str, payload: ModelResultSubmit, req
         outputs,
         expected_task_count,
     )
+    shadow_review = normalize_shadow_review(doc.get("clinical_shadow_review") or {})
+    architecture_comparison = compare_architecture_to_shadow_review(
+        issues,
+        outputs,
+        shadow_review,
+        architecture_complete=True,
+    )
+    clinical_review_gate = apply_shadow_review_hold(
+        clinical_review_gate,
+        architecture_comparison,
+    )
+    improvement_candidate = build_improvement_candidate(
+        assessment_id,
+        architecture_comparison,
+    )
     plan = build_rehab_plan(issues, patient_parameters)
     if clinical_review_gate.get("rehab_access") != "allowed":
         plan = []
@@ -2355,6 +2620,9 @@ async def save_model_results(assessment_id: str, payload: ModelResultSubmit, req
         "muscle_activation_diagnosis": model_activation_report(outputs),
         "survey_consistency": build_survey_consistency(issues, patient_parameters, task_results),
         "clinical_review_gate": clinical_review_gate,
+        "clinical_shadow_review": shadow_review,
+        "architecture_comparison": architecture_comparison,
+        "improvement_candidate": improvement_candidate,
         "patient_insights": build_patient_insights(
             body_function_summary,
             outputs,
@@ -2381,12 +2649,28 @@ async def save_model_results(assessment_id: str, payload: ModelResultSubmit, req
                     else:
                         item[key] = value
                 break
+    if improvement_candidate.get("status") == "pending_clinical_adjudication":
+        try:
+            await db.architecture_improvement_cases.update_one(
+                {"candidate_id": improvement_candidate["candidate_id"]},
+                {"$set": {
+                    **improvement_candidate,
+                    "user_id": doc.get("user_id"),
+                    "assessment_package": doc.get("assessment_package"),
+                    "reviewer": shadow_review.get("reviewer") or {},
+                }},
+                upsert=True,
+            )
+        except Exception as exc:
+            logger.warning(f"Could not persist architecture review case: {str(exc)[:120]}")
     return {
         "assessment_id": assessment_id,
         "status": "completed",
         "tasks_modeled": len(outputs.get("per_task") or []),
         "findings_ready": True,
         "clinical_review_status": clinical_review_gate.get("status"),
+        "architecture_comparison_status": architecture_comparison.get("status"),
+        "automatic_change_applied": False,
     }
 
 
@@ -8035,6 +8319,7 @@ class PatientOnboarding(BaseModel):
     medical_conditions: Optional[List[str]] = None
     medical_conditions_other: Optional[str] = None
     has_caregiver: Optional[bool] = None
+    ai_video_review_consent: Optional[bool] = None
     notes: Optional[str] = None
 
 
