@@ -6,6 +6,7 @@ export const VOICE_GUIDANCE_KEY = "rehyn_voice_guidance_v1";
 export const SHARE_ASSESSMENTS_KEY = "rehyn_share_assessments_v1";
 export const SHARE_CARE_CIRCLE_KEY = "rehyn_share_care_circle_v1";
 export const USAGE_ANALYTICS_KEY = "rehyn_usage_analytics_v1";
+export const DEMO_MODE_KEY = "rehyn_demo_mode_v1";
 
 export const TEXT_SIZES = ["Comfortable", "Large", "Extra large"] as const;
 export type TextSizePreference = (typeof TEXT_SIZES)[number];
@@ -17,6 +18,7 @@ export type UserPreferences = {
   shareAssessments: boolean;
   shareCareCircle: boolean;
   usageAnalytics: boolean;
+  demoMode: boolean;
 };
 
 export const DEFAULT_USER_PREFERENCES: UserPreferences = {
@@ -26,16 +28,18 @@ export const DEFAULT_USER_PREFERENCES: UserPreferences = {
   shareAssessments: true,
   shareCareCircle: false,
   usageAnalytics: false,
+  demoMode: false,
 };
 
 export async function loadUserPreferences(): Promise<UserPreferences> {
-  const [darkMode, textSize, voiceGuidance, shareAssessments, shareCareCircle, usageAnalytics] = await Promise.all([
+  const [darkMode, textSize, voiceGuidance, shareAssessments, shareCareCircle, usageAnalytics, demoMode] = await Promise.all([
     storage.getItem(DARK_MODE_KEY, DEFAULT_USER_PREFERENCES.darkMode),
     storage.getItem(TEXT_SIZE_KEY, DEFAULT_USER_PREFERENCES.textSize),
     storage.getItem(VOICE_GUIDANCE_KEY, DEFAULT_USER_PREFERENCES.voiceGuidance),
     storage.getItem(SHARE_ASSESSMENTS_KEY, DEFAULT_USER_PREFERENCES.shareAssessments),
     storage.getItem(SHARE_CARE_CIRCLE_KEY, DEFAULT_USER_PREFERENCES.shareCareCircle),
     storage.getItem(USAGE_ANALYTICS_KEY, DEFAULT_USER_PREFERENCES.usageAnalytics),
+    storage.getItem(DEMO_MODE_KEY, DEFAULT_USER_PREFERENCES.demoMode),
   ]);
   return {
     darkMode: Boolean(darkMode),
@@ -44,6 +48,7 @@ export async function loadUserPreferences(): Promise<UserPreferences> {
     shareAssessments: shareAssessments !== false,
     shareCareCircle: Boolean(shareCareCircle),
     usageAnalytics: Boolean(usageAnalytics),
+    demoMode: Boolean(demoMode),
   };
 }
 
@@ -55,6 +60,7 @@ export async function saveUserPreference<K extends keyof UserPreferences>(key: K
     shareAssessments: SHARE_ASSESSMENTS_KEY,
     shareCareCircle: SHARE_CARE_CIRCLE_KEY,
     usageAnalytics: USAGE_ANALYTICS_KEY,
+    demoMode: DEMO_MODE_KEY,
   };
   return storage.setItem(storageKeys[key], value);
 }

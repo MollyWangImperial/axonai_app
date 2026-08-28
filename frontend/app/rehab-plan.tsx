@@ -9,6 +9,7 @@ import { fetchAssessment, Assessment } from "@/src/api";
 import { storage } from "@/src/utils/storage";
 import { authedFetch } from "@/src/auth";
 import PaywallModal from "@/src/components/PaywallModal";
+import { DEMO_ASSESSMENT_ID, demoAssessment } from "@/src/demoAssessment";
 
 type ExerciseProgress = {
   completed_reps: number;
@@ -31,6 +32,7 @@ export default function RehabPlanScreen() {
   const [paywallReason, setPaywallReason] = useState<string | undefined>();
 
   const planId = id || "default";
+  const isDemo = id === DEMO_ASSESSMENT_ID;
 
   const loadProgress = React.useCallback(async (plan: Assessment) => {
     const out: Record<string, ExerciseProgress> = {};
@@ -50,7 +52,7 @@ export default function RehabPlanScreen() {
     (async () => {
       try {
         if (id) {
-          const a = await fetchAssessment(id);
+          const a = id === DEMO_ASSESSMENT_ID ? demoAssessment : await fetchAssessment(id);
           setData(a);
           await loadProgress(a);
         }
@@ -127,6 +129,7 @@ export default function RehabPlanScreen() {
       </View>
 
       <ScrollView contentContainerStyle={{ padding: spacing.lg, paddingBottom: 140 }}>
+        {isDemo && <View style={styles.demoBanner}><Ionicons name="sparkles" size={20} color="#675080" /><Text style={styles.demoBannerText}>Sample plan for preview only. Confirm any real exercises with your therapist.</Text></View>}
         <View style={styles.hero}>
           <Text style={styles.heroTitle}>Today&apos;s Plan</Text>
           <Text style={styles.heroSub}>
@@ -182,6 +185,10 @@ export default function RehabPlanScreen() {
                 <Pressable
                   onPress={async () => {
                     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+                    if (isDemo) {
+                      router.push({ pathname: "/exercise", params: { exercise_id: ex.id, name: ex.name, plan_id: planId, sets: String(ex.sets), reps: String(ex.reps) } });
+                      return;
+                    }
                     // Credit pre-flight: skip if subscription_active, else require >=30.
                     try {
                       const r = await authedFetch("/api/credits/balance");
@@ -234,6 +241,8 @@ export default function RehabPlanScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.surface },
+  demoBanner: { flexDirection: "row", alignItems: "center", gap: spacing.xs, borderRadius: radius.sm, padding: spacing.sm, marginBottom: spacing.md, backgroundColor: "#F1EAF7", borderWidth: 1, borderColor: "#DCCFEA" },
+  demoBannerText: { flex: 1, fontSize: 12, lineHeight: 17, fontWeight: "700", color: "#5C486F" },
   center: { alignItems: "center", justifyContent: "center" },
   blockedContent: { flex: 1, padding: spacing.xl },
   blockedIcon: { width: 64, height: 64, borderRadius: 32, alignItems: "center", justifyContent: "center", backgroundColor: colors.brandTertiary, marginBottom: spacing.md },

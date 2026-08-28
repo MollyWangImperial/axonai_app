@@ -7,6 +7,8 @@ import { Ionicons } from "@expo/vector-icons";
 import { Assessment, fetchHistory } from "@/src/api";
 import { addJournalEntry, JournalEntry, loadJournalEntries } from "@/src/journal";
 import { colors, radius, spacing } from "@/src/theme";
+import { DEMO_ASSESSMENT_ID } from "@/src/demoAssessment";
+import { loadUserPreferences } from "@/src/userPreferences";
 
 const brainImage = require("@/assets/images/journey-stroke-brain.png");
 const familyImage = require("@/assets/images/journey-family-support.png");
@@ -29,14 +31,16 @@ export default function JourneyScreen() {
   const [loading, setLoading] = useState(true);
   const [showComposer, setShowComposer] = useState(false);
   const [draft, setDraft] = useState("");
+  const [demoMode, setDemoMode] = useState(false);
   const initialAssessmentId = [...history].reverse().find((item) => item.assessment_package === "initial")?.id ?? history[history.length - 1]?.id;
   const progressWidth = useMemo(() => `${Math.min(100, (history.length + entries.length) * 20)}%` as `${number}%`, [entries.length, history.length]);
 
   const load = useCallback(async () => {
     setLoading(true);
-    const [assessments, journal] = await Promise.all([fetchHistory().catch(() => []), loadJournalEntries()]);
+    const [assessments, journal, preferences] = await Promise.all([fetchHistory().catch(() => []), loadJournalEntries(), loadUserPreferences()]);
     setHistory(assessments);
     setEntries(journal);
+    setDemoMode(preferences.demoMode);
     setLoading(false);
   }, []);
 
@@ -111,22 +115,34 @@ export default function JourneyScreen() {
           ))}
 
           <Text style={styles.sectionTitle} testID="assessment-history">Assessment history</Text>
-          {loading ? <ActivityIndicator color={colors.brandPrimary} /> : history.length === 0 ? (
+          {loading ? <ActivityIndicator color={colors.brandPrimary} /> : history.length === 0 && !demoMode ? (
             <View style={styles.historyEmpty}>
               <View style={styles.sectionIcon}><Ionicons name="clipboard-outline" size={24} color={colors.brandPrimary} /></View>
               <Text style={styles.historyEmptyText}>Your assessments will appear here</Text>
               <Ionicons name="sparkles" size={18} color="#78A87E" />
             </View>
-          ) : history.slice(0, 6).map((item) => (
-            <Pressable key={item.id} testID={`assessment-history-${item.id}`} onPress={() => router.push({ pathname: "/results", params: { id: item.id } })} style={styles.historyRow}>
+          ) : <>
+            {demoMode && (
+              <Pressable testID="assessment-history-demo" onPress={() => router.push({ pathname: "/results", params: { id: DEMO_ASSESSMENT_ID } })} style={[styles.historyRow, styles.demoHistoryRow]}>
+                <View style={[styles.historyIcon, styles.demoHistoryIcon]}><Ionicons name="sparkles" size={21} color="#7B5EA7" /></View>
+                <View style={styles.historyCopy}>
+                  <View style={styles.demoTitleRow}><Text style={styles.historyTitle}>Demo movement snapshot</Text><Text style={styles.demoBadge}>SAMPLE</Text></View>
+                  <Text style={styles.historyMeta}>Explore a sample movement story and map</Text>
+                </View>
+                <Ionicons name="chevron-forward" size={20} color={colors.borderStrong} />
+              </Pressable>
+            )}
+            {history.slice(0, 6).map((item) => (
+              <Pressable key={item.id} testID={`assessment-history-${item.id}`} onPress={() => router.push({ pathname: "/results", params: { id: item.id } })} style={styles.historyRow}>
               <View style={styles.historyIcon}><Ionicons name="analytics-outline" size={21} color={colors.brandPrimary} /></View>
               <View style={styles.historyCopy}>
                 <Text style={styles.historyTitle}>{item.id === initialAssessmentId ? "Initial Assessment" : "Movement check-in"}</Text>
                 <Text style={styles.historyMeta}>{new Date(item.created_at).toLocaleDateString()} · {assessmentPlanLabel(item)}</Text>
               </View>
               <Ionicons name="chevron-forward" size={20} color={colors.borderStrong} />
-            </Pressable>
-          ))}
+              </Pressable>
+            ))}
+          </>}
         </View>
       </ScrollView>
 
@@ -189,6 +205,10 @@ const styles = StyleSheet.create({
   historyCopy: { flex: 1 },
   historyTitle: { fontSize: 15, fontWeight: "800", color: colors.onSurface },
   historyMeta: { fontSize: 12, lineHeight: 17, color: colors.onSurfaceTertiary, marginTop: 2 },
+  demoHistoryRow: { borderColor: "#DCCFEA", backgroundColor: "#FBF8FE" },
+  demoHistoryIcon: { backgroundColor: "#F0E9F7" },
+  demoTitleRow: { flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: spacing.xs },
+  demoBadge: { paddingHorizontal: 7, paddingVertical: 3, borderRadius: radius.pill, backgroundColor: "#EADFF4", color: "#675080", fontSize: 9, fontWeight: "900" },
   modalScrim: { flex: 1, justifyContent: "flex-end", backgroundColor: "rgba(28,32,29,0.36)" },
   composer: { padding: spacing.lg, backgroundColor: colors.surface, borderTopLeftRadius: radius.lg, borderTopRightRadius: radius.lg, gap: spacing.md },
   composerHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },

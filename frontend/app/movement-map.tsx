@@ -6,6 +6,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { Assessment, fetchAssessment, fetchPatientAssessmentSummary, PatientAssessmentSummary } from "@/src/api";
 import { colors, radius, spacing } from "@/src/theme";
+import { DEMO_ASSESSMENT_ID, demoAssessment, demoPatientAssessmentSummary } from "@/src/demoAssessment";
 
 const anatomyImage = require("@/assets/images/rehyn-anatomy-front.png");
 
@@ -33,9 +34,17 @@ export default function MovementMapScreen() {
   const [selected, setSelected] = useState<DomainId>("upper_limb");
   const [view, setView] = useState<"front" | "back">("front");
   const [loading, setLoading] = useState(true);
+  const isDemo = id === DEMO_ASSESSMENT_ID;
 
   useEffect(() => {
     if (!id) return;
+    if (id === DEMO_ASSESSMENT_ID) {
+      setData(demoPatientAssessmentSummary);
+      setAssessment(demoAssessment);
+      setSelected("upper_limb");
+      setLoading(false);
+      return;
+    }
     Promise.all([fetchPatientAssessmentSummary(id), fetchAssessment(id).catch(() => null)])
       .then(([summary, raw]) => {
         setData(summary);
@@ -90,12 +99,13 @@ export default function MovementMapScreen() {
     <View style={styles.container}>
       <View style={[styles.header, { paddingTop: insets.top + spacing.xs }]}>
         <Pressable onPress={() => router.back()} style={styles.headerButton}><Ionicons name="arrow-back" size={23} color="#154B34" /></Pressable>
-        <Text style={styles.headerTitle}>Your movement map</Text>
+        <Text style={styles.headerTitle}>{isDemo ? "Demo movement map" : "Your movement map"}</Text>
         <View style={styles.headerButton} />
       </View>
 
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
         <View style={[styles.page, { width: pageWidth }]}>
+          {isDemo && <View style={styles.demoBanner}><Ionicons name="sparkles" size={20} color="#675080" /><Text style={styles.demoBannerText}>Sample movement map. Your real map will use your completed assessment.</Text></View>}
           <View style={styles.segmented}>
             <Pressable onPress={() => setView("front")} style={[styles.segment, view === "front" && styles.segmentActive]}><Text style={[styles.segmentText, view === "front" && styles.segmentTextActive]}>Front</Text></Pressable>
             <Pressable onPress={() => setView("back")} style={[styles.segment, view === "back" && styles.segmentActive]}><Text style={[styles.segmentText, view === "back" && styles.segmentTextActive]}>Back</Text></Pressable>
@@ -195,6 +205,8 @@ const styles = StyleSheet.create({
   headerTitle: { fontSize: 20, fontWeight: "800", color: "#154B34" },
   content: { alignItems: "center", paddingVertical: spacing.sm, paddingBottom: spacing.xl },
   page: { alignSelf: "center" },
+  demoBanner: { flexDirection: "row", alignItems: "center", gap: spacing.xs, borderRadius: radius.sm, padding: spacing.sm, marginBottom: spacing.sm, backgroundColor: "#F1EAF7", borderWidth: 1, borderColor: "#DCCFEA" },
+  demoBannerText: { flex: 1, fontSize: 12, lineHeight: 17, fontWeight: "700", color: "#5C486F" },
   segmented: { alignSelf: "flex-end", flexDirection: "row", borderWidth: 1, borderColor: "#CAD5CC", borderRadius: radius.pill, padding: 3, marginBottom: spacing.xs },
   segment: { minWidth: 76, minHeight: 36, alignItems: "center", justifyContent: "center", borderRadius: radius.pill },
   segmentActive: { backgroundColor: "#15543C" },

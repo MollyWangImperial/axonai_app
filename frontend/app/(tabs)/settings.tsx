@@ -111,6 +111,10 @@ export default function SettingsScreen() {
             <SettingsToggle testID="settings-voice-guidance" icon="volume-high-outline" title="Voice guidance" subtitle="Spoken cues during sessions" value={preferences.voiceGuidance} onValueChange={(value) => updatePreference("voiceGuidance", value, value ? "Voice guidance is on." : "Voice guidance is off.")} palette={palette} scale={scale} />
           </SettingsGroup>
 
+          <SettingsGroup label="DEMO" palette={palette}>
+            <SettingsToggle testID="settings-demo-mode" icon="sparkles-outline" title="Enable demo mode" subtitle="Show a sample movement story in Assessment history" value={preferences.demoMode} onValueChange={(value) => updatePreference("demoMode", value, value ? "Demo mode is on. Open Journey to view the sample story." : "Demo mode is off.")} palette={palette} scale={scale} />
+          </SettingsGroup>
+
           <SettingsGroup label="SUPPORT & PRIVACY" palette={palette}>
             <SettingsLink testID="settings-privacy" icon="shield-checkmark-outline" title="Privacy policy" subtitle="How Rehyn protects your information" onPress={() => openSection("privacy")} palette={palette} scale={scale} />
             <Divider palette={palette} />

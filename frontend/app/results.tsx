@@ -7,6 +7,7 @@ import * as Haptics from "expo-haptics";
 
 import { Assessment, fetchAssessment, fetchPatientAssessmentSummary, PatientAssessmentSummary } from "@/src/api";
 import { colors, radius, spacing } from "@/src/theme";
+import { DEMO_ASSESSMENT_ID, demoAssessment, demoPatientAssessmentSummary } from "@/src/demoAssessment";
 
 const anatomyImage = require("@/assets/images/rehyn-anatomy-front.png");
 
@@ -43,6 +44,7 @@ export default function ResultsScreen() {
   const [assessment, setAssessment] = useState<Assessment | null>(null);
   const [loading, setLoading] = useState(true);
   const [showDetails, setShowDetails] = useState(false);
+  const isDemo = id === DEMO_ASSESSMENT_ID;
 
   useEffect(() => {
     let cancelled = false;
@@ -50,6 +52,11 @@ export default function ResultsScreen() {
     const load = async () => {
       try {
         if (!id) return;
+        if (id === DEMO_ASSESSMENT_ID) {
+          setData(demoPatientAssessmentSummary);
+          setAssessment(demoAssessment);
+          return;
+        }
         const [summary, raw] = await Promise.all([
           fetchPatientAssessmentSummary(id),
           fetchAssessment(id).catch(() => null),
@@ -94,8 +101,8 @@ export default function ResultsScreen() {
 
   const shareSnapshot = () => {
     void Share.share({
-      title: "My Rehyn movement snapshot",
-      message: `${data?.insights.headline || "My movement assessment is complete."} ${mainTitle}.`,
+      title: isDemo ? "Rehyn demo movement snapshot" : "My Rehyn movement snapshot",
+      message: isDemo ? "This is a sample Rehyn movement snapshot, not a patient result." : `${data?.insights.headline || "My movement assessment is complete."} ${mainTitle}.`,
     });
   };
 
@@ -122,7 +129,7 @@ export default function ResultsScreen() {
       <View style={[styles.header, { paddingTop: insets.top + spacing.xs }]}>
         <Pressable onPress={() => router.replace("/")} style={styles.headerButton} testID="results-home"><Ionicons name="home-outline" size={23} color="#174834" /></Pressable>
         <View style={styles.headerCopy}>
-          <Text style={styles.headerTitle}>Your movement snapshot</Text>
+          <Text style={styles.headerTitle}>{isDemo ? "Demo movement snapshot" : "Your movement snapshot"}</Text>
           <Text style={styles.headerDate}>{new Date(data.created_at).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" })}</Text>
         </View>
         <Pressable onPress={shareSnapshot} style={styles.headerButton} accessibilityLabel="Share movement snapshot"><Ionicons name="share-outline" size={23} color="#174834" /></Pressable>
@@ -130,6 +137,7 @@ export default function ResultsScreen() {
 
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
         <View style={[styles.report, { width: reportWidth }]}>
+          {isDemo && <View style={styles.demoBanner}><Ionicons name="sparkles" size={20} color="#675080" /><Text style={styles.demoBannerText}>Sample data for preview only. This is not your assessment result.</Text></View>}
           <Text style={styles.lead}>{data.insights.headline || "Your completed tasks have been summarized below."}</Text>
 
           <View style={styles.anatomyStage}>
@@ -182,7 +190,10 @@ export default function ResultsScreen() {
 
           <View style={styles.summaryNote}>
             <Ionicons name="leaf-outline" size={23} color="#74AD80" />
-            <Text style={styles.summaryNoteText}>{data.insights.summary}</Text>
+            <View style={styles.storyCopy}>
+              <Text style={styles.storyLabel}>MOVEMENT STORY</Text>
+              <Text style={styles.summaryNoteText}>{data.insights.summary}</Text>
+            </View>
           </View>
 
           {(rehabBlocked || noRehabNeeded) && (
@@ -252,6 +263,8 @@ const styles = StyleSheet.create({
   headerTitle: { fontSize: 18, lineHeight: 23, fontWeight: "800", color: "#164631" },
   headerDate: { marginTop: 2, fontSize: 13, color: colors.onSurfaceTertiary },
   content: { alignItems: "center", paddingTop: spacing.md },
+  demoBanner: { flexDirection: "row", alignItems: "center", gap: spacing.xs, borderRadius: radius.sm, padding: spacing.sm, marginBottom: spacing.md, backgroundColor: "#F1EAF7", borderWidth: 1, borderColor: "#DCCFEA" },
+  demoBannerText: { flex: 1, fontSize: 12, lineHeight: 17, fontWeight: "700", color: "#5C486F" },
   report: { alignSelf: "center" },
   lead: { fontSize: 17, lineHeight: 24, color: colors.onSurface, textAlign: "center", paddingHorizontal: spacing.sm },
   anatomyStage: { height: 390, marginTop: spacing.sm, alignItems: "center", justifyContent: "center" },
@@ -287,7 +300,9 @@ const styles = StyleSheet.create({
   inlineMetricValue: { fontSize: 20, fontWeight: "800", color: "#155039", marginTop: 2 },
   inlineDivider: { width: 1, height: 45, backgroundColor: colors.divider },
   summaryNote: { flexDirection: "row", gap: spacing.sm, paddingVertical: spacing.lg, alignItems: "flex-start" },
-  summaryNoteText: { flex: 1, fontSize: 14, lineHeight: 21, color: colors.onSurfaceSecondary },
+  storyCopy: { flex: 1 },
+  storyLabel: { marginBottom: 4, fontSize: 10, fontWeight: "900", color: colors.brandPrimary },
+  summaryNoteText: { fontSize: 14, lineHeight: 21, color: colors.onSurfaceSecondary },
   reviewCard: { flexDirection: "row", gap: spacing.sm, borderWidth: 1, borderColor: "#BED6C2", borderRadius: radius.md, padding: spacing.md, backgroundColor: "#F2F8F1", marginBottom: spacing.md },
   reviewCopy: { flex: 1 },
   reviewTitle: { fontSize: 16, fontWeight: "800", color: "#174834" },
