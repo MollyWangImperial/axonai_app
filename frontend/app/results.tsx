@@ -10,6 +10,7 @@ import { colors, radius, spacing } from "@/src/theme";
 import { DEMO_ASSESSMENT_ID, demoAssessment, demoPatientAssessmentSummary } from "@/src/demoAssessment";
 
 const anatomyImage = require("@/assets/images/rehyn-anatomy-front.png");
+const webNoOutline = { outlineStyle: "none" } as const;
 
 function formatDuration(durationMs: number) {
   return `${Math.max(1, Math.round(durationMs / 60000))} min`;
@@ -44,6 +45,7 @@ export default function ResultsScreen() {
   const [assessment, setAssessment] = useState<Assessment | null>(null);
   const [loading, setLoading] = useState(true);
   const [showDetails, setShowDetails] = useState(false);
+  const [anatomyZoom, setAnatomyZoom] = useState(1);
   const isDemo = id === DEMO_ASSESSMENT_ID;
 
   useEffect(() => {
@@ -111,6 +113,14 @@ export default function ResultsScreen() {
     router.push({ pathname: "/movement-map", params: { id } });
   };
 
+  const changeAnatomyZoom = (amount: number) => {
+    setAnatomyZoom((current) => Math.min(2.25, Math.max(1, Number((current + amount).toFixed(2)))));
+  };
+
+  const focusAnatomyFinding = () => {
+    setAnatomyZoom((current) => current < 1.75 ? 1.75 : current < 2.25 ? 2.25 : 1);
+  };
+
   if (loading) {
     return <View style={[styles.container, styles.center]}><ActivityIndicator color={colors.brandPrimary} /><Text style={styles.loadingText}>Preparing your movement snapshot...</Text></View>;
   }
@@ -140,12 +150,45 @@ export default function ResultsScreen() {
           {isDemo && <View style={styles.demoBanner}><Ionicons name="sparkles" size={20} color="#675080" /><Text style={styles.demoBannerText}>Sample data for preview only. This is not your assessment result.</Text></View>}
           <Text style={styles.lead}>{data.insights.headline || "Your completed tasks have been summarized below."}</Text>
 
-          <View style={styles.anatomyStage}>
-            <Image source={anatomyImage} resizeMode="contain" style={styles.anatomyImage} />
-            <View style={[styles.bodyMarker, affectedSide === "right" ? styles.markerPatientRight : styles.markerPatientLeft]}>
-              <View style={styles.markerCore} />
+          <View style={styles.anatomyStage} testID="interactive-anatomy">
+            <View
+              style={[
+                styles.anatomyCanvas,
+                {
+                  transform: [{ scale: anatomyZoom }],
+                  transformOrigin: `${affectedSide === "right" ? 25 : 75}% 24%`,
+                },
+              ]}
+            >
+              <Image source={anatomyImage} resizeMode="stretch" style={styles.anatomyImage} />
+              <Pressable
+                testID="anatomy-main-finding"
+                onPress={focusAnatomyFinding}
+                accessibilityLabel={`Focus on the ${affectedSide} shoulder finding`}
+                accessibilityHint="Activate to zoom into the highlighted shoulder"
+                style={[styles.bodyMarker, affectedSide === "right" ? styles.markerPatientRight : styles.markerPatientLeft, webNoOutline as never]}
+              >
+                <View style={styles.markerCore} />
+              </Pressable>
             </View>
-            <View style={[styles.findingPill, affectedSide === "right" ? styles.findingRight : styles.findingLeft]}><Text style={styles.findingPillText}>Main finding</Text></View>
+
+            <View style={styles.anatomyFindingLabel} pointerEvents="none">
+              <View style={styles.anatomyFindingDot} />
+              <Text style={styles.anatomyFindingText}>{affectedSide === "right" ? "Right" : "Left"} shoulder</Text>
+            </View>
+
+            <View style={styles.zoomControls}>
+              <Pressable testID="anatomy-zoom-out" accessibilityLabel="Zoom anatomy out" disabled={anatomyZoom <= 1} onPress={() => changeAnatomyZoom(-0.25)} style={[styles.zoomButton, anatomyZoom <= 1 && styles.zoomButtonDisabled]}>
+                <Ionicons name="remove" size={21} color="#174834" />
+              </Pressable>
+              <Text style={styles.zoomValue}>{Math.round(anatomyZoom * 100)}%</Text>
+              <Pressable testID="anatomy-zoom-in" accessibilityLabel="Zoom anatomy in" disabled={anatomyZoom >= 2.25} onPress={() => changeAnatomyZoom(0.25)} style={[styles.zoomButton, anatomyZoom >= 2.25 && styles.zoomButtonDisabled]}>
+                <Ionicons name="add" size={21} color="#174834" />
+              </Pressable>
+              <Pressable testID="anatomy-zoom-reset" accessibilityLabel="Reset anatomy zoom" onPress={() => setAnatomyZoom(1)} style={styles.zoomButton}>
+                <Ionicons name="scan-outline" size={19} color="#174834" />
+              </Pressable>
+            </View>
           </View>
 
           <View style={styles.mainInsight} testID="results-summary">
@@ -267,16 +310,20 @@ const styles = StyleSheet.create({
   demoBannerText: { flex: 1, fontSize: 12, lineHeight: 17, fontWeight: "700", color: "#5C486F" },
   report: { alignSelf: "center" },
   lead: { fontSize: 17, lineHeight: 24, color: colors.onSurface, textAlign: "center", paddingHorizontal: spacing.sm },
-  anatomyStage: { height: 390, marginTop: spacing.sm, alignItems: "center", justifyContent: "center" },
-  anatomyImage: { width: "100%", height: "100%" },
-  bodyMarker: { position: "absolute", top: 79, width: 66, height: 66, borderRadius: 33, borderWidth: 2, borderColor: "#F28270", backgroundColor: "rgba(241,108,90,0.22)", alignItems: "center", justifyContent: "center" },
-  markerPatientRight: { left: "31%" },
-  markerPatientLeft: { right: "31%" },
+  anatomyStage: { height: 410, marginTop: spacing.sm, alignItems: "center", justifyContent: "center", overflow: "hidden", borderRadius: radius.sm, backgroundColor: "#FFFEFB" },
+  anatomyCanvas: { height: "100%", aspectRatio: 866 / 1817, position: "relative" },
+  anatomyImage: { ...StyleSheet.absoluteFillObject, width: "100%", height: "100%" },
+  bodyMarker: { position: "absolute", top: "24.5%", width: 58, height: 58, marginTop: -29, marginLeft: -29, borderRadius: 29, borderWidth: 2, borderColor: "#F28270", backgroundColor: "rgba(241,108,90,0.24)", alignItems: "center", justifyContent: "center" },
+  markerPatientRight: { left: "25%" },
+  markerPatientLeft: { left: "75%" },
   markerCore: { width: 16, height: 16, borderRadius: 8, backgroundColor: "#F06B58", borderWidth: 3, borderColor: "#FFFFFF" },
-  findingPill: { position: "absolute", top: 90, borderWidth: 1, borderColor: "#F2A090", borderRadius: radius.pill, paddingHorizontal: spacing.sm, paddingVertical: 6, backgroundColor: "rgba(255,254,251,0.94)" },
-  findingRight: { right: 6 },
-  findingLeft: { left: 6 },
-  findingPillText: { color: "#E55F4B", fontWeight: "700", fontSize: 12 },
+  anatomyFindingLabel: { position: "absolute", top: spacing.sm, right: spacing.sm, minHeight: 32, paddingHorizontal: spacing.sm, borderRadius: radius.pill, backgroundColor: "rgba(255,254,251,0.94)", borderWidth: 1, borderColor: "#F2B2A6", flexDirection: "row", alignItems: "center", gap: 6 },
+  anatomyFindingDot: { width: 9, height: 9, borderRadius: 5, backgroundColor: "#F06B58" },
+  anatomyFindingText: { color: "#C95241", fontSize: 12, fontWeight: "800" },
+  zoomControls: { position: "absolute", right: spacing.sm, bottom: spacing.sm, minHeight: 42, padding: 3, borderRadius: radius.pill, backgroundColor: "rgba(255,255,255,0.96)", borderWidth: 1, borderColor: "#D7E1D9", flexDirection: "row", alignItems: "center", shadowColor: "#173D35", shadowOpacity: 0.1, shadowRadius: 8, shadowOffset: { width: 0, height: 3 }, elevation: 2 },
+  zoomButton: { width: 38, height: 38, borderRadius: 19, alignItems: "center", justifyContent: "center" },
+  zoomButtonDisabled: { opacity: 0.3 },
+  zoomValue: { width: 46, textAlign: "center", color: "#174834", fontSize: 11, fontWeight: "800" },
   mainInsight: { flexDirection: "row", gap: spacing.md, alignItems: "flex-start", paddingVertical: spacing.lg, borderBottomWidth: 1, borderBottomColor: colors.divider },
   insightIcon: { width: 54, height: 54, borderRadius: 27, borderWidth: 1, borderColor: "#B9D8C0", backgroundColor: "#F5FAF4", alignItems: "center", justifyContent: "center" },
   insightCopy: { flex: 1 },
