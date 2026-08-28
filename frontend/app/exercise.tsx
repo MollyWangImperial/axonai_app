@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { View, Text, StyleSheet, Pressable, ActivityIndicator, Platform, Animated } from "react-native";
 import { WebView, WebViewMessageEvent } from "react-native-webview";
 import { Ionicons } from "@expo/vector-icons";
@@ -7,6 +7,7 @@ import * as Haptics from "expo-haptics";
 import { colors, spacing, radius } from "@/src/theme";
 import { storage } from "@/src/utils/storage";
 import { API_BASE as BASE } from "@/src/config";
+import { loadUserPreferences } from "@/src/userPreferences";
 
 type ExerciseProgress = {
   completed_reps: number;
@@ -25,6 +26,7 @@ export default function ExerciseScreen() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [doneInfo, setDoneInfo] = useState<{ reps: number; avgScore: number | null } | null>(null);
+  const [voiceGuidance, setVoiceGuidance] = useState(true);
   // Per-rep toast state
   const [repToast, setRepToast] = useState<{ rep: number; total: number; score: number } | null>(null);
   const toastOpacity = useRef(new Animated.Value(0)).current;
@@ -36,7 +38,11 @@ export default function ExerciseScreen() {
   const planId = plan_id || "default";
 
   const guidedReps = Math.max(1, Math.min(20, totalReps));
-  const url = `${BASE}/api/rehab/runner?exercise_id=${encodeURIComponent(exercise_id || "ex_maintenance")}&reps=${guidedReps}`;
+  const url = `${BASE}/api/rehab/runner?exercise_id=${encodeURIComponent(exercise_id || "ex_maintenance")}&reps=${guidedReps}&voice_guidance=${voiceGuidance ? "1" : "0"}`;
+
+  useEffect(() => {
+    void loadUserPreferences().then((saved) => setVoiceGuidance(saved.voiceGuidance));
+  }, []);
 
   const showRepToast = (rep: number, total: number, score: number) => {
     setRepToast({ rep, total, score });

@@ -1,10 +1,12 @@
 import { storage } from "@/src/utils/storage";
 import { API_BASE as BASE } from "@/src/config";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 
 export type Me = { id: string; email: string; name: string; role: "patient" | "therapist"; credits: number };
 
 export const USER_KEY = "active_user_id_v1";
 export const USER_OBJ = "active_user_obj_v1";
+const BACKEND_USER_KEY = `backend_user_id_v1:${BASE}`;
 
 export const onboardingCompleteKey = (userId: string) => `onboarding_complete_v2:${userId}`;
 export const preferredNameKey = (userId: string) => `preferred_name_v2:${userId}`;
@@ -74,12 +76,80 @@ export async function signOut() {
   await storage.removeItem("preferred_name_v1");
 }
 
+async function migrateAccountCache(previousUserId: string, nextUserId: string) {
+  if (!previousUserId || previousUserId === nextUserId) return;
+  const packageIds = ["initial", "upper_limb", "hand", "lower_limb", "balance"];
+  const keyPairs = [
+    [onboardingCompleteKey(previousUserId), onboardingCompleteKey(nextUserId)],
+    [preferredNameKey(previousUserId), preferredNameKey(nextUserId)],
+    [affectedSideKey(previousUserId), affectedSideKey(nextUserId)],
+    [patientProfileKey(previousUserId), patientProfileKey(nextUserId)],
+    [`rehyn_profile_photo_v2:${previousUserId}`, `rehyn_profile_photo_v2:${nextUserId}`],
+    [`rehyn_care_facility_v2:${previousUserId}`, `rehyn_care_facility_v2:${nextUserId}`],
+    [`rehyn_care_circle_v1:${previousUserId}`, `rehyn_care_circle_v1:${nextUserId}`],
+    ...packageIds.flatMap((packageId) => [
+      [completedTasksKey(previousUserId, packageId), completedTasksKey(nextUserId, packageId)],
+      [savedTaskVideosKey(previousUserId, packageId), savedTaskVideosKey(nextUserId, packageId)],
+    ]),
+  ];
+  await Promise.all(keyPairs.map(async ([source, target]) => {
+    const value = await storage.getItem(source, "");
+    if (value !== "" && value != null) await storage.setItem(target, value);
+  }));
+}
+
+export async function recoverSingleAccountCache(userId: string) {
+  if (await storage.getItem(onboardingCompleteKey(userId), "")) return;
+  try {
+    const prefix = "onboarding_complete_v2:";
+    const candidates = (await AsyncStorage.getAllKeys()).filter((key) => key.startsWith(prefix) && key !== onboardingCompleteKey(userId));
+    const completed = [] as string[];
+    for (const key of candidates) {
+      const raw = await AsyncStorage.getItem(key);
+      if (raw && JSON.parse(raw)) completed.push(key.slice(prefix.length));
+    }
+    if (completed.length === 1) await migrateAccountCache(completed[0], userId);
+  } catch {
+    /* Recovery is best-effort; normal backend onboarding remains the fallback. */
+  }
+}
+
 export async function authedFetch(path: string, init: RequestInit = {}): Promise<Response> {
-  const uid = await getUserId();
+  const appUserId = await getUserId();
+  const uid = await storage.getItem(BACKEND_USER_KEY, "") || appUserId;
   const headers = new Headers(init.headers as any);
   if (uid && !headers.has("X-User-Id")) headers.set("X-User-Id", uid);
   headers.set("Content-Type", "application/json");
-  return fetch(`${BASE}${path}`, { ...init, headers });
+  const response = await fetch(`${BASE}${path}`, { ...init, headers });
+  if (response.status !== 401 || path === "/users/login") return response;
+
+  const cached = await getCachedUser();
+  if (!cached?.email) return response;
+  try {
+    const [cachedProfile, onboardingComplete] = await Promise.all([
+      getCachedPatientProfile(cached.id),
+      storage.getItem(onboardingCompleteKey(cached.id), ""),
+    ]);
+    const login = await fetch(`${BASE}/api/users/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: cached.email, name: cached.name, role: cached.role }),
+    });
+    if (!login.ok) return response;
+    const rebound: Me = await login.json();
+    await storage.setItem(BACKEND_USER_KEY, rebound.id);
+    if (onboardingComplete && cachedProfile) {
+      await fetch(`${BASE}/api/users/onboarding`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-User-Id": rebound.id },
+        body: JSON.stringify(cachedProfile),
+      }).catch(() => null);
+    }
+    headers.set("X-User-Id", rebound.id);
+    return fetch(`${BASE}${path}`, { ...init, headers });
+  } catch {
+    return response;
+  }
 }
 
 export async function fetchBalance(): Promise<{ credits: number; user_id?: string; costs: Record<string, number> }> {

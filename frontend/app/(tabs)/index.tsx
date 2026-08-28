@@ -1,5 +1,14 @@
 import { useCallback, useState } from "react";
-import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import {
+  ActivityIndicator,
+  Image,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  useWindowDimensions,
+  View,
+} from "react-native";
 import { useFocusEffect, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
@@ -7,28 +16,50 @@ import * as Haptics from "expo-haptics";
 
 import { Assessment, fetchHistory } from "@/src/api";
 import { getCachedUser, preferredNameKey } from "@/src/auth";
-import { JournalEntry, loadJournalEntries } from "@/src/journal";
 import { colors, radius, spacing } from "@/src/theme";
 import { storage } from "@/src/utils/storage";
+
+const assessmentBenefits = [
+  {
+    icon: "locate-outline" as const,
+    title: "What to focus on",
+    detail: "Your clearest priority for the week",
+    backgroundColor: "#F2EEF8",
+    iconColor: "#6750A4",
+  },
+  {
+    icon: "heart-outline" as const,
+    title: "How you can help",
+    detail: "Simple ways to support recovery",
+    backgroundColor: "#FFF3E5",
+    iconColor: "#A85F12",
+  },
+  {
+    icon: "trending-up-outline" as const,
+    title: "Track progress over time",
+    detail: "A clear record after every assessment",
+    backgroundColor: "#EAF3F8",
+    iconColor: "#356C91",
+  },
+];
 
 export default function HomeScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
+  const { width } = useWindowDimensions();
+  const isWide = width >= 760;
   const [history, setHistory] = useState<Assessment[]>([]);
-  const [entries, setEntries] = useState<JournalEntry[]>([]);
   const [greetName, setGreetName] = useState("");
   const [loading, setLoading] = useState(true);
 
   const load = useCallback(async () => {
     setLoading(true);
     const user = await getCachedUser();
-    const [assessments, journal, preferredName] = await Promise.all([
+    const [assessments, preferredName] = await Promise.all([
       fetchHistory().catch(() => []),
-      loadJournalEntries(),
       user?.id ? storage.getItem(preferredNameKey(user.id), "") : Promise.resolve(""),
     ]);
     setHistory(assessments);
-    setEntries(journal);
     setGreetName(preferredName || user?.name?.split(" ")[0] || "there");
     setLoading(false);
   }, []);
@@ -38,8 +69,10 @@ export default function HomeScreen() {
   const latest = history[0];
   const hasInitialAssessment = history.some((item) => item.assessment_package === "initial");
   const isInitialAssessment = !hasInitialAssessment;
-  const completedThisWeek = Math.min(7, history.length + Math.min(4, entries.length));
-  const weeklyPercent = Math.round((completedThisWeek / 7) * 100);
+  const assessmentDescription = isInitialAssessment
+    ? "The same seven guided arm, hand, and walking observations create your first recovery picture."
+    : "A fresh guided check of your arm, hand, and walking.";
+  const assessmentButtonLabel = isInitialAssessment ? "Start Initial Assessment" : "Start Next Assessment";
 
   const startNextSession = () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
@@ -52,96 +85,127 @@ export default function HomeScreen() {
 
   return (
     <View style={styles.container}>
-      <ScrollView contentContainerStyle={[styles.page, { paddingTop: insets.top + spacing.md }]} showsVerticalScrollIndicator={false}>
+      <ScrollView
+        contentContainerStyle={[styles.page, { paddingTop: insets.top + spacing.sm }]}
+        showsVerticalScrollIndicator={false}
+      >
         <View style={styles.inner}>
           <View style={styles.header}>
             <View style={styles.brandRow}>
-              <View style={styles.brandIcon}><Ionicons name="pulse" size={19} color={colors.onBrandPrimary} /></View>
+              <View style={styles.brandIcon}>
+                <Ionicons name="pulse" size={20} color={colors.onBrandPrimary} />
+              </View>
               <Text style={styles.brand}>Rehyn</Text>
             </View>
             <View style={styles.headerActions}>
-              <Pressable accessibilityLabel="Notifications" style={styles.iconButton}><Ionicons name="notifications-outline" size={20} color={colors.onSurfaceSecondary} /></Pressable>
-              <Pressable testID="home-open-settings" accessibilityLabel="Settings" onPress={() => router.push("/settings" as any)} style={styles.iconButton}><Ionicons name="settings-outline" size={20} color={colors.onSurfaceSecondary} /></Pressable>
-              <Pressable testID="home-open-profile" accessibilityLabel="Profile" onPress={() => router.push("/profile" as any)} style={styles.avatar}><Text style={styles.avatarText}>{greetName.slice(0, 1).toUpperCase()}</Text></Pressable>
-            </View>
-          </View>
-
-          <View style={styles.welcomeCard}>
-            <View style={styles.welcomeBar} />
-            <View style={{ flex: 1 }}>
-              <Text style={styles.welcomeLabel}>Welcome back, {greetName}</Text>
-              <Text style={styles.welcomeText}>{isInitialAssessment ? "Let's learn where to begin, together." : "Every step forward counts. You are building consistency."}</Text>
-            </View>
-          </View>
-
-          <View style={styles.goalCard}>
-            <View style={styles.goalRing}>
-              <Text style={styles.goalPercent}>{weeklyPercent}%</Text>
-              <Text style={styles.goalWord}>GOAL</Text>
-            </View>
-            <View style={styles.goalCopy}>
-              <Text style={styles.goalTitle}>Weekly active goal</Text>
-              <Text style={styles.goalSubtitle}>
-                {isInitialAssessment
-                  ? "Begin with your Initial Assessment"
-                  : "Your next movement check-in is ready"}
-              </Text>
-              <View style={styles.goalMetaRow}>
-                <View style={styles.metaPill}><Ionicons name="checkmark" size={13} color={colors.brandPrimary} /><Text style={styles.metaText}>{completedThisWeek}/7 sessions</Text></View>
-                <View style={styles.streakPill}><Ionicons name="flame-outline" size={13} color={colors.warning} /><Text style={styles.streakText}>{Math.max(1, entries.length)} day streak</Text></View>
-              </View>
-            </View>
-          </View>
-
-          <View style={styles.sessionCard}>
-            <View style={styles.sessionTopRow}>
-              <Text style={styles.sessionBadge}>{isInitialAssessment ? "GET STARTED" : "NEXT ASSESSMENT"}</Text>
-              <View style={styles.duration}><Ionicons name="time-outline" size={15} color="#E8F0EA" /><Text style={styles.durationText}>15 mins</Text></View>
-            </View>
-            <Text style={styles.sessionTitle}>{isInitialAssessment ? "Initial Assessment" : "Next Assessment"}</Text>
-            <Text style={styles.sessionDescription}>
-              {isInitialAssessment
-                ? "The same seven guided arm, hand, and walking observations for every new patient, so we can understand your movement broadly."
-                : "Complete the same guided movement collection again so changes in your upper limb, hand function, and walking can be compared over time."}
-            </Text>
-            <Pressable testID="home-start-next-session" onPress={startNextSession} style={styles.startButton}>
-              <Ionicons name="play" size={18} color={colors.brandPrimary} />
-              <Text style={styles.startButtonText}>{isInitialAssessment ? "Start Initial Assessment" : "Start Next Assessment"}</Text>
-            </Pressable>
-            {!isInitialAssessment && latest && (
-              <Pressable testID="home-view-latest-results" onPress={viewLatestResults} style={styles.resultsButton}>
-                <Ionicons name="analytics-outline" size={18} color={colors.onBrandPrimary} />
-                <Text style={styles.resultsButtonText}>View latest results</Text>
+              <Pressable
+                testID="home-open-settings"
+                accessibilityLabel="Settings"
+                onPress={() => router.push("/settings" as any)}
+                style={({ pressed }) => [styles.iconButton, pressed && styles.pressed]}
+              >
+                <Ionicons name="settings-outline" size={21} color={colors.onSurfaceSecondary} />
               </Pressable>
-            )}
-          </View>
-
-          <View style={styles.sectionHeader}>
-            <Text style={styles.sectionTitle}>Journal & milestones</Text>
-            <Pressable testID="home-add-journal" onPress={() => router.push("/journey" as any)} style={styles.addEntry}>
-              <Ionicons name="add" size={17} color={colors.brandPrimary} />
-              <Text style={styles.addEntryText}>Add entry</Text>
-            </Pressable>
-          </View>
-
-          {loading ? <ActivityIndicator color={colors.brandPrimary} /> : entries.length === 0 ? (
-            <Pressable onPress={() => router.push("/journey" as any)} style={styles.emptyJournal}>
-              <View style={styles.journalIcon}><Ionicons name="book-outline" size={21} color={colors.brandPrimary} /></View>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.journalTitle}>Record your first recovery note</Text>
-                <Text style={styles.journalBody}>Small observations help make future support more personal.</Text>
-              </View>
-              <Ionicons name="chevron-forward" size={20} color={colors.borderStrong} />
-            </Pressable>
-          ) : entries.slice(0, 2).map((entry) => (
-            <View key={entry.id} style={styles.journalCard}>
-              <View style={styles.journalTopRow}>
-                <Text style={styles.journalTag}>{entry.tag}</Text>
-                <Text style={styles.journalDate}>{new Date(entry.createdAt).toLocaleDateString(undefined, { month: "short", day: "numeric" })}</Text>
-              </View>
-              <Text style={styles.journalBody} numberOfLines={3}>{entry.body}</Text>
+              <Pressable
+                testID="home-open-profile"
+                accessibilityLabel="Profile"
+                onPress={() => router.push("/profile" as any)}
+                style={({ pressed }) => [styles.avatar, pressed && styles.pressed]}
+              >
+                <Text style={styles.avatarText}>{greetName.slice(0, 1).toUpperCase()}</Text>
+              </Pressable>
             </View>
-          ))}
+          </View>
+
+          {loading ? (
+            <View style={styles.loadingState}>
+              <ActivityIndicator color={colors.brandPrimary} />
+            </View>
+          ) : (
+            <>
+              <View style={[styles.hero, isWide && styles.heroWide]}>
+                <View style={[styles.heroCopy, isWide && styles.heroCopyWide]}>
+                  {!isInitialAssessment && (
+                    <Text style={styles.eyebrow}>{`WELCOME BACK, ${greetName.toUpperCase()}`}</Text>
+                  )}
+                  <Text style={[styles.heroTitle, isWide && styles.heroTitleWide]}>
+                    {isInitialAssessment
+                      ? "See where your recovery stands today"
+                      : "See how your recovery looks today"}
+                  </Text>
+                  <Text style={styles.heroBody}>
+                    {assessmentDescription}
+                  </Text>
+
+                  <View style={styles.primaryActions}>
+                    <Pressable
+                      testID="home-start-next-session"
+                      onPress={startNextSession}
+                      style={({ pressed }) => [styles.startButton, pressed && styles.startButtonPressed]}
+                    >
+                      <Ionicons name="play" size={18} color={colors.onBrandPrimary} />
+                      <Text style={styles.startButtonText}>
+                        {assessmentButtonLabel}
+                      </Text>
+                    </Pressable>
+                    <View style={styles.durationRow}>
+                      <Ionicons name="time-outline" size={18} color={colors.onSurfaceTertiary} />
+                      <Text style={styles.durationText}>About 3 minutes</Text>
+                    </View>
+                  </View>
+
+                  {!isInitialAssessment && latest && (
+                    <Pressable
+                      testID="home-view-latest-results"
+                      onPress={viewLatestResults}
+                      style={({ pressed }) => [styles.resultsLink, pressed && styles.pressed]}
+                    >
+                      <Ionicons name="analytics-outline" size={18} color={colors.brandPrimary} />
+                      <Text style={styles.resultsLinkText}>View latest results</Text>
+                      <Ionicons name="arrow-forward" size={17} color={colors.brandPrimary} />
+                    </Pressable>
+                  )}
+                </View>
+
+                <View style={[styles.artwork, isWide && styles.artworkWide]}>
+                  <Image
+                    source={require("../../assets/images/rehyn-home-reach.png")}
+                    resizeMode="contain"
+                    style={styles.heroImage}
+                    accessibilityLabel="An older adult completing a comfortable guided shoulder reach"
+                  />
+                </View>
+              </View>
+
+              <View style={styles.discoverySection}>
+                <Text style={styles.discoveryHeading}>What every assessment gives you</Text>
+                <View style={[styles.discoveryRow, !isWide && styles.discoveryRowCompact]}>
+                  {assessmentBenefits.map((benefit) => (
+                    <View
+                      key={benefit.title}
+                      style={[
+                        styles.discoveryItem,
+                        !isWide && styles.discoveryItemCompact,
+                        { backgroundColor: benefit.backgroundColor },
+                      ]}
+                    >
+                      <View style={[styles.discoveryIcon, !isWide && styles.discoveryIconCompact]}>
+                        <Ionicons name={benefit.icon} size={22} color={benefit.iconColor} />
+                      </View>
+                      <View style={styles.discoveryCopy}>
+                        <Text style={[styles.discoveryTitle, !isWide && styles.discoveryTitleCompact]}>
+                          {benefit.title}
+                        </Text>
+                        <Text style={[styles.discoveryDetail, !isWide && styles.discoveryDetailCompact]}>
+                          {benefit.detail}
+                        </Text>
+                      </View>
+                    </View>
+                  ))}
+                </View>
+              </View>
+            </>
+          )}
         </View>
       </ScrollView>
     </View>
@@ -150,53 +214,150 @@ export default function HomeScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.surface },
-  page: { paddingHorizontal: spacing.md, paddingBottom: 110 },
-  inner: { width: "100%", maxWidth: 620, alignSelf: "center", gap: spacing.md },
-  header: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", minHeight: 52 },
-  brandRow: { flexDirection: "row", alignItems: "center", gap: spacing.xs },
-  brandIcon: { width: 34, height: 34, borderRadius: radius.sm, backgroundColor: "#24594F", alignItems: "center", justifyContent: "center" },
-  brand: { fontSize: 22, fontWeight: "800", color: "#24594F" },
+  page: { paddingHorizontal: spacing.md, paddingBottom: 108 },
+  inner: { width: "100%", maxWidth: 1080, alignSelf: "center" },
+  header: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    minHeight: 64,
+    marginBottom: spacing.md,
+  },
+  brandRow: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
+  brandIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: radius.sm,
+    backgroundColor: "#1F6255",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  brand: { fontSize: 24, fontWeight: "800", color: "#17483F" },
   headerActions: { flexDirection: "row", alignItems: "center", gap: spacing.xs },
-  iconButton: { width: 38, height: 38, borderRadius: 19, alignItems: "center", justifyContent: "center", borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface },
-  avatar: { width: 38, height: 38, borderRadius: 19, backgroundColor: colors.brandSecondary, alignItems: "center", justifyContent: "center" },
-  avatarText: { color: colors.onBrandSecondary, fontWeight: "800" },
-  welcomeCard: { flexDirection: "row", gap: spacing.sm, padding: spacing.md, borderRadius: radius.md, backgroundColor: "#EAF1EF" },
-  welcomeBar: { width: 4, borderRadius: 2, backgroundColor: "#3C8273" },
-  welcomeLabel: { fontSize: 13, color: colors.onSurfaceSecondary },
-  welcomeText: { fontSize: 15, lineHeight: 21, fontWeight: "800", color: colors.onSurface },
-  goalCard: { flexDirection: "row", alignItems: "center", gap: spacing.md, padding: spacing.md, borderRadius: radius.md, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface },
-  goalRing: { width: 78, height: 78, borderRadius: 39, borderWidth: 8, borderColor: colors.brandPrimary, alignItems: "center", justifyContent: "center", backgroundColor: colors.surface },
-  goalPercent: { fontSize: 18, fontWeight: "800", color: colors.onSurface },
-  goalWord: { fontSize: 9, color: colors.onSurfaceTertiary, fontWeight: "700" },
-  goalCopy: { flex: 1, minWidth: 0 },
-  goalTitle: { fontSize: 16, fontWeight: "800", color: colors.onSurface },
-  goalSubtitle: { fontSize: 12, lineHeight: 17, color: colors.onSurfaceTertiary, marginTop: 2 },
-  goalMetaRow: { flexDirection: "row", flexWrap: "wrap", gap: spacing.xs, marginTop: spacing.sm },
-  metaPill: { flexDirection: "row", alignItems: "center", gap: 4, backgroundColor: colors.surfaceSecondary, paddingHorizontal: spacing.sm, paddingVertical: 5, borderRadius: radius.pill },
-  metaText: { fontSize: 11, color: colors.onSurfaceSecondary, fontWeight: "700" },
-  streakPill: { flexDirection: "row", alignItems: "center", gap: 4, backgroundColor: "#FFF3DC", paddingHorizontal: spacing.sm, paddingVertical: 5, borderRadius: radius.pill },
-  streakText: { fontSize: 11, color: "#8A5B18", fontWeight: "700" },
-  sessionCard: { padding: spacing.md, borderRadius: radius.md, backgroundColor: "#24594F", gap: spacing.xs },
-  sessionTopRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
-  sessionBadge: { color: "#DDEBE6", backgroundColor: "rgba(255,255,255,0.13)", borderRadius: radius.sm, paddingHorizontal: spacing.sm, paddingVertical: 5, fontSize: 10, fontWeight: "800" },
-  duration: { flexDirection: "row", alignItems: "center", gap: 4 },
-  durationText: { color: "#E8F0EA", fontSize: 12, fontWeight: "700" },
-  sessionTitle: { color: "#FFFFFF", fontSize: 21, fontWeight: "800", marginTop: spacing.sm },
-  sessionDescription: { color: "#E8F0EA", fontSize: 13, lineHeight: 19 },
-  startButton: { minHeight: 48, marginTop: spacing.sm, borderRadius: radius.sm, backgroundColor: colors.surface, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: spacing.xs },
-  startButtonText: { color: colors.brandPrimary, fontSize: 15, fontWeight: "800" },
-  resultsButton: { minHeight: 42, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: spacing.xs },
-  resultsButtonText: { color: colors.onBrandPrimary, fontSize: 14, fontWeight: "700" },
-  sectionHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginTop: spacing.sm },
-  sectionTitle: { fontSize: 17, fontWeight: "800", color: colors.onSurface },
-  addEntry: { flexDirection: "row", alignItems: "center", gap: 3, minHeight: 40, paddingHorizontal: spacing.xs },
-  addEntryText: { fontSize: 13, fontWeight: "800", color: colors.brandPrimary },
-  emptyJournal: { flexDirection: "row", alignItems: "center", gap: spacing.sm, padding: spacing.md, borderRadius: radius.md, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface },
-  journalIcon: { width: 42, height: 42, borderRadius: 21, backgroundColor: colors.brandTertiary, alignItems: "center", justifyContent: "center" },
-  journalTitle: { fontSize: 14, fontWeight: "800", color: colors.onSurface },
-  journalBody: { fontSize: 13, lineHeight: 19, color: colors.onSurfaceSecondary },
-  journalCard: { padding: spacing.md, borderRadius: radius.md, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface },
-  journalTopRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: spacing.xs },
-  journalTag: { fontSize: 11, fontWeight: "800", color: colors.brandPrimary },
-  journalDate: { fontSize: 11, color: colors.onSurfaceTertiary },
+  iconButton: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surface,
+  },
+  avatar: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    backgroundColor: "#DDEBE1",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  avatarText: { color: colors.onSurface, fontSize: 16, fontWeight: "800" },
+  pressed: { opacity: 0.68 },
+  loadingState: { minHeight: 420, alignItems: "center", justifyContent: "center" },
+  hero: {
+    backgroundColor: "#F5F8F6",
+    borderRadius: radius.sm,
+    overflow: "hidden",
+    paddingTop: spacing.lg,
+  },
+  heroWide: {
+    minHeight: 530,
+    paddingTop: 0,
+    paddingHorizontal: spacing.xl,
+    flexDirection: "row",
+    alignItems: "center",
+  },
+  heroCopy: { paddingHorizontal: spacing.md, zIndex: 2 },
+  heroCopyWide: { width: "48%", paddingHorizontal: spacing.md, paddingVertical: spacing.xxl },
+  eyebrow: { fontSize: 12, lineHeight: 18, fontWeight: "800", color: colors.brandPrimary },
+  heroTitle: {
+    maxWidth: 500,
+    marginTop: spacing.sm,
+    fontSize: 34,
+    lineHeight: 40,
+    fontWeight: "800",
+    color: "#183A32",
+  },
+  heroTitleWide: { fontSize: 48, lineHeight: 57 },
+  heroBody: {
+    maxWidth: 440,
+    marginTop: spacing.md,
+    fontSize: 16,
+    lineHeight: 24,
+    color: colors.onSurfaceSecondary,
+  },
+  primaryActions: { marginTop: 20, alignItems: "flex-start", gap: spacing.sm },
+  startButton: {
+    minHeight: 54,
+    minWidth: 244,
+    paddingHorizontal: spacing.lg,
+    borderRadius: radius.sm,
+    backgroundColor: "#1F6A59",
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: spacing.xs,
+    shadowColor: "#16483D",
+    shadowOpacity: 0.18,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 7 },
+    elevation: 3,
+  },
+  startButtonPressed: { backgroundColor: "#174F43", transform: [{ scale: 0.99 }] },
+  startButtonText: { color: colors.onBrandPrimary, fontSize: 16, fontWeight: "800" },
+  durationRow: { flexDirection: "row", alignItems: "center", gap: 6 },
+  durationText: { color: colors.onSurfaceTertiary, fontSize: 13, fontWeight: "700" },
+  resultsLink: {
+    minHeight: 44,
+    marginTop: spacing.sm,
+    flexDirection: "row",
+    alignItems: "center",
+    alignSelf: "flex-start",
+    gap: 6,
+  },
+  resultsLinkText: { color: colors.brandPrimary, fontSize: 14, fontWeight: "800" },
+  artwork: { height: 220, marginTop: spacing.sm, position: "relative" },
+  artworkWide: { width: "52%", height: 500, marginTop: 0 },
+  heroImage: { width: "100%", height: "100%" },
+  discoverySection: { paddingVertical: spacing.lg },
+  discoveryHeading: {
+    marginBottom: spacing.lg,
+    textAlign: "center",
+    fontSize: 18,
+    lineHeight: 24,
+    fontWeight: "800",
+    color: colors.onSurface,
+  },
+  discoveryRow: { flexDirection: "row", gap: spacing.md },
+  discoveryRowCompact: { flexDirection: "column", gap: spacing.sm },
+  discoveryItem: {
+    flex: 1,
+    minHeight: 154,
+    alignItems: "flex-start",
+    justifyContent: "center",
+    padding: spacing.lg,
+    borderRadius: radius.sm,
+  },
+  discoveryItemCompact: {
+    minHeight: 94,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "flex-start",
+  },
+  discoveryIcon: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: "#E9F2EB",
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: spacing.sm,
+  },
+  discoveryIconCompact: { marginRight: spacing.md, marginBottom: 0 },
+  discoveryCopy: { flex: 1, minWidth: 0 },
+  discoveryTitle: { fontSize: 16, lineHeight: 21, fontWeight: "800", color: colors.onSurface },
+  discoveryTitleCompact: { fontSize: 15, lineHeight: 20 },
+  discoveryDetail: { marginTop: 5, fontSize: 12, lineHeight: 17, color: colors.onSurfaceTertiary },
+  discoveryDetailCompact: { marginTop: 2 },
 });

@@ -1,31 +1,23 @@
 import { useEffect, useRef, useState } from "react";
-import {
-  ActivityIndicator,
-  KeyboardAvoidingView,
-  Platform,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  Text,
-  TextInput,
-  View,
-} from "react-native";
+import { ActivityIndicator, Image, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, useWindowDimensions, View } from "react-native";
 import { createAudioPlayer } from "expo-audio";
-import { LinearGradient } from "expo-linear-gradient";
+import { useLocalSearchParams, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
-import Svg, { Path } from "react-native-svg";
+
 import { colors, radius, spacing } from "@/src/theme";
 import { storage } from "@/src/utils/storage";
 import TypingIndicator from "@/src/components/TypingIndicator";
 import { API_BASE as BASE } from "@/src/config";
+import { authedFetch } from "@/src/auth";
+import { fetchHistory } from "@/src/api";
 
 type Turn = { role: "user" | "assistant"; text: string; ts: string };
 
 const SESSION_KEY = "alira_session_id";
-const LOCAL_GREETING =
-  "Hi there! I'm Alira, your AI recovery companion. I'm here to support you - body, mind, and progress. How are you feeling today?";
+const LOCAL_GREETING = "Hi there! I'm Alira, your recovery companion. I'm here to support you - body, mind, and progress. How are you feeling today?";
+const companionImage = require("@/assets/images/alira-companion.png");
 
 function genId() {
   return "s_" + Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
@@ -39,25 +31,30 @@ function formatTime(ts: string) {
 
 export default function ChatScreen() {
   const insets = useSafeAreaInsets();
+  const router = useRouter();
+  const { width } = useWindowDimensions();
+  const { prompt } = useLocalSearchParams<{ prompt?: string }>();
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [turns, setTurns] = useState<Turn[]>([]);
-  const [input, setInput] = useState("");
+  const [input, setInput] = useState(prompt || "");
   const [sending, setSending] = useState(false);
+  const [openingAction, setOpeningAction] = useState<string | null>(null);
   const scrollRef = useRef<ScrollView>(null);
+  const inputRef = useRef<TextInput>(null);
+  const wide = width >= 760;
 
   const playAliraVoice = async (text: string) => {
     try {
-      const r = await fetch(`${BASE}/api/tts/generate`, {
+      const response = await fetch(`${BASE}/api/tts/generate`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ text }),
       });
-      if (!r.ok) return;
-      const d = await r.json();
-      const player = createAudioPlayer({ uri: `data:audio/mpeg;base64,${d.audio_b64}` });
-      player.play();
+      if (!response.ok) return;
+      const audio = await response.json();
+      createAudioPlayer({ uri: `data:audio/mpeg;base64,${audio.audio_b64}` }).play();
     } catch {
-      /* voice is optional */
+      /* Voice is a helpful enhancement, not a blocker for chat. */
     }
   };
 
@@ -65,213 +62,163 @@ export default function ChatScreen() {
     (async () => {
       const storedId = await storage.getItem<string>(SESSION_KEY, "");
       const id = storedId || genId();
-      if (!storedId) {
-        await storage.setItem(SESSION_KEY, id);
-      }
+      if (!storedId) await storage.setItem(SESSION_KEY, id);
       setSessionId(id);
       try {
-        const r = await fetch(`${BASE}/api/chat/history?session_id=${encodeURIComponent(id)}`);
-        const d = await r.json();
-        const existing: Turn[] = d.turns || [];
+        const response = await authedFetch(`/api/chat/history?session_id=${encodeURIComponent(id)}`);
+        const data = await response.json();
+        const existing: Turn[] = data.turns || [];
         if (existing.length > 0) {
           setTurns(existing);
         } else {
-          const pr = await fetch(`${BASE}/api/chat/proactive`, {
+          const proactive = await authedFetch("/api/chat/proactive", {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ session_id: id, text: "" }),
           });
-          const pd = await pr.json();
-          const greeting = pd.text || LOCAL_GREETING;
+          const proactiveData = await proactive.json();
+          const greeting = proactiveData.text || LOCAL_GREETING;
           setTurns([{ role: "assistant", text: greeting, ts: new Date().toISOString() }]);
-          if (Platform.OS !== "web") playAliraVoice(greeting);
         }
       } catch {
         setTurns([{ role: "assistant", text: LOCAL_GREETING, ts: new Date().toISOString() }]);
-        if (Platform.OS !== "web") playAliraVoice(LOCAL_GREETING);
       }
     })();
   }, []);
 
-  const send = async () => {
-    const txt = input.trim();
-    if (!txt || !sessionId || sending) return;
+  useEffect(() => {
+    if (prompt) setInput(prompt);
+  }, [prompt]);
+
+  const sendMessage = async (message: string, speakReply = false) => {
+    const text = message.trim();
+    if (!text || !sessionId || sending) return;
     Haptics.selectionAsync();
-    const now = new Date().toISOString();
-    setTurns((t) => [...t, { role: "user", text: txt, ts: now }]);
+    setTurns((current) => [...current, { role: "user", text, ts: new Date().toISOString() }]);
     setInput("");
     setSending(true);
     try {
-      const r = await fetch(`${BASE}/api/chat/message`, {
+      const response = await authedFetch("/api/chat/message", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ session_id: sessionId, text: txt }),
+        body: JSON.stringify({ session_id: sessionId, text }),
       });
-      if (!r.ok) throw new Error("chat fail");
-      const d = await r.json();
-      setTurns((t) => [...t, { role: "assistant", text: d.text, ts: new Date().toISOString() }]);
+      if (!response.ok) throw new Error("chat fail");
+      const data = await response.json();
+      setTurns((current) => [...current, { role: "assistant", text: data.text, ts: new Date().toISOString() }]);
+      if (speakReply) void playAliraVoice(data.text);
     } catch {
-      setTurns((t) => [
-        ...t,
-        {
-          role: "assistant",
-          text: "I'm having trouble reaching the server. Let's try again in a moment.",
-          ts: new Date().toISOString(),
-        },
-      ]);
+      setTurns((current) => [...current, { role: "assistant", text: "I'm having trouble reaching the server. Let's try again in a moment.", ts: new Date().toISOString() }]);
     } finally {
       setSending(false);
       setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 80);
     }
   };
 
+  const send = async () => sendMessage(input);
+
+  const startGuidedExercise = async () => {
+    setOpeningAction("exercise");
+    try {
+      const history = await fetchHistory();
+      const assessment = history.find((item) => item.rehab_plan.length > 0 && (item.clinical_review_gate?.rehab_access ?? "allowed") === "allowed");
+      if (assessment) {
+        router.push({ pathname: "/rehab-plan", params: { id: assessment.id } });
+        return;
+      }
+      if (history[0]) {
+        router.push({ pathname: "/results", params: { id: history[0].id } });
+        return;
+      }
+      router.push({ pathname: "/session-check" as never, params: { target: "assessment", mode: "initial" } });
+    } catch {
+      router.push("/journey");
+    } finally {
+      setOpeningAction(null);
+    }
+  };
+
+  const startPrompt = (value: string) => {
+    setInput(value);
+    setTimeout(() => inputRef.current?.focus(), 80);
+  };
+
+  const conversationTurns = turns.length === 1 && turns[0]?.role === "assistant" ? [] : turns;
   const actions = [
-    { icon: "analytics-outline" as const, text: "Check My Progress" },
-    { icon: "walk-outline" as const, text: "Start Guided Exercise" },
-    { icon: "heart" as const, text: "Pain Check-in" },
-    { icon: "book-outline" as const, text: "Reflect on Today" },
+    { id: "progress", icon: "trending-up-outline" as const, text: "Check My Progress", tone: "#EFF6F4", onPress: () => router.push("/progress") },
+    { id: "exercise", icon: "walk-outline" as const, text: "Start Guided Exercise", tone: "#F1F4EC", onPress: () => void startGuidedExercise() },
+    { id: "pain", icon: "heart" as const, text: "Pain Check-in", tone: "#F5F0FA", onPress: () => void sendMessage("Please guide me through a gentle pain check-in. Ask me one short question at a time, beginning with where I feel pain and how strong it is from zero to ten.", true) },
+    { id: "reflect", icon: "book-outline" as const, text: "Reflect on Today", tone: "#FAF3EA", onPress: () => void sendMessage("Please guide me through a short reflection on today's recovery. Ask me one encouraging question at a time and help me notice one small win.", true) },
   ];
 
   return (
     <View style={[styles.container, { paddingTop: insets.top }]}>
-      <View style={styles.header}>
-        <LinearGradient colors={["#5B966B", colors.brandPrimary]} style={styles.headerAvatar}>
-          <Ionicons name="heart" size={30} color="#fff" />
-        </LinearGradient>
-        <View style={styles.headerCopy}>
-          <Text style={styles.headerTitle}>Alira</Text>
-          <Text style={styles.headerSub}>Your recovery companion - always here</Text>
-        </View>
-        <Pressable style={styles.sparkleButton} accessibilityLabel="Alira insights">
-          <Ionicons name="sparkles" size={24} color={colors.brandPrimary} />
-        </Pressable>
-      </View>
-
-      <KeyboardAvoidingView
-        behavior={Platform.OS === "ios" ? "padding" : undefined}
-        keyboardVerticalOffset={Platform.OS === "ios" ? 88 : 0}
-        style={styles.keyboard}
-      >
-        <ScrollView
-          ref={scrollRef}
-          style={styles.scroll}
-          contentContainerStyle={styles.scrollContent}
-          showsVerticalScrollIndicator={false}
-        >
-          <View style={styles.hero}>
-            <Svg height="92" width="100%" viewBox="0 0 360 92" style={styles.wave}>
-              <Path
-                d="M0 46 C42 20 78 68 120 40 C156 16 190 76 230 44 C272 10 308 72 360 40"
-                stroke="#C9DEC9"
-                strokeWidth="18"
-                strokeLinecap="round"
-                fill="none"
-                opacity="0.45"
-              />
-              <Path
-                d="M0 46 C42 20 78 68 120 40 C156 16 190 76 230 44 C272 10 308 72 360 40"
-                stroke="#7EAF82"
-                strokeWidth="2"
-                strokeLinecap="round"
-                fill="none"
-                opacity="0.75"
-              />
-            </Svg>
-            <View style={styles.orbOuter}>
-              <LinearGradient colors={["#F6FBF2", "#B8D8B3", "#EAF5DE"]} style={styles.orb}>
-                <Svg height="52" width="86" viewBox="0 0 86 52">
-                  <Path
-                    d="M3 29 C18 8 32 47 47 24 C59 6 69 38 83 20"
-                    stroke="#4A7856"
-                    strokeWidth="4"
-                    strokeLinecap="round"
-                    fill="none"
-                  />
-                  <Path
-                    d="M5 32 C22 15 32 49 50 28 C62 13 70 41 84 25"
-                    stroke="#FFFFFF"
-                    strokeWidth="2"
-                    strokeLinecap="round"
-                    fill="none"
-                    opacity="0.75"
-                  />
-                </Svg>
-              </LinearGradient>
+      <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} keyboardVerticalOffset={Platform.OS === "ios" ? 84 : 0} style={styles.keyboard}>
+        <ScrollView ref={scrollRef} contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
+          <View style={styles.page}>
+            <View style={styles.header}>
+              <View style={styles.headerAvatar}><Ionicons name="heart" size={25} color="#FFFFFF" /></View>
+              <View style={styles.headerCopy}>
+                <Text style={styles.headerTitle}>Alira</Text>
+                <Text style={styles.headerSub}>Your recovery companion</Text>
+              </View>
+              <Pressable onPress={() => startPrompt("What should I focus on today?")} style={styles.sparkleButton} accessibilityLabel="Ask Alira for today's focus">
+                <Ionicons name="sparkles" size={22} color={colors.brandPrimary} />
+              </Pressable>
             </View>
-            <View style={styles.listeningPill}>
-              <View style={styles.listeningDot} />
-              <Text style={styles.listeningText}>Alira is listening</Text>
-            </View>
-          </View>
 
-          {turns.length === 0 ? (
-            <ActivityIndicator color={colors.brandPrimary} style={styles.loading} />
-          ) : (
-            turns.map((item, index) => (
+            <View style={[styles.hero, wide && styles.heroWide]}>
+              <View style={styles.heroCopy}>
+                <Text style={styles.heroTitle}>Hi, I’m Alira.{"\n"}I’m here for you.</Text>
+                <Text style={styles.heroSub}>We’ll take this recovery journey one step at a time, together.</Text>
+              </View>
+              <Image source={companionImage} resizeMode="contain" style={styles.companionImage} />
+            </View>
+
+            <View style={styles.callCard}>
+              <View style={styles.callIcon}><Ionicons name="call" size={24} color={colors.brandPrimary} /></View>
+              <View style={styles.callCopy}>
+                <Text style={styles.callTitle}>Talk to Alira now</Text>
+                <Text style={styles.callSub}>Speak naturally and hear Alira reply</Text>
+              </View>
+              <Pressable testID="alira-call" onPress={() => router.push("/alira-call" as never)} style={styles.callButton}>
+                <Ionicons name="call" size={19} color="#FFFFFF" />
+                <Text style={styles.callButtonText}>Call Alira</Text>
+              </Pressable>
+            </View>
+
+            <View style={[styles.actionGrid, wide && styles.actionGridWide]}>
+              {actions.map((action) => (
+                <Pressable key={action.text} testID={`alira-action-${action.id}`} disabled={sending || (["pain", "reflect"].includes(action.id) && !sessionId)} onPress={action.onPress} style={[styles.actionCard, wide && styles.actionCardWide, { backgroundColor: action.tone }, (sending || (["pain", "reflect"].includes(action.id) && !sessionId)) && { opacity: 0.6 }]} accessibilityLabel={action.text}>
+                  <View style={styles.actionIcon}>{openingAction === action.id ? <ActivityIndicator color={colors.brandPrimary} /> : <Ionicons name={action.icon} size={24} color={colors.brandPrimary} />}</View>
+                  <Text style={styles.actionText}>{openingAction === action.id ? "Opening your plan..." : action.text}</Text>
+                </Pressable>
+              ))}
+            </View>
+
+            {turns.length === 0 && <ActivityIndicator color={colors.brandPrimary} style={styles.loading} />}
+            {conversationTurns.length > 0 && <Text style={styles.conversationTitle}>Your conversation</Text>}
+            {conversationTurns.map((item, index) => (
               <View key={`${item.ts}-${index}`} style={[styles.messageRow, item.role === "user" && styles.userRow]}>
-                {item.role === "assistant" && (
-                  <LinearGradient colors={["#5B966B", colors.brandPrimary]} style={styles.messageAvatar}>
-                    <Ionicons name="heart" size={18} color="#fff" />
-                  </LinearGradient>
-                )}
+                {item.role === "assistant" && <View style={styles.messageAvatar}><Ionicons name="heart" size={17} color="#FFFFFF" /></View>}
                 <View style={[styles.bubble, item.role === "user" ? styles.userBubble : styles.assistantBubble]}>
                   <Text style={styles.bubbleText}>{item.text}</Text>
-                  <Text style={[styles.timeText, item.role === "user" && styles.userTime]}>
-                    {formatTime(item.ts)}
-                    {item.role === "user" ? "  ✓✓" : ""}
-                  </Text>
+                  <Text style={styles.timeText}>{formatTime(item.ts)}</Text>
                 </View>
               </View>
-            ))
-          )}
-
-          {sending && (
-            <View style={styles.typingWrap}>
-              <TypingIndicator />
-            </View>
-          )}
-
-          <View style={styles.actionRow}>
-            {actions.map((action) => (
-              <Pressable key={action.text} style={styles.actionChip} accessibilityLabel={action.text}>
-                <View style={styles.actionIconWrap}>
-                  <Ionicons name={action.icon} size={21} color={colors.brandPrimary} />
-                </View>
-                <Text
-                  style={styles.actionText}
-                  numberOfLines={2}
-                  adjustsFontSizeToFit
-                  minimumFontScale={0.82}
-                >
-                  {action.text}
-                </Text>
-              </Pressable>
             ))}
+            {sending && <View style={styles.typingWrap}><TypingIndicator /></View>}
           </View>
         </ScrollView>
 
-        <View style={[styles.inputWrap, { paddingBottom: Math.max(insets.bottom, spacing.sm) }]}>
-          <Pressable style={styles.micButton}>
-            <Ionicons name="mic" size={26} color={colors.brandPrimary} />
-          </Pressable>
-          <TextInput
-            value={input}
-            onChangeText={setInput}
-            placeholder="Message Alira..."
-            placeholderTextColor="#A5AAA6"
-            style={styles.input}
-            multiline
-            maxLength={500}
-            testID="chat-input"
-          />
-          <Pressable
-            onPress={send}
-            disabled={sending || !input.trim()}
-            style={[styles.sendBtn, (sending || !input.trim()) && styles.sendBtnDisabled]}
-            testID="chat-send"
-          >
-            <Ionicons name="send" size={22} color="#fff" />
-          </Pressable>
+        <View style={[styles.inputBar, { paddingBottom: Math.max(insets.bottom, spacing.sm) }]}>
+          <View style={styles.inputInner}>
+            <Pressable onPress={() => playAliraVoice("I'm listening. Tell me how I can help.")} style={styles.micButton} accessibilityLabel="Hear Alira">
+              <Ionicons name="mic" size={23} color={colors.brandPrimary} />
+            </Pressable>
+            <TextInput ref={inputRef} value={input} onChangeText={setInput} placeholder="Message Alira..." placeholderTextColor="#98A09A" style={styles.input} multiline maxLength={500} testID="chat-input" />
+            <Pressable onPress={send} disabled={sending || !input.trim()} style={[styles.sendBtn, (sending || !input.trim()) && styles.sendBtnDisabled]} testID="chat-send">
+              <Ionicons name="send" size={21} color="#FFFFFF" />
+            </Pressable>
+          </View>
         </View>
       </KeyboardAvoidingView>
     </View>
@@ -279,207 +226,50 @@ export default function ChatScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: "#FBFCFA" },
-  header: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: spacing.md,
-    paddingHorizontal: spacing.lg,
-    paddingTop: spacing.md,
-    paddingBottom: spacing.lg,
-    backgroundColor: "#FBFCFA",
-  },
-  headerAvatar: {
-    width: 64,
-    height: 64,
-    borderRadius: 32,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  headerCopy: { flex: 1 },
-  headerTitle: { fontSize: 34, lineHeight: 38, fontWeight: "900", color: colors.onSurface },
-  headerSub: { marginTop: 2, fontSize: 17, lineHeight: 22, color: colors.brandPrimary, fontWeight: "600" },
-  sparkleButton: {
-    width: 56,
-    height: 56,
-    borderRadius: radius.md,
-    backgroundColor: "#F2F6F1",
-    alignItems: "center",
-    justifyContent: "center",
-  },
+  container: { flex: 1, backgroundColor: "#FCFDFB" },
   keyboard: { flex: 1 },
-  scroll: { flex: 1, backgroundColor: "#FBFCFA" },
-  scrollContent: { paddingBottom: spacing.md },
-  hero: {
-    minHeight: 260,
-    alignItems: "center",
-    justifyContent: "center",
-    overflow: "hidden",
-    backgroundColor: "#FBFCFA",
-  },
-  wave: { position: "absolute", top: 78 },
-  orbOuter: {
-    width: 176,
-    height: 176,
-    borderRadius: 88,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: "rgba(255,255,255,0.78)",
-    borderWidth: 1,
-    borderColor: "rgba(74,120,86,0.12)",
-    shadowColor: colors.brandPrimary,
-    shadowOpacity: 0.16,
-    shadowRadius: 28,
-    shadowOffset: { width: 0, height: 8 },
-    elevation: 3,
-  },
-  orb: {
-    width: 130,
-    height: 130,
-    borderRadius: 65,
-    alignItems: "center",
-    justifyContent: "center",
-    borderWidth: 4,
-    borderColor: "rgba(255,255,255,0.72)",
-  },
-  listeningPill: {
-    marginTop: spacing.md,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: spacing.xs,
-    paddingHorizontal: spacing.sm,
-    paddingVertical: 6,
-    borderRadius: radius.pill,
-    backgroundColor: "#EEF4EC",
-  },
-  listeningDot: { width: 11, height: 11, borderRadius: 6, backgroundColor: "#55A466" },
-  listeningText: { color: colors.brandPrimary, fontWeight: "700", fontSize: 14 },
+  scrollContent: { paddingBottom: spacing.xl },
+  page: { width: "100%", maxWidth: 1080, alignSelf: "center", paddingHorizontal: spacing.md },
+  header: { flexDirection: "row", alignItems: "center", gap: spacing.sm, paddingVertical: spacing.sm, borderBottomWidth: 1, borderBottomColor: colors.divider },
+  headerAvatar: { width: 52, height: 52, borderRadius: 26, backgroundColor: "#4C8A5A", alignItems: "center", justifyContent: "center" },
+  headerCopy: { flex: 1 },
+  headerTitle: { fontSize: 28, lineHeight: 32, fontWeight: "900", color: "#123326" },
+  headerSub: { marginTop: 1, fontSize: 14, color: colors.brandPrimary, fontWeight: "600" },
+  sparkleButton: { width: 46, height: 46, borderRadius: radius.md, backgroundColor: "#F1F5EF", alignItems: "center", justifyContent: "center" },
+  hero: { paddingTop: spacing.xl, alignItems: "center" },
+  heroWide: { minHeight: 280, flexDirection: "row", justifyContent: "space-between" },
+  heroCopy: { width: "100%", maxWidth: 420, alignSelf: "flex-start", zIndex: 1 },
+  heroTitle: { fontSize: 35, lineHeight: 42, fontWeight: "800", color: "#123326" },
+  heroSub: { marginTop: spacing.md, maxWidth: 360, fontSize: 17, lineHeight: 25, color: colors.onSurfaceTertiary },
+  companionImage: { width: "100%", maxWidth: 540, height: 210, marginTop: -12 },
+  callCard: { flexDirection: "row", alignItems: "center", gap: spacing.sm, padding: spacing.md, borderWidth: 1, borderColor: "#DCE3DA", borderRadius: radius.md, backgroundColor: "#FBFCF9" },
+  callIcon: { width: 46, height: 46, borderRadius: 23, backgroundColor: "#EAF3E8", alignItems: "center", justifyContent: "center" },
+  callCopy: { flex: 1 },
+  callTitle: { fontSize: 16, fontWeight: "800", color: colors.onSurface },
+  callSub: { fontSize: 12, lineHeight: 17, color: colors.onSurfaceTertiary, marginTop: 2 },
+  callButton: { minHeight: 46, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 7, borderRadius: radius.pill, backgroundColor: "#2F7540", paddingHorizontal: spacing.md },
+  callButtonText: { color: "#FFFFFF", fontSize: 14, fontWeight: "800" },
+  actionGrid: { flexDirection: "row", flexWrap: "wrap", gap: spacing.sm, marginTop: spacing.md },
+  actionGridWide: { flexWrap: "nowrap" },
+  actionCard: { width: "48%", minHeight: 118, padding: spacing.md, borderWidth: 1, borderColor: "rgba(74,120,86,0.12)", borderRadius: radius.md, justifyContent: "space-between" },
+  actionCardWide: { flex: 1, width: "auto" },
+  actionIcon: { width: 44, height: 44, borderRadius: 22, backgroundColor: "rgba(255,255,255,0.78)", alignItems: "center", justifyContent: "center" },
+  actionText: { fontSize: 15, lineHeight: 20, color: colors.onSurface, fontWeight: "800" },
   loading: { marginVertical: spacing.xl },
-  messageRow: {
-    flexDirection: "row",
-    alignItems: "flex-start",
-    gap: spacing.sm,
-    paddingHorizontal: spacing.lg,
-    marginBottom: spacing.sm,
-  },
+  conversationTitle: { fontSize: 17, fontWeight: "800", color: colors.onSurface, marginTop: spacing.xl, marginBottom: spacing.md },
+  messageRow: { flexDirection: "row", alignItems: "flex-start", gap: spacing.sm, marginBottom: spacing.sm },
   userRow: { justifyContent: "flex-end" },
-  messageAvatar: {
-    width: 42,
-    height: 42,
-    borderRadius: 21,
-    alignItems: "center",
-    justifyContent: "center",
-    marginTop: 2,
-  },
-  bubble: {
-    maxWidth: "76%",
-    borderRadius: radius.lg,
-    paddingHorizontal: spacing.md,
-    paddingTop: spacing.sm,
-    paddingBottom: spacing.xs,
-    shadowColor: "#1C201D",
-    shadowOpacity: 0.08,
-    shadowRadius: 10,
-    shadowOffset: { width: 0, height: 4 },
-    elevation: 2,
-  },
-  assistantBubble: {
-    backgroundColor: "#FFFFFF",
-    borderWidth: 1,
-    borderColor: "#E2E7E0",
-    borderTopLeftRadius: radius.sm,
-  },
-  userBubble: {
-    alignSelf: "flex-end",
-    backgroundColor: "#E5EEE4",
-    borderTopRightRadius: radius.sm,
-  },
-  bubbleText: { fontSize: 17, lineHeight: 24, color: colors.onSurface },
-  timeText: { marginTop: 5, fontSize: 12, color: "#838A84" },
-  userTime: { alignSelf: "flex-end", color: colors.brandPrimary },
-  typingWrap: { paddingLeft: spacing.lg, marginBottom: spacing.sm },
-  actionRow: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    justifyContent: "space-between",
-    rowGap: spacing.sm,
-    paddingHorizontal: spacing.lg,
-    paddingTop: spacing.sm,
-    paddingBottom: spacing.xl,
-  },
-  actionChip: {
-    width: "48%",
-    minHeight: 64,
-    borderRadius: radius.md,
-    borderWidth: 1,
-    borderColor: "#DCE3DA",
-    backgroundColor: "#FFFFFF",
-    flexDirection: "row",
-    alignItems: "center",
-    gap: spacing.sm,
-    paddingHorizontal: spacing.sm,
-    paddingVertical: spacing.sm,
-    shadowColor: "#1C201D",
-    shadowOpacity: 0.05,
-    shadowRadius: 8,
-    shadowOffset: { width: 0, height: 3 },
-    elevation: 1,
-  },
-  actionIconWrap: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
-    backgroundColor: "#EEF4EC",
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  actionText: {
-    flex: 1,
-    fontSize: 14,
-    lineHeight: 17,
-    color: colors.onSurface,
-    fontWeight: "700",
-  },
-  inputWrap: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: spacing.sm,
-    paddingHorizontal: spacing.lg,
-    paddingTop: spacing.sm,
-    backgroundColor: "#FBFCFA",
-    borderTopWidth: 1,
-    borderTopColor: "rgba(227,230,225,0.8)",
-  },
-  micButton: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
-    backgroundColor: "#FFFFFF",
-    borderWidth: 1,
-    borderColor: "#DCE3DA",
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  input: {
-    flex: 1,
-    minHeight: 48,
-    maxHeight: 96,
-    borderRadius: radius.pill,
-    borderWidth: 1,
-    borderColor: "#DCE3DA",
-    backgroundColor: "#FFFFFF",
-    paddingHorizontal: spacing.md,
-    paddingVertical: Platform.OS === "ios" ? 12 : 8,
-    fontSize: 17,
-    color: colors.onSurface,
-  },
-  sendBtn: {
-    width: 52,
-    height: 52,
-    borderRadius: 26,
-    backgroundColor: colors.brandPrimary,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  sendBtnDisabled: { opacity: 0.55 },
+  messageAvatar: { width: 38, height: 38, borderRadius: 19, alignItems: "center", justifyContent: "center", backgroundColor: colors.brandPrimary },
+  bubble: { maxWidth: "78%", borderRadius: radius.md, paddingHorizontal: spacing.md, paddingVertical: spacing.sm },
+  assistantBubble: { backgroundColor: "#FFFFFF", borderWidth: 1, borderColor: colors.border },
+  userBubble: { backgroundColor: "#E5EEE4" },
+  bubbleText: { fontSize: 15, lineHeight: 22, color: colors.onSurface },
+  timeText: { marginTop: 4, fontSize: 11, color: colors.onSurfaceTertiary },
+  typingWrap: { marginVertical: spacing.sm },
+  inputBar: { borderTopWidth: 1, borderTopColor: colors.divider, backgroundColor: "rgba(252,253,251,0.98)", paddingHorizontal: spacing.md, paddingTop: spacing.sm },
+  inputInner: { width: "100%", maxWidth: 1080, alignSelf: "center", flexDirection: "row", alignItems: "center", gap: spacing.sm },
+  micButton: { width: 46, height: 46, borderRadius: 23, borderWidth: 1, borderColor: "#DCE3DA", backgroundColor: "#FFFFFF", alignItems: "center", justifyContent: "center" },
+  input: { flex: 1, minHeight: 46, maxHeight: 92, borderRadius: radius.pill, borderWidth: 1, borderColor: "#DCE3DA", backgroundColor: "#FFFFFF", paddingHorizontal: spacing.md, paddingVertical: Platform.OS === "ios" ? 12 : 8, fontSize: 16, color: colors.onSurface },
+  sendBtn: { width: 48, height: 48, borderRadius: 24, backgroundColor: colors.brandPrimary, alignItems: "center", justifyContent: "center" },
+  sendBtnDisabled: { opacity: 0.5 },
 });

@@ -6,7 +6,7 @@ import { SafeAreaProvider } from "react-native-safe-area-context";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 
 import { useIconFonts } from "@/src/hooks/use-icon-fonts";
-import { getCachedUser, authedFetch, cachePatientOnboarding, onboardingCompleteKey } from "@/src/auth";
+import { getCachedUser, authedFetch, cachePatientOnboarding, onboardingCompleteKey, recoverSingleAccountCache } from "@/src/auth";
 import { preloadAssessmentMediaPipe } from "@/src/assessmentPreload";
 import { storage } from "@/src/utils/storage";
 
@@ -36,6 +36,7 @@ function AuthGate() {
       }
       // Patient role → ensure onboarding is complete before entering main app
       if (u.role !== "therapist") {
+        await recoverSingleAccountCache(u.id);
         const localFlag = await storage.getItem(onboardingCompleteKey(u.id), "");
         const allowedDuringOnboarding = ["onboarding", "sign-in"];
         if (!localFlag && !allowedDuringOnboarding.includes(seg0)) {

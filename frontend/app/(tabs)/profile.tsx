@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -15,10 +15,12 @@ import {
 import { useFocusEffect, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
+import * as ImagePicker from "expo-image-picker";
 
 import { authedFetch, getCachedUser, preferredNameKey, signOut } from "@/src/auth";
 import { colors, radius, spacing } from "@/src/theme";
 import { storage } from "@/src/utils/storage";
+import { careFacilityKey, loadCareCircle, loadUserPreferences, profilePhotoKey, textScaleFor, UserPreferences } from "@/src/userPreferences";
 
 const PHOTO_KEY = "rehyn_profile_photo_v1";
 const FACILITY_KEY = "rehyn_care_facility_v1";
@@ -51,26 +53,43 @@ export default function ProfileScreen() {
   const [photo, setPhoto] = useState("");
   const [facility, setFacility] = useState("");
   const [profile, setProfile] = useState<Record<string, unknown>>({});
+  const [userId, setUserId] = useState("");
+  const [careCircleCount, setCareCircleCount] = useState(0);
+  const [preferences, setPreferences] = useState<UserPreferences | null>(null);
   const [editMode, setEditMode] = useState<EditMode>(null);
   const [draft, setDraft] = useState("");
 
   const load = useCallback(async () => {
     setLoading(true);
-    const [user, onboarding, savedPhoto, savedFacility] = await Promise.all([
-      getCachedUser(),
-      authedFetch("/api/users/onboarding").then((response) => response.json()).catch(() => null),
+    const user = await getCachedUser();
+    if (!user) {
+      router.replace("/sign-in");
+      return;
+    }
+    const [savedPhoto, legacyPhoto, savedFacility, legacyFacility, careCircle, savedPreferences] = await Promise.all([
+      storage.getItem(profilePhotoKey(user.id), ""),
       storage.getItem(PHOTO_KEY, ""),
+      storage.getItem(careFacilityKey(user.id), ""),
       storage.getItem(FACILITY_KEY, ""),
+      loadCareCircle(user.id),
+      loadUserPreferences(),
     ]);
-    const nextProfile = onboarding?.profile || {};
-    const preferredName = nextProfile.preferred_name || user?.name || "Your profile";
-    setProfile(nextProfile);
-    setName(preferredName);
+    setUserId(user.id);
+    setName(user?.name || "Your profile");
     setEmail(user?.email || "");
-    setPhoto(savedPhoto || "");
-    setFacility(savedFacility || "");
+    setPhoto(savedPhoto || legacyPhoto || "");
+    setFacility(savedFacility || legacyFacility || "");
+    setCareCircleCount(careCircle.length);
+    setPreferences(savedPreferences);
     setLoading(false);
-  }, []);
+
+    const onboarding = await authedFetch("/api/users/onboarding")
+      .then((response) => response.json())
+      .catch(() => null);
+    const nextProfile = onboarding?.profile || {};
+    setProfile(nextProfile);
+    setName(nextProfile.preferred_name || user?.name || "Your profile");
+  }, [router]);
 
   useFocusEffect(useCallback(() => { void load(); }, [load]));
 
@@ -85,7 +104,7 @@ export default function ProfileScreen() {
     setSaving(true);
     try {
       if (editMode === "facility") {
-        await storage.setItem(FACILITY_KEY, value);
+        await storage.setItem(careFacilityKey(userId), value);
         setFacility(value);
       } else {
         const payload: Record<string, unknown> = {};
@@ -112,9 +131,25 @@ export default function ProfileScreen() {
     }
   };
 
-  const choosePhoto = () => {
+  const choosePhoto = async () => {
     if (Platform.OS !== "web") {
-      Alert.alert("Add your photo", "Photo selection is available in the Rehyn web app for now.");
+      const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (!permission.granted) {
+        Alert.alert("Photo access is off", "Allow photo access in your device settings to choose a profile photo.");
+        return;
+      }
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        allowsEditing: true,
+        aspect: [1, 1],
+        quality: 0.72,
+        base64: true,
+      });
+      if (result.canceled || !result.assets[0]) return;
+      const asset = result.assets[0];
+      const value = asset.base64 ? `data:${asset.mimeType || "image/jpeg"};base64,${asset.base64}` : asset.uri;
+      setPhoto(value);
+      await storage.setItem(profilePhotoKey(userId), value);
       return;
     }
     const input = document.createElement("input");
@@ -132,11 +167,16 @@ export default function ProfileScreen() {
         const value = typeof reader.result === "string" ? reader.result : "";
         if (!value) return;
         setPhoto(value);
-        await storage.setItem(PHOTO_KEY, value);
+        await storage.setItem(profilePhotoKey(userId), value);
       };
       reader.readAsDataURL(file);
     };
     input.click();
+  };
+
+  const removePhoto = async () => {
+    setPhoto("");
+    await storage.removeItem(profilePhotoKey(userId));
   };
 
   const logout = () => {
@@ -153,63 +193,84 @@ export default function ProfileScreen() {
     ]);
   };
 
+  const dark = Boolean(preferences?.darkMode);
+  const scale = textScaleFor(preferences?.textSize || "Comfortable");
+  const palette = useMemo(() => ({
+    page: dark ? "#10201B" : "#F8FAF9",
+    surface: dark ? "#193028" : colors.surface,
+    soft: dark ? "#213A32" : "#ECF5F2",
+    text: dark ? "#F3F8F6" : "#173D35",
+    muted: dark ? "#B8C9C3" : colors.onSurfaceTertiary,
+    border: dark ? "#355047" : colors.divider,
+  }), [dark]);
+  const openSection = (section: string) => router.push({ pathname: "/account-center" as never, params: { section } });
+
   return (
-    <View style={styles.container}>
+    <View style={[styles.container, { backgroundColor: palette.page }]}>
       <ScrollView
         contentContainerStyle={[styles.page, { paddingTop: insets.top + spacing.sm }]}
         showsVerticalScrollIndicator={false}
       >
         <View style={styles.inner}>
-          <ScreenHeader title="Your profile" onBack={() => router.back()} />
+          <ScreenHeader title="Your profile" onBack={() => router.back()} onHelp={() => openSection("help")} palette={palette} scale={scale} />
 
-          <View style={styles.heroCard}>
-            <View style={styles.avatarLarge}>
+          <View style={[styles.heroCard, { backgroundColor: palette.surface, borderColor: palette.border }]}>
+            <View style={[styles.avatarLarge, { backgroundColor: palette.soft }]}>
               {photo ? <Image source={{ uri: photo }} style={styles.avatarImage} /> : <Ionicons name="person-outline" size={50} color="#24594F" />}
             </View>
             {loading ? <ActivityIndicator color={colors.brandPrimary} /> : (
               <>
-                <Text testID="profile-name" style={styles.name}>{name}</Text>
-                <Text style={styles.profileGreeting}>This space is yours, {name.split(" ")[0]}.</Text>
+                <Text testID="profile-name" style={[styles.name, { color: palette.text, fontSize: 24 * scale, lineHeight: 30 * scale }]}>{name}</Text>
+                <Text style={[styles.profileGreeting, { color: palette.muted, fontSize: 15 * scale, lineHeight: 21 * scale }]}>This space is yours, {name.split(" ")[0]}.</Text>
               </>
             )}
             <Pressable testID="profile-add-photo" onPress={choosePhoto} style={styles.photoButton}>
               <Ionicons name="camera-outline" size={20} color={colors.onBrandPrimary} />
               <Text style={styles.photoButtonText}>{photo ? "Change your photo" : "Add your photo"}</Text>
             </Pressable>
-            <Text style={styles.photoNote}>Optional - simply a friendly face for your Rehyn profile. You can remove it whenever you like.</Text>
+            {photo ? <Pressable testID="profile-remove-photo" onPress={removePhoto}><Text style={styles.removePhotoText}>Remove photo</Text></Pressable> : null}
+            <Text style={[styles.photoNote, { color: palette.muted }]}>Optional - simply a friendly face for your Rehyn profile. You can remove it whenever you like.</Text>
           </View>
 
-          <Pressable testID="profile-edit-facility" onPress={() => openEditor("facility")} style={styles.facilityCard}>
-            <View style={styles.rowIcon}><Ionicons name="medkit-outline" size={23} color="#24594F" /></View>
+          <Pressable testID="profile-edit-facility" onPress={() => openEditor("facility")} style={[styles.facilityCard, { backgroundColor: palette.soft }]}>
+            <View style={[styles.rowIcon, { backgroundColor: palette.surface }]}><Ionicons name="medkit-outline" size={23} color="#24594F" /></View>
             <View style={styles.rowCopy}>
-              <Text style={styles.rowEyebrow}>Your care facility</Text>
-              <Text style={styles.facilityName}>{facility || "Not connected yet"}</Text>
+              <Text style={[styles.rowEyebrow, { color: palette.muted }]}>Your care facility</Text>
+              <Text style={[styles.facilityName, { color: palette.text, fontSize: 16 * scale }]}>{facility || "Not connected yet"}</Text>
             </View>
-            <Ionicons name="chevron-forward" size={20} color={colors.onSurfaceTertiary} />
+            <Ionicons name="chevron-forward" size={20} color={palette.muted} />
           </Pressable>
 
-          <View style={styles.sectionCard}>
-            <Text style={styles.sectionLabel}>PROFILE INFORMATION</Text>
+          <View style={[styles.sectionCard, { backgroundColor: palette.surface, borderColor: palette.border }]}>
+            <Text style={[styles.sectionLabel, { color: palette.muted }]}>PROFILE INFORMATION</Text>
             <ProfileRow
               testID="profile-edit-personal-details"
               icon="person-outline"
               title="Personal details"
               subtitle={email || "Name and preferred form of address"}
-              onPress={() => openEditor("name")}
+              onPress={() => openSection("personal")}
+              palette={palette}
+              scale={scale}
             />
-            <View style={styles.divider} />
+            <View style={[styles.divider, { backgroundColor: palette.border }]} />
             <ProfileRow
+              testID="profile-care-circle"
               icon="people-outline"
               title="Care circle"
-              subtitle="People you have chosen to involve"
-              onPress={() => Alert.alert("Care circle", "You have not added anyone to your care circle yet.")}
+              subtitle={careCircleCount ? `${careCircleCount} ${careCircleCount === 1 ? "person" : "people"} added` : "People you have chosen to involve"}
+              onPress={() => openSection("care-circle")}
+              palette={palette}
+              scale={scale}
             />
-            <View style={styles.divider} />
+            <View style={[styles.divider, { backgroundColor: palette.border }]} />
             <ProfileRow
+              testID="profile-account"
               icon="key-outline"
               title="Account and password"
               subtitle="Email-only sign-in"
-              onPress={() => Alert.alert("Account and password", `Your Rehyn account uses ${email || "your email"}. Password sign-in is not required.`)}
+              onPress={() => openSection("account")}
+              palette={palette}
+              scale={scale}
             />
           </View>
 
@@ -217,15 +278,15 @@ export default function ProfileScreen() {
             <Ionicons name="log-out-outline" size={21} color={colors.error} />
             <Text style={styles.logoutText}>Log out</Text>
           </Pressable>
-          <Text style={styles.footerNote}>{"You're in control of your profile and what you share."}</Text>
+          <Text style={[styles.footerNote, { color: palette.muted }]}>{"You're in control of your profile and what you share."}</Text>
         </View>
       </ScrollView>
 
       <Modal visible={editMode !== null} transparent animationType="fade" onRequestClose={() => setEditMode(null)}>
         <View style={styles.modalScrim}>
-          <View style={styles.modalCard}>
-            <Text style={styles.modalTitle}>{editMode === "name" ? "Your preferred name" : "Your care facility"}</Text>
-            <Text style={styles.modalBody}>{editMode === "name" ? "How would you like Rehyn to address you?" : "Add the name of your hospital, clinic, or rehabilitation centre."}</Text>
+          <View style={[styles.modalCard, { backgroundColor: palette.surface }]}>
+            <Text style={[styles.modalTitle, { color: palette.text }]}>{editMode === "name" ? "Your preferred name" : "Your care facility"}</Text>
+            <Text style={[styles.modalBody, { color: palette.muted }]}>{editMode === "name" ? "How would you like Rehyn to address you?" : "Add the name of your hospital, clinic, or rehabilitation centre."}</Text>
             <TextInput
               testID="profile-edit-input"
               value={draft}
@@ -233,10 +294,10 @@ export default function ProfileScreen() {
               autoFocus
               placeholder={editMode === "name" ? "Preferred name" : "Care facility"}
               placeholderTextColor={colors.onSurfaceTertiary}
-              style={styles.input}
+              style={[styles.input, { color: palette.text, borderColor: palette.border, backgroundColor: palette.soft }]}
             />
             <View style={styles.modalActions}>
-              <Pressable onPress={() => setEditMode(null)} style={styles.cancelButton}><Text style={styles.cancelText}>Cancel</Text></Pressable>
+              <Pressable onPress={() => setEditMode(null)} style={[styles.cancelButton, { backgroundColor: palette.soft }]}><Text style={[styles.cancelText, { color: palette.text }]}>Cancel</Text></Pressable>
               <Pressable testID="profile-save-edit" disabled={saving || !draft.trim()} onPress={saveEdit} style={[styles.saveButton, (!draft.trim() || saving) && styles.disabledButton]}>
                 {saving ? <ActivityIndicator color={colors.onBrandPrimary} /> : <Text style={styles.saveText}>Save</Text>}
               </Pressable>
@@ -248,25 +309,27 @@ export default function ProfileScreen() {
   );
 }
 
-function ScreenHeader({ title, onBack }: { title: string; onBack: () => void }) {
+type ProfilePalette = { page: string; surface: string; soft: string; text: string; muted: string; border: string };
+
+function ScreenHeader({ title, onBack, onHelp, palette, scale }: { title: string; onBack: () => void; onHelp: () => void; palette: ProfilePalette; scale: number }) {
   return (
     <View style={styles.header}>
-      <Pressable accessibilityLabel="Go back" onPress={onBack} style={styles.headerButton}><Ionicons name="arrow-back" size={23} color={colors.onSurfaceSecondary} /></Pressable>
-      <Text style={styles.headerTitle}>{title}</Text>
-      <Pressable accessibilityLabel="Help" onPress={() => Alert.alert("Need help?", "Contact support from Settings and we'll help you.")} style={styles.headerButton}><Ionicons name="help-circle-outline" size={23} color={colors.onSurfaceSecondary} /></Pressable>
+      <Pressable accessibilityLabel="Go back" onPress={onBack} style={[styles.headerButton, { backgroundColor: palette.surface, borderColor: palette.border }]}><Ionicons name="arrow-back" size={23} color={palette.text} /></Pressable>
+      <Text style={[styles.headerTitle, { color: palette.text, fontSize: 22 * scale }]}>{title}</Text>
+      <Pressable accessibilityLabel="Help" onPress={onHelp} style={[styles.headerButton, { backgroundColor: palette.surface, borderColor: palette.border }]}><Ionicons name="help-circle-outline" size={23} color={palette.text} /></Pressable>
     </View>
   );
 }
 
-function ProfileRow({ icon, title, subtitle, onPress, testID }: { icon: keyof typeof Ionicons.glyphMap; title: string; subtitle: string; onPress: () => void; testID?: string }) {
+function ProfileRow({ icon, title, subtitle, onPress, testID, palette, scale }: { icon: keyof typeof Ionicons.glyphMap; title: string; subtitle: string; onPress: () => void; testID?: string; palette: ProfilePalette; scale: number }) {
   return (
     <Pressable testID={testID} onPress={onPress} style={styles.profileRow}>
-      <View style={styles.rowIcon}><Ionicons name={icon} size={22} color="#24594F" /></View>
+      <View style={[styles.rowIcon, { backgroundColor: palette.soft }]}><Ionicons name={icon} size={22} color="#4A7856" /></View>
       <View style={styles.rowCopy}>
-        <Text style={styles.rowTitle}>{title}</Text>
-        <Text style={styles.rowSubtitle} numberOfLines={2}>{subtitle}</Text>
+        <Text style={[styles.rowTitle, { color: palette.text, fontSize: 16 * scale }]}>{title}</Text>
+        <Text style={[styles.rowSubtitle, { color: palette.muted, fontSize: 12 * scale, lineHeight: 17 * scale }]} numberOfLines={2}>{subtitle}</Text>
       </View>
-      <Ionicons name="chevron-forward" size={20} color={colors.onSurfaceTertiary} />
+      <Ionicons name="chevron-forward" size={20} color={palette.muted} />
     </Pressable>
   );
 }
@@ -285,6 +348,7 @@ const styles = StyleSheet.create({
   profileGreeting: { fontSize: 15, lineHeight: 21, color: colors.onSurfaceTertiary, textAlign: "center" },
   photoButton: { minHeight: 48, marginTop: spacing.sm, borderRadius: radius.pill, backgroundColor: "#176257", flexDirection: "row", alignItems: "center", justifyContent: "center", gap: spacing.xs, paddingHorizontal: spacing.lg },
   photoButtonText: { color: colors.onBrandPrimary, fontSize: 15, fontWeight: "800" },
+  removePhotoText: { color: colors.error, fontSize: 13, fontWeight: "800", paddingVertical: 4 },
   photoNote: { maxWidth: 390, marginTop: spacing.sm, fontSize: 12, lineHeight: 18, color: colors.onSurfaceTertiary, textAlign: "center" },
   facilityCard: { minHeight: 94, borderRadius: radius.md, padding: spacing.md, backgroundColor: "#E8F3F1", flexDirection: "row", alignItems: "center", gap: spacing.sm },
   sectionCard: { borderRadius: radius.md, paddingHorizontal: spacing.md, paddingBottom: spacing.xs, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.divider },

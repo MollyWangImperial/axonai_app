@@ -1,4 +1,4 @@
-from fastapi import FastAPI, APIRouter, HTTPException, Request
+from fastapi import FastAPI, APIRouter, File, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse, Response, StreamingResponse
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
@@ -119,12 +119,14 @@ def _persist_local_dict(path: Path, data: Dict[str, Dict[str, Any]]) -> None:
 LOCAL_USERS: Dict[str, Dict[str, Any]] = _load_local_dict(LOCAL_USERS_FILE)
 LOCAL_TASK_PROGRESS: Dict[str, Dict[str, Any]] = _load_local_dict(LOCAL_TASK_PROGRESS_FILE)
 LOCAL_ASSESSMENTS: List[Dict[str, Any]] = []
+LOCAL_CHAT_SESSIONS: Dict[str, Dict[str, Any]] = {}
 
 # OpenAI TTS: prefer direct OPENAI_API_KEY for local/dev, keep Emergent key as fallback.
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "").strip()
 EMERGENT_LLM_KEY = os.environ.get("EMERGENT_LLM_KEY", "").strip()
 TTS_VOICE = os.environ.get("TTS_VOICE", "nova")  # warm/encouraging default
 TTS_MODEL = os.environ.get("TTS_MODEL", "tts-1")
+ALIRA_CHAT_MODEL = os.environ.get("ALIRA_CHAT_MODEL", "gpt-4o-mini")
 ANALYSIS_WORKER_TOKEN = os.environ.get("ANALYSIS_WORKER_TOKEN", "").strip()
 LOCAL_GPU_WORKER_URL = os.environ.get("LOCAL_GPU_WORKER_URL", "").strip().rstrip("/")
 LOCAL_BACKEND_CALLBACK_URL = os.environ.get(
@@ -1732,6 +1734,40 @@ async def tts_health():
         }
 
 
+@api_router.post("/stt/transcribe")
+async def transcribe_speech(file: UploadFile = File(...)):
+    """Transcribe a short Alira voice turn without retaining the recording."""
+    if not openai_tts_client:
+        raise HTTPException(status_code=503, detail="Speech recognition is unavailable.")
+    audio = await file.read()
+    if not audio:
+        raise HTTPException(status_code=400, detail="The recording was empty.")
+    if len(audio) > 12 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="Keep each voice turn under one minute.")
+
+    filename = file.filename or "alira-turn.m4a"
+    content_type = file.content_type or "audio/m4a"
+
+    def run_transcription():
+        return openai_tts_client.audio.transcriptions.create(
+            model="whisper-1",
+            file=(filename, audio, content_type),
+            response_format="json",
+        )
+
+    try:
+        result = await asyncio.to_thread(run_transcription)
+        text = str(getattr(result, "text", "") or "").strip()
+        if not text:
+            raise HTTPException(status_code=422, detail="No speech was detected. Please try again.")
+        return {"text": text}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("Speech transcription failed: %s", str(exc)[:200])
+        raise HTTPException(status_code=502, detail="I could not understand that recording. Please try again.") from exc
+
+
 def _assessment_patient_parameters(
     submitted: Dict[str, Any],
     user: Optional[Dict[str, Any]],
@@ -2656,6 +2692,7 @@ const celebrateTitle = document.getElementById("celebrateTitle");
 const celebrateMsg = document.getElementById("celebrateMsg");
 const celebrateDots = document.getElementById("celebrateDots");
 const URL_PARAMS = new URLSearchParams(window.location.search);
+const VOICE_GUIDANCE_ENABLED = URL_PARAMS.get("voice_guidance") !== "0";
 
 function classifyCameraDevice({
   userAgent=navigator.userAgent || "",
@@ -3928,7 +3965,7 @@ async function fetchVoiceAudio(text){
 }
 
 function prefetchVoice(text){
-  if(!text) return;
+  if(!VOICE_GUIDANCE_ENABLED || !text) return;
   fetchVoiceAudio(text).catch(() => {});
 }
 
@@ -3942,6 +3979,10 @@ function prefetchUpcomingVoice(){
 }
 
 async function playVoice(text){
+  if(!VOICE_GUIDANCE_ENABLED){
+    voiceText.textContent = "Voice guidance off · follow on-screen text";
+    return;
+  }
   try{
     voiceText.textContent = "Playing instruction…";
     const audioB64 = await fetchVoiceAudio(text);
@@ -6920,6 +6961,7 @@ const fbReplay = document.getElementById("fbReplay");
 const checkYes = document.getElementById("checkYes");
 const checkUnderstand = document.getElementById("checkUnderstand");
 const URL_PARAMS = new URLSearchParams(window.location.search);
+const VOICE_GUIDANCE_ENABLED = URL_PARAMS.get("voice_guidance") !== "0";
 
 function classifyCameraDevice({
   userAgent=navigator.userAgent || "",
@@ -7093,7 +7135,10 @@ function playBrowserVoice(text){
 }
 
 async function playVoice(text){
-  if(!text) return;
+  if(!VOICE_GUIDANCE_ENABLED || !text){
+    voiceText.textContent = "Voice guidance off · follow on-screen text";
+    return;
+  }
   try{
     voiceText.textContent = "Playing instruction…";
     const audioB64 = await fetchVoiceAudio(text);
@@ -7144,7 +7189,7 @@ function fetchVoiceAudio(text){
 }
 
 function prefetchVoice(text){
-  if(!text) return Promise.resolve(null);
+  if(!VOICE_GUIDANCE_ENABLED || !text) return Promise.resolve(null);
   return fetchVoiceAudio(text).catch(() => null);
 }
 
@@ -8212,9 +8257,19 @@ async def all_therapists():
     return {"ai": [{k: v for k, v in t.items() if k != "persona_prompt"} for t in THERAPISTS_SEED], "real": real}
 
 
-async def _build_patient_context() -> str:
-    """Pulls the latest assessment so the assistant knows the patient's situation."""
-    doc = await db.assessments.find_one({}, {"_id": 0}, sort=[("created_at", -1)])
+async def _build_patient_context(user: Optional[Dict[str, Any]]) -> str:
+    """Pull the signed-in patient's latest assessment for Alira's context."""
+    if not user:
+        return "No signed-in patient context is available."
+    try:
+        doc = await db.assessments.find_one(
+            {"user_id": user["id"]},
+            {"_id": 0},
+            sort=[("created_at", -1)],
+        )
+    except Exception:
+        matching = [item for item in LOCAL_ASSESSMENTS if item.get("user_id") == user["id"]]
+        doc = max(matching, key=lambda item: item.get("created_at", ""), default=None)
     if not doc:
         return "The patient has not completed an assessment yet."
     issues = [f"- {i['label']}: {i['description']}" for i in doc.get("functional_issues", [])]
@@ -8227,7 +8282,7 @@ async def _build_patient_context() -> str:
     )
 
 
-CHAT_SYSTEM_PROMPT_BASE = """You are "Aria" — a warm, calm, deeply empathetic AI recovery companion for a stroke survivor. You are NOT a doctor; you are a supportive friend who happens to know about stroke rehabilitation.
+CHAT_SYSTEM_PROMPT_BASE = """You are "Alira" — a warm, calm AI stroke-rehabilitation companion. You provide therapist-informed education, reflection, and exercise support, but you are not a licensed therapist and you do not replace the patient's clinical team.
 
 Your tone:
 - Warm, patient, never patronizing
@@ -8247,6 +8302,11 @@ What you DO NOT do:
 - Make false promises about recovery timelines
 - Use clinical jargon — speak in plain, kind language
 
+Safety:
+- If the patient describes new facial droop, new arm weakness, new speech difficulty, sudden severe headache, collapse, chest pain, or trouble breathing, tell them to seek emergency help immediately.
+- If pain, dizziness, or fatigue appears during exercise, tell them to stop and contact their therapist or clinician before continuing.
+- Ask one short question at a time during pain check-ins or guided reflections.
+
 When you don't know something, say so warmly and suggest asking their therapist.
 
 If the patient seems distressed, gently acknowledge it, sit with them, and only suggest a tiny actionable step if they seem ready.
@@ -8256,16 +8316,22 @@ Keep replies under 4 short sentences unless the patient asks for more detail."""
 
 @api_router.post("/chat/message", response_model=ChatResponse)
 async def chat_message(req: ChatRequest, request: Request):
-    if not EMERGENT_LLM_KEY:
+    if not EMERGENT_LLM_KEY and not openai_tts_client:
         raise HTTPException(status_code=503, detail="Chat unavailable — LLM key not configured.")
-    # Load previous turns from MongoDB
-    sess = await db.chat_sessions.find_one({"session_id": req.session_id}, {"_id": 0})
+    user = await _user_from_header(dict(request.headers))
+    if not user:
+        raise HTTPException(status_code=401, detail="Sign in to talk with Alira.")
+    session_filter = {"session_id": req.session_id, "user_id": user["id"]}
+    local_session_key = f"{user['id']}:{req.session_id}"
+    try:
+        sess = await db.chat_sessions.find_one(session_filter, {"_id": 0})
+    except Exception:
+        sess = LOCAL_CHAT_SESSIONS.get(local_session_key)
     turns: List[Dict[str, Any]] = sess["turns"] if sess else []
 
     # Build patient context (refreshed every turn so new assessments propagate)
-    patient_ctx = await _build_patient_context()
+    patient_ctx = await _build_patient_context(user)
     # Inject preferred name from the signed-in user's onboarding profile, if available.
-    user = await _user_from_header(dict(request.headers))
     name = ""
     if user:
         prof = user.get("profile") or {}
@@ -8273,29 +8339,38 @@ async def chat_message(req: ChatRequest, request: Request):
     name_block = f"\nPATIENT PREFERRED NAME: {name}\n" if name else ""
     system_prompt = CHAT_SYSTEM_PROMPT_BASE + name_block + "\n----\nPATIENT CONTEXT:\n" + patient_ctx
 
-    chat = LlmChat(
-        api_key=EMERGENT_LLM_KEY,
-        session_id=req.session_id,
-        system_message=system_prompt,
-    ).with_model("anthropic", "claude-sonnet-4-5-20250929")
-
-    # Replay history (LlmChat is stateless per-instance, so we replay)
-    # The library accumulates history within the instance. We rebuild for stateless requests by
-    # constructing a single "history-aware" message stub. For simplicity here, we rely on backend
-    # session storage and pass only the new user message; the library will only see this turn.
-    # That's acceptable because we inject relevant patient context every turn — recent dialogue is
-    # included via the last few turns in the system prompt extension below.
-    if turns:
-        recent = "\n".join(f"{t['role'].upper()}: {t['text']}" for t in turns[-6:])
-        chat = LlmChat(
-            api_key=EMERGENT_LLM_KEY,
-            session_id=req.session_id,
-            system_message=system_prompt + "\n\n----\nRECENT CONVERSATION:\n" + recent,
-        ).with_model("anthropic", "claude-sonnet-4-5-20250929")
-
     try:
-        response = await chat.send_message(UserMessage(text=req.text))
-        reply_text = response if isinstance(response, str) else str(response)
+        if openai_tts_client:
+            messages = [{"role": "system", "content": system_prompt}]
+            messages.extend(
+                {"role": turn["role"], "content": turn["text"]}
+                for turn in turns[-8:]
+                if turn.get("role") in {"user", "assistant"}
+            )
+            messages.append({"role": "user", "content": req.text})
+
+            def run_chat_completion():
+                return openai_tts_client.chat.completions.create(
+                    model=ALIRA_CHAT_MODEL,
+                    messages=messages,
+                    temperature=0.5,
+                    max_tokens=260,
+                )
+
+            response = await asyncio.to_thread(run_chat_completion)
+            reply_text = str(response.choices[0].message.content or "").strip()
+        else:
+            recent = "\n".join(f"{t['role'].upper()}: {t['text']}" for t in turns[-6:])
+            emergent_prompt = system_prompt + ("\n\n----\nRECENT CONVERSATION:\n" + recent if recent else "")
+            chat = LlmChat(
+                api_key=EMERGENT_LLM_KEY,
+                session_id=req.session_id,
+                system_message=emergent_prompt,
+            ).with_model("anthropic", "claude-sonnet-4-5-20250929")
+            response = await chat.send_message(UserMessage(text=req.text))
+            reply_text = response if isinstance(response, str) else str(response)
+        if not reply_text:
+            raise RuntimeError("Alira returned an empty response")
     except Exception as e:
         logger.error(f"Chat error: {e}")
         raise HTTPException(status_code=502, detail=f"Chat error: {str(e)[:200]}")
@@ -8303,17 +8378,23 @@ async def chat_message(req: ChatRequest, request: Request):
     now = datetime.now(timezone.utc).isoformat()
     turns.append({"role": "user", "text": req.text, "ts": now})
     turns.append({"role": "assistant", "text": reply_text, "ts": now})
-    await db.chat_sessions.update_one(
-        {"session_id": req.session_id},
-        {"$set": {"session_id": req.session_id, "turns": turns, "updated_at": now}},
-        upsert=True,
-    )
+    session_doc = {"session_id": req.session_id, "user_id": user["id"], "turns": turns, "updated_at": now}
+    try:
+        await db.chat_sessions.update_one(session_filter, {"$set": session_doc}, upsert=True)
+    except Exception:
+        LOCAL_CHAT_SESSIONS[local_session_key] = session_doc
     return ChatResponse(session_id=req.session_id, text=reply_text, turns=len(turns))
 
 
 @api_router.get("/chat/history")
-async def chat_history(session_id: str):
-    sess = await db.chat_sessions.find_one({"session_id": session_id}, {"_id": 0})
+async def chat_history(session_id: str, request: Request):
+    user = await _user_from_header(dict(request.headers))
+    if not user:
+        raise HTTPException(status_code=401, detail="Sign in to view this conversation.")
+    try:
+        sess = await db.chat_sessions.find_one({"session_id": session_id, "user_id": user["id"]}, {"_id": 0})
+    except Exception:
+        sess = LOCAL_CHAT_SESSIONS.get(f"{user['id']}:{session_id}")
     return {"session_id": session_id, "turns": (sess or {}).get("turns", [])}
 
 
@@ -8326,22 +8407,31 @@ async def chat_proactive(req: ChatRequest, request: Request):
     if user:
         profile = user.get("profile") or {}
         name = (profile.get("preferred_name") or user.get("name") or "").split(" ")[0].strip()
-    sess = await db.chat_sessions.find_one({"session_id": req.session_id}, {"_id": 0})
+    try:
+        sess = await db.chat_sessions.find_one(
+            {"session_id": req.session_id, "user_id": user["id"]} if user else {"session_id": req.session_id},
+            {"_id": 0},
+        )
+    except Exception:
+        sess = LOCAL_CHAT_SESSIONS.get(f"{user['id']}:{req.session_id}") if user else None
     has_history = bool(sess and sess.get("turns"))
     has_assessment = False
     if user:
-        has_assessment = bool(await db.assessments.find_one({"user_id": user["id"]}, {"_id": 1}))
+        try:
+            has_assessment = bool(await db.assessments.find_one({"user_id": user["id"]}, {"_id": 1}))
+        except Exception:
+            has_assessment = any(item.get("user_id") == user["id"] for item in LOCAL_ASSESSMENTS)
     n = f", {name}" if name else ""
 
     if not has_assessment:
         pool = [
-            f"Hi{n}. I'm Aria — your recovery companion. Whenever you're ready, taking that first assessment will help me support you. How are you feeling today?",
+            f"Hi{n}. I'm Alira — your recovery companion. Whenever you're ready, taking that first assessment will help me support you. How are you feeling today?",
             f"Hello{n}. I'm here whenever you need to talk. Have you had a chance to do your first movement check yet?",
-            f"Hi{n}, I'm Aria. How are you doing today?",
+            f"Hi{n}, I'm Alira. How are you doing today?",
         ]
     elif not has_history:
         pool = [
-            f"Hi{n}, I'm Aria. I saw your assessment results — thank you for trusting me. How are you feeling today, gently?",
+            f"Hi{n}, I'm Alira. I saw your assessment results — thank you for trusting me. How are you feeling today, gently?",
             f"Hello{n}. I'm here for the journey. Want to tell me how the morning has been?",
             f"Hi{n}. Recovery has good days and tougher days. Which one is today?",
         ]
@@ -8360,7 +8450,7 @@ async def chat_proactive(req: ChatRequest, request: Request):
 
 @api_router.get("/chat/proactive/messages")
 async def chat_proactive_messages(request: Request, n: int = 3):
-    """Returns N varied caring proactive messages — for the floating Aria bubble on Home."""
+    """Returns N varied caring proactive messages for the floating Alira bubble on Home."""
     import random
     user = await _user_from_header(dict(request.headers))
     name = ""
