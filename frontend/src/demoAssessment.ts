@@ -15,7 +15,6 @@ const clinicalReviewGate = {
   next_step: "Explore the sample plan. Your real plan will only use your completed assessment.",
   reporting_rule: "Demonstration data only. This is not a clinical result.",
 };
-
 export const demoAssessment: Assessment = {
   id: DEMO_ASSESSMENT_ID,
   created_at: createdAt,
@@ -147,4 +146,3 @@ export const demoPatientAssessmentSummary: PatientAssessmentSummary = {
     reporting_rule: "This sample is for product demonstration and is not a diagnosis or patient result.",
   },
 };
-
