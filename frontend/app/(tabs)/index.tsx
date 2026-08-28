@@ -11,7 +11,7 @@ import {
 } from "react-native";
 import { useFocusEffect, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { Ionicons } from "@expo/vector-icons";
+import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 
 import { Assessment, fetchHistory } from "@/src/api";
@@ -21,25 +21,22 @@ import { storage } from "@/src/utils/storage";
 
 const assessmentBenefits = [
   {
-    icon: "locate-outline" as const,
-    title: "What to focus on",
-    detail: "Your clearest priority for the week",
-    backgroundColor: "#F2EEF8",
-    iconColor: "#6750A4",
+    icon: "target" as const,
+    number: "01",
+    title: "Your next priority",
+    detail: "Know what to focus on during the coming week.",
   },
   {
-    icon: "heart-outline" as const,
-    title: "How you can help",
-    detail: "Simple ways to support recovery",
-    backgroundColor: "#FFF3E5",
-    iconColor: "#A85F12",
+    icon: "hand-heart-outline" as const,
+    number: "02",
+    title: "Simple ways to help",
+    detail: "Get practical actions that support recovery.",
   },
   {
-    icon: "trending-up-outline" as const,
-    title: "Track progress over time",
-    detail: "A clear record after every assessment",
-    backgroundColor: "#EAF3F8",
-    iconColor: "#356C91",
+    icon: "chart-line" as const,
+    number: "03",
+    title: "See your progress",
+    detail: "Compare results after every assessment.",
   },
 ];
 
@@ -178,28 +175,28 @@ export default function HomeScreen() {
               </View>
 
               <View style={styles.discoverySection}>
-                <Text style={styles.discoveryHeading}>What every assessment gives you</Text>
+                <Text style={styles.discoveryHeading}>{"What you'll get after every assessment"}</Text>
                 <View style={[styles.discoveryRow, !isWide && styles.discoveryRowCompact]}>
-                  {assessmentBenefits.map((benefit) => (
+                  {assessmentBenefits.map((benefit, index) => (
                     <View
                       key={benefit.title}
                       style={[
                         styles.discoveryItem,
                         !isWide && styles.discoveryItemCompact,
-                        { backgroundColor: benefit.backgroundColor },
+                        index > 0 && styles.discoveryItemDivided,
+                        !isWide && index > 0 && styles.discoveryItemDividedCompact,
                       ]}
                     >
-                      <View style={[styles.discoveryIcon, !isWide && styles.discoveryIconCompact]}>
-                        <Ionicons name={benefit.icon} size={22} color={benefit.iconColor} />
+                      <View style={styles.discoveryNumber}>
+                        <Text style={styles.discoveryNumberText}>{benefit.number}</Text>
                       </View>
-                      <View style={styles.discoveryCopy}>
-                        <Text style={[styles.discoveryTitle, !isWide && styles.discoveryTitleCompact]}>
-                          {benefit.title}
-                        </Text>
-                        <Text style={[styles.discoveryDetail, !isWide && styles.discoveryDetailCompact]}>
-                          {benefit.detail}
-                        </Text>
+                      <View style={styles.discoveryMainRow}>
+                        <View style={styles.discoveryIcon}>
+                          <MaterialCommunityIcons name={benefit.icon} size={isWide ? 58 : 46} color="#15543C" />
+                        </View>
+                        <Text style={styles.discoveryTitle}>{benefit.title}</Text>
                       </View>
+                      <Text style={[styles.discoveryDetail, !isWide && styles.discoveryDetailCompact]}>{benefit.detail}</Text>
                     </View>
                   ))}
                 </View>
@@ -322,42 +319,56 @@ const styles = StyleSheet.create({
   heroImage: { width: "100%", height: "100%" },
   discoverySection: { paddingVertical: spacing.lg },
   discoveryHeading: {
-    marginBottom: spacing.lg,
-    textAlign: "center",
-    fontSize: 18,
-    lineHeight: 24,
-    fontWeight: "800",
-    color: colors.onSurface,
+    marginBottom: spacing.sm,
+    paddingHorizontal: spacing.xl,
+    fontSize: 20,
+    lineHeight: 26,
+    fontWeight: "900",
+    color: "#17483F",
   },
-  discoveryRow: { flexDirection: "row", gap: spacing.md },
-  discoveryRowCompact: { flexDirection: "column", gap: spacing.sm },
+  discoveryRow: {
+    marginHorizontal: spacing.xl,
+    flexDirection: "row",
+    borderWidth: 1,
+    borderColor: "#D5DFD7",
+    borderRadius: radius.sm,
+    backgroundColor: "#FFFFFF",
+    overflow: "hidden",
+  },
+  discoveryRowCompact: { marginHorizontal: 0, flexDirection: "column" },
   discoveryItem: {
     flex: 1,
-    minHeight: 154,
-    alignItems: "flex-start",
+    minWidth: 0,
+    minHeight: 252,
     justifyContent: "center",
-    padding: spacing.lg,
-    borderRadius: radius.sm,
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.md,
   },
+  discoveryItemDivided: { borderLeftWidth: 1, borderLeftColor: "#D5DFD7" },
   discoveryItemCompact: {
-    minHeight: 94,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "flex-start",
+    minHeight: 166,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.md,
   },
-  discoveryIcon: {
+  discoveryItemDividedCompact: { borderLeftWidth: 0, borderTopWidth: 1, borderTopColor: "#D5DFD7" },
+  discoveryNumber: {
     width: 44,
     height: 44,
+    marginBottom: spacing.md,
     borderRadius: 22,
-    backgroundColor: "#E9F2EB",
+    backgroundColor: "#E6F0E8",
     alignItems: "center",
     justifyContent: "center",
-    marginBottom: spacing.sm,
   },
-  discoveryIconCompact: { marginRight: spacing.md, marginBottom: 0 },
-  discoveryCopy: { flex: 1, minWidth: 0 },
-  discoveryTitle: { fontSize: 16, lineHeight: 21, fontWeight: "800", color: colors.onSurface },
-  discoveryTitleCompact: { fontSize: 15, lineHeight: 20 },
-  discoveryDetail: { marginTop: 5, fontSize: 12, lineHeight: 17, color: colors.onSurfaceTertiary },
-  discoveryDetailCompact: { marginTop: 2 },
+  discoveryNumberText: { color: "#15543C", fontSize: 15, lineHeight: 20, fontWeight: "900" },
+  discoveryMainRow: { minHeight: 58, flexDirection: "row", alignItems: "center", gap: spacing.md },
+  discoveryIcon: {
+    width: 64,
+    height: 64,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  discoveryTitle: { flex: 1, minWidth: 0, fontSize: 19, lineHeight: 24, fontWeight: "900", color: colors.onSurface },
+  discoveryDetail: { maxWidth: 290, marginTop: spacing.md, fontSize: 16, lineHeight: 24, color: colors.onSurfaceSecondary },
+  discoveryDetailCompact: { maxWidth: "100%" },
 });

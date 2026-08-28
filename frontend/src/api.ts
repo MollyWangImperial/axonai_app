@@ -172,6 +172,7 @@ export type Assessment = {
   created_at: string;
   affected_side: string;
   assessment_package?: AssessmentPackageId;
+  patient_parameters?: { age_band?: string; [key: string]: unknown };
   functional_issues: FunctionalIssue[];
   rehab_plan: RehabExercise[];
   domain_assessments: {

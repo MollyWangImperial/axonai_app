@@ -123,17 +123,17 @@ export default function JourneyScreen() {
             </View>
           ) : <>
             {demoMode && (
-              <Pressable testID="assessment-history-demo" onPress={() => router.push({ pathname: "/results", params: { id: DEMO_ASSESSMENT_ID } })} style={[styles.historyRow, styles.demoHistoryRow]}>
+              <Pressable testID="assessment-history-demo" onPress={() => router.push({ pathname: "/function-summary" as never, params: { id: DEMO_ASSESSMENT_ID } })} style={[styles.historyRow, styles.demoHistoryRow]}>
                 <View style={[styles.historyIcon, styles.demoHistoryIcon]}><Ionicons name="sparkles" size={21} color="#7B5EA7" /></View>
                 <View style={styles.historyCopy}>
-                  <View style={styles.demoTitleRow}><Text style={styles.historyTitle}>Demo movement snapshot</Text><Text style={styles.demoBadge}>SAMPLE</Text></View>
-                  <Text style={styles.historyMeta}>Explore a sample movement story and map</Text>
+                  <View style={styles.demoTitleRow}><Text style={styles.historyTitle}>Demo assessment summary</Text><Text style={styles.demoBadge}>SAMPLE</Text></View>
+                  <Text style={styles.historyMeta}>Explore a sample function summary, movement story and map</Text>
                 </View>
                 <Ionicons name="chevron-forward" size={20} color={colors.borderStrong} />
               </Pressable>
             )}
             {history.slice(0, 6).map((item) => (
-              <Pressable key={item.id} testID={`assessment-history-${item.id}`} onPress={() => router.push({ pathname: "/results", params: { id: item.id } })} style={styles.historyRow}>
+              <Pressable key={item.id} testID={`assessment-history-${item.id}`} onPress={() => router.push({ pathname: "/function-summary" as never, params: { id: item.id } })} style={styles.historyRow}>
               <View style={styles.historyIcon}><Ionicons name="analytics-outline" size={21} color={colors.brandPrimary} /></View>
               <View style={styles.historyCopy}>
                 <Text style={styles.historyTitle}>{item.id === initialAssessmentId ? "Initial Assessment" : "Movement check-in"}</Text>

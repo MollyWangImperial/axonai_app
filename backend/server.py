@@ -257,6 +257,7 @@ class Assessment(BaseModel):
     created_at: str
     affected_side: str
     assessment_package: str = "upper_limb"
+    patient_parameters: Dict[str, Any] = Field(default_factory=dict)
     task_results: List[TaskResult]
     functional_issues: List[FunctionalIssue]
     rehab_plan: List[RehabExercise]

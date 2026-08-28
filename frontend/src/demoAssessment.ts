@@ -20,6 +20,7 @@ export const demoAssessment: Assessment = {
   created_at: createdAt,
   affected_side: "right",
   assessment_package: "initial",
+  patient_parameters: { age_band: "70-79" },
   functional_issues: [
     {
       code: "DEMO_SHOULDER_EFFORT",
