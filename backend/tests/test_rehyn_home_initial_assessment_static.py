@@ -70,19 +70,21 @@ def test_web_assessment_shim_has_a_defined_full_size_container():
 
 def test_onboarding_collects_pdf_feedback_fields():
     onboarding = read("frontend/app/onboarding.tsx")
+    survey = read("frontend/src/patientSurvey.ts")
     server = read("backend/server.py")
-    assert 'value: "under_20"' in onboarding
-    assert 'key: "affected_areas"' in onboarding
-    assert 'label: "Left upper limb (shoulder, arm or hand)"' in onboarding
-    assert 'label: "Left lower limb (hip, leg or foot)"' in onboarding
-    assert 'label: "Right upper limb (shoulder, arm or hand)"' in onboarding
-    assert 'label: "Right lower limb (hip, leg or foot)"' in onboarding
+    assert 'PATIENT_SURVEY_STEPS as STEPS' in onboarding
+    assert 'value: "under_20"' in survey
+    assert 'key: "affected_areas"' in survey
+    assert 'label: "Left upper limb (shoulder, arm or hand)"' in survey
+    assert 'label: "Left lower limb (hip, leg or foot)"' in survey
+    assert 'label: "Right upper limb (shoulder, arm or hand)"' in survey
+    assert 'label: "Right lower limb (hip, leg or foot)"' in survey
     assert 'testID="onb-other-area-input"' in onboarding
     assert 'testID="onb-other-area-save"' in onboarding
-    assert 'label: "Other"' in onboarding
+    assert 'label: "Other"' in survey
     assert 'testID="onb-other-goal-input"' in onboarding
     assert 'testID="onb-other-goal-save"' in onboarding
-    assert 'key: "medical_conditions"' in onboarding
+    assert 'key: "medical_conditions"' in survey
     assert 'testID="onb-other-condition-input"' in onboarding
     assert 'testID="onb-other-condition-save"' in onboarding
     assert "affected_areas: Optional[List[str]]" in server
@@ -90,6 +92,17 @@ def test_onboarding_collects_pdf_feedback_fields():
     assert "secondary_goals_other: Optional[str]" in server
     assert "medical_conditions: Optional[List[str]]" in server
     assert "medical_conditions_other: Optional[str]" in server
+
+
+def test_settings_can_open_all_canonical_survey_questions():
+    settings = read("frontend/app/(tabs)/settings.tsx")
+    survey_page = read("frontend/app/survey-questions.tsx")
+
+    assert 'testID="settings-survey-questions"' in settings
+    assert 'router.push("/survey-questions"' in settings
+    assert "PATIENT_SURVEY_STEPS.map" in survey_page
+    assert 'testID="survey-questions-list"' in survey_page
+    assert "does not change your saved answers" in survey_page
 
 
 def test_onboarding_finish_recovers_stale_session_and_reports_failures():

@@ -8,6 +8,7 @@ import { colors, radius, spacing } from "@/src/theme";
 import { DEFAULT_SETTINGS, ensurePermission, loadSettings, rescheduleReminders, saveSettings } from "@/src/utils/notifications";
 import { loadUserPreferences, saveUserPreference, TEXT_SIZES, textScaleFor, TextSizePreference, UserPreferences } from "@/src/userPreferences";
 import { DisplayPalette, useDisplayPreferences } from "@/src/displayPreferences";
+import { PATIENT_SURVEY_STEPS } from "@/src/patientSurvey";
 
 type Palette = DisplayPalette;
 
@@ -104,6 +105,18 @@ export default function SettingsScreen() {
             <SettingsLink testID="settings-text-size" icon="reorder-three-outline" title="Text size" subtitle={preferences.textSize} onPress={() => setShowTextSizes(true)} palette={palette} scale={scale} />
             <Divider palette={palette} />
             <SettingsToggle testID="settings-voice-guidance" icon="volume-high-outline" title="Voice guidance" subtitle="Spoken cues during sessions" value={preferences.voiceGuidance} onValueChange={(value) => updatePreference("voiceGuidance", value, value ? "Voice guidance is on." : "Voice guidance is off.")} palette={palette} scale={scale} />
+          </SettingsGroup>
+
+          <SettingsGroup label="YOUR PROFILE" palette={palette}>
+            <SettingsLink
+              testID="settings-survey-questions"
+              icon="list-outline"
+              title="View survey questions"
+              subtitle={`See all ${PATIENT_SURVEY_STEPS.length} setup questions in one place`}
+              onPress={() => router.push("/survey-questions" as never)}
+              palette={palette}
+              scale={scale}
+            />
           </SettingsGroup>
 
           <SettingsGroup label="DEMO" palette={palette}>

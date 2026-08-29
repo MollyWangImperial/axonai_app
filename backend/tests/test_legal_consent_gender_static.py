@@ -49,7 +49,7 @@ def test_settings_open_full_legal_screens_and_removed_care_circle_sharing():
 
 
 def test_gender_question_and_server_profile_fields_are_comprehensive():
-    onboarding = read("frontend/app/onboarding.tsx")
+    survey = read("frontend/src/patientSurvey.ts")
     server = read("backend/server.py")
 
     for label in (
@@ -61,7 +61,7 @@ def test_gender_question_and_server_profile_fields_are_comprehensive():
         "Another gender identity",
         "Prefer not to say",
     ):
-        assert label in onboarding
+        assert label in survey
     assert "gender: Optional[str]" in server
     assert "gender_self_description: Optional[str]" in server
 
