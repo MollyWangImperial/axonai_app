@@ -1,0 +1,405 @@
+import { authedFetch } from "@/src/auth";
+import { API_BASE as BASE } from "@/src/config";
+
+export type TaskStep = {
+  id: string;
+  voice: string;
+  caption: string;
+  target: { x: number; y: number; r: number; landmark: string };
+  hold_ms: number;
+  measure?: string[];
+  movement_required?: boolean;
+  failure_phenotype?: {
+    code: string;
+    domain: string;
+    label: string;
+    description: string;
+    severity: string;
+    source: string;
+    rehab_code: string;
+  };
+};
+
+export type Task = {
+  id: string;
+  title: string;
+  view: string;
+  focus: string;
+  steps: TaskStep[];
+  advanced_marker_required?: boolean;
+  advanced_label?: string;
+  recommended_objects?: string[];
+  safety_tier?: "seated" | "spotter_required";
+  safety_note?: string;
+};
+
+export type AssessmentPackageId = "initial" | "upper_limb" | "hand" | "lower_limb" | "balance";
+
+export type AssessmentPackage = {
+  id: AssessmentPackageId;
+  title: string;
+  subtitle: string;
+  task_count: number;
+};
+
+export type TaskVideo = {
+  id: string;
+  user_id: string;
+  package_id: AssessmentPackageId;
+  task_id: string;
+  duration_ms: number;
+  content_type: string;
+  created_at: string;
+  filename: string;
+  size_bytes: number;
+  storage: "gridfs" | "local" | "r2";
+};
+
+export type PatientInsightActivation = {
+  task_id: string;
+  domain: "upper_limb" | "hand" | "lower_limb";
+  muscle: string;
+  label: string;
+  mean: number;
+  peak: number;
+  template_mean: number | null;
+  delta_mean: number | null;
+};
+
+export type PatientInsights = {
+  version: string;
+  status: "processing" | "research_ready" | "validated" | "needs_review";
+  badge: string;
+  headline: string;
+  summary: string;
+  domain_metrics: {
+    domain: "upper_limb" | "hand" | "lower_limb";
+    label: string;
+    completion_percent: number;
+    findings_count: number;
+    status: string;
+  }[];
+  activation_profile: PatientInsightActivation[];
+  modeled_domains: string[];
+  observations: { title: string; detail: string }[];
+  analysis_order: string[];
+  reporting_rule: string;
+};
+
+export type PatientAssessmentSummary = {
+  id: string;
+  created_at: string;
+  assessment_package: AssessmentPackageId;
+  collection: {
+    tasks_collected: number;
+    tasks_expected: number;
+    completed_steps: number;
+    total_steps: number;
+    completion_percent: number;
+    duration_ms: number;
+    domains: { domain: string; label: string }[];
+  };
+  body_function_summary: {
+    version: string;
+    overall_status: "analysis_pending" | "review_recommended" | "no_observable_difficulty";
+    model_analysis_complete: boolean;
+    domains: BodyFunctionDomainSummary[];
+    reporting_rule: string;
+  };
+  rehab_plan_ready: boolean;
+  clinical_review_gate: ClinicalReviewGate;
+  insights: PatientInsights;
+};
+
+export type BodyFunctionDomainSummary = {
+  domain: "upper_limb" | "hand" | "lower_limb";
+  label: string;
+  status: "analysis_pending" | "review_recommended" | "no_observable_difficulty" | "not_observed";
+  tasks_completed: number;
+  tasks_observed: number;
+  step_completion_percent: number;
+  average_task_duration_ms: number;
+  findings_count: number;
+  summary: string;
+};
+
+export type ClinicalReviewGate = {
+  version?: string;
+  status: "clear" | "awaiting_model_analysis" | "therapist_confirmation_required" | "no_rehab_needed";
+  rehab_access: "allowed" | "blocked" | "not_needed";
+  reason_code?: string;
+  therapist_confirmation_required?: boolean;
+  patient_title?: string;
+  patient_message?: string;
+  next_step?: string;
+  reported_domains?: string[];
+  objective_evidence?: {
+    task_collection_complete: boolean;
+    validated_model_complete: boolean;
+    camera_findings_count: number;
+    model_findings_count: number;
+  };
+  reporting_rule?: string;
+};
+
+export type FunctionalIssue = {
+  code: string;
+  label: string;
+  description: string;
+  source: string;
+  severity: string;
+  related_task: string;
+  related_step?: string | null;
+  phenotype_domain?: string | null;
+};
+
+export type RehabExercise = {
+  id: string;
+  name: string;
+  description: string;
+  sets: number;
+  reps: number;
+  frequency: string;
+  targets_issue: string;
+  source: string;
+  selection_reason?: string | null;
+  safety_note?: string | null;
+  requires_clinician_confirmation?: boolean;
+};
+
+export type Assessment = {
+  id: string;
+  created_at: string;
+  affected_side: string;
+  assessment_package?: AssessmentPackageId;
+  patient_parameters?: { age_band?: string; [key: string]: unknown };
+  functional_issues: FunctionalIssue[];
+  rehab_plan: RehabExercise[];
+  domain_assessments: {
+    domain: string;
+    label: string;
+    task_count: number;
+    completed_steps: number;
+    total_steps: number;
+    completion_percent: number;
+    interpretation: string;
+    method: string;
+    clinical_status: string;
+  }[];
+  clinician_measures: {
+    code: string;
+    value: unknown;
+    method: string;
+    provenance: string;
+    clinical_status: string;
+  }[];
+  biomechanical_estimates: {
+    code: string;
+    label: string;
+    value: unknown;
+    unit?: string | null;
+    method: string;
+    provenance: string;
+    confidence: string;
+    interpretation: string;
+  }[];
+  measurement_form?: {
+    version: string;
+    reporting_rule: string;
+    summary: {
+      auto_filled: number;
+      model_filled: number;
+      clinician_filled: number;
+      tool_filled: number;
+      pending: number;
+    };
+    domains: {
+      domain: string;
+      label: string;
+      auto_filled: number;
+      model_filled: number;
+      clinician_filled: number;
+      tool_filled: number;
+      pending: number;
+      rows: {
+        code: string;
+        label: string;
+        scale: string;
+        source_type: string;
+        source_label: string;
+        status: string;
+        value: unknown;
+        unit?: string | null;
+        method: string;
+        confidence: string;
+        requirement: string;
+        applicable_to_submitted_tasks: boolean;
+      }[];
+    }[];
+    scale_readiness: {
+      scale: string;
+      status: string;
+      formal_score: unknown;
+      reason: string;
+    }[];
+  };
+  muscle_activation_diagnosis?: MuscleActivationDiagnosis;
+  survey_consistency?: SurveyConsistency;
+  analysis_pipeline?: AnalysisPipeline;
+  clinical_review_gate?: ClinicalReviewGate;
+  patient_insights?: PatientInsights;
+  rehabilitation_goals?: {
+    version: string;
+    method: string;
+    status: string;
+    short_term: RehabilitationGoal[];
+    long_term: RehabilitationGoal[];
+    missing_information: string[];
+    safety_rule: string;
+    generation_rule: string;
+    measurement_form_version?: string | null;
+  };
+};
+
+export type SurveyConsistency = {
+  version: string;
+  method: string;
+  overall_status: string;
+  counts: Record<"consistent" | "discordant" | "not_addressed" | "survey_only", number>;
+  reported_domains: string[];
+  survey_evidence: string[];
+  findings: {
+    issue_code?: string | null;
+    issue_label: string;
+    domain: string;
+    domain_label: string;
+    status: "consistent" | "discordant" | "not_addressed" | "survey_only";
+    interpretation: string;
+    action: string;
+  }[];
+  reporting_rule: string;
+};
+
+export type AnalysisPipeline = {
+  version: string;
+  overall_status: string;
+  stages: {
+    id: string;
+    label: string;
+    status: "complete" | "insufficient_data" | "not_run" | "screening_only";
+    method: string;
+    evidence?: Record<string, unknown>;
+    limitation?: string;
+    reason?: string | null;
+  }[];
+  model_outputs: {
+    activation_available: boolean;
+    muscle_force_available: boolean;
+    confidence: string;
+  };
+  reporting_rule: string;
+};
+
+export type MuscleActivationFinding = {
+  code: string;
+  package: string;
+  anomaly_type: "hypoactivation" | "hyperactivation" | "timing_disorder" | "co_contraction";
+  anomaly_label: string;
+  label: string;
+  muscles: string;
+  pipeline_route: string;
+  pipeline_route_label: string;
+  severity: string;
+  interpretation: string;
+  evidence_metrics: Record<string, unknown>;
+  related_tasks: string[];
+  citation: string;
+};
+
+export type MuscleActivationDiagnosis = {
+  version: string;
+  method: string;
+  reporting_rule: string;
+  anomaly_taxonomy: Record<string, string>;
+  packages_evaluated: string[];
+  findings: MuscleActivationFinding[];
+};
+
+export type RehabilitationGoal = {
+  id: string;
+  horizon: "short_term" | "long_term";
+  domain: string;
+  domain_label: string;
+  statement: string;
+  timeframe: string;
+  baseline: string;
+  target: string;
+  outcome_measure: string;
+  review_schedule: string;
+  linked_task_ids: string[];
+  linked_issue_codes: string[];
+  patient_priority?: string | null;
+  patient_agreement_required: boolean;
+  clinician_confirmation_required: boolean;
+  status: string;
+  evidence: {
+    id: string;
+    source: string;
+    title: string;
+    organization: string;
+    year: number;
+    url: string;
+    rules: string[];
+    retrieval_score: number;
+    matched_tags: string[];
+  }[];
+};
+
+export async function fetchTasks(packageId: AssessmentPackageId = "upper_limb"): Promise<{
+  tasks: Task[];
+  voice_id: string;
+  package_id: AssessmentPackageId;
+  package_title: string;
+  package_subtitle: string;
+  packages: AssessmentPackage[];
+}> {
+  const res = await fetch(`${BASE}/api/assessment/tasks?package=${encodeURIComponent(packageId)}`);
+  return res.json();
+}
+
+export async function fetchHistory(): Promise<Assessment[]> {
+  const res = await authedFetch("/api/assessment/history");
+  return res.json();
+}
+
+export async function fetchTaskVideos(packageId: AssessmentPackageId = "initial"): Promise<TaskVideo[]> {
+  const res = await authedFetch(`/api/assessment/task-videos?package=${encodeURIComponent(packageId)}`);
+  if (!res.ok) return [];
+  const data = await res.json();
+  return Array.isArray(data?.videos) ? data.videos : [];
+}
+
+export async function fetchTaskProgress(packageId: AssessmentPackageId = "initial"): Promise<string[]> {
+  const res = await authedFetch(`/api/assessment/task-progress?package=${encodeURIComponent(packageId)}`);
+  if (!res.ok) return [];
+  const data = await res.json();
+  return Array.isArray(data?.completed_task_ids) ? data.completed_task_ids.map(String) : [];
+}
+
+export async function resetTaskProgress(packageId: AssessmentPackageId = "initial"): Promise<void> {
+  const res = await authedFetch(`/api/assessment/task-progress?package=${encodeURIComponent(packageId)}`, { method: "DELETE" });
+  if (!res.ok) throw new Error(`Could not reset task progress (${res.status})`);
+}
+
+export async function fetchAssessment(id: string): Promise<Assessment> {
+  const res = await fetch(`${BASE}/api/assessment/${id}`);
+  return res.json();
+}
+
+export async function fetchPatientAssessmentSummary(id: string): Promise<PatientAssessmentSummary> {
+  const res = await fetch(`${BASE}/api/assessment/${id}/patient-summary`);
+  if (!res.ok) throw new Error(`Could not load assessment summary (${res.status})`);
+  return res.json();
+}
+
+export const POSE_RUNNER_URL = `${BASE}/api/pose/runner`;

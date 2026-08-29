@@ -1,0 +1,237 @@
+import { useEffect, useState } from "react";
+import { View, Text, StyleSheet, Pressable, ScrollView, Image, ActivityIndicator } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { Ionicons } from "@expo/vector-icons";
+import { useRouter } from "expo-router";
+import * as Haptics from "expo-haptics";
+import { colors, spacing, radius } from "@/src/theme";
+import { fetchHistory } from "@/src/api";
+import { API_BASE as BASE } from "@/src/config";
+
+type Therapist = {
+  id: string;
+  ai?: boolean;
+  trained_on?: string;
+  name: string;
+  title: string;
+  specialties: string[];
+  location: string;
+  languages: string[];
+  rating: number;
+  years: number;
+  availability: string[];
+  blurb: string;
+  photo: string;
+};
+
+type Match = { therapist: Therapist; score: number; reason: string };
+
+const FALLBACK_MATCHES: Match[] = [
+  {
+    score: 98,
+    reason: "good match for hand and fine-motor recovery",
+    therapist: {
+      id: "th_001",
+      ai: true,
+      trained_on: "12 years of OT case data - fine motor and hand rehab",
+      name: "Maya (AI Therapist)",
+      title: "AI Occupational Therapist - Hand and Fine Motor",
+      specialties: ["HAND_OPENING", "PINCH_IMPAIRED", "GROSS_GRASP"],
+      location: "Always available - Worldwide",
+      languages: ["English", "Spanish"],
+      rating: 4.9,
+      years: 12,
+      availability: ["24/7 chat"],
+      blurb: "I specialize in helping survivors rebuild fine motor control with playful, daily activities. We'll go at your pace.",
+      photo: "https://images.unsplash.com/photo-1559839734-2b71ea197ec2?w=400",
+    },
+  },
+  {
+    score: 94,
+    reason: "good match for reach training and trunk control",
+    therapist: {
+      id: "th_002",
+      ai: true,
+      trained_on: "9 years of neuro-PT case data - reach training and trunk control",
+      name: "Aiden (AI Therapist)",
+      title: "AI Physical Therapist - Reach and Shoulder",
+      specialties: ["REACH_INCOMPLETE", "SHOULDER_FLEX_LIMITED", "TRUNK_COMP"],
+      location: "Always available - Worldwide",
+      languages: ["English", "Korean"],
+      rating: 4.8,
+      years: 9,
+      availability: ["24/7 chat"],
+      blurb: "Reach training and trunk control specialist. I love seeing the moment a patient realizes their arm can do more than they thought.",
+      photo: "https://images.unsplash.com/photo-1622253692010-333f2da6031d?w=400",
+    },
+  },
+  {
+    score: 92,
+    reason: "good match for daily living and self-care practice",
+    therapist: {
+      id: "th_005",
+      ai: true,
+      trained_on: "11 years of OT in ADL retraining - feeding, dressing, grooming",
+      name: "Lena (AI Therapist)",
+      title: "AI OT - Daily Living and Self-Care",
+      specialties: ["H2M_IMPAIRED", "GROSS_GRASP", "PINCH_IMPAIRED"],
+      location: "Always available - Worldwide",
+      languages: ["English", "German"],
+      rating: 4.85,
+      years: 11,
+      availability: ["24/7 chat"],
+      blurb: "Daily-living focused. We'll work on feeding, dressing, and small joys like coin pinches, buttons, and a familiar mug.",
+      photo: "https://images.unsplash.com/photo-1551836022-d5d88e9218df?w=400",
+    },
+  },
+];
+
+export default function TherapistsScreen() {
+  const insets = useSafeAreaInsets();
+  const router = useRouter();
+  const [matches, setMatches] = useState<Match[]>(FALLBACK_MATCHES);
+  const [loading, setLoading] = useState(true);
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      let codes = "";
+      try {
+        const history = await fetchHistory();
+        const latest = history[0];
+        codes = latest ? latest.functional_issues.map((i) => i.code).join(",") : "";
+      } catch {
+        codes = "";
+      }
+      const res = await fetch(`${BASE}/api/therapists/match?issues=${encodeURIComponent(codes)}`);
+      const data = await res.json();
+      setMatches(data.matches?.length ? data.matches : FALLBACK_MATCHES);
+    } catch {
+      setMatches(FALLBACK_MATCHES);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => { load(); }, []);
+
+  const connect = async (id: string) => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    router.push({ pathname: "/persona-chat", params: { persona_id: id } });
+  };
+
+  return (
+    <View style={[styles.container, { paddingTop: insets.top }]}>
+      <View style={styles.header}>
+        <Text style={styles.headerTitle}>Find your therapist</Text>
+        <Text style={styles.headerSub}>
+          Available 24/7, trained on real therapist expertise and experience.
+        </Text>
+      </View>
+
+      <ScrollView contentContainerStyle={{ padding: spacing.lg, paddingBottom: 32 }} showsVerticalScrollIndicator={false}>
+        <View style={styles.eaBanner} testID="ea-banner">
+          <Ionicons name="ribbon" size={18} color={colors.onBrandTertiary} />
+          <View style={{ flex: 1 }}>
+            <Text style={styles.eaTitle}>Trained on real clinical practice</Text>
+            <Text style={styles.eaBody}>Our therapists are built from the methods, voice, and patience of licensed clinicians - grounded in CIMT, Fugl-Meyer, ARAT, and Bobath.</Text>
+          </View>
+        </View>
+        {loading && <ActivityIndicator color={colors.brandPrimary} />}
+        {matches.map((m, idx) => {
+          const t = m.therapist;
+          return (
+            <View key={t.id} style={styles.card} testID={`therapist-${t.id}`}>
+              <View style={styles.badgeRow}>
+                {idx === 0 && (
+                  <View style={styles.topMatch}>
+                    <Ionicons name="sparkles" size={14} color={colors.onBrandSecondary} />
+                    <Text style={styles.topMatchText}>TOP MATCH</Text>
+                  </View>
+                )}
+                <View style={styles.aiBadge}>
+                  <Ionicons name="sparkles" size={12} color={colors.onBrandSecondary} />
+                  <Text style={styles.aiBadgeText}>AI</Text>
+                </View>
+              </View>
+              <View style={styles.cardHead}>
+                <Image source={{ uri: t.photo }} style={styles.avatar} />
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.name}>{t.name}</Text>
+                  <Text style={styles.title}>{t.title}</Text>
+                  <View style={styles.metaRow}>
+                    <Ionicons name="star" size={14} color={colors.brandSecondary} />
+                    <Text style={styles.metaText}>{t.rating} - {t.years} yrs</Text>
+                  </View>
+                </View>
+              </View>
+              <Text style={styles.reason}>Match: {m.reason}</Text>
+              {t.trained_on && (
+                <View style={styles.trainedRow}>
+                  <Ionicons name="school" size={14} color={colors.brandPrimary} />
+                  <Text style={styles.trainedText}>Trained on {t.trained_on}</Text>
+                </View>
+              )}
+              <Text style={styles.blurb}>{t.blurb}</Text>
+              <View style={styles.tags}>
+                {t.languages.map((l: string) => (
+                  <View key={l} style={styles.tag}>
+                    <Ionicons name="globe" size={11} color={colors.onSurfaceSecondary} />
+                    <Text style={styles.tagText}>{l}</Text>
+                  </View>
+                ))}
+                <View style={styles.tag}>
+                  <Ionicons name="time" size={11} color={colors.onSurfaceSecondary} />
+                  <Text style={styles.tagText}>{t.availability.join(" - ")}</Text>
+                </View>
+              </View>
+              <Pressable
+                onPress={() => connect(t.id)}
+                style={styles.connectBtn}
+                testID={`connect-${t.id}`}
+              >
+                <Ionicons name="chatbubbles" size={18} color="#fff" />
+                <Text style={styles.connectText}>Chat with {t.name.split(" ")[0]}</Text>
+              </Pressable>
+            </View>
+          );
+        })}
+      </ScrollView>
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: { flex: 1, backgroundColor: colors.surface },
+  header: { paddingHorizontal: spacing.lg, paddingVertical: spacing.md, borderBottomWidth: 1, borderBottomColor: colors.divider },
+  headerTitle: { fontSize: 26, fontWeight: "800", color: colors.onSurface },
+  headerSub: { fontSize: 14, color: colors.onSurfaceSecondary, marginTop: 4 },
+  card: { backgroundColor: colors.surfaceSecondary, borderRadius: radius.lg, padding: spacing.md, marginBottom: spacing.md, gap: spacing.sm },
+  eaBanner: { flexDirection: "row", gap: spacing.sm, backgroundColor: colors.brandTertiary, padding: spacing.md, borderRadius: radius.lg, marginBottom: spacing.md, alignItems: "flex-start" },
+  eaTitle: { fontSize: 14, fontWeight: "800", color: colors.onBrandTertiary, marginBottom: 4 },
+  eaBody: { fontSize: 13, color: colors.onBrandTertiary, lineHeight: 18 },
+  badgeRow: { flexDirection: "row", gap: 6 },
+  aiBadge: { flexDirection: "row", alignItems: "center", gap: 4, backgroundColor: colors.brandSecondary, paddingHorizontal: 10, paddingVertical: 4, borderRadius: 12 },
+  aiBadgeText: { color: colors.onBrandSecondary, fontSize: 11, fontWeight: "800", letterSpacing: 1 },
+  topMatch: { flexDirection: "row", alignItems: "center", gap: 4, backgroundColor: colors.brandPrimary, paddingHorizontal: 10, paddingVertical: 4, borderRadius: 12 },
+  topMatchText: { color: colors.onBrandPrimary, fontSize: 11, fontWeight: "800", letterSpacing: 1 },
+  trainedRow: { flexDirection: "row", gap: 6, alignItems: "center", backgroundColor: colors.brandTertiary, padding: spacing.sm, borderRadius: radius.md },
+  trainedText: { color: colors.onBrandTertiary, fontSize: 12, fontWeight: "700", flex: 1 },
+  cardHead: { flexDirection: "row", gap: spacing.md, alignItems: "center" },
+  avatar: { width: 64, height: 64, borderRadius: 32, backgroundColor: colors.brandTertiary },
+  name: { fontSize: 17, fontWeight: "800", color: colors.onSurface },
+  title: { fontSize: 13, color: colors.onSurfaceSecondary, marginTop: 2 },
+  metaRow: { flexDirection: "row", alignItems: "center", gap: 4, marginTop: 4 },
+  metaText: { fontSize: 13, color: colors.onSurface, fontWeight: "600" },
+  reason: { fontSize: 13, color: colors.brandPrimary, fontWeight: "700" },
+  blurb: { fontSize: 14, color: colors.onSurfaceSecondary, fontStyle: "italic", lineHeight: 20 },
+  tags: { flexDirection: "row", flexWrap: "wrap", gap: 6 },
+  tag: { flexDirection: "row", alignItems: "center", gap: 4, backgroundColor: colors.surfaceTertiary, paddingHorizontal: 8, paddingVertical: 4, borderRadius: 12 },
+  tagText: { fontSize: 11, color: colors.onSurfaceSecondary, fontWeight: "600" },
+  avail: { marginTop: 4 },
+  availLabel: { fontSize: 11, color: colors.onSurfaceTertiary, fontWeight: "700", letterSpacing: 1 },
+  availText: { fontSize: 13, color: colors.onSurface, marginTop: 2 },
+  connectBtn: { flexDirection: "row", gap: 8, backgroundColor: colors.brandPrimary, borderRadius: radius.md, paddingVertical: 13, alignItems: "center", justifyContent: "center", marginTop: 6 },
+  connectBtnAlt: { backgroundColor: colors.success },
+  connectText: { color: "#fff", fontWeight: "700", fontSize: 15 },
+});
