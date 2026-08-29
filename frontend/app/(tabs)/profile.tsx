@@ -238,6 +238,12 @@ export default function ProfileScreen() {
             <View style={styles.rowCopy}>
               <Text style={[styles.rowEyebrow, { color: palette.muted }]}>Your care facility</Text>
               <Text style={[styles.facilityName, { color: palette.text, fontSize: 16 * scale }]}>{facility || "Not connected yet"}</Text>
+              <Text
+                testID="profile-facility-privacy-note"
+                style={[styles.facilityPrivacyNote, { color: palette.muted, fontSize: 11 * scale, lineHeight: 16 * scale }]}
+              >
+                Rehyn will not contact this facility or share your profile with it.
+              </Text>
             </View>
             <Ionicons name="chevron-forward" size={20} color={palette.muted} />
           </Pressable>
@@ -359,6 +365,7 @@ const styles = StyleSheet.create({
   rowCopy: { flex: 1, minWidth: 0 },
   rowEyebrow: { fontSize: 11, fontWeight: "800", color: "#61766F", marginBottom: 3 },
   facilityName: { fontSize: 16, lineHeight: 21, color: colors.onSurface, fontWeight: "600" },
+  facilityPrivacyNote: { marginTop: 5, fontSize: 11, lineHeight: 16, color: colors.onSurfaceTertiary },
   rowTitle: { fontSize: 16, fontWeight: "800", color: "#173D35" },
   rowSubtitle: { fontSize: 12, lineHeight: 17, color: colors.onSurfaceTertiary, marginTop: 2 },
   divider: { height: 1, backgroundColor: colors.divider, marginLeft: 56 },

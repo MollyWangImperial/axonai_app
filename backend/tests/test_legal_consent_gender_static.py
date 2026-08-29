@@ -78,3 +78,10 @@ def test_consent_and_optional_improvement_choice_are_account_backed():
     assert 'authedFetch("/api/users/consent"' in auth
     assert "Off by default" in data_permissions
     assert "Raw movement videos are not used for model training" in data_permissions
+
+
+def test_care_facility_has_clear_profile_privacy_note():
+    profile = read("frontend/app/(tabs)/profile.tsx")
+
+    assert 'testID="profile-facility-privacy-note"' in profile
+    assert "Rehyn will not contact this facility or share your profile with it." in profile
