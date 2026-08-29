@@ -13,7 +13,7 @@ type SessionActor = "patient" | "carer";
 export default function SessionCheckScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
-  const params = useLocalSearchParams<{ target?: string; id?: string; mode?: string }>();
+  const params = useLocalSearchParams<{ target?: string; id?: string; mode?: string; package?: string }>();
   const [actor, setActor] = useState<SessionActor | null>(null);
   const [safetyAck, setSafetyAck] = useState(false);
 
@@ -25,7 +25,10 @@ export default function SessionCheckScreen() {
       router.replace({ pathname: "/rehab-plan", params: { id: params.id, session_actor: actor } });
       return;
     }
-    router.replace({ pathname: "/task-intro", params: { mode: params.mode || "initial", session_actor: actor } });
+    router.replace({
+      pathname: "/task-intro",
+      params: { mode: params.mode || "initial", session_actor: actor, package: params.package || "initial" },
+    });
   };
 
   return (

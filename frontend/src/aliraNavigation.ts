@@ -1,6 +1,7 @@
 import { Assessment, fetchHistory } from "@/src/api";
 import { DEMO_ASSESSMENT_ID } from "@/src/demoAssessment";
 import { loadUserPreferences } from "@/src/userPreferences";
+import { authedFetch } from "@/src/auth";
 
 export const ALIRA_NAVIGATION_DESTINATIONS = {
   home: { label: "Home", path: "/" },
@@ -23,7 +24,7 @@ export const ALIRA_NAVIGATION_DESTINATIONS = {
   },
   next_assessment: {
     label: "next assessment setup",
-    path: "/session-check?target=assessment&mode=followup",
+    dynamic: "next-assessment",
   },
   profile: { label: "profile", path: "/(tabs)/profile" },
   care_facility: { label: "care facility profile", path: "/(tabs)/profile" },
@@ -104,6 +105,34 @@ export async function resolveAliraNavigation(rawDestination: string): Promise<Al
       label: target.label,
       action: target.action,
       message: "Going back to the previous page.",
+    };
+  }
+
+  if (target.dynamic === "next-assessment") {
+    try {
+      const response = await authedFetch("/api/alira/care-plan");
+      if (response.ok) {
+        const carePlan = await response.json();
+        const packageId = String(carePlan?.assessment?.packages?.[0] || "initial");
+        const approvedPackages = new Set(["initial", "upper_limb", "hand", "lower_limb", "balance"]);
+        const selectedPackage = approvedPackages.has(packageId) ? packageId : "initial";
+        return {
+          success: true,
+          destination,
+          label: target.label,
+          path: `/session-check?target=assessment&mode=followup&package=${encodeURIComponent(selectedPackage)}`,
+          message: `Opening ${target.label}.`,
+        };
+      }
+    } catch {
+      // Fall back to the established initial package when the adaptive plan is unavailable.
+    }
+    return {
+      success: true,
+      destination,
+      label: target.label,
+      path: "/session-check?target=assessment&mode=followup&package=initial",
+      message: `Opening ${target.label}.`,
     };
   }
 

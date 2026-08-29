@@ -8,6 +8,7 @@ import { colors, spacing, radius } from "@/src/theme";
 import { storage } from "@/src/utils/storage";
 import { API_BASE as BASE } from "@/src/config";
 import { loadUserPreferences } from "@/src/userPreferences";
+import { authedFetch } from "@/src/auth";
 
 type ExerciseProgress = {
   completed_reps: number;
@@ -99,6 +100,20 @@ export default function ExerciseScreen() {
             await storage.setItem(PROGRESS_KEY(planId, exercise_id || ""), JSON.stringify(p));
           }
         } catch {/* */}
+        try {
+          await authedFetch("/api/alira/activities", {
+            method: "POST",
+            body: JSON.stringify({
+              exercise_id: exercise_id || "",
+              plan_id: planId,
+              completed_reps: Number(msg.reps || arr.length || 0),
+              average_score: avg,
+              completed_at: new Date().toISOString(),
+            }),
+          });
+        } catch {
+          // Local exercise progress remains available and can sync on a later session.
+        }
         setTimeout(() => router.back(), 2400);
       } else if (msg.type === "camera_error") {
         setError("Camera unavailable. Please grant camera permission in your phone settings and try again.");

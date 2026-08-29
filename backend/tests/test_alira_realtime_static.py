@@ -54,7 +54,7 @@ def test_realtime_registers_the_same_allowlisted_destinations_as_the_client():
 
     assert server_destinations == client_destinations
     assert {"progress", "movement_snapshot", "movement_map", "rehab_plan", "guided_exercise"} <= server_destinations
-    assert '"tools": [ALIRA_NAVIGATION_TOOL]' in SERVER
+    assert '"tools": [ALIRA_NAVIGATION_TOOL, ALIRA_RECORD_CHECKIN_TOOL]' in SERVER
     assert '"tool_choice": "auto"' in SERVER
     assert '"additionalProperties": False' in SERVER
 
@@ -70,6 +70,16 @@ def test_web_call_executes_navigation_tool_and_returns_function_output():
     assert 'tool_choice: "none"' in realtime
     assert "completeNavigation(pending)" in realtime
     assert "deleteAccount" not in NAVIGATION
+
+
+def test_web_call_can_save_an_adaptive_recovery_check_in():
+    realtime = CALL_SCREEN.split("function RealtimeWebCall()", 1)[1].split(
+        "const realtimeStyles", 1
+    )[0]
+    assert 'event.name !== "record_rehab_check_in"' in realtime
+    assert 'authedFetch("/api/alira/check-ins"' in realtime
+    assert 'source: "realtime_voice"' in realtime
+    assert "next_exercise_action" in realtime
 
 
 def test_result_navigation_uses_latest_assessment_and_journal_opens_composer():

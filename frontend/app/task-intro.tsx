@@ -30,9 +30,12 @@ const PREPARATION_TIPS = [
 export default function TaskIntro() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
-  const params = useLocalSearchParams<{ mode?: string }>();
+  const params = useLocalSearchParams<{ mode?: string; package?: string }>();
   const isInitial = params.mode !== "followup";
-  const packageId: AssessmentPackageId = "initial";
+  const allowedPackages: AssessmentPackageId[] = ["initial", "upper_limb", "hand", "lower_limb", "balance"];
+  const packageId: AssessmentPackageId = allowedPackages.includes(params.package as AssessmentPackageId)
+    ? params.package as AssessmentPackageId
+    : "initial";
   const [completedTasks, setCompletedTasks] = useState<Record<string, boolean>>({});
   const [taskIds, setTaskIds] = useState<string[]>([]);
   const [userId, setUserId] = useState<string | null>(null);
@@ -84,7 +87,7 @@ export default function TaskIntro() {
         setLoading(false);
       }
     })();
-  }, []);
+  }, [packageId]);
 
   const onBegin = async () => {
     let taskToStart = nextTaskId;

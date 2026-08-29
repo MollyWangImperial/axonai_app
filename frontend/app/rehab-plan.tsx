@@ -32,6 +32,11 @@ type ExerciseProgress = {
   sessions: number;
 };
 
+type AdaptiveCarePlan = {
+  safety?: { status?: string; message?: string; blocks_exercise?: boolean };
+  exercise_plan?: { action?: string; dose_change_percent?: number; reason?: string };
+};
+
 const SUPPORTED_REACH_IMAGE = require("../assets/images/rehab-supported-forward-reach.png") as ImageSourcePropType;
 const HAND_OPENING_IMAGE = require("../assets/images/rehab-relaxed-hand-opening.png") as ImageSourcePropType;
 const PROGRESS_KEY = (planId: string, exId: string) => `ex_progress_v1:${planId}:${exId}`;
@@ -59,6 +64,20 @@ function exercisePurpose(exercise: RehabExercise): string {
 
 function exerciseSafety(exercise: RehabExercise): string {
   return exercise.safety_note || "Use a comfortable range. Stop if you feel pain, dizziness, or unusual fatigue.";
+}
+
+function applyAdaptiveDose(plan: Assessment, carePlan: AdaptiveCarePlan | null): Assessment {
+  const adjustment = carePlan?.exercise_plan;
+  if (adjustment?.action !== "reduce_next_session" || (adjustment.dose_change_percent || 0) >= 0) return plan;
+  const factor = Math.max(0.5, 1 + Number(adjustment.dose_change_percent || 0) / 100);
+  return {
+    ...plan,
+    rehab_plan: plan.rehab_plan.map((exercise) => ({
+      ...exercise,
+      reps: Math.max(1, Math.floor(exercise.reps * factor)),
+      selection_reason: `${exercise.selection_reason || "Selected from the approved exercise library."} Alira reduced the next-session dose after the latest check-in.`,
+    })),
+  };
 }
 
 function ProgressRing({ percent, size = 72 }: { percent: number; size?: number }) {
@@ -96,6 +115,7 @@ export default function RehabPlanScreen() {
   const { width } = useWindowDimensions();
   const { id } = useLocalSearchParams<{ id: string }>();
   const [data, setData] = useState<Assessment | null>(null);
+  const [adaptiveCarePlan, setAdaptiveCarePlan] = useState<AdaptiveCarePlan | null>(null);
   const [loading, setLoading] = useState(true);
   const [progress, setProgress] = useState<Record<string, ExerciseProgress>>({});
   const [paywallOpen, setPaywallOpen] = useState(false);
@@ -111,9 +131,13 @@ export default function RehabPlanScreen() {
     for (const ex of plan.rehab_plan) {
       try {
         const raw = await storage.getItem(PROGRESS_KEY(planId, ex.id), "");
-        out[ex.id] = typeof raw === "string" && raw
-          ? JSON.parse(raw)
-          : { completed_reps: 0, total_reps: ex.sets * ex.reps, last_score: null, best_score: null, sessions: 0 };
+        if (typeof raw === "string" && raw) {
+          const saved = JSON.parse(raw) as ExerciseProgress;
+          const adjustedTotal = ex.sets * ex.reps;
+          out[ex.id] = { ...saved, total_reps: adjustedTotal, completed_reps: Math.min(saved.completed_reps || 0, adjustedTotal) };
+        } else {
+          out[ex.id] = { completed_reps: 0, total_reps: ex.sets * ex.reps, last_score: null, best_score: null, sessions: 0 };
+        }
       } catch {
         out[ex.id] = { completed_reps: 0, total_reps: ex.sets * ex.reps, last_score: null, best_score: null, sessions: 0 };
       }
@@ -126,8 +150,19 @@ export default function RehabPlanScreen() {
       try {
         if (id) {
           const assessment = id === DEMO_ASSESSMENT_ID ? demoAssessment : await fetchAssessment(id);
-          setData(assessment);
-          await loadProgress(assessment);
+          let carePlan: AdaptiveCarePlan | null = null;
+          if (id !== DEMO_ASSESSMENT_ID) {
+            try {
+              const response = await authedFetch("/api/alira/care-plan");
+              if (response.ok) carePlan = await response.json();
+            } catch {
+              // Keep the last assessment plan when the adaptive service is temporarily unavailable.
+            }
+          }
+          const adjustedAssessment = applyAdaptiveDose(assessment, carePlan);
+          setAdaptiveCarePlan(carePlan);
+          setData(adjustedAssessment);
+          await loadProgress(adjustedAssessment);
         }
       } finally {
         setLoading(false);
@@ -182,13 +217,18 @@ export default function RehabPlanScreen() {
     return <View style={[styles.container, styles.center]}><Text>No plan available.</Text></View>;
   }
 
-  if (data.clinical_review_gate?.rehab_access !== "allowed" || data.rehab_plan.length === 0) {
+  if (adaptiveCarePlan?.safety?.blocks_exercise || data.clinical_review_gate?.rehab_access !== "allowed" || data.rehab_plan.length === 0) {
     const gate = data.clinical_review_gate;
+    const adaptiveHold = Boolean(adaptiveCarePlan?.safety?.blocks_exercise);
     const awaiting = gate?.status === "awaiting_model_analysis";
     const noRehabNeeded = gate?.status === "no_rehab_needed" || gate?.rehab_access === "not_needed";
-    const title = gate?.patient_title || "No rehabilitation plan is available";
-    const message = gate?.patient_message || "This assessment did not produce exercises for automatic recommendation.";
-    const nextStep = gate?.next_step || "Return home and review the result with your therapist if you still have symptoms.";
+    const title = adaptiveHold ? "Pause today's exercises" : gate?.patient_title || "No rehabilitation plan is available";
+    const message = adaptiveHold
+      ? adaptiveCarePlan?.safety?.message || "Your latest check-in needs attention before exercise continues."
+      : gate?.patient_message || "This assessment did not produce exercises for automatic recommendation.";
+    const nextStep = adaptiveHold
+      ? "Follow the safety message above and contact your stroke rehabilitation team before restarting this plan."
+      : gate?.next_step || "Return home and review the result with your therapist if you still have symptoms.";
     return (
       <View style={styles.container}>
         <View style={[styles.header, { paddingTop: insets.top + spacing.sm }]}>

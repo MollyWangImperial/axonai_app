@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useState } from "react";
 import { ActivityIndicator, Image, Modal, Pressable, ScrollView, StyleSheet, Text, TextInput, useWindowDimensions, View } from "react-native";
 import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -10,6 +10,7 @@ import { colors, radius, spacing } from "@/src/theme";
 import { DEMO_ASSESSMENT_ID } from "@/src/demoAssessment";
 import { loadUserPreferences } from "@/src/userPreferences";
 import { useDisplayPreferences } from "@/src/displayPreferences";
+import { JourneyProgressPanel } from "@/src/components/JourneyProgressPanel";
 
 const brainImage = require("@/assets/images/journey-stroke-brain.png");
 const familyImage = require("@/assets/images/journey-family-support.png");
@@ -36,7 +37,6 @@ export default function JourneyScreen() {
   const [draft, setDraft] = useState("");
   const [demoMode, setDemoMode] = useState(false);
   const initialAssessmentId = [...history].reverse().find((item) => item.assessment_package === "initial")?.id ?? history[history.length - 1]?.id;
-  const progressWidth = useMemo(() => `${Math.min(100, (history.length + entries.length) * 20)}%` as `${number}%`, [entries.length, history.length]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -73,15 +73,7 @@ export default function JourneyScreen() {
             </Pressable>
           </View>
 
-          <Pressable onPress={() => router.push("/progress")} style={[styles.summaryCard, { backgroundColor: palette.surface, borderColor: palette.border }]}>
-            <View style={[styles.summaryIcon, { backgroundColor: palette.soft }]}><Ionicons name="trending-up" size={27} color={palette.brand} /></View>
-            <View style={styles.summaryCopy}>
-              <Text style={[styles.summaryTitle, { color: palette.text }]}>Your progress at a glance</Text>
-              <View style={[styles.progressTrack, { backgroundColor: palette.soft }]}><View style={[styles.progressFill, { width: progressWidth, backgroundColor: palette.brand }]} /></View>
-              <Text style={[styles.summaryBody, { color: palette.muted }]}>{history.length} assessment{history.length === 1 ? "" : "s"} completed · {entries.length} journal entr{entries.length === 1 ? "y" : "ies"}</Text>
-            </View>
-            <Ionicons name="chevron-forward" size={22} color={palette.brand} />
-          </Pressable>
+          <JourneyProgressPanel demoMode={demoMode} />
 
           <Text style={[styles.sectionTitle, { color: palette.text }]}>Journal & milestones</Text>
           {entries.length === 0 ? (
@@ -178,13 +170,6 @@ const styles = StyleSheet.create({
   title: { fontSize: 34, lineHeight: 40, fontWeight: "900", color: "#113126" },
   addButton: { flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: spacing.md, minHeight: 44, borderRadius: radius.pill, backgroundColor: "#26783A" },
   addButtonText: { color: colors.onBrandPrimary, fontWeight: "800" },
-  summaryCard: { flexDirection: "row", alignItems: "center", gap: spacing.md, padding: spacing.md, borderRadius: radius.md, backgroundColor: "#FBFCF9", borderWidth: 1, borderColor: "#DCE3DA" },
-  summaryIcon: { width: 58, height: 58, borderRadius: 29, backgroundColor: "#EFF6EC", alignItems: "center", justifyContent: "center" },
-  summaryCopy: { flex: 1 },
-  summaryTitle: { fontSize: 16, fontWeight: "800", color: colors.onSurface },
-  progressTrack: { height: 9, borderRadius: 5, backgroundColor: "#E6ECE4", overflow: "hidden", marginTop: spacing.sm },
-  progressFill: { height: "100%", borderRadius: 5, backgroundColor: colors.brandPrimary },
-  summaryBody: { fontSize: 12, lineHeight: 17, color: colors.onSurfaceTertiary, marginTop: 7 },
   sectionTitle: { fontSize: 17, lineHeight: 22, fontWeight: "800", color: colors.onSurface, marginTop: spacing.sm },
   articleGrid: { gap: spacing.sm },
   articleGridWide: { flexDirection: "row" },

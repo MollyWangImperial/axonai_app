@@ -1,6 +1,7 @@
 import * as Notifications from "expo-notifications";
 import { Platform } from "react-native";
 import { storage } from "@/src/utils/storage";
+import { authedFetch } from "@/src/auth";
 
 const STORE_KEY = "reminders_settings_v1";
 
@@ -46,44 +47,95 @@ export async function saveSettings(s: ReminderSettings) {
   await storage.setItem(STORE_KEY, JSON.stringify(s));
 }
 
-export async function rescheduleReminders(s: ReminderSettings) {
+type AdaptiveReminderPlan = {
+  survey?: { due?: boolean; due_at?: string };
+  assessment?: { due?: boolean; due_at?: string; blocked_by_safety?: boolean };
+  exercise_plan?: { action?: string; approved_exercise_ids?: string[] };
+};
+
+function futureReminderDate(value?: string): Date | null {
+  const parsed = value ? new Date(value) : null;
+  if (!parsed || Number.isNaN(parsed.getTime())) return null;
+  return parsed.getTime() > Date.now() + 60_000 ? parsed : new Date(Date.now() + 60_000);
+}
+
+export async function rescheduleReminders(s: ReminderSettings, suppliedPlan?: AdaptiveReminderPlan | null) {
   if (Platform.OS === "web") return;
   try {
     await Notifications.cancelAllScheduledNotificationsAsync();
     if (!s.enabled) return;
 
-    // Daily exercise reminder (local notification)
-    await Notifications.scheduleNotificationAsync({
-      identifier: "daily_exercise",
-      content: {
-        title: "Hope · Daily check-in",
-        body: "Time for today's rehab — even 5 minutes is a real win 💚",
-        sound: true,
-      },
-      trigger: {
-        type: Notifications.SchedulableTriggerInputTypes.CALENDAR,
-        hour: s.dailyHour,
-        minute: s.dailyMinute,
-        repeats: true,
-      } as any,
-    });
+    let plan = suppliedPlan || null;
+    if (!plan) {
+      try {
+        const response = await authedFetch("/api/alira/care-plan");
+        if (response.ok) plan = await response.json();
+      } catch {
+        // Use the conservative legacy schedule when the adaptive plan cannot load.
+      }
+    }
 
-    // Weekly movement check-in reminder
-    await Notifications.scheduleNotificationAsync({
-      identifier: "weekly_assessment",
-      content: {
-        title: "Hope · Weekly movement check-in",
-        body: "It's time to retake your quick movement assessment. Let's see your progress!",
-        sound: true,
-      },
-      trigger: {
-        type: Notifications.SchedulableTriggerInputTypes.CALENDAR,
-        weekday: s.weeklyDay,
-        hour: s.dailyHour,
-        minute: s.dailyMinute,
-        repeats: true,
-      } as any,
-    });
+    const hasAssignedExercises = !plan || (plan.exercise_plan?.approved_exercise_ids?.length || 0) > 0;
+    if (hasAssignedExercises && plan?.exercise_plan?.action !== "hold") {
+      await Notifications.scheduleNotificationAsync({
+        identifier: "daily_exercise",
+        content: {
+          title: "Rehyn · Today's plan",
+          body: "Your guided recovery plan is ready when you are.",
+          sound: true,
+        },
+        trigger: {
+          type: Notifications.SchedulableTriggerInputTypes.CALENDAR,
+          hour: s.dailyHour,
+          minute: s.dailyMinute,
+          repeats: true,
+        } as any,
+      });
+    }
+
+    const surveyDate = futureReminderDate(plan?.survey?.due_at);
+    if (surveyDate) {
+      await Notifications.scheduleNotificationAsync({
+        identifier: "adaptive_recovery_check_in",
+        content: {
+          title: "Rehyn · Short recovery check-in",
+          body: "Alira has a few short questions to keep your next plan relevant.",
+          sound: true,
+        },
+        trigger: { type: Notifications.SchedulableTriggerInputTypes.DATE, date: surveyDate } as any,
+      });
+    }
+
+    const assessmentDate = plan?.assessment?.blocked_by_safety ? null : futureReminderDate(plan?.assessment?.due_at);
+    if (assessmentDate) {
+      await Notifications.scheduleNotificationAsync({
+        identifier: "adaptive_movement_assessment",
+        content: {
+          title: "Rehyn · Movement check",
+          body: "Your next short movement assessment is ready.",
+          sound: true,
+        },
+        trigger: { type: Notifications.SchedulableTriggerInputTypes.DATE, date: assessmentDate } as any,
+      });
+    }
+
+    if (!plan) {
+      await Notifications.scheduleNotificationAsync({
+        identifier: "weekly_assessment",
+        content: {
+          title: "Rehyn · Movement check-in",
+          body: "Reconnect with Alira to refresh your recovery schedule.",
+          sound: true,
+        },
+        trigger: {
+          type: Notifications.SchedulableTriggerInputTypes.CALENDAR,
+          weekday: s.weeklyDay,
+          hour: s.dailyHour,
+          minute: s.dailyMinute,
+          repeats: true,
+        } as any,
+      });
+    }
   } catch {
     // Silent — local notifications may be limited in Expo Go on iOS
   }

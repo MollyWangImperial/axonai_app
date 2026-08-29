@@ -47,6 +47,12 @@ try:
     )
     from backend.object_storage import task_video_object_storage
     from backend.patient_insights import build_patient_insights
+    from backend.alira_care_orchestrator import (
+        QUESTION_BANK as ALIRA_CARE_QUESTION_BANK,
+        approved_question_ids,
+        build_adaptive_care_plan,
+        validate_check_in_answers,
+    )
 except ImportError:
     from rehab_assessment import (
         build_biomechanical_estimates,
@@ -74,6 +80,12 @@ except ImportError:
     )
     from object_storage import task_video_object_storage
     from patient_insights import build_patient_insights
+    from alira_care_orchestrator import (
+        QUESTION_BANK as ALIRA_CARE_QUESTION_BANK,
+        approved_question_ids,
+        build_adaptive_care_plan,
+        validate_check_in_answers,
+    )
 
 try:
     from openai import OpenAI
@@ -99,6 +111,7 @@ TASK_VIDEO_FALLBACK_DIR = ROOT_DIR / ".task_videos"
 LOCAL_STATE_DIR = ROOT_DIR / ".local_state"
 LOCAL_USERS_FILE = LOCAL_STATE_DIR / "users.json"
 LOCAL_TASK_PROGRESS_FILE = LOCAL_STATE_DIR / "task_progress.json"
+LOCAL_CARE_STATE_FILE = LOCAL_STATE_DIR / "alira_care_state.json"
 
 
 def _load_local_dict(path: Path) -> Dict[str, Dict[str, Any]]:
@@ -119,6 +132,7 @@ def _persist_local_dict(path: Path, data: Dict[str, Dict[str, Any]]) -> None:
 # is not running. Mongo remains the source of truth whenever it is reachable.
 LOCAL_USERS: Dict[str, Dict[str, Any]] = _load_local_dict(LOCAL_USERS_FILE)
 LOCAL_TASK_PROGRESS: Dict[str, Dict[str, Any]] = _load_local_dict(LOCAL_TASK_PROGRESS_FILE)
+LOCAL_CARE_STATE: Dict[str, Dict[str, Any]] = _load_local_dict(LOCAL_CARE_STATE_FILE)
 LOCAL_ASSESSMENTS: List[Dict[str, Any]] = []
 LOCAL_CHAT_SESSIONS: Dict[str, Dict[str, Any]] = {}
 
@@ -185,6 +199,46 @@ ALIRA_NAVIGATION_TOOL = {
         "required": ["destination"],
         "additionalProperties": False,
     },
+}
+ALIRA_RECORD_CHECKIN_TOOL = {
+    "type": "function",
+    "name": "record_rehab_check_in",
+    "description": (
+        "Save the patient's answers from a short Alira recovery check-in. Ask only the questions listed in "
+        "the current adaptive care plan, one at a time. Call this after the patient has answered; never infer "
+        "an answer from silence, video, or an unrelated statement. The backend validates every value and "
+        "returns the next safe survey, assessment, and exercise-plan action."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "answers": {
+                "type": "object",
+                "properties": {
+                    "sudden_change": {"type": "string", "enum": ["no", "yes"]},
+                    "falls": {"type": "string", "enum": ["no", "near_fall", "fall_no_injury", "fall_with_injury"]},
+                    "pain": {"type": "number", "minimum": 0, "maximum": 10},
+                    "fatigue": {"type": "string", "enum": ["not_at_all", "a_little", "quite_a_bit", "a_lot"]},
+                    "function_change": {"type": "string", "enum": ["much_easier", "a_little_easier", "about_the_same", "a_little_harder", "much_harder"]},
+                    "exercise_tolerance": {"type": "string", "enum": ["not_tried", "too_easy", "about_right", "too_hard", "stopped_for_symptoms"]},
+                    "goal_activity": {"type": "string", "enum": ["not_tried", "easier", "about_the_same", "harder", "needed_more_help"]},
+                    "walking_confidence": {"type": "string", "enum": ["not_applicable", "confident", "a_little_unsure", "very_unsure", "needed_more_help"]},
+                    "hand_use": {"type": "string", "enum": ["not_at_all", "a_little", "often", "most_activities"]},
+                },
+                "additionalProperties": False,
+            },
+            "patient_note": {
+                "type": "string",
+                "description": "Optional short verbatim note from the patient. Do not add a diagnosis or interpretation.",
+            },
+        },
+        "required": ["answers"],
+        "additionalProperties": False,
+    },
+}
+ALIRA_CHAT_RECORD_CHECKIN_TOOL = {
+    "type": "function",
+    "function": {key: value for key, value in ALIRA_RECORD_CHECKIN_TOOL.items() if key != "type"},
 }
 ANALYSIS_WORKER_TOKEN = os.environ.get("ANALYSIS_WORKER_TOKEN", "").strip()
 LOCAL_GPU_WORKER_URL = os.environ.get("LOCAL_GPU_WORKER_URL", "").strip().rstrip("/")
@@ -7717,6 +7771,20 @@ class RealtimeSessionRequest(BaseModel):
     sdp: str = Field(min_length=64, max_length=200_000)
 
 
+class AliraCheckInSubmit(BaseModel):
+    answers: Dict[str, Any] = Field(default_factory=dict)
+    patient_note: Optional[str] = Field(default=None, max_length=500)
+    source: str = Field(default="app", pattern="^(app|text_chat|realtime_voice)$")
+
+
+class AliraActivitySubmit(BaseModel):
+    exercise_id: str = Field(min_length=1, max_length=120)
+    plan_id: str = Field(default="default", min_length=1, max_length=120)
+    completed_reps: int = Field(default=0, ge=0, le=500)
+    average_score: Optional[float] = Field(default=None, ge=0, le=100)
+    completed_at: Optional[str] = None
+
+
 # ============ Therapists routes ============
 @api_router.get("/therapists")
 async def get_therapists():
@@ -7885,8 +7953,27 @@ class ReminderSettings(BaseModel):
 
 
 @api_router.get("/reminders/status")
-async def reminders_status():
-    """Computes whether the patient is overdue on daily exercise or weekly assessment."""
+async def reminders_status(request: Request):
+    """Return the signed-in patient's adaptive reminder state, with a legacy fallback."""
+    user = await _user_from_header(dict(request.headers))
+    if user and (user.get("consent") or {}).get("health_data_consent") is True:
+        care_plan = await _adaptive_care_plan_for_user(user)
+        exercise = care_plan["exercise_plan"]
+        safety = care_plan["safety"]
+        return {
+            "now": care_plan["generated_at"],
+            "adaptive": True,
+            "stage": care_plan["stage"],
+            "survey_overdue": care_plan["survey"]["due"],
+            "survey_due_at": care_plan["survey"]["due_at"],
+            "exercise_overdue": bool(exercise["approved_exercise_ids"]) and exercise["action"] != "hold",
+            "assessment_overdue": care_plan["assessment"]["due"],
+            "assessment_due_at": care_plan["assessment"]["due_at"],
+            "daily_reminder_text": safety["message"] if safety["status"] != "clear" else "Your guided recovery plan is ready when you are.",
+            "survey_reminder_text": "Alira has a few short questions to keep your next plan relevant.",
+            "assessment_reminder_text": "Your next approved movement check is ready.",
+        }
+
     latest_assessment = await db.assessments.find_one({}, {"_id": 0}, sort=[("created_at", -1)])
     latest_session = await db.chat_sessions.find_one({"session_id": {"$regex": "^persona:"}, "turns.0": {"$exists": True}}, sort=[("updated_at", -1)])
 
@@ -8448,28 +8535,270 @@ async def all_therapists():
     return {"ai": [{k: v for k, v in t.items() if k != "persona_prompt"} for t in THERAPISTS_SEED], "real": real}
 
 
+async def _care_assessments_for_user(user_id: str) -> List[Dict[str, Any]]:
+    try:
+        return await db.assessments.find(
+            {"user_id": user_id},
+            {"_id": 0},
+        ).sort("created_at", -1).to_list(100)
+    except Exception:
+        return [item.copy() for item in LOCAL_ASSESSMENTS if item.get("user_id") == user_id]
+
+
+async def _care_check_ins_for_user(user_id: str) -> List[Dict[str, Any]]:
+    try:
+        return await db.alira_check_ins.find(
+            {"user_id": user_id},
+            {"_id": 0},
+        ).sort("created_at", -1).to_list(100)
+    except Exception:
+        return [item.copy() for item in (LOCAL_CARE_STATE.get(user_id) or {}).get("check_ins", [])]
+
+
+async def _care_activities_for_user(user_id: str) -> List[Dict[str, Any]]:
+    try:
+        return await db.alira_activities.find(
+            {"user_id": user_id},
+            {"_id": 0},
+        ).sort("completed_at", -1).to_list(200)
+    except Exception:
+        return [item.copy() for item in (LOCAL_CARE_STATE.get(user_id) or {}).get("activities", [])]
+
+
+async def _adaptive_care_plan_for_user(
+    user: Dict[str, Any],
+    assessments: Optional[List[Dict[str, Any]]] = None,
+    check_ins: Optional[List[Dict[str, Any]]] = None,
+    activities: Optional[List[Dict[str, Any]]] = None,
+) -> Dict[str, Any]:
+    if assessments is None:
+        assessments = await _care_assessments_for_user(user["id"])
+    if check_ins is None:
+        check_ins = await _care_check_ins_for_user(user["id"])
+    if activities is None:
+        activities = await _care_activities_for_user(user["id"])
+    return build_adaptive_care_plan(user.get("profile") or {}, assessments, check_ins, activities)
+
+
+def _require_health_data_consent(user: Dict[str, Any]) -> None:
+    consent = user.get("consent") or {}
+    if consent.get("health_data_consent") is not True:
+        raise HTTPException(status_code=403, detail="Health-data consent is required before Alira can adapt care.")
+
+
+async def _persist_alira_check_in(user: Dict[str, Any], payload: AliraCheckInSubmit) -> Dict[str, Any]:
+    _require_health_data_consent(user)
+    try:
+        answers = validate_check_in_answers(payload.answers)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    required_answers = {"sudden_change", "function_change"}
+    missing_answers = sorted(required_answers - set(answers))
+    if missing_answers:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Complete the required check-in questions before saving: {', '.join(missing_answers)}",
+        )
+
+    now = datetime.now(timezone.utc).isoformat()
+    check_in = {
+        "id": "aci_" + uuid.uuid4().hex[:16],
+        "user_id": user["id"],
+        "created_at": now,
+        "source": payload.source,
+        "answers": answers,
+        "patient_note": (payload.patient_note or "").strip(),
+        "question_ids": list(answers),
+    }
+    stored_locally = False
+    try:
+        await db.alira_check_ins.insert_one(check_in.copy())
+    except Exception as exc:
+        logger.warning("Mongo unavailable for Alira check-in; using local fallback: %s", str(exc)[:120])
+        state = dict(LOCAL_CARE_STATE.get(user["id"]) or {})
+        state["check_ins"] = [*(state.get("check_ins") or []), check_in.copy()][-100:]
+        LOCAL_CARE_STATE[user["id"]] = state
+        _persist_local_dict(LOCAL_CARE_STATE_FILE, LOCAL_CARE_STATE)
+        stored_locally = True
+
+    assessments = await _care_assessments_for_user(user["id"])
+    check_ins = await _care_check_ins_for_user(user["id"])
+    activities = await _care_activities_for_user(user["id"])
+    if not any(item.get("id") == check_in["id"] for item in check_ins):
+        check_ins.append(check_in.copy())
+    care_plan = build_adaptive_care_plan(user.get("profile") or {}, assessments, check_ins, activities)
+    review = {
+        "id": "acr_" + uuid.uuid4().hex[:16],
+        "user_id": user["id"],
+        "created_at": now,
+        "trigger": "patient_check_in",
+        "check_in_id": check_in["id"],
+        "policy_version": care_plan["version"],
+        "decision": care_plan,
+        "model_invoked": False,
+        "audit_note": "Deterministic clinical guardrails ran before any optional language-model review.",
+    }
+    try:
+        await db.alira_care_reviews.insert_one(review.copy())
+    except Exception:
+        if not stored_locally:
+            state = dict(LOCAL_CARE_STATE.get(user["id"]) or {})
+            state["check_ins"] = [*(state.get("check_ins") or []), check_in.copy()][-100:]
+        else:
+            state = dict(LOCAL_CARE_STATE.get(user["id"]) or {})
+        state["reviews"] = [*(state.get("reviews") or []), review.copy()][-100:]
+        state["latest_plan"] = care_plan
+        LOCAL_CARE_STATE[user["id"]] = state
+        _persist_local_dict(LOCAL_CARE_STATE_FILE, LOCAL_CARE_STATE)
+    return {"ok": True, "check_in": check_in, "care_plan": care_plan}
+
+
+async def _persist_alira_activity(user: Dict[str, Any], payload: AliraActivitySubmit) -> Dict[str, Any]:
+    _require_health_data_consent(user)
+    assessments = await _care_assessments_for_user(user["id"])
+    latest_assessment = max(assessments, key=lambda item: item.get("created_at", ""), default=None)
+    approved_ids = {
+        str(exercise.get("id"))
+        for exercise in (latest_assessment or {}).get("rehab_plan") or []
+        if exercise.get("id")
+    }
+    if payload.exercise_id not in approved_ids:
+        raise HTTPException(status_code=409, detail="This exercise is not in the patient's current approved plan.")
+    completed_at = payload.completed_at or datetime.now(timezone.utc).isoformat()
+    try:
+        completed_at = datetime.fromisoformat(completed_at.replace("Z", "+00:00")).astimezone(timezone.utc).isoformat()
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="completed_at must be an ISO-8601 timestamp") from exc
+    activity = {
+        "id": "aca_" + uuid.uuid4().hex[:16],
+        "user_id": user["id"],
+        "exercise_id": payload.exercise_id,
+        "plan_id": payload.plan_id,
+        "completed_reps": payload.completed_reps,
+        "average_score": payload.average_score,
+        "completed_at": completed_at,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    try:
+        await db.alira_activities.insert_one(activity.copy())
+    except Exception as exc:
+        logger.warning("Mongo unavailable for Alira activity; using local fallback: %s", str(exc)[:120])
+        state = dict(LOCAL_CARE_STATE.get(user["id"]) or {})
+        state["activities"] = [*(state.get("activities") or []), activity.copy()][-200:]
+        LOCAL_CARE_STATE[user["id"]] = state
+        _persist_local_dict(LOCAL_CARE_STATE_FILE, LOCAL_CARE_STATE)
+    check_ins = await _care_check_ins_for_user(user["id"])
+    activities = await _care_activities_for_user(user["id"])
+    if not any(item.get("id") == activity["id"] for item in activities):
+        activities.append(activity.copy())
+    care_plan = build_adaptive_care_plan(user.get("profile") or {}, assessments, check_ins, activities)
+    review = {
+        "id": "acr_" + uuid.uuid4().hex[:16],
+        "user_id": user["id"],
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "trigger": "exercise_activity",
+        "activity_id": activity["id"],
+        "policy_version": care_plan["version"],
+        "decision": care_plan,
+        "model_invoked": False,
+        "audit_note": "Daily activity monitoring updated reminders without changing clinical content.",
+    }
+    try:
+        await db.alira_care_reviews.insert_one(review.copy())
+    except Exception:
+        state = dict(LOCAL_CARE_STATE.get(user["id"]) or {})
+        if not any(item.get("id") == activity["id"] for item in state.get("activities") or []):
+            state["activities"] = [*(state.get("activities") or []), activity.copy()][-200:]
+        state["reviews"] = [*(state.get("reviews") or []), review.copy()][-100:]
+        state["latest_plan"] = care_plan
+        LOCAL_CARE_STATE[user["id"]] = state
+        _persist_local_dict(LOCAL_CARE_STATE_FILE, LOCAL_CARE_STATE)
+    return {"ok": True, "activity": activity, "care_plan": care_plan}
+
+
+@api_router.get("/alira/care-plan")
+async def get_alira_care_plan(request: Request):
+    user = await _user_from_header(dict(request.headers))
+    if not user:
+        raise HTTPException(status_code=401, detail="Sign in required")
+    _require_health_data_consent(user)
+    return await _adaptive_care_plan_for_user(user)
+
+
+@api_router.get("/alira/check-in/questions")
+async def get_alira_check_in_questions(request: Request):
+    user = await _user_from_header(dict(request.headers))
+    if not user:
+        raise HTTPException(status_code=401, detail="Sign in required")
+    _require_health_data_consent(user)
+    plan = await _adaptive_care_plan_for_user(user)
+    return {
+        "due": plan["survey"]["due"],
+        "due_at": plan["survey"]["due_at"],
+        "stage": plan["stage"],
+        "questions": plan["survey"]["questions"],
+        "approved_question_ids": approved_question_ids(),
+    }
+
+
+@api_router.post("/alira/check-ins")
+async def submit_alira_check_in(payload: AliraCheckInSubmit, request: Request):
+    user = await _user_from_header(dict(request.headers))
+    if not user:
+        raise HTTPException(status_code=401, detail="Sign in required")
+    return await _persist_alira_check_in(user, payload)
+
+
+@api_router.get("/alira/check-ins")
+async def list_alira_check_ins(request: Request, limit: int = 20):
+    user = await _user_from_header(dict(request.headers))
+    if not user:
+        raise HTTPException(status_code=401, detail="Sign in required")
+    _require_health_data_consent(user)
+    items = await _care_check_ins_for_user(user["id"])
+    items.sort(key=lambda item: item.get("created_at", ""), reverse=True)
+    return {"check_ins": items[:max(1, min(limit, 100))]}
+
+
+@api_router.post("/alira/activities")
+async def submit_alira_activity(payload: AliraActivitySubmit, request: Request):
+    user = await _user_from_header(dict(request.headers))
+    if not user:
+        raise HTTPException(status_code=401, detail="Sign in required")
+    return await _persist_alira_activity(user, payload)
+
+
 async def _build_patient_context(user: Optional[Dict[str, Any]]) -> str:
-    """Pull the signed-in patient's latest assessment for Alira's context."""
+    """Pull the signed-in patient's latest assessment and care schedule for Alira."""
     if not user:
         return "No signed-in patient context is available."
-    try:
-        doc = await db.assessments.find_one(
-            {"user_id": user["id"]},
-            {"_id": 0},
-            sort=[("created_at", -1)],
-        )
-    except Exception:
-        matching = [item for item in LOCAL_ASSESSMENTS if item.get("user_id") == user["id"]]
-        doc = max(matching, key=lambda item: item.get("created_at", ""), default=None)
+    assessments = await _care_assessments_for_user(user["id"])
+    check_ins = await _care_check_ins_for_user(user["id"])
+    activities = await _care_activities_for_user(user["id"])
+    doc = max(assessments, key=lambda item: item.get("created_at", ""), default=None)
+    care_plan = build_adaptive_care_plan(user.get("profile") or {}, assessments, check_ins, activities)
+    due_questions = [question["id"] for question in care_plan["survey"]["questions"]]
+    adaptive_context = (
+        "\n\nALIRA ADAPTIVE CARE WORKFLOW:\n"
+        f"Recovery stage: {care_plan['stage']}\n"
+        f"Safety status: {care_plan['safety']['status']}\n"
+        f"Short check-in due: {care_plan['survey']['due']}\n"
+        f"Approved questions to ask now: {', '.join(due_questions) or '(none due)'}\n"
+        f"Camera assessment due: {care_plan['assessment']['due']}\n"
+        f"Approved assessment packages: {', '.join(care_plan['assessment']['packages']) or '(none due)'}\n"
+        f"Next exercise-plan action: {care_plan['exercise_plan']['action']}\n"
+        f"Daily activity action: {care_plan['daily_monitoring']['next_day_action']}\n"
+        "Do not invent a new clinical question, assessment, or exercise. Use only this workflow and the approved tools."
+    )
     if not doc:
-        return "The patient has not completed an assessment yet."
+        return "The patient has not completed an assessment yet." + adaptive_context
     issues = [f"- {i['label']}: {i['description']}" for i in doc.get("functional_issues", [])]
     plan = [f"- {e['name']} ({e['sets']}×{e['reps']}, {e['frequency']})" for e in doc.get("rehab_plan", [])]
     return (
         "Latest assessment date: " + doc.get("created_at", "unknown") + "\n"
         "Affected side: " + doc.get("affected_side", "unknown") + "\n\n"
         "FUNCTIONAL ISSUES IDENTIFIED:\n" + ("\n".join(issues) or "(none yet)") + "\n\n"
-        "CURRENT REHAB PLAN:\n" + ("\n".join(plan) or "(no plan yet)")
+        "CURRENT REHAB PLAN:\n" + ("\n".join(plan) or "(no plan yet)") + adaptive_context
     )
 
 
@@ -8492,6 +8821,15 @@ What you DO NOT do:
 - Recommend stopping medication or therapy
 - Make false promises about recovery timelines
 - Use clinical jargon — speak in plain, kind language
+- Change, add, or delete app functionality
+- Invent or activate a new clinical survey question, camera assessment, or exercise. Novel ideas must remain reviewable drafts and must never be assigned to a patient.
+
+Adaptive rehabilitation workflow:
+- Follow the ALIRA ADAPTIVE CARE WORKFLOW in the patient context. It is generated from saved survey answers, check-ins, validated assessment evidence, and the approved exercise library.
+- Ask a short check-in only when it is due. Ask only the listed approved questions, one at a time, and call record_rehab_check_in after the patient answers.
+- Never infer a check-in answer. If the patient does not know or does not want to answer, respect that and leave it unsaved.
+- The backend safety rules decide whether the next plan is held, maintained, reduced, or eligible for a small confirmed progression. Do not override that result.
+- Patient-reported difficulty remains valid evidence even when a camera task looks normal. Missing or pending model output is never evidence of normal function.
 
 Safety:
 - If the patient describes new facial droop, new arm weakness, new speech difficulty, sudden severe headache, collapse, chest pain, or trouble breathing, tell them to seek emergency help immediately.
@@ -8545,7 +8883,7 @@ LIVE VOICE CONVERSATION RULES:
         "output_modalities": ["audio"],
         "instructions": instructions,
         "max_output_tokens": 500,
-        "tools": [ALIRA_NAVIGATION_TOOL],
+        "tools": [ALIRA_NAVIGATION_TOOL, ALIRA_RECORD_CHECKIN_TOOL],
         "tool_choice": "auto",
         "audio": {
             "input": {
@@ -8630,12 +8968,71 @@ async def chat_message(req: ChatRequest, request: Request):
                 return openai_tts_client.chat.completions.create(
                     model=ALIRA_CHAT_MODEL,
                     messages=messages,
+                    tools=[ALIRA_CHAT_RECORD_CHECKIN_TOOL],
+                    tool_choice="auto",
                     temperature=0.5,
                     max_tokens=260,
                 )
 
             response = await asyncio.to_thread(run_chat_completion)
-            reply_text = str(response.choices[0].message.content or "").strip()
+            assistant_message = response.choices[0].message
+            tool_calls = list(assistant_message.tool_calls or [])
+            if tool_calls:
+                messages.append({
+                    "role": "assistant",
+                    "content": assistant_message.content or "",
+                    "tool_calls": [
+                        {
+                            "id": call.id,
+                            "type": "function",
+                            "function": {
+                                "name": call.function.name,
+                                "arguments": call.function.arguments,
+                            },
+                        }
+                        for call in tool_calls
+                    ],
+                })
+                for call in tool_calls:
+                    if call.function.name != "record_rehab_check_in":
+                        tool_result = {"ok": False, "message": "Unsupported Alira care tool."}
+                    else:
+                        try:
+                            arguments = json.loads(call.function.arguments or "{}")
+                            submitted = AliraCheckInSubmit(
+                                answers=arguments.get("answers") or {},
+                                patient_note=arguments.get("patient_note"),
+                                source="text_chat",
+                            )
+                            saved = await _persist_alira_check_in(user, submitted)
+                            tool_result = {
+                                "ok": True,
+                                "safety": saved["care_plan"]["safety"],
+                                "next_exercise_action": saved["care_plan"]["exercise_plan"]["action"],
+                                "next_assessment": saved["care_plan"]["assessment"],
+                            }
+                        except (ValueError, TypeError, HTTPException) as exc:
+                            detail = exc.detail if isinstance(exc, HTTPException) else str(exc)
+                            tool_result = {"ok": False, "message": detail}
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": call.id,
+                        "content": json.dumps(tool_result, ensure_ascii=True),
+                    })
+
+                def run_follow_up_completion():
+                    return openai_tts_client.chat.completions.create(
+                        model=ALIRA_CHAT_MODEL,
+                        messages=messages,
+                        tools=[ALIRA_CHAT_RECORD_CHECKIN_TOOL],
+                        tool_choice="none",
+                        temperature=0.3,
+                        max_tokens=220,
+                    )
+
+                response = await asyncio.to_thread(run_follow_up_completion)
+                assistant_message = response.choices[0].message
+            reply_text = str(assistant_message.content or "").strip()
         else:
             recent = "\n".join(f"{t['role'].upper()}: {t['text']}" for t in turns[-6:])
             emergent_prompt = system_prompt + ("\n\n----\nRECENT CONVERSATION:\n" + recent if recent else "")

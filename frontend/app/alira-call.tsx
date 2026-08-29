@@ -323,12 +323,66 @@ function RealtimeWebCall() {
     }));
   }, [completeNavigation]);
 
+  const handleCheckInTool = useCallback(async (event: any) => {
+    if (event.name !== "record_rehab_check_in") return;
+    const callId = String(event.call_id || event.item_id || "");
+    if (!callId || handledToolCallsRef.current.has(callId)) return;
+    handledToolCallsRef.current.add(callId);
+
+    let toolResult: Record<string, unknown>;
+    try {
+      const parsed = JSON.parse(String(event.arguments || "{}"));
+      const response = await authedFetch("/api/alira/check-ins", {
+        method: "POST",
+        body: JSON.stringify({
+          answers: parsed.answers || {},
+          patient_note: parsed.patient_note || "",
+          source: "realtime_voice",
+        }),
+      });
+      const saved = await response.json();
+      if (!response.ok) throw new Error(saved?.detail || "The check-in could not be saved.");
+      toolResult = {
+        ok: true,
+        safety: saved.care_plan?.safety,
+        next_exercise_action: saved.care_plan?.exercise_plan?.action,
+        next_assessment: saved.care_plan?.assessment,
+      };
+    } catch (caught) {
+      toolResult = {
+        ok: false,
+        message: caught instanceof Error ? caught.message : "The check-in could not be saved.",
+      };
+    }
+
+    const channel = dataChannelRef.current;
+    if (!channel || channel.readyState !== "open") return;
+    channel.send(JSON.stringify({
+      type: "conversation.item.create",
+      item: {
+        type: "function_call_output",
+        call_id: callId,
+        output: JSON.stringify(toolResult),
+      },
+    }));
+    channel.send(JSON.stringify({
+      type: "response.create",
+      response: {
+        tool_choice: "none",
+        instructions: toolResult.ok
+          ? "Confirm briefly that the check-in was saved. Follow the returned safety and next-plan action exactly. If safety is not clear, give that instruction first."
+          : "Say briefly that the check-in was not saved and ask the patient to try again later. Do not claim that their plan changed.",
+      },
+    }));
+  }, []);
+
   const handleServerEvent = useCallback((message: any) => {
     let event: any;
     try { event = JSON.parse(String(message.data || "{}")); } catch { return; }
 
     if (event.type === "response.function_call_arguments.done") {
       void handleNavigationTool(event);
+      void handleCheckInTool(event);
       return;
     }
     if (event.type === "input_audio_buffer.speech_started") {
@@ -399,7 +453,7 @@ function RealtimeWebCall() {
       setError("The live conversation had a connection problem. End the call and try again.");
       setPhase("error");
     }
-  }, [addTurn, completeNavigation, handleNavigationTool]);
+  }, [addTurn, completeNavigation, handleCheckInTool, handleNavigationTool]);
 
   const endCall = useCallback((message = "Call ended") => {
     closedByUserRef.current = true;
