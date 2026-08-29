@@ -13,6 +13,7 @@ import { API_BASE as BASE } from "@/src/config";
 import { authedFetch } from "@/src/auth";
 import { fetchHistory } from "@/src/api";
 import { useDisplayPreferences } from "@/src/displayPreferences";
+import AliraLivingBackground from "@/src/components/AliraLivingBackground";
 
 type Turn = { role: "user" | "assistant"; text: string; ts: string };
 
@@ -153,6 +154,7 @@ export default function ChatScreen() {
 
   return (
     <View style={[styles.container, { paddingTop: insets.top, backgroundColor: palette.page }]}>
+      <AliraLivingBackground darkMode={preferences.darkMode} engaged={sending || conversationTurns.length > 0} />
       <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} keyboardVerticalOffset={Platform.OS === "ios" ? 84 : 0} style={styles.keyboard}>
         <ScrollView ref={scrollRef} contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
           <View style={styles.page}>
@@ -228,8 +230,8 @@ export default function ChatScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: "#FCFDFB" },
-  keyboard: { flex: 1 },
+  container: { flex: 1, backgroundColor: "#FCFDFB", overflow: "hidden" },
+  keyboard: { flex: 1, zIndex: 1 },
   scrollContent: { paddingBottom: spacing.xl },
   page: { width: "100%", maxWidth: 1080, alignSelf: "center", paddingHorizontal: spacing.md },
   header: { flexDirection: "row", alignItems: "center", gap: spacing.sm, paddingVertical: spacing.sm, borderBottomWidth: 1, borderBottomColor: colors.divider },
