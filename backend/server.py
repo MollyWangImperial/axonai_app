@@ -8767,6 +8767,67 @@ async def auth_google_session(request: Request):
 
 
 # ============ Progress dashboard ============
+@api_router.get("/therapist/patients")
+async def therapist_patients(request: Request):
+    user = await _user_from_header(dict(request.headers))
+    if not user or user.get("role") != "therapist":
+        raise HTTPException(status_code=400, detail="Therapist account required")
+    bookings = await db.bookings.find({"therapist_user_id": user["id"]}, {"_id": 0}).to_list(500)
+    roster: Dict[str, str] = {}
+    for b in bookings:
+        pid = b.get("patient_user_id")
+        if pid:
+            roster[pid] = b.get("patient_name") or "Patient"
+    signoffs = await db.plan_signoffs.find({"therapist_user_id": user["id"]}, {"_id": 0}).to_list(500)
+    signed_by_patient = {s["patient_user_id"]: s for s in signoffs}
+    patients = []
+    for pid, pname in roster.items():
+        latest = await db.assessments.find_one(
+            {"user_id": pid},
+            {"_id": 0, "id": 1, "created_at": 1, "issues_detected": 1, "rehab_plan": 1},
+            sort=[("created_at", -1)],
+        )
+        signed = signed_by_patient.get(pid)
+        patients.append({
+            "patient_user_id": pid,
+            "name": pname,
+            "latest_assessment_id": (latest or {}).get("id"),
+            "last_assessment_date": (latest or {}).get("created_at"),
+            "issues_count": len((latest or {}).get("issues_detected") or []),
+            "exercises_count": len((latest or {}).get("rehab_plan") or []),
+            "plan_signed": bool(signed and signed.get("assessment_id") == (latest or {}).get("id")),
+            "signed_at": (signed or {}).get("signed_at"),
+        })
+    patients.sort(key=lambda p: p.get("last_assessment_date") or "", reverse=True)
+    return {"patients": patients}
+
+
+class PlanSignoff(BaseModel):
+    assessment_id: str
+    note: Optional[str] = None
+
+
+@api_router.post("/therapist/patient/{patient_user_id}/signoff")
+async def therapist_signoff(patient_user_id: str, payload: PlanSignoff, request: Request):
+    user = await _user_from_header(dict(request.headers))
+    if not user or user.get("role") != "therapist":
+        raise HTTPException(status_code=400, detail="Therapist account required")
+    signed_at = datetime.now(timezone.utc).isoformat()
+    record = {
+        "therapist_user_id": user["id"],
+        "patient_user_id": patient_user_id,
+        "assessment_id": payload.assessment_id,
+        "note": payload.note or "",
+        "signed_at": signed_at,
+    }
+    await db.plan_signoffs.update_one(
+        {"therapist_user_id": user["id"], "patient_user_id": patient_user_id},
+        {"$set": record},
+        upsert=True,
+    )
+    return {"ok": True, "signed_at": signed_at}
+
+
 @api_router.get("/progress/summary")
 async def progress_summary(request: Request):
     """Returns time-series functional metrics + exercise progress totals.

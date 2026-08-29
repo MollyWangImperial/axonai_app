@@ -298,6 +298,7 @@ export default function AccountCenterScreen() {
               <PolicySection title="Video and movement data" body="Task recordings and derived movement data are linked to your signed-in account. They are not sold or used for advertising." palette={palette} scale={scale} />
               <PolicySection title="Clinical limits" body="Rehyn supports rehabilitation but does not replace a diagnosis or your clinical team. Findings that need review are held for a therapist." palette={palette} scale={scale} />
               <PolicySection title="Your choices" body="You can control sharing, permissions, and your care circle at any time from Data and permissions." palette={palette} scale={scale} />
+              <Pressable testID="privacy-open-policy" onPress={() => router.push("/privacy-policy" as never)} style={[styles.secondaryButton, { borderColor: palette.border, marginBottom: spacing.sm }]}><Text style={[styles.secondaryText, { color: palette.text }]}>Read full privacy policy</Text></Pressable>
               <Pressable onPress={() => router.push({ pathname: "/account-center" as never, params: { section: "permissions" } })} style={styles.primaryButton}><Text style={styles.primaryButtonText}>Review data choices</Text></Pressable>
             </View>
           ) : null}

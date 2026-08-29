@@ -201,6 +201,9 @@ export default function SignInScreen() {
         <Text style={styles.disclaim}>
           New here? Your patient account starts with <Text style={{ color: colors.brandSecondary, fontWeight: "800" }}>100 credits</Text> — enough for one assessment, one personalized plan, and one guided exercise.
         </Text>
+        <Pressable onPress={() => router.push("/privacy-policy" as never)} testID="signin-privacy" hitSlop={8}>
+          <Text style={styles.privacyLink}>Privacy policy</Text>
+        </Pressable>
       </KeyboardAvoidingView>
     </LinearGradient>
   );
@@ -226,5 +229,6 @@ const styles = StyleSheet.create({
   submitText: { color: colors.onBrandSecondary, fontWeight: "800", fontSize: 16 },
   err: { color: "#FFA0A0", marginBottom: spacing.xs },
   disclaim: { color: colors.brandTertiary, fontSize: 13, marginTop: spacing.md, lineHeight: 19 },
+  privacyLink: { color: "rgba(255,255,255,0.85)", fontSize: 13, fontWeight: "700", textDecorationLine: "underline", marginTop: spacing.sm },
   mvp: { color: "rgba(255,255,255,0.5)", fontSize: 11, marginTop: spacing.sm, fontStyle: "italic" },
 });

@@ -1,4 +1,5 @@
 import React, { useCallback, useMemo, useState } from "react";
+import { ProgressStoryCard } from "@/src/components/ProgressStoryCard";
 import {
   ActivityIndicator,
   Pressable,
@@ -304,6 +305,7 @@ export default function ProgressScreen() {
       ) : (
         <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false}>
           <View style={styles.page}>
+            <ProgressStoryCard />
             {demoMode && (
               <View style={styles.demoBanner} testID="progress-demo-banner">
                 <Ionicons name="sparkles" size={24} color="#674AA8" />

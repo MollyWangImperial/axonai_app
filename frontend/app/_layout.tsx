@@ -21,8 +21,10 @@ function AuthGate() {
     (async () => {
       const u = await getCachedUser();
       const seg0 = segments[0] || "";
-      // If not signed in and not already on sign-in, redirect
-      if (!u && seg0 !== "sign-in") {
+      // Public routes that should be reachable without auth (e.g., legal pages linked from sign-in footer).
+      const publicRoutes = ["sign-in", "privacy-policy"];
+      // If not signed in and not on a public route, redirect
+      if (!u && !publicRoutes.includes(seg0)) {
         router.replace("/sign-in");
         return;
       }
@@ -31,7 +33,7 @@ function AuthGate() {
         void preloadAssessmentMediaPipe();
       }
       // Therapist role → therapist portal
-      if (u.role === "therapist" && seg0 !== "therapist" && seg0 !== "sign-in") {
+      if (u.role === "therapist" && seg0 !== "therapist" && !publicRoutes.includes(seg0)) {
         router.replace("/therapist");
         return;
       }
@@ -40,12 +42,12 @@ function AuthGate() {
         await recoverSingleAccountCache(u.id);
         // Safety/consent gate: new patients must accept the disclaimer first.
         const consentOk = await hasAcceptedConsent(u.id);
-        if (!consentOk && seg0 !== "consent" && seg0 !== "sign-in") {
+        if (!consentOk && seg0 !== "consent" && !publicRoutes.includes(seg0)) {
           router.replace("/consent");
           return;
         }
         const localFlag = await storage.getItem(onboardingCompleteKey(u.id), "");
-        const allowedDuringOnboarding = ["onboarding", "sign-in", "consent"];
+        const allowedDuringOnboarding = ["onboarding", "sign-in", "consent", "privacy-policy"];
         if (!localFlag && !allowedDuringOnboarding.includes(seg0)) {
           // double-check with backend (in case user signed in on a fresh device)
           try {

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { View, Text, StyleSheet, Pressable, ScrollView, TextInput, ActivityIndicator, KeyboardAvoidingView, Platform } from "react-native";
+import { View, Text, StyleSheet, Pressable, ScrollView, TextInput, ActivityIndicator, KeyboardAvoidingView, Platform, Modal } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
@@ -29,6 +29,9 @@ export default function TherapistPortal() {
   const [specialties, setSpecialties] = useState<string[]>([]);
   const [me, setMe] = useState<any>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [patients, setPatients] = useState<any[]>([]);
+  const [reviewPatient, setReviewPatient] = useState<any | null>(null);
+  const [signingOff, setSigningOff] = useState(false);
 
   const load = async () => {
     const uid = await getUserId();
@@ -38,7 +41,7 @@ export default function TherapistPortal() {
       if (r.ok) {
         const d = await r.json();
         setMe(d);
-        if (d.profile) setStep("dashboard"); else setStep("onboard");
+        if (d.profile) { setStep("dashboard"); void loadPatients(); } else setStep("onboard");
       } else if (r.status === 400) {
         router.replace("/sign-in"); // not a therapist account
       }
@@ -77,6 +80,25 @@ export default function TherapistPortal() {
   const doSignOut = async () => {
     await signOut();
     router.replace("/sign-in");
+  };
+
+  const loadPatients = async () => {
+    try {
+      const r = await authedFetch("/api/therapist/patients");
+      if (r.ok) { const d = await r.json(); setPatients(d.patients || []); }
+    } catch {/* */}
+  };
+
+  const signOffPlan = async () => {
+    if (!reviewPatient?.latest_assessment_id) { setReviewPatient(null); return; }
+    setSigningOff(true);
+    try {
+      const r = await authedFetch(`/api/therapist/patient/${reviewPatient.patient_user_id}/signoff`, {
+        method: "POST",
+        body: JSON.stringify({ assessment_id: reviewPatient.latest_assessment_id }),
+      });
+      if (r.ok) { Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success); await loadPatients(); setReviewPatient(null); }
+    } finally { setSigningOff(false); }
   };
 
   if (step === "loading") {
@@ -178,6 +200,23 @@ export default function TherapistPortal() {
           </View>
         ))}
 
+        <Text style={styles.sectionTitle}>My patients</Text>
+        {patients.length === 0 && <Text style={styles.muted}>Patients who connect or book with you appear here with their latest movement summary and plan status.</Text>}
+        {patients.map((p) => (
+          <View key={p.patient_user_id} style={styles.patientCard} testID={`patient-${p.patient_user_id}`}>
+            <View style={{ flex: 1, minWidth: 0 }}>
+              <Text style={styles.patientName}>{p.name}</Text>
+              <Text style={styles.patientMeta}>{p.last_assessment_date ? `Last assessment ${new Date(p.last_assessment_date).toLocaleDateString()}` : "No assessment yet"} · {p.issues_count} finding{p.issues_count === 1 ? "" : "s"} · {p.exercises_count} exercises</Text>
+              {p.plan_signed
+                ? <View style={styles.signedRow}><Ionicons name="checkmark-circle" size={15} color={colors.success} /><Text style={styles.signedText}>Plan signed off</Text></View>
+                : <Text style={styles.pendingText}>Awaiting your review</Text>}
+            </View>
+            <Pressable onPress={() => setReviewPatient(p)} disabled={!p.latest_assessment_id} style={[styles.reviewBtn, !p.latest_assessment_id && { opacity: 0.4 }]} testID={`patient-review-${p.patient_user_id}`}>
+              <Text style={styles.reviewBtnText}>{p.plan_signed ? "View" : "Review"}</Text>
+            </Pressable>
+          </View>
+        ))}
+
         <Text style={styles.sectionTitle}>Your AI persona</Text>
         <View style={styles.personaCard}>
           <Ionicons name="sparkles" size={20} color={colors.brandSecondary} />
@@ -186,6 +225,28 @@ export default function TherapistPortal() {
           </Text>
         </View>
       </ScrollView>
+
+      <Modal visible={!!reviewPatient} transparent animationType="fade" onRequestClose={() => setReviewPatient(null)}>
+        <View style={styles.modalBackdrop}>
+          <View style={styles.modalCard} testID="patient-review-modal">
+            <Text style={styles.modalTitle}>{reviewPatient?.name}</Text>
+            <Text style={styles.modalMeta}>{reviewPatient?.last_assessment_date ? new Date(reviewPatient.last_assessment_date).toLocaleDateString() : ""}</Text>
+            <View style={styles.modalStats}>
+              <View style={styles.modalStat}><Text style={styles.modalStatValue}>{reviewPatient?.issues_count ?? 0}</Text><Text style={styles.modalStatLabel}>Findings</Text></View>
+              <View style={styles.modalStat}><Text style={styles.modalStatValue}>{reviewPatient?.exercises_count ?? 0}</Text><Text style={styles.modalStatLabel}>Exercises</Text></View>
+            </View>
+            <Text style={styles.modalNote}>Confirm you have reviewed this patient&apos;s latest movement summary and approve their guided exercise plan.</Text>
+            <View style={styles.modalActions}>
+              <Pressable onPress={() => setReviewPatient(null)} style={styles.modalCancel} testID="patient-review-close"><Text style={styles.modalCancelText}>Close</Text></Pressable>
+              {!reviewPatient?.plan_signed && (
+                <Pressable onPress={signOffPlan} disabled={signingOff} style={styles.modalSign} testID="patient-signoff-confirm">
+                  {signingOff ? <ActivityIndicator color="#fff" /> : <Text style={styles.modalSignText}>Sign off plan</Text>}
+                </Pressable>
+              )}
+            </View>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -221,4 +282,26 @@ const styles = StyleSheet.create({
   bookAmount: { fontSize: 18, fontWeight: "800", color: colors.brandPrimary },
   personaCard: { flexDirection: "row", gap: 10, alignItems: "center", backgroundColor: colors.surfaceSecondary, padding: spacing.md, borderRadius: radius.lg },
   personaText: { flex: 1, color: colors.onSurfaceSecondary, fontSize: 13 },
+  patientCard: { flexDirection: "row", alignItems: "center", gap: spacing.sm, backgroundColor: colors.surfaceSecondary, padding: spacing.md, borderRadius: radius.lg, marginBottom: spacing.sm },
+  patientName: { fontSize: 16, fontWeight: "800", color: colors.onSurface },
+  patientMeta: { fontSize: 12, lineHeight: 17, color: colors.onSurfaceTertiary, marginTop: 3 },
+  signedRow: { flexDirection: "row", alignItems: "center", gap: 4, marginTop: 5 },
+  signedText: { fontSize: 12, fontWeight: "800", color: colors.success },
+  pendingText: { fontSize: 12, fontWeight: "800", color: colors.warning, marginTop: 5 },
+  reviewBtn: { minHeight: 40, paddingHorizontal: spacing.md, borderRadius: radius.pill, backgroundColor: colors.brandPrimary, alignItems: "center", justifyContent: "center" },
+  reviewBtnText: { color: "#fff", fontSize: 13, fontWeight: "800" },
+  modalBackdrop: { flex: 1, alignItems: "center", justifyContent: "center", padding: spacing.lg, backgroundColor: "rgba(10,22,16,0.6)" },
+  modalCard: { width: "100%", maxWidth: 440, borderRadius: radius.lg, backgroundColor: colors.surface, padding: spacing.lg },
+  modalTitle: { fontSize: 20, fontWeight: "800", color: colors.onSurface },
+  modalMeta: { fontSize: 13, color: colors.onSurfaceTertiary, marginTop: 2 },
+  modalStats: { flexDirection: "row", gap: spacing.sm, marginTop: spacing.md },
+  modalStat: { flex: 1, backgroundColor: colors.surfaceSecondary, borderRadius: radius.md, padding: spacing.md, alignItems: "center" },
+  modalStatValue: { fontSize: 24, fontWeight: "800", color: colors.onSurface },
+  modalStatLabel: { fontSize: 12, color: colors.onSurfaceTertiary, marginTop: 2 },
+  modalNote: { fontSize: 13, lineHeight: 19, color: colors.onSurfaceSecondary, marginTop: spacing.md },
+  modalActions: { flexDirection: "row", justifyContent: "flex-end", gap: spacing.sm, marginTop: spacing.lg },
+  modalCancel: { minHeight: 46, minWidth: 90, alignItems: "center", justifyContent: "center", paddingHorizontal: spacing.md, borderRadius: radius.md, borderWidth: 1, borderColor: colors.border },
+  modalCancelText: { color: colors.onSurface, fontSize: 15, fontWeight: "700" },
+  modalSign: { minHeight: 46, minWidth: 130, alignItems: "center", justifyContent: "center", paddingHorizontal: spacing.md, borderRadius: radius.md, backgroundColor: colors.brandPrimary },
+  modalSignText: { color: "#fff", fontSize: 15, fontWeight: "800" },
 });

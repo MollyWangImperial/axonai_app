@@ -16,7 +16,13 @@ Camera-based stroke rehabilitation platform. MediaPipe pose capture (WebView) �
 - **Caregiver / family** — frequently the payer and session helper.
 - **Therapist / clinic** — supervises home practice, confirms plans; B2B buyer.
 
-## Implemented (this round — 2026-08-29)
+## Implemented — Round 2 (2026-08-29): Privacy, Progress, Coach, Therapist
+- **Privacy policy** (`app/privacy-policy.tsx`): plain-language standalone page, linked from sign-in footer + account-center. AuthGate `publicRoutes` allowlist lets it open when logged out.
+- **Progress Story chart** (`src/components/ProgressStoryCard.tsx`): SVG trend of a derived movement score over sessions, baseline→latest delta + Share; on `/progress`. Hidden until 2+ assessments.
+- **Daily Check-in coach** (`src/components/DailyCheckInCard.tsx`): Alira greeting + local streak + "Talk to Alira" CTA on patient home.
+- **Therapist dashboard patients** (`app/therapist.tsx` + backend `/api/therapist/patients`, `/api/therapist/patient/{id}/signoff`): roster from bookings, latest assessment summary, plan sign-off (`plan_signoffs`). Role-gated. Verified backend 8/8 + frontend E2E.
+
+## Implemented — Round 1 (2026-08-29)
 ### Phase 1 — Compliance & Safety (DONE, tested)
 - **Medical consent gate** (`/app/frontend/app/consent.tsx`): new patients must accept a non-diagnostic + safety disclaimer before onboarding. Wired in `_layout.tsx` AuthGate (`hasAcceptedConsent`).
 - **Pre-session safety checklist** on `session-check.tsx`: Continue disabled until actor + safety acknowledgement.

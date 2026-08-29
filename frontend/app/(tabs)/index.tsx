@@ -16,6 +16,7 @@ import * as Haptics from "expo-haptics";
 
 import { Assessment, fetchHistory } from "@/src/api";
 import { getCachedUser, preferredNameKey } from "@/src/auth";
+import { DailyCheckInCard } from "@/src/components/DailyCheckInCard";
 import { colors, radius, spacing } from "@/src/theme";
 import { storage } from "@/src/utils/storage";
 import { useDisplayPreferences } from "@/src/displayPreferences";
@@ -115,6 +116,8 @@ export default function HomeScreen() {
               </Pressable>
             </View>
           </View>
+
+          {!loading && <DailyCheckInCard />}
 
           {loading ? (
             <View style={styles.loadingState}>
