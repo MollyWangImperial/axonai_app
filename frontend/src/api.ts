@@ -172,6 +172,7 @@ export type Assessment = {
   created_at: string;
   affected_side: string;
   assessment_package?: AssessmentPackageId;
+  assigned_task_ids?: string[];
   patient_parameters?: { age_band?: string; [key: string]: unknown };
   functional_issues: FunctionalIssue[];
   rehab_plan: RehabExercise[];
@@ -355,15 +356,24 @@ export type RehabilitationGoal = {
   }[];
 };
 
-export async function fetchTasks(packageId: AssessmentPackageId = "upper_limb"): Promise<{
+export async function fetchTasks(packageId: AssessmentPackageId = "upper_limb", assignedTaskIds?: string[]): Promise<{
   tasks: Task[];
   voice_id: string;
   package_id: AssessmentPackageId;
   package_title: string;
   package_subtitle: string;
+  assigned_task_ids: string[];
   packages: AssessmentPackage[];
 }> {
-  const res = await fetch(`${BASE}/api/assessment/tasks?package=${encodeURIComponent(packageId)}`);
+  const query = new URLSearchParams({ package: packageId });
+  if (assignedTaskIds) query.set("task_ids", assignedTaskIds.join(","));
+  const res = packageId === "initial"
+    ? await authedFetch(`/api/assessment/tasks?${query.toString()}`)
+    : await fetch(`${BASE}/api/assessment/tasks?${query.toString()}`);
+  if (!res.ok) {
+    const body = await res.json().catch(() => null);
+    throw new Error(body?.detail || "Could not load assessment tasks");
+  }
   return res.json();
 }
 

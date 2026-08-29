@@ -18,6 +18,23 @@ def signed_in_user(consented: bool = True):
     }
 
 
+def readiness_user(**overrides):
+    user = signed_in_user()
+    user["profile"] = {
+        "months_since_stroke": 6,
+        "affected_areas": ["right_upper", "right_lower"],
+        "sitting_ability": "independent",
+        "affected_arm_movement": "some_movement",
+        "affected_hand_movement": "some_finger_movement",
+        "mobility_level": "person_assist",
+        "movement_pain": "mild",
+        "instruction_support": "independent",
+        "has_caregiver": True,
+        **overrides,
+    }
+    return user
+
+
 def sample_plan():
     return {
         "version": "alira-care-v1",
@@ -54,6 +71,43 @@ def test_care_plan_requires_health_data_consent(monkeypatch):
 
     assert response.status_code == 403
     assert "consent" in response.json()["detail"].lower()
+
+
+def test_initial_recommendation_uses_saved_capabilities(monkeypatch):
+    async def user_from_header(_headers):
+        return readiness_user()
+
+    monkeypatch.setattr(server, "_user_from_header", user_from_header)
+    response = TestClient(server.app).get(
+        "/api/assessment/recommendation?package=initial",
+        headers={"X-User-Id": "u_alira_care"},
+    )
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("application/json")
+    assert response.json()["task_ids"] == ["T1", "T2", "T3", "H1", "H3", "H4"]
+    assert "L6" not in response.json()["task_ids"]
+
+
+def test_initial_task_endpoint_rejects_client_override(monkeypatch):
+    async def user_from_header(_headers):
+        return readiness_user()
+
+    monkeypatch.setattr(server, "_user_from_header", user_from_header)
+    client = TestClient(server.app)
+    approved = client.get(
+        "/api/assessment/tasks?package=initial&task_ids=T1,T2,T3,H1,H3,H4",
+        headers={"X-User-Id": "u_alira_care"},
+    )
+    override = client.get(
+        "/api/assessment/tasks?package=initial&task_ids=T1,T2,T3,H1,H3,H4,L6",
+        headers={"X-User-Id": "u_alira_care"},
+    )
+
+    assert approved.status_code == 200
+    assert approved.json()["assigned_task_ids"] == ["T1", "T2", "T3", "H1", "H3", "H4"]
+    assert override.status_code == 422
+    assert "saved readiness survey" in override.json()["detail"]
 
 
 def test_check_in_endpoint_preserves_patient_answer_source(monkeypatch):

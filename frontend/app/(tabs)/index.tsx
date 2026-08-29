@@ -70,7 +70,7 @@ export default function HomeScreen() {
   const hasInitialAssessment = history.some((item) => item.assessment_package === "initial");
   const isInitialAssessment = !hasInitialAssessment;
   const assessmentDescription = isInitialAssessment
-    ? "The same seven guided arm, hand, and walking observations create your first recovery picture."
+    ? "Alira selects suitable guided arm, hand, and walking observations from your readiness answers."
     : "A fresh guided check of your arm, hand, and walking.";
   const assessmentButtonLabel = isInitialAssessment ? "Start Initial Assessment" : "Start Next Assessment";
 

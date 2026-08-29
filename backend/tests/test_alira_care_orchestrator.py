@@ -4,13 +4,31 @@ from pathlib import Path
 import pytest
 
 from backend.alira_care_orchestrator import (
+    ASSESSMENT_READINESS_FIELDS,
     MAX_CHECK_IN_QUESTIONS,
     build_adaptive_care_plan,
+    initial_assessment_recommendation,
     validate_check_in_answers,
 )
 
 
 NOW = datetime(2026, 8, 29, 12, 0, tzinfo=timezone.utc)
+
+
+def ready_profile(**overrides):
+    profile = {
+        "months_since_stroke": 6,
+        "affected_areas": ["right_upper", "right_lower"],
+        "sitting_ability": "independent",
+        "affected_arm_movement": "some_movement",
+        "affected_hand_movement": "some_finger_movement",
+        "mobility_level": "walker",
+        "movement_pain": "mild",
+        "instruction_support": "independent",
+        "has_caregiver": False,
+    }
+    profile.update(overrides)
+    return profile
 
 
 def iso_days_ago(days: int) -> str:
@@ -50,6 +68,64 @@ def test_starting_patient_gets_short_survey_and_initial_assessment():
     assert 1 <= len(plan["survey"]["questions"]) <= MAX_CHECK_IN_QUESTIONS
     assert plan["assessment"]["due"] is True
     assert plan["assessment"]["packages"] == ["initial"]
+    assert plan["assessment"]["can_start"] is False
+    assert set(plan["assessment"]["missing_answers"]) == set(ASSESSMENT_READINESS_FIELDS)
+
+
+def test_initial_assessment_selects_all_tasks_only_when_prerequisites_are_met():
+    recommendation = initial_assessment_recommendation(ready_profile())
+
+    assert recommendation["status"] == "ready"
+    assert recommendation["can_start"] is True
+    assert recommendation["task_ids"] == ["T1", "T2", "T3", "H1", "H3", "H4", "L6"]
+
+
+def test_initial_assessment_does_not_assign_walking_when_hands_on_help_is_needed():
+    recommendation = initial_assessment_recommendation(ready_profile(mobility_level="person_assist"))
+
+    assert recommendation["can_start"] is True
+    assert recommendation["task_ids"] == ["T1", "T2", "T3", "H1", "H3", "H4"]
+    assert any("hands-on assistance" in item["reason"] for item in recommendation["excluded"])
+
+
+def test_initial_assessment_does_not_assign_active_arm_or_hand_tasks_without_active_arm_movement():
+    recommendation = initial_assessment_recommendation(ready_profile(
+        affected_arm_movement="no_movement",
+        affected_hand_movement="some_finger_movement",
+        mobility_level="wheelchair",
+    ))
+
+    assert recommendation["can_start"] is False
+    assert recommendation["requires_clinician_review"] is True
+    assert recommendation["task_ids"] == []
+
+
+def test_initial_assessment_keeps_tasks_for_an_unaffected_arm_and_hand():
+    recommendation = initial_assessment_recommendation(ready_profile(
+        affected_arm_movement="not_affected",
+        affected_hand_movement="not_affected",
+    ))
+
+    assert recommendation["can_start"] is True
+    assert recommendation["task_ids"] == ["T1", "T2", "T3", "H1", "H3", "H4", "L6"]
+
+
+def test_helper_required_treats_saved_no_answer_as_no_available_caregiver():
+    recommendation = initial_assessment_recommendation(ready_profile(
+        instruction_support="helper_required",
+        has_caregiver="no",
+    ))
+
+    assert recommendation["can_start"] is False
+    assert recommendation["status"] == "support_needed"
+
+
+def test_initial_assessment_pauses_for_severe_or_worsening_pain():
+    recommendation = initial_assessment_recommendation(ready_profile(movement_pain="severe_or_worsening"))
+
+    assert recommendation["status"] == "clinical_review"
+    assert recommendation["can_start"] is False
+    assert recommendation["requires_clinician_review"] is True
 
 
 def test_early_stage_uses_three_day_survey_and_fourteen_day_assessment_cadence():
@@ -170,6 +246,9 @@ def test_novel_content_is_only_a_reviewable_draft():
     assert all(item["status"] == "draft_clinical_review" for item in plan["content_proposals"])
     assert plan["autonomy"]["may_activate_novel_clinical_content"] is False
     assert plan["autonomy"]["may_change_app_features"] is False
+    assert plan["autonomy"]["may_draft_novel_assessment_tasks"] is True
+    assert all(item.get("not_for_patient_use") is True for item in plan["content_proposals"])
+    assert all(item.get("proposed_steps") for item in plan["content_proposals"] if item["type"] == "assessment_task")
 
 
 def test_daily_activity_monitoring_uses_sessions_for_reminders_without_model_calls():

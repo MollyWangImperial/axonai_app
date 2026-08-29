@@ -27,6 +27,18 @@ const PREPARATION_TIPS = [
   "Ask a carer or family member to film the walking task from the side and keep your full body visible",
 ];
 
+type InitialAssessmentRecommendation = {
+  status: "needs_answers" | "support_needed" | "clinical_review" | "ready";
+  can_start: boolean;
+  task_ids: string[];
+  task_count: number;
+  missing_answers: string[];
+  requires_helper: boolean;
+  requires_clinician_review: boolean;
+  safety_notes: string[];
+  message: string;
+};
+
 export default function TaskIntro() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
@@ -42,6 +54,7 @@ export default function TaskIntro() {
   const [nextTaskId, setNextTaskId] = useState<string | null>(null);
   const [affectedSide, setAffectedSide] = useState<"left" | "right">("right");
   const [savedVideoCount, setSavedVideoCount] = useState(0);
+  const [recommendation, setRecommendation] = useState<InitialAssessmentRecommendation | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [showStartOver, setShowStartOver] = useState(false);
@@ -53,11 +66,34 @@ export default function TaskIntro() {
         const uid = await getUserId();
         if (!uid) throw new Error("Please sign in again.");
         setUserId(uid);
-        const [taskResponse, rawCompleted, rawSavedVideos, profileResponse, savedVideos, serverProgress] = await Promise.all([
-          fetchTasks(packageId),
+        const [profileResponse, recommendationResponse] = await Promise.all([
+          authedFetch("/api/users/onboarding").then((r) => r.json()).catch(() => null),
+          isInitial
+            ? authedFetch("/api/assessment/recommendation?package=initial")
+              .then(async (response) => {
+                const body = await response.json().catch(() => null);
+                if (!response.ok) throw new Error(body?.detail || "Could not select suitable assessment tasks.");
+                return body as InitialAssessmentRecommendation;
+              })
+            : Promise.resolve(null),
+        ]);
+        setRecommendation(recommendationResponse);
+        const storedSide = await storage.getItem(affectedSideKey(uid), "");
+        const profileSide = profileResponse?.profile?.side_affected;
+        const resolvedSide = storedSide || profileSide;
+        setAffectedSide(resolvedSide === "left" ? "left" : "right");
+        if (recommendationResponse && !recommendationResponse.can_start) {
+          setTaskIds([]);
+          setCompletedTasks({});
+          setNextTaskId(null);
+          setSavedVideoCount(0);
+          return;
+        }
+        const assignedTaskIds = recommendationResponse?.task_ids;
+        const [taskResponse, rawCompleted, rawSavedVideos, savedVideos, serverProgress] = await Promise.all([
+          fetchTasks(packageId, assignedTaskIds),
           storage.getItem(completedTasksKey(uid, packageId), ""),
           storage.getItem(savedTaskVideosKey(uid, packageId), ""),
-          authedFetch("/api/users/onboarding").then((r) => r.json()).catch(() => null),
           fetchTaskVideos(packageId).catch(() => []),
           fetchTaskProgress(packageId).catch(() => []),
         ]);
@@ -73,11 +109,7 @@ export default function TaskIntro() {
           await storage.setItem(completedTasksKey(uid, packageId), JSON.stringify(completed));
         }
         const nextTask = taskResponse.tasks.find((task) => !completed[task.id]);
-        const storedSide = await storage.getItem(affectedSideKey(uid), "");
-        const profileSide = profileResponse?.profile?.side_affected;
-        const resolvedSide = storedSide || profileSide;
         setTaskIds(taskResponse.tasks.reduce<string[]>((ids, task) => [...ids, task.id], []));
-        setAffectedSide(resolvedSide === "left" ? "left" : "right");
         setCompletedTasks(completed);
         setNextTaskId(nextTask?.id || null);
         setSavedVideoCount(Math.max(savedVideos.length, Object.keys(deviceSavedVideos).length));
@@ -87,9 +119,13 @@ export default function TaskIntro() {
         setLoading(false);
       }
     })();
-  }, [packageId]);
+  }, [isInitial, packageId]);
 
   const onBegin = async () => {
+    if (isInitial && recommendation && !recommendation.can_start) {
+      router.push("/onboarding?mode=assessment-readiness" as never);
+      return;
+    }
     let taskToStart = nextTaskId;
     let completedTaskIds = Object.keys(completedTasks).filter((taskId) => completedTasks[taskId]);
     if (!isInitial && assessmentComplete && userId) {
@@ -119,6 +155,7 @@ export default function TaskIntro() {
         start_task: taskToStart,
         completed_tasks: completedTaskIds.join(","),
         affected_side: affectedSide,
+        task_ids: taskIds.join(","),
       },
     });
   };
@@ -147,6 +184,9 @@ export default function TaskIntro() {
 
   const completedCount = taskIds.filter((taskId) => completedTasks[taskId]).length;
   const assessmentComplete = taskIds.length > 0 && completedCount === taskIds.length;
+  const preparationTips = recommendation && !recommendation.task_ids.includes("L6")
+    ? PREPARATION_TIPS.filter((tip) => !tip.toLowerCase().includes("walking"))
+    : PREPARATION_TIPS;
 
   return (
     <View style={styles.container}>
@@ -163,13 +203,13 @@ export default function TaskIntro() {
         <Text style={styles.title}>{isInitial ? "Your Initial Assessment" : "Your next movement check-in"}</Text>
         <Text style={styles.sub}>
           {isInitial
-            ? "Every new patient completes the same seven guided arm, hand, and comfortable-walking observations. This gives us a broad, consistent starting point before personalizing future sessions."
+            ? recommendation?.message || "Alira uses your saved movement-readiness answers to select only suitable approved arm, hand, and walking tasks."
             : "We have selected the next standardized movement session for you. Alira will guide each task in order."}
         </Text>
 
         <View style={styles.tipsCard} testID="task-intro-tips">
           <Text style={styles.tipsHeader}>Before we begin</Text>
-          {PREPARATION_TIPS.map((tip) => (
+          {preparationTips.map((tip) => (
             <View key={tip} style={styles.tipRow}>
               <Ionicons name="checkmark-circle" size={18} color={colors.brandPrimary} />
               <Text style={styles.tipText}>{tip}</Text>
@@ -187,18 +227,28 @@ export default function TaskIntro() {
             </View>
             <View style={styles.sessionReadyCopy}>
               <Text style={styles.sessionReadyTitle}>
-                {assessmentComplete
+                {recommendation && !recommendation.can_start
+                  ? recommendation.status === "needs_answers" ? "A few readiness answers are needed" : "Camera tasks are paused"
+                  : assessmentComplete
                   ? isInitial ? "Your Initial Assessment is complete" : "Your next assessment is ready"
                   : completedCount > 0 ? "Continue where you left off" : isInitial ? "Your first guided task is ready" : "Your next guided task is ready"}
               </Text>
               <Text style={styles.sessionReadyText}>
-                {assessmentComplete
+                {recommendation && !recommendation.can_start
+                  ? recommendation.message
+                  : assessmentComplete
                   ? isInitial
                     ? "You do not need to repeat these tasks. Your saved results are ready from the Home screen."
                     : "Your previous results will remain in Assessment history. Starting now creates a new movement check-in for progress comparison."
                   : `Alira will launch your next guided task automatically and continue through the remaining assessment. ${completedCount} of ${taskIds.length} tasks are already complete.`}
               </Text>
-              {savedVideoCount > 0 && (
+              {recommendation?.safety_notes?.map((note) => (
+                <View key={note} style={styles.savedVideoRow}>
+                  <Ionicons name="shield-checkmark-outline" size={16} color={colors.brandPrimary} />
+                  <Text style={styles.savedVideoText}>{note}</Text>
+                </View>
+              ))}
+              {savedVideoCount > 0 && recommendation?.can_start !== false && (
                 <View style={styles.savedVideoRow} testID="saved-task-video-count">
                   <Ionicons name="cloud-done-outline" size={16} color={colors.brandPrimary} />
                   <Text style={styles.savedVideoText}>
@@ -219,9 +269,11 @@ export default function TaskIntro() {
           </Pressable>
         )}
         <Pressable testID="task-intro-begin" disabled={loading} onPress={onBegin} style={[styles.ctaBtn, loading && { opacity: 0.4 }]}>
-          <Ionicons name={assessmentComplete && isInitial ? "home" : "videocam"} size={21} color={colors.onBrandPrimary} />
+          <Ionicons name={recommendation && !recommendation.can_start ? "clipboard" : assessmentComplete && isInitial ? "home" : "videocam"} size={21} color={colors.onBrandPrimary} />
           <Text style={styles.ctaText}>
-            {assessmentComplete
+            {recommendation && !recommendation.can_start
+              ? recommendation.status === "needs_answers" ? "Answer readiness questions" : "Review readiness answers"
+              : assessmentComplete
               ? isInitial ? "Return Home" : "Start Next Assessment"
               : completedCount > 0 ? "Continue Assessment" : isInitial ? "Begin Initial Assessment" : "Begin Movement Check-in"}
           </Text>
@@ -232,7 +284,7 @@ export default function TaskIntro() {
         <View style={styles.modalBackdrop}>
           <View style={styles.modalCard} testID="task-intro-startover-modal">
             <Text style={styles.modalTitle}>Start the assessment again?</Text>
-            <Text style={styles.modalBody}>Your saved results will remain in your history, but all seven collection tasks will be marked as incomplete.</Text>
+            <Text style={styles.modalBody}>Your saved results will remain in your history, but all {taskIds.length} assigned collection tasks will be marked as incomplete.</Text>
             <View style={styles.modalActions}>
               <Pressable testID="startover-cancel" onPress={() => setShowStartOver(false)} style={styles.modalCancel}>
                 <Text style={styles.modalCancelText}>Cancel</Text>

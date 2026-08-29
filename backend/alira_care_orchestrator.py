@@ -14,6 +14,15 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence
 CARE_POLICY_VERSION = "alira-care-v1"
 MAX_CHECK_IN_QUESTIONS = 4
 APPROVED_ASSESSMENT_PACKAGES = {"initial", "upper_limb", "hand", "lower_limb", "balance"}
+INITIAL_ASSESSMENT_TASK_IDS = ("T1", "T2", "T3", "H1", "H3", "H4", "L6")
+ASSESSMENT_READINESS_FIELDS = (
+    "sitting_ability",
+    "affected_arm_movement",
+    "affected_hand_movement",
+    "mobility_level",
+    "movement_pain",
+    "instruction_support",
+)
 
 
 QUESTION_BANK: Dict[str, Dict[str, Any]] = {
@@ -91,6 +100,132 @@ QUESTION_BANK: Dict[str, Dict[str, Any]] = {
         "required": False,
     },
 }
+
+
+def initial_assessment_recommendation(profile: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Select only approved initial tasks that match the saved self-reported prerequisites."""
+    profile = dict(profile or {})
+    missing = [
+        key
+        for key in ASSESSMENT_READINESS_FIELDS
+        if profile.get(key) is None or str(profile.get(key)).strip() == ""
+    ]
+    base = {
+        "policy_version": CARE_POLICY_VERSION,
+        "package_id": "initial",
+        "missing_answers": missing,
+        "task_ids": [],
+        "task_count": 0,
+        "excluded": [],
+        "requires_helper": False,
+        "requires_clinician_review": False,
+        "safety_notes": [],
+    }
+    if missing:
+        return {
+            **base,
+            "status": "needs_answers",
+            "can_start": False,
+            "message": "Answer the short movement-readiness questions before Alira selects camera tasks.",
+        }
+
+    sitting = str(profile.get("sitting_ability") or "").lower()
+    arm = str(profile.get("affected_arm_movement") or "").lower()
+    hand = str(profile.get("affected_hand_movement") or "").lower()
+    mobility = str(profile.get("mobility_level") or "").lower()
+    pain = str(profile.get("movement_pain") or "").lower()
+    instruction_support = str(profile.get("instruction_support") or "").lower()
+    caregiver_answer = profile.get("has_caregiver")
+    has_caregiver = caregiver_answer is True or str(caregiver_answer or "").lower() in {"yes", "true", "1"}
+
+    excluded: List[Dict[str, Any]] = []
+    task_ids: List[str] = []
+    safety_notes: List[str] = []
+    requires_helper = sitting == "needs_support" or instruction_support in {"helper_preferred", "helper_required"}
+
+    if pain == "severe_or_worsening":
+        return {
+            **base,
+            "status": "clinical_review",
+            "can_start": False,
+            "requires_clinician_review": True,
+            "excluded": [{"task_ids": list(INITIAL_ASSESSMENT_TASK_IDS), "reason": "Severe or worsening movement pain was reported."}],
+            "message": "The camera assessment is paused because severe or worsening pain needs clinical advice first.",
+        }
+
+    if instruction_support == "helper_required" and not has_caregiver:
+        return {
+            **base,
+            "status": "support_needed",
+            "can_start": False,
+            "requires_helper": True,
+            "excluded": [{"task_ids": list(INITIAL_ASSESSMENT_TASK_IDS), "reason": "The patient reported needing help to follow instructions or use the screen."}],
+            "message": "Please have a trusted helper present before starting the camera assessment.",
+        }
+
+    active_arm = arm in {"most_movements", "some_movement", "not_affected"}
+    active_hand = hand in {"opens_and_moves", "some_finger_movement", "very_little_movement", "not_affected"}
+    independent_sitting = sitting == "independent"
+
+    if independent_sitting and active_arm:
+        task_ids.extend(["T1", "T2", "T3"])
+    else:
+        reason = (
+            "These seated reaching tasks need independent sitting and some unassisted affected-arm movement."
+            if sitting != "independent"
+            else "The patient did not report enough unassisted affected-arm movement for active reaching tasks."
+        )
+        excluded.append({"task_ids": ["T1", "T2", "T3"], "reason": reason})
+
+    if independent_sitting and active_arm and active_hand:
+        task_ids.extend(["H1", "H3", "H4"])
+    else:
+        reason = (
+            "These hand tasks require the affected hand to be raised safely in front of the camera."
+            if not independent_sitting or not active_arm
+            else "The patient did not report active affected-finger movement for these hand tasks."
+        )
+        excluded.append({"task_ids": ["H1", "H3", "H4"], "reason": reason})
+
+    if mobility in {"independent", "cane", "walker"}:
+        task_ids.append("L6")
+        safety_notes.append("Use the usual walking aid and have a separate helper nearby if normally needed for safety.")
+    else:
+        excluded.append({
+            "task_ids": ["L6"],
+            "reason": "Walking video is assigned only when the patient reports walking safely without hands-on assistance.",
+        })
+
+    if pain in {"moderate", "not_sure"}:
+        safety_notes.append("Use a comfortable range and stop if pain increases, dizziness occurs, or movement feels unsafe.")
+    if requires_helper:
+        safety_notes.append("A trusted helper should stay nearby throughout the assessment.")
+
+    selected = set(task_ids)
+    task_ids = [task_id for task_id in INITIAL_ASSESSMENT_TASK_IDS if task_id in selected]
+    if not task_ids:
+        return {
+            **base,
+            "status": "clinical_review",
+            "can_start": False,
+            "excluded": excluded,
+            "requires_helper": requires_helper,
+            "requires_clinician_review": True,
+            "safety_notes": safety_notes,
+            "message": "None of the current camera tasks match the reported abilities safely. A clinician should choose an appropriate assessment.",
+        }
+
+    return {
+        **base,
+        "status": "ready",
+        "can_start": True,
+        "task_ids": task_ids,
+        "task_count": len(task_ids),
+        "excluded": excluded,
+        "requires_helper": requires_helper,
+        "safety_notes": safety_notes,
+        "message": f"Alira selected {len(task_ids)} suitable task{'s' if len(task_ids) != 1 else ''} from the approved initial assessment.",
+    }
 
 
 def _as_utc(value: Any) -> Optional[datetime]:
@@ -298,16 +433,56 @@ def _content_gaps(profile: Dict[str, Any], domains: Sequence[str]) -> List[Dict[
             "status": "draft_clinical_review",
             "title": "Communication goal screening gap",
             "reason": "The current camera movement library does not validate speech or language function.",
+            "proposed_steps": [
+                {"sequence": 1, "instruction": "Confirm the communication goal and preferred communication method."},
+                {"sequence": 2, "instruction": "Use a validated communication screen selected by a speech and language therapist."},
+                {"sequence": 3, "instruction": "Record support needs without inferring a diagnosis from camera movement."},
+            ],
+            "not_for_patient_use": True,
             "activation_rule": "Must be designed and approved by an appropriately qualified stroke clinician before patient use.",
         })
     goal = str(profile.get("primary_goal") or "").strip()
     if goal and not domains:
         gaps.append({
-            "type": "goal_specific_question",
+            "type": "survey_question",
             "status": "draft_clinical_review",
             "title": "Goal-specific follow-up question",
             "reason": f"The saved patient goal is not yet mapped to an approved camera task: {goal[:120]}",
+            "draft": {
+                "question": "How much help did you need with your chosen activity this week?",
+                "options": ["not_tried", "no_help", "a_little_help", "a_lot_of_help", "unable"],
+                "escalation_required_for": ["unable"],
+            },
+            "not_for_patient_use": True,
             "activation_rule": "A clinician must confirm relevance, wording, scoring, and escalation rules before activation.",
+        })
+        gaps.append({
+            "type": "assessment_task",
+            "status": "draft_clinical_review",
+            "title": "Goal-specific camera task draft",
+            "reason": f"No approved camera task currently measures this saved goal: {goal[:120]}",
+            "proposed_steps": [
+                {"sequence": 1, "instruction": "Confirm a safe starting position and the equipment normally used."},
+                {"sequence": 2, "instruction": "Demonstrate one comfortable attempt with a clear stop option."},
+                {"sequence": 3, "instruction": "Observe completion and compensation without forcing range or speed."},
+                {"sequence": 4, "instruction": "Return to the safe starting position and ask about pain or fatigue."},
+            ],
+            "not_for_patient_use": True,
+            "activation_rule": "A stroke clinician must approve eligibility, exclusions, scoring, voice wording, and stop rules before activation.",
+        })
+        gaps.append({
+            "type": "exercise",
+            "status": "draft_clinical_review",
+            "title": "Goal-specific guided exercise draft",
+            "reason": f"The approved exercise library does not yet contain a progression for this saved goal: {goal[:120]}",
+            "proposed_steps": [
+                {"sequence": 1, "instruction": "Set up in the clinician-approved supported position."},
+                {"sequence": 2, "instruction": "Practise a small, comfortable part of the goal activity."},
+                {"sequence": 3, "instruction": "Pause, check symptoms, and rest before another repetition."},
+                {"sequence": 4, "instruction": "Finish in a stable position and record effort, pain, and assistance."},
+            ],
+            "not_for_patient_use": True,
+            "activation_rule": "A stroke clinician must approve the movement, dose, progression, contraindications, and step-by-step guidance before activation.",
         })
     return gaps
 
@@ -338,6 +513,7 @@ def build_adaptive_care_plan(
     assessment_due = now >= assessment_due_at and not safety["blocks_assessment"]
     has_plan = bool((latest_assessment or {}).get("rehab_plan"))
     packages = _assessment_packages(domains, bool(latest_assessment))
+    initial_readiness = initial_assessment_recommendation(profile) if not latest_assessment else None
     latest_activity = _latest(activities, key="completed_at")
     latest_activity_at = _as_utc((latest_activity or {}).get("completed_at"))
     sessions_last_7_days = sum(
@@ -374,6 +550,11 @@ def build_adaptive_care_plan(
             "due_at": assessment_due_at.isoformat(),
             "cadence_days": cadence["assessment_days"],
             "packages": packages if assessment_due else [],
+            "task_ids": (initial_readiness or {}).get("task_ids", []) if assessment_due else [],
+            "readiness": (initial_readiness or {}).get("status", "ready"),
+            "can_start": bool((initial_readiness or {}).get("can_start", True)) and not safety["blocks_assessment"],
+            "missing_answers": (initial_readiness or {}).get("missing_answers", []),
+            "selection_message": (initial_readiness or {}).get("message"),
             "blocked_by_safety": safety["blocks_assessment"],
             "reason": "Only approved camera packages matching the affected functional domains are selected.",
         },
@@ -397,6 +578,10 @@ def build_adaptive_care_plan(
             "maximum_automatic_dose_change_percent": 20,
             "may_change_app_features": False,
             "may_activate_novel_clinical_content": False,
+            "may_draft_novel_survey_questions": True,
+            "may_draft_novel_assessment_tasks": True,
+            "may_draft_novel_exercises": True,
+            "novel_drafts_require_step_by_step_guidance": True,
             "novel_content_status": "draft_clinical_review",
         },
         "evidence": {

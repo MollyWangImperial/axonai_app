@@ -25,7 +25,7 @@ def test_home_launches_standardized_initial_assessment():
     home = read("frontend/app/(tabs)/index.tsx")
     assert '"Start Initial Assessment"' in home
     assert 'target: "assessment", mode: isInitialAssessment ? "initial" : "followup"' in home
-    assert "same seven guided arm, hand, and walking observations" in home
+    assert "selects suitable guided arm, hand, and walking observations" in home
     assert 'pathname: "/session-check"' in home
 
 
@@ -42,9 +42,11 @@ def test_home_becomes_next_assessment_after_initial_completion():
     assert 'return "Movement analysis in progress"' in journey
 
 
-def test_initial_assessment_has_no_package_or_task_choice():
+def test_initial_assessment_is_automatically_selected_without_a_manual_task_choice():
     intro = read("frontend/app/task-intro.tsx")
-    assert 'const packageId: AssessmentPackageId = "initial"' in intro
+    assert 'authedFetch("/api/assessment/recommendation?package=initial")' in intro
+    assert 'fetchTasks(packageId, assignedTaskIds)' in intro
+    assert 'task_ids: taskIds.join(",")' in intro
     assert "launch your next guided task automatically" in intro
     assert "tasks.map(" not in intro
     assert "task-row-" not in intro
@@ -72,7 +74,7 @@ def test_onboarding_collects_pdf_feedback_fields():
     onboarding = read("frontend/app/onboarding.tsx")
     survey = read("frontend/src/patientSurvey.ts")
     server = read("backend/server.py")
-    assert 'PATIENT_SURVEY_STEPS as STEPS' in onboarding
+    assert "ASSESSMENT_READINESS_KEYS, PATIENT_SURVEY_STEPS" in onboarding
     assert 'value: "under_20"' in survey
     assert 'key: "affected_areas"' in survey
     assert 'label: "Left upper limb (shoulder, arm or hand)"' in survey
@@ -112,7 +114,7 @@ def test_onboarding_finish_recovers_stale_session_and_reports_failures():
     assert "const refreshedUser = await signIn" in onboarding
     assert 'headers: userId ? { "X-User-Id": userId } : undefined' in onboarding
     assert 'testID="onb-save-error"' in onboarding
-    assert "router.replace(\"/\")" in onboarding
+    assert 'router.replace(isReadinessUpdate ? "/task-intro?mode=initial" : "/")' in onboarding
     assert 'uid && !headers.has("X-User-Id")' in auth
 
 

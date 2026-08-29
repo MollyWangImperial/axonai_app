@@ -1,16 +1,21 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { View, Text, StyleSheet, Pressable, TextInput, ScrollView, ActivityIndicator, KeyboardAvoidingView, Modal, Platform } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
-import { useRouter } from "expo-router";
+import { useLocalSearchParams, useRouter } from "expo-router";
 import * as Haptics from "expo-haptics";
 import { colors, spacing, radius } from "@/src/theme";
 import { authedFetch, cachePatientOnboarding, getCachedUser, signIn } from "@/src/auth";
-import { PATIENT_SURVEY_STEPS as STEPS } from "@/src/patientSurvey";
+import { ASSESSMENT_READINESS_KEYS, PATIENT_SURVEY_STEPS } from "@/src/patientSurvey";
 
 export default function OnboardingScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
+  const params = useLocalSearchParams<{ mode?: string }>();
+  const isReadinessUpdate = params.mode === "assessment-readiness";
+  const steps = isReadinessUpdate
+    ? PATIENT_SURVEY_STEPS.filter((item) => ASSESSMENT_READINESS_KEYS.includes(item.key as typeof ASSESSMENT_READINESS_KEYS[number]))
+    : PATIENT_SURVEY_STEPS;
   const [idx, setIdx] = useState(0);
   const [values, setValues] = useState<Record<string, any>>({});
   const [textInput, setTextInput] = useState("");
@@ -23,10 +28,29 @@ export default function OnboardingScreen() {
   const [genderDescription, setGenderDescription] = useState("");
   const [showGenderDescription, setShowGenderDescription] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [loadingProfile, setLoadingProfile] = useState(isReadinessUpdate);
   const [saveError, setSaveError] = useState<string | null>(null);
 
-  const step = STEPS[idx];
-  const progress = ((idx + 1) / STEPS.length) * 100;
+  const step = steps[idx];
+  const progress = ((idx + 1) / steps.length) * 100;
+
+  useEffect(() => {
+    if (!isReadinessUpdate) return;
+    let active = true;
+    (async () => {
+      try {
+        const response = await authedFetch("/api/users/onboarding");
+        if (!response.ok) throw new Error("PROFILE_LOAD_FAILED");
+        const body = await response.json();
+        if (active) setValues(body?.profile || {});
+      } catch {
+        if (active) setSaveError("We couldn't load your saved survey. Check your connection and try again.");
+      } finally {
+        if (active) setLoadingProfile(false);
+      }
+    })();
+    return () => { active = false; };
+  }, [isReadinessUpdate]);
 
   const setVal = (k: string, v: any) => setValues((prev) => ({ ...prev, [k]: v }));
 
@@ -47,7 +71,7 @@ export default function OnboardingScreen() {
     else if (step.type === "number") next[step.key] = parseInt(textInput, 10);
     setValues(next);
     setTextInput("");
-    if (idx < STEPS.length - 1) {
+    if (idx < steps.length - 1) {
       setIdx(idx + 1);
     } else {
       setSaving(true);
@@ -85,7 +109,7 @@ export default function OnboardingScreen() {
         if (savedUser?.id) await cachePatientOnboarding(savedUser.id, payload);
 
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-        router.replace("/");
+        router.replace(isReadinessUpdate ? "/task-intro?mode=initial" : "/");
       } catch (error) {
         const message = error instanceof Error ? error.message : "";
         setSaveError(
@@ -99,7 +123,7 @@ export default function OnboardingScreen() {
   };
 
   const onSkip = async () => {
-    if (idx < STEPS.length - 1) {
+    if (idx < steps.length - 1) {
       setIdx(idx + 1);
       setTextInput("");
       return;
@@ -217,10 +241,10 @@ export default function OnboardingScreen() {
   return (
     <View style={[styles.container, { paddingTop: insets.top + spacing.sm }]}>
       <View style={styles.topBar}>
-        <Pressable onPress={() => idx > 0 && setIdx(idx - 1)} disabled={idx === 0} hitSlop={12}>
-          <Ionicons name="chevron-back" size={26} color={idx === 0 ? colors.onSurfaceTertiary : colors.onSurface} />
+        <Pressable onPress={() => idx > 0 ? setIdx(idx - 1) : isReadinessUpdate ? router.back() : undefined} disabled={idx === 0 && !isReadinessUpdate} hitSlop={12}>
+          <Ionicons name="chevron-back" size={26} color={idx === 0 && !isReadinessUpdate ? colors.onSurfaceTertiary : colors.onSurface} />
         </Pressable>
-        <Text style={styles.stepCounter}>{idx + 1} of {STEPS.length}</Text>
+        <Text style={styles.stepCounter}>{isReadinessUpdate ? "Assessment readiness" : `${idx + 1} of ${steps.length}`}</Text>
         {step.optional ? (
           <Pressable onPress={onSkip} testID="onb-skip" hitSlop={12}>
             <Text style={styles.skip}>Skip</Text>
@@ -236,7 +260,7 @@ export default function OnboardingScreen() {
           <Text style={styles.question} testID={`onb-q-${step.key}`}>{step.question}</Text>
           {step.helper && <Text style={styles.helper}>{step.helper}</Text>}
           <View style={{ height: spacing.lg }} />
-          {renderInput()}
+          {loadingProfile ? <ActivityIndicator color={colors.brandPrimary} /> : renderInput()}
         </ScrollView>
 
         <View style={[styles.footer, { paddingBottom: Math.max(insets.bottom, spacing.md) }]}>
@@ -247,12 +271,12 @@ export default function OnboardingScreen() {
           )}
           <Pressable
             testID="onb-continue"
-            disabled={!canContinue() || saving}
+            disabled={!canContinue() || saving || loadingProfile}
             onPress={onContinue}
-            style={[styles.continueBtn, (!canContinue() || saving) && styles.continueBtnDisabled]}
+            style={[styles.continueBtn, (!canContinue() || saving || loadingProfile) && styles.continueBtnDisabled]}
           >
             {saving ? <ActivityIndicator color="#fff" /> :
-              <Text style={styles.continueText}>{idx === STEPS.length - 1 ? "Finish" : "Continue"}</Text>}
+              <Text style={styles.continueText}>{idx === steps.length - 1 ? isReadinessUpdate ? "Save and select tasks" : "Finish" : "Continue"}</Text>}
           </Pressable>
         </View>
       </KeyboardAvoidingView>

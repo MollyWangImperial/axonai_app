@@ -364,6 +364,8 @@ def test_routes_expose_packages_modeling_contract_and_multidomain_results():
         submitted = client.post(
             "/api/assessment/submit",
             json={
+                "assessment_package": "lower_limb",
+                "assigned_task_ids": ["L3"],
                 "affected_side": "right",
                 "patient_parameters": {
                     "height_cm": 170,
@@ -403,11 +405,27 @@ def test_routes_expose_packages_modeling_contract_and_multidomain_results():
         assert "measurement_form" not in summary_payload
 
 
-def test_initial_package_is_fixed_broad_and_guided_in_order():
+def test_initial_package_keeps_an_approved_catalog_and_serves_the_survey_selection(monkeypatch):
     expected = ["T1", "T2", "T3", "H1", "H3", "H4", "L6"]
     assert [task["id"] for task in server.ASSESSMENT_PACKAGES["initial"]["tasks"]] == expected
+
+    async def user_from_header(_headers):
+        return {
+            "id": "u_ready",
+            "consent": {"health_data_consent": True},
+            "profile": {
+                "sitting_ability": "independent",
+                "affected_arm_movement": "some_movement",
+                "affected_hand_movement": "some_finger_movement",
+                "mobility_level": "walker",
+                "movement_pain": "mild",
+                "instruction_support": "independent",
+            },
+        }
+
+    monkeypatch.setattr(server, "_user_from_header", user_from_header)
     with TestClient(server.app) as client:
-        response = client.get("/api/assessment/tasks?package=initial")
+        response = client.get("/api/assessment/tasks?package=initial", headers={"X-User-Id": "u_ready"})
         assert response.status_code == 200
         payload = response.json()
         assert payload["package_id"] == "initial"
@@ -427,6 +445,25 @@ def test_completed_initial_assessment_is_saved_in_account_history():
         )
         assert login.status_code == 200
         headers = {"X-User-Id": login.json()["id"]}
+        consent = client.post(
+            "/api/users/consent",
+            headers=headers,
+            json={"terms_version": server.CURRENT_TERMS_VERSION, "terms_accepted": True, "health_data_consent": True},
+        )
+        assert consent.status_code == 200
+        onboarding = client.post(
+            "/api/users/onboarding",
+            headers=headers,
+            json={
+                "sitting_ability": "independent",
+                "affected_arm_movement": "some_movement",
+                "affected_hand_movement": "some_finger_movement",
+                "mobility_level": "walker",
+                "movement_pain": "mild",
+                "instruction_support": "independent",
+            },
+        )
+        assert onboarding.status_code == 200
         task_results = []
         for task in server.ASSESSMENT_PACKAGES["initial"]["tasks"]:
             total_steps = len(task["steps"])
@@ -443,6 +480,7 @@ def test_completed_initial_assessment_is_saved_in_account_history():
             headers=headers,
             json={
                 "assessment_package": "initial",
+                "assigned_task_ids": [task["id"] for task in server.ASSESSMENT_PACKAGES["initial"]["tasks"]],
                 "affected_side": "right",
                 "task_results": task_results,
             },
@@ -457,13 +495,36 @@ def test_completed_initial_assessment_is_saved_in_account_history():
         assert records[0]["assessment_package"] == "initial"
 
 
-def test_completed_initial_collection_returns_domain_metrics_without_a_normal_rehab_plan():
+def test_completed_initial_collection_returns_domain_metrics_without_a_normal_rehab_plan(monkeypatch):
     task_ids = ["T1", "T2", "T3", "H1", "H3", "H4", "L6"]
+
+    async def user_from_header(_headers):
+        return {
+            "id": "u_initial_collection",
+            "consent": {"health_data_consent": True},
+            "credits": 1000,
+            "profile": {
+                "sitting_ability": "independent",
+                "affected_arm_movement": "some_movement",
+                "affected_hand_movement": "some_finger_movement",
+                "mobility_level": "walker",
+                "movement_pain": "mild",
+                "instruction_support": "independent",
+            },
+        }
+
+    async def consume(_user_id, _kind):
+        return 1000
+
+    monkeypatch.setattr(server, "_user_from_header", user_from_header)
+    monkeypatch.setattr(server, "consume_credits", consume)
     with TestClient(server.app) as client:
         submitted = client.post(
             "/api/assessment/submit",
+            headers={"X-User-Id": "u_initial_collection"},
             json={
                 "assessment_package": "initial",
+                "assigned_task_ids": task_ids,
                 "affected_side": "right",
                 "task_results": [
                     {
@@ -490,6 +551,61 @@ def test_completed_initial_collection_returns_domain_metrics_without_a_normal_re
         ]
         assert all(item["step_completion_percent"] == 100 for item in summary["body_function_summary"]["domains"])
         assert summary["rehab_plan_ready"] is False
+
+
+def test_screened_initial_collection_does_not_report_unassigned_walking(monkeypatch):
+    task_ids = ["T1", "T2", "T3", "H1", "H3", "H4"]
+
+    async def user_from_header(_headers):
+        return {
+            "id": "u_screened_initial",
+            "consent": {"health_data_consent": True},
+            "credits": 1000,
+            "profile": {
+                "sitting_ability": "independent",
+                "affected_arm_movement": "some_movement",
+                "affected_hand_movement": "some_finger_movement",
+                "mobility_level": "person_assist",
+                "movement_pain": "mild",
+                "instruction_support": "independent",
+                "has_caregiver": True,
+            },
+        }
+
+    async def consume(_user_id, _kind):
+        return 1000
+
+    monkeypatch.setattr(server, "_user_from_header", user_from_header)
+    monkeypatch.setattr(server, "consume_credits", consume)
+    with TestClient(server.app) as client:
+        submitted = client.post(
+            "/api/assessment/submit",
+            headers={"X-User-Id": "u_screened_initial"},
+            json={
+                "assessment_package": "initial",
+                "assigned_task_ids": task_ids,
+                "affected_side": "right",
+                "task_results": [
+                    {
+                        "task_id": task_id,
+                        "completed_steps": 1,
+                        "total_steps": 1,
+                        "duration_ms": 10000,
+                        "steps": [],
+                        "metrics": {},
+                    }
+                    for task_id in task_ids
+                ],
+            },
+        )
+
+        assert submitted.status_code == 200
+        assessment = submitted.json()
+        assert assessment["assigned_task_ids"] == task_ids
+        assert [item["domain"] for item in assessment["body_function_summary"]["domains"]] == ["upper_limb", "hand"]
+        summary = client.get(f"/api/assessment/{assessment['id']}/patient-summary").json()
+        assert summary["collection"]["tasks_expected"] == 6
+        assert all(item["domain"] != "lower_limb" for item in summary["body_function_summary"]["domains"])
 
 
 def test_initial_runner_switches_models_by_task_and_captures_2d_and_3d_trajectories():

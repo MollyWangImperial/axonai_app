@@ -15,7 +15,7 @@ const TIPS: { icon: keyof typeof Ionicons.glyphMap; title: string; body: string 
 export default function CameraCheckScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
-  const params = useLocalSearchParams<{ package?: string; start_task?: string; completed_tasks?: string; affected_side?: string }>();
+  const params = useLocalSearchParams<{ package?: string; start_task?: string; completed_tasks?: string; affected_side?: string; task_ids?: string }>();
 
   const onReady = () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
@@ -26,6 +26,7 @@ export default function CameraCheckScreen() {
         start_task: params.start_task || "",
         completed_tasks: params.completed_tasks || "",
         affected_side: params.affected_side || "right",
+        task_ids: params.task_ids || "",
       },
     });
   };

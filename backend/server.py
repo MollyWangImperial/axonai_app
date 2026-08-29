@@ -51,6 +51,7 @@ try:
         QUESTION_BANK as ALIRA_CARE_QUESTION_BANK,
         approved_question_ids,
         build_adaptive_care_plan,
+        initial_assessment_recommendation,
         validate_check_in_answers,
     )
 except ImportError:
@@ -84,6 +85,7 @@ except ImportError:
         QUESTION_BANK as ALIRA_CARE_QUESTION_BANK,
         approved_question_ids,
         build_adaptive_care_plan,
+        initial_assessment_recommendation,
         validate_check_in_answers,
     )
 
@@ -296,6 +298,7 @@ class AssessmentSubmit(BaseModel):
     task_results: List[TaskResult]
     affected_side: str = "right"  # "left" or "right"
     assessment_package: str = "upper_limb"
+    assigned_task_ids: Optional[List[str]] = None
     patient_parameters: Dict[str, Any] = Field(default_factory=dict)
     musculoskeletal_outputs: Dict[str, Any] = Field(default_factory=dict)
     motion_data: Dict[str, Any] = Field(default_factory=dict)
@@ -370,6 +373,7 @@ class Assessment(BaseModel):
     created_at: str
     affected_side: str
     assessment_package: str = "upper_limb"
+    assigned_task_ids: List[str] = Field(default_factory=list)
     patient_parameters: Dict[str, Any] = Field(default_factory=dict)
     task_results: List[TaskResult]
     functional_issues: List[FunctionalIssue]
@@ -845,7 +849,7 @@ ASSESSMENT_PACKAGES: Dict[str, Dict[str, Any]] = {
     "initial": {
         "id": "initial",
         "title": "Initial Functional Assessment",
-        "subtitle": "Seven guided arm, hand, and comfortable-walking observations for every new patient",
+        "subtitle": "Survey-selected arm, hand, and comfortable-walking observations matched to current ability",
         "tasks": INITIAL_ASSESSMENT_TASKS,
     },
     "upper_limb": {
@@ -873,6 +877,35 @@ ASSESSMENT_PACKAGES: Dict[str, Dict[str, Any]] = {
         "tasks": BALANCE_TASKS_DATA,
     },
 }
+
+
+def _validated_assigned_task_ids(package_id: str, requested: Optional[List[str]]) -> List[str]:
+    package = ASSESSMENT_PACKAGES.get(package_id)
+    if not package:
+        raise HTTPException(status_code=422, detail="Unsupported assessment package")
+    allowed = [str(task["id"]) for task in package["tasks"]]
+    if requested is None:
+        return allowed
+    selected = list(dict.fromkeys(str(task_id).strip() for task_id in requested if str(task_id).strip()))
+    invalid = [task_id for task_id in selected if task_id not in allowed]
+    if invalid:
+        raise HTTPException(status_code=422, detail=f"Unsupported assigned task ids: {', '.join(invalid)}")
+    if not selected:
+        raise HTTPException(status_code=422, detail="At least one assigned task is required")
+    return [task_id for task_id in allowed if task_id in set(selected)]
+
+
+def _expected_domains_for_tasks(package_id: str, task_ids: List[str]) -> Optional[tuple[str, ...]]:
+    if package_id != "initial":
+        return None
+    domains: List[str] = []
+    if any(task_id.startswith("T") for task_id in task_ids):
+        domains.append("upper_limb")
+    if any(task_id.startswith("H") for task_id in task_ids):
+        domains.append("hand")
+    if any(task_id.startswith(("L", "B")) for task_id in task_ids):
+        domains.append("lower_limb")
+    return tuple(domains)
 
 
 # ============ Functional Issue Rules ============
@@ -1253,8 +1286,27 @@ async def get_status_checks():
 
 
 @api_router.get("/assessment/tasks")
-async def get_tasks(package: str = "upper_limb"):
+async def get_tasks(request: Request, package: str = "upper_limb", task_ids: Optional[str] = None):
     selected = ASSESSMENT_PACKAGES.get(package, ASSESSMENT_PACKAGES["upper_limb"])
+    selected_tasks = selected["tasks"]
+    if selected["id"] == "initial":
+        user = await _user_from_header(dict(request.headers))
+        if not user:
+            raise HTTPException(status_code=401, detail="Sign in required")
+        _require_health_data_consent(user)
+        recommendation = initial_assessment_recommendation(user.get("profile") or {})
+        if not recommendation["can_start"]:
+            raise HTTPException(status_code=409, detail=recommendation["message"])
+        recommended_ids = recommendation["task_ids"]
+        if task_ids is not None:
+            requested = [item.strip() for item in task_ids.split(",") if item.strip()]
+            if set(requested) != set(recommended_ids):
+                raise HTTPException(status_code=422, detail="Assigned initial tasks do not match the saved readiness survey")
+        selected_tasks = [task for task in selected_tasks if task["id"] in set(recommended_ids)]
+    elif task_ids is not None:
+        requested = [item.strip() for item in task_ids.split(",") if item.strip()]
+        selected_ids = _validated_assigned_task_ids(selected["id"], requested)
+        selected_tasks = [task for task in selected_tasks if task["id"] in set(selected_ids)]
     packages = [
         {
             "id": item["id"],
@@ -1265,13 +1317,25 @@ async def get_tasks(package: str = "upper_limb"):
         for item in ASSESSMENT_PACKAGES.values()
     ]
     return {
-        "tasks": selected["tasks"],
+        "tasks": selected_tasks,
         "voice_id": TTS_VOICE,
         "package_id": selected["id"],
         "package_title": selected["title"],
         "package_subtitle": selected["subtitle"],
+        "assigned_task_ids": [task["id"] for task in selected_tasks],
         "packages": packages,
     }
+
+
+@api_router.get("/assessment/recommendation")
+async def get_assessment_recommendation(request: Request, package: str = "initial"):
+    user = await _user_from_header(dict(request.headers))
+    if not user:
+        raise HTTPException(status_code=401, detail="Sign in required")
+    _require_health_data_consent(user)
+    if package != "initial":
+        raise HTTPException(status_code=422, detail="Capability screening is currently available for the initial assessment only")
+    return initial_assessment_recommendation(user.get("profile") or {})
 
 
 @api_router.get("/assessment/modeling-spec")
@@ -1889,7 +1953,7 @@ def _assessment_patient_parameters(
     merged = dict(submitted or {})
     profile = user.get("profile") if isinstance(user, dict) and isinstance(user.get("profile"), dict) else {}
     if profile:
-        for key in ("age_band", "months_since_stroke", "side_affected", "affected_areas", "affected_areas_other", "dominant_hand", "mobility_level", "medical_conditions", "medical_conditions_other", "has_caregiver"):
+        for key in ("age_band", "months_since_stroke", "side_affected", "affected_areas", "affected_areas_other", "dominant_hand", "mobility_level", "sitting_ability", "affected_arm_movement", "affected_hand_movement", "movement_pain", "instruction_support", "medical_conditions", "medical_conditions_other", "has_caregiver"):
             if profile.get(key) is not None:
                 merged.setdefault(key, profile[key])
         if not merged.get("patient_priorities"):
@@ -1912,6 +1976,19 @@ async def submit_assessment(payload: AssessmentSubmit, request: Request):
     patient_parameters = _assessment_patient_parameters(payload.patient_parameters, user)
     assessment_id = str(uuid.uuid4())
     task_ids = [task.task_id for task in payload.task_results]
+    assigned_task_ids = _validated_assigned_task_ids(payload.assessment_package, payload.assigned_task_ids)
+    if payload.assessment_package == "initial":
+        if not user:
+            raise HTTPException(status_code=401, detail="Sign in required")
+        _require_health_data_consent(user)
+        recommendation = initial_assessment_recommendation(user.get("profile") or {})
+        if not recommendation["can_start"]:
+            raise HTTPException(status_code=409, detail=recommendation["message"])
+        if set(assigned_task_ids) != set(recommendation["task_ids"]):
+            raise HTTPException(status_code=422, detail="Assigned initial tasks do not match the saved readiness survey")
+    if set(task_ids) != set(assigned_task_ids):
+        raise HTTPException(status_code=422, detail="Submitted task results must match the assigned assessment tasks")
+    patient_parameters["assigned_task_ids"] = assigned_task_ids
     video_records = await _latest_task_videos(
         user["id"] if user else "",
         payload.assessment_package,
@@ -1931,14 +2008,14 @@ async def submit_assessment(payload: AssessmentSubmit, request: Request):
         ),
         "modeled_tasks": ["L6"] if walking_video_ready else [],
     }
-    expected_task_count = len(ASSESSMENT_PACKAGES.get(payload.assessment_package, {}).get("tasks", []))
+    expected_task_count = len(assigned_task_ids)
     collection_summary = patient_collection_summary(payload.task_results, expected_task_count)
     if payload.musculoskeletal_outputs:
         logger.warning("Ignoring client-supplied musculoskeletal outputs; trusted worker ingestion is required")
     trusted_model_outputs: Dict[str, Any] = {}
     issues = derive_functional_issues(payload.task_results)
     domain_assessments = build_domain_assessments(payload.task_results)
-    expected_summary_domains = ("upper_limb", "hand", "lower_limb") if payload.assessment_package == "initial" else None
+    expected_summary_domains = _expected_domains_for_tasks(payload.assessment_package, assigned_task_ids)
     body_function_summary = patient_body_function_summary(
         payload.task_results,
         issues,
@@ -1990,6 +2067,7 @@ async def submit_assessment(payload: AssessmentSubmit, request: Request):
         created_at=datetime.now(timezone.utc).isoformat(),
         affected_side=payload.affected_side,
         assessment_package=payload.assessment_package,
+        assigned_task_ids=assigned_task_ids,
         task_results=payload.task_results,
         functional_issues=issues,
         rehab_plan=plan,
@@ -2057,7 +2135,8 @@ async def get_assessment_history(request: Request):
     for doc in docs:
         if not doc.get("patient_insights"):
             package_id = str(doc.get("assessment_package") or "upper_limb")
-            expected_domains = ("upper_limb", "hand", "lower_limb") if package_id == "initial" else None
+            assigned_task_ids = doc.get("assigned_task_ids") or [str(item.get("task_id")) for item in doc.get("task_results", [])]
+            expected_domains = _expected_domains_for_tasks(package_id, assigned_task_ids)
             body_summary = doc.get("body_function_summary") or patient_body_function_summary(
                 doc.get("task_results", []),
                 doc.get("functional_issues", []),
@@ -2096,9 +2175,10 @@ async def get_patient_assessment_summary(assessment_id: str):
     if not doc:
         raise HTTPException(status_code=404, detail="Assessment not found")
     package_id = str(doc.get("assessment_package") or "upper_limb")
-    expected = len(ASSESSMENT_PACKAGES.get(package_id, {}).get("tasks", []))
+    assigned_task_ids = doc.get("assigned_task_ids") or [str(item.get("task_id")) for item in doc.get("task_results", [])]
+    expected = len(assigned_task_ids) or len(ASSESSMENT_PACKAGES.get(package_id, {}).get("tasks", []))
     collection = doc.get("patient_summary") or patient_collection_summary(doc.get("task_results", []), expected)
-    expected_summary_domains = ("upper_limb", "hand", "lower_limb") if package_id == "initial" else None
+    expected_summary_domains = _expected_domains_for_tasks(package_id, assigned_task_ids)
     body_function_summary = doc.get("body_function_summary") or patient_body_function_summary(
         doc.get("task_results", []),
         doc.get("functional_issues", []),
@@ -2439,7 +2519,9 @@ async def save_model_results(assessment_id: str, payload: ModelResultSubmit, req
         if str(item.get("source") or "") != "Validated musculoskeletal model"
     ]
     issues = merge_validated_model_issues(camera_issues, outputs)
-    expected_task_count = len(ASSESSMENT_PACKAGES.get(doc.get("assessment_package") or "upper_limb", {}).get("tasks", []))
+    package_id = str(doc.get("assessment_package") or "upper_limb")
+    assigned_task_ids = doc.get("assigned_task_ids") or [str(item.get("task_id")) for item in task_results]
+    expected_task_count = len(assigned_task_ids) or len(ASSESSMENT_PACKAGES.get(package_id, {}).get("tasks", []))
     clinical_review_gate = build_clinical_review_gate(
         camera_issues,
         patient_parameters,
@@ -2450,7 +2532,7 @@ async def save_model_results(assessment_id: str, payload: ModelResultSubmit, req
     plan = build_rehab_plan(issues, patient_parameters)
     if clinical_review_gate.get("rehab_access") != "allowed":
         plan = []
-    expected_summary_domains = ("upper_limb", "hand", "lower_limb") if doc.get("assessment_package") == "initial" else None
+    expected_summary_domains = _expected_domains_for_tasks(package_id, assigned_task_ids)
     body_function_summary = patient_body_function_summary(
         task_results,
         issues,
@@ -2520,7 +2602,7 @@ async def get_muscle_diagnosis(assessment_id: str):
 # A self-contained page that:
 # 1. Opens device camera (getUserMedia)
 # 2. Loads MediaPipe PoseLandmarker
-# 3. Walks through 7 tasks × steps with target overlays + voice prompts
+# 3. Walks through the assigned tasks and steps with target overlays + voice prompts
 # 4. Posts results to React Native via window.ReactNativeWebView.postMessage
 POSE_RUNNER_HTML = r"""<!DOCTYPE html>
 <html lang="en">
@@ -2657,7 +2739,7 @@ POSE_RUNNER_HTML = r"""<!DOCTYPE html>
   </div>
   <div id="overlay">
     <h1>Ready to begin?</h1>
-    <p>We will guide you through 7 short movement tasks using your camera. Move into the camera view, then set up your seated position.</p>
+    <p>We will guide you through the movement tasks selected from your readiness answers. Move into the camera view, then follow the setup guidance.</p>
     <button id="startBtn" data-testid="assessment-start">Set Up Camera</button>
   </div>
   <div id="calibrationOverlay" class="hidden" data-testid="assessment-calibration">
@@ -3058,6 +3140,8 @@ const MOTION_SAMPLE_INTERVAL_MS = 100;
 const MAX_MOTION_FRAMES = 2400;
 const CURRENT_USER_ID = URL_PARAMS.get("uid") || "";
 const ASSESSMENT_PACKAGE = URL_PARAMS.get("package") || "upper_limb";
+const ASSIGNED_TASK_IDS = (URL_PARAMS.get("task_ids") || "")
+  .split(",").map(value => value.trim()).filter(Boolean);
 const START_TASK_ID = URL_PARAMS.get("start_task") || "";
 const PREVIOUSLY_COMPLETED_TASK_IDS = new Set(
   (URL_PARAMS.get("completed_tasks") || "").split(",").map(value => value.trim()).filter(Boolean)
@@ -3419,7 +3503,15 @@ function captureMotionFrame(now){
 }
 
 async function loadTasks(){
-  const res = await fetch(`${API_BASE}/assessment/tasks?package=${encodeURIComponent(ASSESSMENT_PACKAGE)}`);
+  const taskQuery = new URLSearchParams({package:ASSESSMENT_PACKAGE});
+  if(ASSIGNED_TASK_IDS.length) taskQuery.set("task_ids", ASSIGNED_TASK_IDS.join(","));
+  const res = await fetch(`${API_BASE}/assessment/tasks?${taskQuery.toString()}`, {
+    headers: CURRENT_USER_ID ? {"X-User-Id": CURRENT_USER_ID} : {},
+  });
+  if(!res.ok){
+    const detail = await res.text();
+    throw new Error(`Task selection failed (${res.status}): ${detail.slice(0, 160)}`);
+  }
   const json = await res.json();
   tasks = json.tasks;
   voiceId = json.voice_id;
@@ -6292,6 +6384,7 @@ async function finishAssessment(){
         task_results: taskResults.filter(Boolean),
         affected_side: AFFECTED_SIDE,
         assessment_package: ASSESSMENT_PACKAGE,
+        assigned_task_ids: tasks.map(task => task.id),
         motion_data: {
           schema_version: "1.0",
           coordinate_space: {
@@ -8180,7 +8273,12 @@ class PatientOnboarding(BaseModel):
     affected_areas: Optional[List[str]] = None
     affected_areas_other: Optional[str] = None
     dominant_hand: Optional[str] = None    # "left" | "right" | "ambidextrous"
-    mobility_level: Optional[str] = None   # "wheelchair" | "walker" | "cane" | "independent"
+    sitting_ability: Optional[str] = None
+    affected_arm_movement: Optional[str] = None
+    affected_hand_movement: Optional[str] = None
+    mobility_level: Optional[str] = None
+    movement_pain: Optional[str] = None
+    instruction_support: Optional[str] = None
     primary_goal: Optional[str] = None     # free text
     secondary_goals: Optional[List[str]] = None
     secondary_goals_other: Optional[str] = None

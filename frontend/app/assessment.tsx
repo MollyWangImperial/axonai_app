@@ -36,11 +36,12 @@ async function markTaskVideoSaved(userId: string, packageId: AssessmentPackageId
 
 export default function AssessmentScreen() {
   const router = useRouter();
-  const params = useLocalSearchParams<{ package?: string; start_task?: string; completed_tasks?: string; affected_side?: string }>();
+  const params = useLocalSearchParams<{ package?: string; start_task?: string; completed_tasks?: string; affected_side?: string; task_ids?: string }>();
   const packageParam = params["package"];
   const startTaskParam = params["start_task"];
   const affectedSideParam = params["affected_side"];
   const completedTasksParam = params["completed_tasks"];
+  const assignedTaskIdsParam = params["task_ids"];
   const webRef = useRef<WebView>(null);
   const userIdRef = useRef<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -61,9 +62,10 @@ export default function AssessmentScreen() {
       query.set("voice_guidance", preferences.voiceGuidance ? "1" : "0");
       if (selectedStartTask) query.set("start_task", selectedStartTask);
       if (typeof completedTasksParam === "string" && completedTasksParam) query.set("completed_tasks", completedTasksParam);
+      if (typeof assignedTaskIdsParam === "string" && assignedTaskIdsParam) query.set("task_ids", assignedTaskIdsParam);
       setRunnerUri(`${POSE_RUNNER_URL}?${query.toString()}`);
     })();
-  }, [packageParam, startTaskParam, completedTasksParam, affectedSideParam]);
+  }, [packageParam, startTaskParam, completedTasksParam, affectedSideParam, assignedTaskIdsParam]);
 
   const onMessage = (e: WebViewMessageEvent) => {
     try {
