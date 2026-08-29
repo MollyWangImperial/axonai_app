@@ -34,6 +34,8 @@ import {
 const PROFILE_FIELDS = [
   "preferred_name",
   "age_band",
+  "gender",
+  "gender_self_description",
   "months_since_stroke",
   "side_affected",
   "affected_areas",
@@ -250,6 +252,7 @@ export default function AccountCenterScreen() {
               <Field label="Preferred name" value={name} onChangeText={setName} palette={palette} scale={scale} />
               <Field label="Care facility" value={facility} onChangeText={setFacility} placeholder="Hospital, clinic, or rehabilitation centre" palette={palette} scale={scale} />
               <ReadOnlyRow label="Account email" value={email} palette={palette} scale={scale} />
+              <ReadOnlyRow label="Gender" value={String(profile.gender_self_description || profile.gender || "Not recorded").replaceAll("_", " ")} palette={palette} scale={scale} />
               <ReadOnlyRow label="Affected side" value={String(profile.side_affected || "Not recorded")} palette={palette} scale={scale} />
               <Pressable testID="personal-save" disabled={saving || !name.trim()} onPress={savePersonal} style={[styles.primaryButton, (!name.trim() || saving) && styles.disabled]}>
                 {saving ? <ActivityIndicator color="#FFFFFF" /> : <Text style={styles.primaryButtonText}>Save details</Text>}
@@ -299,7 +302,7 @@ export default function AccountCenterScreen() {
               <PolicySection title="Clinical limits" body="Rehyn supports rehabilitation but does not replace a diagnosis or your clinical team. Findings that need review are held for a therapist." palette={palette} scale={scale} />
               <PolicySection title="Your choices" body="You can control sharing, permissions, and your care circle at any time from Data and permissions." palette={palette} scale={scale} />
               <Pressable testID="privacy-open-policy" onPress={() => router.push("/privacy-policy" as never)} style={[styles.secondaryButton, { borderColor: palette.border, marginBottom: spacing.sm }]}><Text style={[styles.secondaryText, { color: palette.text }]}>Read full privacy policy</Text></Pressable>
-              <Pressable onPress={() => router.push({ pathname: "/account-center" as never, params: { section: "permissions" } })} style={styles.primaryButton}><Text style={styles.primaryButtonText}>Review data choices</Text></Pressable>
+              <Pressable onPress={() => router.push("/data-permissions" as never)} style={styles.primaryButton}><Text style={styles.primaryButtonText}>Review data choices</Text></Pressable>
             </View>
           ) : null}
 
@@ -312,8 +315,6 @@ export default function AccountCenterScreen() {
               </View>
               <View style={[styles.card, { backgroundColor: palette.surface, borderColor: palette.border }]}>
                 <ToggleRow title="Save assessment results" subtitle="Keep results in Assessment history" value={preferences.shareAssessments} onValueChange={(value) => updatePreference("shareAssessments", value)} palette={palette} scale={scale} />
-                <Divider color={palette.border} />
-                <ToggleRow title="Share with care circle" subtitle="Allow people you add to see shared summaries" value={preferences.shareCareCircle} onValueChange={(value) => updatePreference("shareCareCircle", value)} palette={palette} scale={scale} />
                 <Divider color={palette.border} />
                 <ToggleRow title="Anonymous usage analytics" subtitle="Help improve navigation and reliability" value={preferences.usageAnalytics} onValueChange={(value) => updatePreference("usageAnalytics", value)} palette={palette} scale={scale} />
               </View>

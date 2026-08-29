@@ -111,9 +111,9 @@ export default function SettingsScreen() {
           </SettingsGroup>
 
           <SettingsGroup label="SUPPORT & PRIVACY" palette={palette}>
-            <SettingsLink testID="settings-privacy" icon="shield-checkmark-outline" title="Privacy policy" subtitle="How Rehyn protects your information" onPress={() => openSection("privacy")} palette={palette} scale={scale} />
+            <SettingsLink testID="settings-privacy" icon="shield-checkmark-outline" title="Privacy policy" subtitle="How Rehyn protects your information" onPress={() => router.push("/privacy-policy" as never)} palette={palette} scale={scale} />
             <Divider palette={palette} />
-            <SettingsLink testID="settings-permissions" icon="lock-closed-outline" title="Data and permissions" subtitle="Review what you choose to share" onPress={() => openSection("permissions")} palette={palette} scale={scale} />
+            <SettingsLink testID="settings-permissions" icon="lock-closed-outline" title="Data and permissions" subtitle="Review how your information is used" onPress={() => router.push("/data-permissions" as never)} palette={palette} scale={scale} />
             <Divider palette={palette} />
             <SettingsLink testID="settings-help" icon="help-circle-outline" title="Help centre" subtitle="Answers and guidance" onPress={() => openSection("help")} palette={palette} scale={scale} />
             <Divider palette={palette} />

@@ -7,7 +7,7 @@ import { useRouter } from "expo-router";
 import * as Haptics from "expo-haptics";
 import * as WebBrowser from "expo-web-browser";
 import { colors, spacing, radius } from "@/src/theme";
-import { signIn, authedFetch, cachePatientOnboarding, getCachedPatientProfile, USER_KEY, USER_OBJ } from "@/src/auth";
+import { signIn, authedFetch, cachePatientOnboarding, getCachedPatientProfile, USER_KEY, USER_OBJ, hasPendingConsent, setConsentAccepted, clearPendingConsent } from "@/src/auth";
 import { storage } from "@/src/utils/storage";
 import { API_BASE as BASE } from "@/src/config";
 
@@ -22,6 +22,10 @@ export default function SignInScreen() {
   const [err, setErr] = useState<string | null>(null);
 
   const routePatientAfterLogin = async (user: { id: string }) => {
+    if (await hasPendingConsent()) {
+      await setConsentAccepted(user.id);
+      await clearPendingConsent();
+    }
     const cachedProfile = await getCachedPatientProfile(user.id);
     try {
       const response = await authedFetch("/api/users/onboarding");

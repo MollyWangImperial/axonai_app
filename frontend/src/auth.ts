@@ -35,8 +35,8 @@ export async function getCachedPatientProfile(userId: string): Promise<Record<st
     }
   }
   const [preferredName, affectedSide] = await Promise.all([
-    storage.getItem(preferredNameKey(userId), ""),
-    storage.getItem(affectedSideKey(userId), ""),
+    storage.getItem(preferredNameKey(userId), "" as string),
+    storage.getItem(affectedSideKey(userId), "" as string),
   ]);
   if (!preferredName && affectedSide !== "left" && affectedSide !== "right") return null;
   return {
@@ -76,14 +76,44 @@ export async function signOut() {
   await storage.removeItem("preferred_name_v1");
 }
 
-export const consentAcceptedKey = (userId: string) => `medical_consent_accepted_v1:${userId}`;
+const CURRENT_TERMS_VERSION = "1.0";
+const PENDING_CONSENT_KEY = `pending_legal_consent_v1:${CURRENT_TERMS_VERSION}`;
+export const consentAcceptedKey = (userId: string) => `legal_consent_v2:${CURRENT_TERMS_VERSION}:${userId}`;
 
-export async function hasAcceptedConsent(userId: string): Promise<boolean> {
-  const value = await storage.getItem(consentAcceptedKey(userId), "");
+export async function setPendingConsentAccepted() {
+  const saved = await storage.setItem(PENDING_CONSENT_KEY, "1");
+  if (!saved) throw new Error("Consent could not be saved");
+}
+
+export async function hasPendingConsent(): Promise<boolean> {
+  const value: string | null = await storage.getItem(PENDING_CONSENT_KEY, "" as string);
   return value === "1";
 }
 
+export async function clearPendingConsent() {
+  await storage.removeItem(PENDING_CONSENT_KEY);
+}
+
+export async function hasAcceptedConsent(userId: string): Promise<boolean> {
+  const value: string | null = await storage.getItem(consentAcceptedKey(userId), "" as string);
+  if (value === "1") return true;
+  try {
+    const response = await authedFetch("/api/users/consent");
+    if (!response.ok) return false;
+    const result = await response.json();
+    if (result.accepted) await storage.setItem(consentAcceptedKey(userId), "1");
+    return Boolean(result.accepted);
+  } catch {
+    return false;
+  }
+}
+
 export async function setConsentAccepted(userId: string) {
+  const response = await authedFetch("/api/users/consent", {
+    method: "POST",
+    body: JSON.stringify({ terms_version: CURRENT_TERMS_VERSION, terms_accepted: true, health_data_consent: true }),
+  });
+  if (!response.ok) throw new Error("Consent could not be saved");
   await storage.setItem(consentAcceptedKey(userId), "1");
 }
 
@@ -100,6 +130,7 @@ async function migrateAccountCache(previousUserId: string, nextUserId: string) {
   if (!previousUserId || previousUserId === nextUserId) return;
   const packageIds = ["initial", "upper_limb", "hand", "lower_limb", "balance"];
   const keyPairs = [
+    [consentAcceptedKey(previousUserId), consentAcceptedKey(nextUserId)],
     [onboardingCompleteKey(previousUserId), onboardingCompleteKey(nextUserId)],
     [preferredNameKey(previousUserId), preferredNameKey(nextUserId)],
     [affectedSideKey(previousUserId), affectedSideKey(nextUserId)],

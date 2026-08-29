@@ -8023,6 +8023,8 @@ async def login(payload: UserSignup):
 class PatientOnboarding(BaseModel):
     preferred_name: Optional[str] = None
     age_band: Optional[str] = None
+    gender: Optional[str] = None
+    gender_self_description: Optional[str] = None
     months_since_stroke: Optional[int] = None
     side_affected: Optional[str] = None    # "left" | "right" | "both" | "unsure"
     affected_areas: Optional[List[str]] = None
@@ -8036,6 +8038,101 @@ class PatientOnboarding(BaseModel):
     medical_conditions_other: Optional[str] = None
     has_caregiver: Optional[bool] = None
     notes: Optional[str] = None
+
+
+CURRENT_TERMS_VERSION = "1.0"
+
+
+class ConsentAcceptance(BaseModel):
+    terms_version: str = CURRENT_TERMS_VERSION
+    terms_accepted: bool
+    health_data_consent: bool
+
+
+class DataPermissionUpdate(BaseModel):
+    key: str
+    enabled: bool
+    version: str = CURRENT_TERMS_VERSION
+
+
+@api_router.get("/users/consent")
+async def get_user_consent(request: Request):
+    user = await _user_from_header(dict(request.headers))
+    if not user:
+        raise HTTPException(status_code=401, detail="Sign in required")
+    consent = user.get("consent") or {}
+    accepted = (
+        consent.get("terms_version") == CURRENT_TERMS_VERSION
+        and consent.get("terms_accepted") is True
+        and consent.get("health_data_consent") is True
+    )
+    return {"accepted": accepted, "consent": consent, "required_terms_version": CURRENT_TERMS_VERSION}
+
+
+@api_router.post("/users/consent")
+async def accept_user_consent(payload: ConsentAcceptance, request: Request):
+    user = await _user_from_header(dict(request.headers))
+    if not user:
+        raise HTTPException(status_code=401, detail="Sign in required")
+    if payload.terms_version != CURRENT_TERMS_VERSION:
+        raise HTTPException(status_code=409, detail="Please review the current Terms of Use")
+    if not payload.terms_accepted or not payload.health_data_consent:
+        raise HTTPException(status_code=400, detail="Both required acknowledgements must be accepted")
+    accepted_at = datetime.now(timezone.utc).isoformat()
+    consent = {
+        "terms_version": CURRENT_TERMS_VERSION,
+        "terms_accepted": True,
+        "health_data_consent": True,
+        "accepted_at": accepted_at,
+    }
+    audit = {"type": "required_consent", "enabled": True, "version": CURRENT_TERMS_VERSION, "changed_at": accepted_at}
+    try:
+        result = await db.users.update_one(
+            {"id": user["id"]},
+            {"$set": {"consent": consent}, "$push": {"consent_audit": audit}},
+        )
+        if getattr(result, "matched_count", 0) == 0 and user["id"] in LOCAL_USERS:
+            raise RuntimeError("local user")
+    except Exception as e:
+        logger.warning(f"Mongo unavailable for consent update; using local fallback: {str(e)[:120]}")
+        local_user = {**user, "consent": consent, "consent_audit": [*(user.get("consent_audit") or []), audit]}
+        LOCAL_USERS[user["id"]] = local_user
+        _persist_local_dict(LOCAL_USERS_FILE, LOCAL_USERS)
+    return {"ok": True, "accepted": True, "consent": consent}
+
+
+@api_router.get("/users/data-permissions")
+async def get_data_permissions(request: Request):
+    user = await _user_from_header(dict(request.headers))
+    if not user:
+        raise HTTPException(status_code=401, detail="Sign in required")
+    permissions = user.get("data_permissions") or {}
+    return {"model_improvement": bool(permissions.get("model_improvement", False))}
+
+
+@api_router.post("/users/data-permissions")
+async def update_data_permission(payload: DataPermissionUpdate, request: Request):
+    user = await _user_from_header(dict(request.headers))
+    if not user:
+        raise HTTPException(status_code=401, detail="Sign in required")
+    if payload.key != "model_improvement":
+        raise HTTPException(status_code=400, detail="Unsupported data permission")
+    changed_at = datetime.now(timezone.utc).isoformat()
+    audit = {"type": payload.key, "enabled": payload.enabled, "version": payload.version, "changed_at": changed_at}
+    next_permissions = {**(user.get("data_permissions") or {}), payload.key: payload.enabled}
+    try:
+        result = await db.users.update_one(
+            {"id": user["id"]},
+            {"$set": {f"data_permissions.{payload.key}": payload.enabled}, "$push": {"consent_audit": audit}},
+        )
+        if getattr(result, "matched_count", 0) == 0 and user["id"] in LOCAL_USERS:
+            raise RuntimeError("local user")
+    except Exception as e:
+        logger.warning(f"Mongo unavailable for data-permission update; using local fallback: {str(e)[:120]}")
+        local_user = {**user, "data_permissions": next_permissions, "consent_audit": [*(user.get("consent_audit") or []), audit]}
+        LOCAL_USERS[user["id"]] = local_user
+        _persist_local_dict(LOCAL_USERS_FILE, LOCAL_USERS)
+    return {"ok": True, "model_improvement": bool(next_permissions["model_improvement"]), "changed_at": changed_at}
 
 
 @api_router.post("/users/onboarding")

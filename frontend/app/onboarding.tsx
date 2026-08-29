@@ -29,6 +29,16 @@ const STEPS: Step[] = [
       { value: "70-79", label: "70 - 79" },
       { value: "80+", label: "80 or older" },
     ] },
+  { key: "gender", question: "How do you describe your gender?", helper: "Choose the answer that feels right for you.", type: "single",
+    options: [
+      { value: "female", label: "Female" },
+      { value: "male", label: "Male" },
+      { value: "transgender_woman", label: "Transgender woman" },
+      { value: "transgender_man", label: "Transgender man" },
+      { value: "non_binary", label: "Non-binary" },
+      { value: "self_describe", label: "Another gender identity" },
+      { value: "prefer_not_to_say", label: "Prefer not to say" },
+    ] },
   { key: "months_since_stroke", question: "Roughly how many months since your stroke?", helper: "An estimate is fine — this helps tune your plan to your recovery stage.", type: "number" },
   { key: "affected_areas", question: "Which areas of your body were affected?", helper: "Select every area that applies.", type: "multi",
     options: [
@@ -95,6 +105,8 @@ export default function OnboardingScreen() {
   const [showOtherGoal, setShowOtherGoal] = useState(false);
   const [otherConditionText, setOtherConditionText] = useState("");
   const [showOtherCondition, setShowOtherCondition] = useState(false);
+  const [genderDescription, setGenderDescription] = useState("");
+  const [showGenderDescription, setShowGenderDescription] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
 
@@ -205,7 +217,14 @@ export default function OnboardingScreen() {
               <Pressable
                 key={o.value}
                 testID={`onb-opt-${step.key}-${o.value}`}
-                onPress={() => setVal(step.key, o.value)}
+                onPress={() => {
+                  if (step.key === "gender" && o.value === "self_describe") {
+                    setShowGenderDescription(true);
+                    return;
+                  }
+                  setVal(step.key, o.value);
+                  if (step.key === "gender") setVal("gender_self_description", undefined);
+                }}
                 style={[styles.optionRow, active && styles.optionRowActive]}
               >
                 {o.emoji && <Text style={styles.optionEmoji}>{o.emoji}</Text>}
@@ -372,6 +391,47 @@ export default function OnboardingScreen() {
                   setShowOtherArea(false);
                 }}
                 style={[styles.modalSave, !otherAreaText.trim() && styles.modalSaveDisabled]}
+              >
+                <Text style={styles.modalSaveText}>Save</Text>
+              </Pressable>
+            </View>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
+
+      <Modal
+        visible={showGenderDescription}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowGenderDescription(false)}
+      >
+        <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={styles.modalBackdrop}>
+          <View style={styles.modalPanel}>
+            <Text style={styles.modalTitle}>Tell us how you describe your gender</Text>
+            <Text style={styles.modalHelper}>Use the words that feel right for you.</Text>
+            <TextInput
+              testID="onb-gender-description-input"
+              value={genderDescription}
+              onChangeText={setGenderDescription}
+              placeholder="Type your gender identity"
+              placeholderTextColor={colors.onSurfaceTertiary}
+              autoFocus
+              style={styles.modalInput}
+            />
+            <View style={styles.modalActions}>
+              <Pressable testID="onb-gender-description-cancel" onPress={() => { setShowGenderDescription(false); setGenderDescription(""); }} style={styles.modalCancel}>
+                <Text style={styles.modalCancelText}>Cancel</Text>
+              </Pressable>
+              <Pressable
+                testID="onb-gender-description-save"
+                disabled={!genderDescription.trim()}
+                onPress={() => {
+                  const description = genderDescription.trim();
+                  if (!description) return;
+                  setValues((previous) => ({ ...previous, gender: "self_describe", gender_self_description: description }));
+                  setShowGenderDescription(false);
+                }}
+                style={[styles.modalSave, !genderDescription.trim() && styles.modalSaveDisabled]}
               >
                 <Text style={styles.modalSaveText}>Save</Text>
               </Pressable>

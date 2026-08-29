@@ -5,26 +5,26 @@ import { useRouter } from "expo-router";
 
 import { LegalDocument } from "@/src/components/LegalDocument";
 import { useDisplayPreferences } from "@/src/displayPreferences";
-import { LEGAL_EFFECTIVE_DATE, LEGAL_VERSION, PRIVACY_INTRO, PRIVACY_SECTIONS } from "@/src/legalContent";
+import { LEGAL_EFFECTIVE_DATE, LEGAL_VERSION, TERMS_INTRO, TERMS_SECTIONS } from "@/src/legalContent";
 import { spacing } from "@/src/theme";
 
-export default function PrivacyPolicyScreen() {
+export default function TermsOfUseScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const { palette } = useDisplayPreferences();
   return (
     <View style={[styles.container, { backgroundColor: palette.page }]}>
       <View style={[styles.header, { paddingTop: insets.top + spacing.sm, backgroundColor: palette.surface, borderBottomColor: palette.border }]}>
-        <Pressable onPress={() => router.back()} style={styles.headerButton} testID="privacy-back" accessibilityLabel="Go back"><Ionicons name="chevron-back" size={25} color={palette.text} /></Pressable>
-        <Text style={[styles.headerTitle, { color: palette.text }]}>Privacy Notice</Text>
+        <Pressable onPress={() => router.back()} style={styles.headerButton} accessibilityLabel="Go back"><Ionicons name="chevron-back" size={25} color={palette.text} /></Pressable>
+        <Text style={[styles.headerTitle, { color: palette.text }]}>Terms of Use</Text>
         <View style={styles.headerButton} />
       </View>
       <ScrollView contentContainerStyle={[styles.scroll, { paddingBottom: Math.max(insets.bottom, spacing.lg) + spacing.xl }]} showsVerticalScrollIndicator={false}>
         <View style={styles.page}>
-          <Text style={[styles.documentTitle, { color: palette.text }]}>REHYN PRIVACY NOTICE</Text>
+          <Text style={[styles.documentTitle, { color: palette.text }]}>REHYN APP TERMS OF USE</Text>
           <Text style={[styles.meta, { color: palette.muted }]}>Effective date: {LEGAL_EFFECTIVE_DATE} · Version {LEGAL_VERSION}</Text>
-          <Text style={[styles.company, { color: palette.muted }]}>Controller: Rehyn Ltd · Company number 17417716 · info@rehyn.com</Text>
-          <LegalDocument intro={PRIVACY_INTRO} sections={PRIVACY_SECTIONS} palette={palette} />
+          <Text style={[styles.company, { color: palette.muted }]}>Rehyn Ltd · Company number 17417716 · info@rehyn.com</Text>
+          <LegalDocument intro={TERMS_INTRO} sections={TERMS_SECTIONS} palette={palette} />
         </View>
       </ScrollView>
     </View>

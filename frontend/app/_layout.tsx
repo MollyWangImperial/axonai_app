@@ -6,7 +6,7 @@ import { SafeAreaProvider } from "react-native-safe-area-context";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 
 import { useIconFonts } from "@/src/hooks/use-icon-fonts";
-import { getCachedUser, authedFetch, cachePatientOnboarding, onboardingCompleteKey, recoverSingleAccountCache, hasAcceptedConsent } from "@/src/auth";
+import { getCachedUser, authedFetch, cachePatientOnboarding, onboardingCompleteKey, recoverSingleAccountCache, hasAcceptedConsent, hasPendingConsent, clearPendingConsent, setConsentAccepted } from "@/src/auth";
 import { preloadAssessmentMediaPipe } from "@/src/assessmentPreload";
 import { storage } from "@/src/utils/storage";
 import { DisplayPreferencesProvider, useDisplayPreferences } from "@/src/displayPreferences";
@@ -22,10 +22,10 @@ function AuthGate() {
       const u = await getCachedUser();
       const seg0 = segments[0] || "";
       // Public routes that should be reachable without auth (e.g., legal pages linked from sign-in footer).
-      const publicRoutes = ["sign-in", "privacy-policy"];
+      const publicRoutes = ["sign-in", "consent", "privacy-policy", "terms-of-use", "data-permissions"];
       // If not signed in and not on a public route, redirect
       if (!u && !publicRoutes.includes(seg0)) {
-        router.replace("/sign-in");
+        router.replace("/consent");
         return;
       }
       if (!u) return;
@@ -41,13 +41,24 @@ function AuthGate() {
       if (u.role !== "therapist") {
         await recoverSingleAccountCache(u.id);
         // Safety/consent gate: new patients must accept the disclaimer first.
-        const consentOk = await hasAcceptedConsent(u.id);
+        let consentOk = await hasAcceptedConsent(u.id);
+        if (consentOk) {
+          await clearPendingConsent();
+        } else if (await hasPendingConsent()) {
+          try {
+            await setConsentAccepted(u.id);
+            await clearPendingConsent();
+            consentOk = true;
+          } catch {
+            consentOk = false;
+          }
+        }
         if (!consentOk && seg0 !== "consent" && !publicRoutes.includes(seg0)) {
           router.replace("/consent");
           return;
         }
         const localFlag = await storage.getItem(onboardingCompleteKey(u.id), "");
-        const allowedDuringOnboarding = ["onboarding", "sign-in", "consent", "privacy-policy"];
+        const allowedDuringOnboarding = ["onboarding", "sign-in", "consent", "privacy-policy", "terms-of-use", "data-permissions"];
         if (!localFlag && !allowedDuringOnboarding.includes(seg0)) {
           // double-check with backend (in case user signed in on a fresh device)
           try {
