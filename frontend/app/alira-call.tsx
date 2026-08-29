@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ActivityIndicator, Platform, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
@@ -17,14 +17,21 @@ import { colors, radius, spacing } from "@/src/theme";
 import { storage } from "@/src/utils/storage";
 
 type CallPhase = "ready" | "listening" | "processing" | "speaking" | "error";
+type RealtimePhase = "idle" | "connecting" | "listening" | "thinking" | "speaking" | "ended" | "error";
+type TranscriptTurn = { id: string; role: "user" | "assistant"; text: string };
 
 const SESSION_KEY = "alira_session_id";
+const MAX_CALL_MS = 20 * 60 * 1000;
 
 function makeSessionId() {
   return "s_" + Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
 }
 
 export default function AliraCallScreen() {
+  return Platform.OS === "web" ? <RealtimeWebCall /> : <TurnBasedAliraCallScreen />;
+}
+
+function TurnBasedAliraCallScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const recorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
@@ -182,6 +189,353 @@ export default function AliraCallScreen() {
     </View>
   );
 }
+
+function RealtimeWebCall() {
+  const insets = useSafeAreaInsets();
+  const router = useRouter();
+  const peerRef = useRef<any>(null);
+  const dataChannelRef = useRef<any>(null);
+  const mediaStreamRef = useRef<any>(null);
+  const remoteAudioRef = useRef<any>(null);
+  const callTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const closedByUserRef = useRef(false);
+  const [phase, setPhase] = useState<RealtimePhase>("idle");
+  const [turns, setTurns] = useState<TranscriptTurn[]>([]);
+  const [liveReply, setLiveReply] = useState("");
+  const [muted, setMuted] = useState(false);
+  const [error, setError] = useState("");
+
+  const releaseConnection = useCallback(() => {
+    if (callTimerRef.current) clearTimeout(callTimerRef.current);
+    callTimerRef.current = null;
+    try { dataChannelRef.current?.close(); } catch { /* no-op */ }
+    try { peerRef.current?.close(); } catch { /* no-op */ }
+    try { mediaStreamRef.current?.getTracks()?.forEach((track: any) => track.stop()); } catch { /* no-op */ }
+    try {
+      if (remoteAudioRef.current) {
+        remoteAudioRef.current.pause?.();
+        remoteAudioRef.current.srcObject = null;
+      }
+    } catch { /* no-op */ }
+    dataChannelRef.current = null;
+    peerRef.current = null;
+    mediaStreamRef.current = null;
+    remoteAudioRef.current = null;
+  }, []);
+
+  useEffect(() => releaseConnection, [releaseConnection]);
+
+  const addTurn = useCallback((role: TranscriptTurn["role"], rawText: unknown, id?: string) => {
+    const text = String(rawText || "").trim();
+    if (!text) return;
+    setTurns((current) => {
+      if (current.some((turn) => turn.role === role && turn.text === text)) return current;
+      return [...current, { id: id || `${role}-${Date.now()}`, role, text }].slice(-8);
+    });
+  }, []);
+
+  const handleServerEvent = useCallback((message: any) => {
+    let event: any;
+    try { event = JSON.parse(String(message.data || "{}")); } catch { return; }
+
+    if (event.type === "input_audio_buffer.speech_started") {
+      setLiveReply("");
+      setPhase("listening");
+      return;
+    }
+    if (event.type === "input_audio_buffer.speech_stopped") {
+      setPhase("thinking");
+      return;
+    }
+    if (event.type === "conversation.item.input_audio_transcription.completed") {
+      addTurn("user", event.transcript, event.item_id);
+      return;
+    }
+    if (event.type === "response.created" || event.type === "output_audio_buffer.started") {
+      setPhase("speaking");
+      return;
+    }
+    if (event.type === "response.output_audio_transcript.delta" || event.type === "response.audio_transcript.delta") {
+      setLiveReply((current) => current + String(event.delta || ""));
+      return;
+    }
+    if (event.type === "response.output_audio_transcript.done" || event.type === "response.audio_transcript.done") {
+      addTurn("assistant", event.transcript, event.item_id || event.response_id);
+      setLiveReply("");
+      return;
+    }
+    if (event.type === "response.done") {
+      const output = Array.isArray(event.response?.output) ? event.response.output : [];
+      output.forEach((item: any) => {
+        const content = Array.isArray(item?.content) ? item.content : [];
+        content.forEach((part: any) => addTurn("assistant", part?.transcript || part?.text, item?.id));
+      });
+      setLiveReply("");
+      setPhase("listening");
+      return;
+    }
+    if (event.type === "output_audio_buffer.stopped") {
+      setPhase("listening");
+      return;
+    }
+    if (event.type === "error") {
+      setError("The live conversation had a connection problem. End the call and try again.");
+      setPhase("error");
+    }
+  }, [addTurn]);
+
+  const endCall = useCallback((message = "Call ended") => {
+    closedByUserRef.current = true;
+    releaseConnection();
+    setLiveReply("");
+    setPhase("ended");
+    setError(message === "Call ended" ? "" : message);
+  }, [releaseConnection]);
+
+  const startCall = useCallback(async () => {
+    const browser = globalThis as any;
+    const PeerConnection = browser.RTCPeerConnection;
+    const mediaDevices = browser.navigator?.mediaDevices;
+    if (!PeerConnection || !mediaDevices?.getUserMedia) {
+      setError("This browser does not support live voice calls. Please use a current version of Chrome, Edge, Firefox, or Safari.");
+      setPhase("error");
+      return;
+    }
+
+    releaseConnection();
+    closedByUserRef.current = false;
+    setError("");
+    setTurns([]);
+    setLiveReply("");
+    setMuted(false);
+    setPhase("connecting");
+
+    try {
+      const peer = new PeerConnection();
+      peerRef.current = peer;
+      const remoteAudio = browser.document.createElement("audio");
+      remoteAudio.autoplay = true;
+      remoteAudio.setAttribute("playsinline", "true");
+      remoteAudioRef.current = remoteAudio;
+      peer.ontrack = (event: any) => {
+        remoteAudio.srcObject = event.streams[0];
+        void remoteAudio.play().catch(() => setError("Tap the screen once if your browser has blocked Alira's audio."));
+      };
+
+      const stream = await mediaDevices.getUserMedia({
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+      });
+      mediaStreamRef.current = stream;
+      stream.getAudioTracks().forEach((track: any) => peer.addTrack(track, stream));
+
+      const dataChannel = peer.createDataChannel("oai-events");
+      dataChannelRef.current = dataChannel;
+      dataChannel.addEventListener("message", handleServerEvent);
+      dataChannel.addEventListener("open", () => {
+        setPhase("speaking");
+        dataChannel.send(JSON.stringify({
+          type: "response.create",
+          response: {
+            instructions: "Greet the patient warmly in one short sentence, introduce yourself as Alira, then ask what they would like support with today.",
+          },
+        }));
+      });
+      dataChannel.addEventListener("close", () => {
+        if (!closedByUserRef.current) {
+          setError("The live call disconnected. You can start a new call.");
+          setPhase("ended");
+        }
+      });
+
+      peer.onconnectionstatechange = () => {
+        if (peer.connectionState === "failed") {
+          closedByUserRef.current = true;
+          releaseConnection();
+          setError("The live call could not stay connected. Please check your internet connection and try again.");
+          setPhase("error");
+        }
+      };
+
+      const offer = await peer.createOffer();
+      await peer.setLocalDescription(offer);
+      const response = await authedFetch("/api/realtime/session", {
+        method: "POST",
+        body: JSON.stringify({ sdp: offer.sdp }),
+      });
+      const answerSdp = await response.text();
+      if (!response.ok) {
+        let detail = "Alira could not start a live call. Please try again.";
+        try { detail = JSON.parse(answerSdp).detail || detail; } catch { /* use fallback */ }
+        throw new Error(detail);
+      }
+      await peer.setRemoteDescription({ type: "answer", sdp: answerSdp });
+      callTimerRef.current = setTimeout(
+        () => endCall("The 20-minute call limit was reached. You can start another call whenever you are ready."),
+        MAX_CALL_MS,
+      );
+    } catch (caught) {
+      closedByUserRef.current = true;
+      releaseConnection();
+      const message = caught instanceof Error ? caught.message : "Alira could not start a live call. Please try again.";
+      setError(message.includes("Permission") || message.includes("NotAllowed")
+        ? "Microphone access is needed. Allow it in your browser settings, then try again."
+        : message);
+      setPhase("error");
+    }
+  }, [endCall, handleServerEvent, releaseConnection]);
+
+  const toggleMute = () => {
+    setMuted((current) => {
+      const next = !current;
+      mediaStreamRef.current?.getAudioTracks()?.forEach((track: any) => { track.enabled = !next; });
+      return next;
+    });
+  };
+
+  const leaveScreen = () => {
+    if (peerRef.current) endCall();
+    router.back();
+  };
+
+  const active = ["connecting", "listening", "thinking", "speaking"].includes(phase);
+  const status = phase === "connecting"
+    ? "Connecting securely..."
+    : phase === "listening"
+      ? muted ? "Microphone muted" : "Listening - speak naturally"
+      : phase === "thinking"
+        ? "Alira is thinking..."
+        : phase === "speaking"
+          ? "Alira is speaking - you can interrupt at any time"
+          : phase === "ended"
+            ? "Call ended"
+            : phase === "error"
+              ? "Live call unavailable"
+              : "Ready for a real-time conversation";
+
+  return (
+    <View style={[realtimeStyles.container, { paddingTop: insets.top }]}>
+      <View style={realtimeStyles.header}>
+        <Pressable onPress={leaveScreen} style={realtimeStyles.headerButton} accessibilityLabel="Close Alira call" testID="alira-call-back">
+          <Ionicons name="close" size={26} color={colors.onSurface} />
+        </Pressable>
+        <View style={realtimeStyles.headerCopy}>
+          <Text style={realtimeStyles.title}>Call Alira</Text>
+          <Text style={realtimeStyles.subtitle}>Live AI recovery companion</Text>
+        </View>
+        <View style={realtimeStyles.livePill}>
+          <View style={[realtimeStyles.liveDot, active && realtimeStyles.liveDotActive]} />
+          <Text style={realtimeStyles.liveText}>{active ? "Live" : "Ready"}</Text>
+        </View>
+      </View>
+
+      <ScrollView contentContainerStyle={realtimeStyles.content}>
+        <View style={[realtimeStyles.avatar, phase === "speaking" && realtimeStyles.avatarSpeaking]}>
+          <Ionicons name="heart" size={42} color="#FFFFFF" />
+        </View>
+        <Text style={realtimeStyles.aliraName}>Alira</Text>
+        <Text style={realtimeStyles.status}>{status}</Text>
+        <Text style={realtimeStyles.safety}>Alira is an AI recovery companion, not a therapist or emergency service. She cannot diagnose or replace your clinical team.</Text>
+
+        <View style={realtimeStyles.liveHint}>
+          <Ionicons name="sparkles-outline" size={20} color={colors.brandPrimary} />
+          <Text style={realtimeStyles.liveHintText}>No recording or send button. Talk naturally, pause when you are done, and Alira will answer.</Text>
+        </View>
+
+        <View style={realtimeStyles.conversationCard}>
+          {turns.length === 0 && !liveReply ? (
+            <View style={realtimeStyles.emptyConversation}>
+              <Ionicons name="chatbubbles-outline" size={30} color={colors.brandPrimary} />
+              <Text style={realtimeStyles.emptyTitle}>{active ? "Alira will greet you in a moment" : "Start when you feel ready"}</Text>
+              <Text style={realtimeStyles.emptyText}>Your conversation captions will appear here.</Text>
+            </View>
+          ) : (
+            turns.map((turn) => (
+              <View key={turn.id} style={[realtimeStyles.turn, turn.role === "user" ? realtimeStyles.userTurn : realtimeStyles.aliraTurn]}>
+                <Text style={realtimeStyles.turnLabel}>{turn.role === "user" ? "You" : "Alira"}</Text>
+                <Text style={realtimeStyles.turnText}>{turn.text}</Text>
+              </View>
+            ))
+          )}
+          {liveReply ? (
+            <View style={[realtimeStyles.turn, realtimeStyles.aliraTurn]}>
+              <Text style={realtimeStyles.turnLabel}>Alira</Text>
+              <Text style={realtimeStyles.turnText}>{liveReply}</Text>
+            </View>
+          ) : null}
+        </View>
+
+        {error ? (
+          <View style={realtimeStyles.errorCard}>
+            <Ionicons name="alert-circle-outline" size={20} color={colors.error} />
+            <Text style={realtimeStyles.errorText}>{error}</Text>
+          </View>
+        ) : null}
+
+        {!active ? (
+          <Pressable onPress={startCall} style={realtimeStyles.startButton} accessibilityLabel="Start live call with Alira" testID="alira-call-start">
+            <Ionicons name="call" size={23} color="#FFFFFF" />
+            <Text style={realtimeStyles.startButtonText}>{phase === "ended" || phase === "error" ? "Start a new call" : "Start live call"}</Text>
+          </Pressable>
+        ) : (
+          <View style={realtimeStyles.callControls}>
+            <View style={realtimeStyles.controlWithLabel}>
+              <Pressable onPress={toggleMute} disabled={phase === "connecting"} style={[realtimeStyles.roundControl, muted && realtimeStyles.roundControlMuted]} accessibilityLabel={muted ? "Unmute microphone" : "Mute microphone"}>
+                {phase === "connecting" ? <ActivityIndicator color={colors.brandPrimary} /> : <Ionicons name={muted ? "mic-off" : "mic"} size={28} color={muted ? colors.error : colors.brandPrimary} />}
+              </Pressable>
+              <Text style={realtimeStyles.controlLabel}>{muted ? "Unmute" : "Mute"}</Text>
+            </View>
+            <View style={realtimeStyles.controlWithLabel}>
+              <Pressable onPress={() => endCall()} style={[realtimeStyles.roundControl, realtimeStyles.endControl]} accessibilityLabel="End call" testID="alira-call-end">
+                <Ionicons name="call" size={28} color="#FFFFFF" />
+              </Pressable>
+              <Text style={realtimeStyles.controlLabel}>End</Text>
+            </View>
+          </View>
+        )}
+      </ScrollView>
+    </View>
+  );
+}
+
+const realtimeStyles = StyleSheet.create({
+  container: { flex: 1, backgroundColor: "#F6F9F6" },
+  header: { minHeight: 72, flexDirection: "row", alignItems: "center", paddingHorizontal: spacing.md, borderBottomWidth: 1, borderBottomColor: colors.divider, backgroundColor: colors.surface },
+  headerButton: { width: 44, height: 44, alignItems: "center", justifyContent: "center" },
+  headerCopy: { flex: 1, alignItems: "center" },
+  title: { fontSize: 19, fontWeight: "800", color: colors.onSurface },
+  subtitle: { marginTop: 2, fontSize: 11, color: colors.onSurfaceTertiary },
+  livePill: { minWidth: 60, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6 },
+  liveDot: { width: 9, height: 9, borderRadius: 5, backgroundColor: colors.border },
+  liveDotActive: { backgroundColor: colors.success },
+  liveText: { fontSize: 12, fontWeight: "800", color: colors.brandPrimary },
+  content: { flexGrow: 1, alignItems: "center", padding: spacing.lg, paddingBottom: spacing.xxl },
+  avatar: { width: 92, height: 92, borderRadius: 46, alignItems: "center", justifyContent: "center", backgroundColor: "#4C8A5A", marginTop: spacing.md, borderWidth: 6, borderColor: "#E4F0E6" },
+  avatarSpeaking: { borderColor: "#BFD9C4" },
+  aliraName: { marginTop: spacing.sm, fontSize: 26, fontWeight: "900", color: colors.onSurface },
+  status: { marginTop: 4, minHeight: 22, fontSize: 15, lineHeight: 21, fontWeight: "700", textAlign: "center", color: colors.brandPrimary },
+  safety: { maxWidth: 590, marginTop: spacing.sm, fontSize: 12, lineHeight: 18, textAlign: "center", color: colors.onSurfaceTertiary },
+  liveHint: { width: "100%", maxWidth: 650, flexDirection: "row", alignItems: "center", gap: spacing.sm, marginTop: spacing.lg, paddingHorizontal: spacing.md, paddingVertical: spacing.sm, borderRadius: radius.sm, backgroundColor: "#E8F2EA" },
+  liveHintText: { flex: 1, fontSize: 13, lineHeight: 19, color: colors.onSurfaceSecondary },
+  conversationCard: { width: "100%", maxWidth: 650, minHeight: 210, marginTop: spacing.md, padding: spacing.md, borderRadius: radius.md, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, gap: spacing.sm },
+  emptyConversation: { flex: 1, minHeight: 175, alignItems: "center", justifyContent: "center", padding: spacing.lg },
+  emptyTitle: { marginTop: spacing.sm, fontSize: 17, lineHeight: 23, fontWeight: "800", color: colors.onSurface, textAlign: "center" },
+  emptyText: { marginTop: 4, fontSize: 13, color: colors.onSurfaceTertiary, textAlign: "center" },
+  turn: { maxWidth: "88%", paddingHorizontal: spacing.md, paddingVertical: spacing.sm, borderRadius: radius.sm },
+  userTurn: { alignSelf: "flex-end", backgroundColor: "#E7F1E9" },
+  aliraTurn: { alignSelf: "flex-start", backgroundColor: "#F1F3F1" },
+  turnLabel: { fontSize: 10, fontWeight: "900", textTransform: "uppercase", color: colors.brandPrimary },
+  turnText: { marginTop: 3, fontSize: 16, lineHeight: 23, color: colors.onSurface },
+  errorCard: { width: "100%", maxWidth: 650, flexDirection: "row", alignItems: "flex-start", gap: spacing.sm, marginTop: spacing.md, padding: spacing.md, borderRadius: radius.md, backgroundColor: "#FFF1EF" },
+  errorText: { flex: 1, fontSize: 13, lineHeight: 19, color: colors.error },
+  startButton: { width: "100%", maxWidth: 420, minHeight: 60, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: spacing.sm, marginTop: spacing.xl, paddingHorizontal: spacing.lg, borderRadius: radius.md, backgroundColor: colors.brandPrimary },
+  startButtonText: { fontSize: 18, fontWeight: "900", color: "#FFFFFF" },
+  callControls: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 50, marginTop: spacing.xl },
+  controlWithLabel: { alignItems: "center" },
+  roundControl: { width: 66, height: 66, borderRadius: 33, alignItems: "center", justifyContent: "center", borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface },
+  roundControlMuted: { backgroundColor: "#FFF1EF", borderColor: "#F2C8C2" },
+  endControl: { borderColor: colors.error, backgroundColor: colors.error, transform: [{ rotate: "135deg" }] },
+  controlLabel: { marginTop: 7, fontSize: 13, fontWeight: "700", color: colors.onSurfaceSecondary },
+});
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: "#F8FBF8" },

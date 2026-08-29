@@ -16,6 +16,10 @@ services:
         value: nova
       - key: TTS_MODEL
         value: tts-1
+      - key: ALIRA_REALTIME_MODEL
+        value: gpt-realtime-2.1
+      - key: ALIRA_REALTIME_VOICE
+        value: marin
       - key: LOCAL_GPU_WORKER_URL
         sync: false
       - key: LOCAL_BACKEND_CALLBACK_URL

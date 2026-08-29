@@ -17,6 +17,7 @@ import re
 import asyncio
 import httpx
 import json
+import hashlib
 from datetime import datetime, timezone
 
 try:
@@ -127,6 +128,8 @@ EMERGENT_LLM_KEY = os.environ.get("EMERGENT_LLM_KEY", "").strip()
 TTS_VOICE = os.environ.get("TTS_VOICE", "nova")  # warm/encouraging default
 TTS_MODEL = os.environ.get("TTS_MODEL", "tts-1")
 ALIRA_CHAT_MODEL = os.environ.get("ALIRA_CHAT_MODEL", "gpt-4o-mini")
+ALIRA_REALTIME_MODEL = os.environ.get("ALIRA_REALTIME_MODEL", "gpt-realtime-2.1").strip()
+ALIRA_REALTIME_VOICE = os.environ.get("ALIRA_REALTIME_VOICE", "marin").strip()
 ANALYSIS_WORKER_TOKEN = os.environ.get("ANALYSIS_WORKER_TOKEN", "").strip()
 LOCAL_GPU_WORKER_URL = os.environ.get("LOCAL_GPU_WORKER_URL", "").strip().rstrip("/")
 LOCAL_BACKEND_CALLBACK_URL = os.environ.get(
@@ -7654,6 +7657,10 @@ class ChatResponse(BaseModel):
     turns: int
 
 
+class RealtimeSessionRequest(BaseModel):
+    sdp: str = Field(min_length=64, max_length=200_000)
+
+
 # ============ Therapists routes ============
 @api_router.get("/therapists")
 async def get_therapists():
@@ -8440,6 +8447,87 @@ When you don't know something, say so warmly and suggest asking their therapist.
 If the patient seems distressed, gently acknowledge it, sit with them, and only suggest a tiny actionable step if they seem ready.
 
 Keep replies under 4 short sentences unless the patient asks for more detail."""
+
+
+@api_router.post("/realtime/session")
+async def create_alira_realtime_session(req: RealtimeSessionRequest, request: Request):
+    """Create a browser WebRTC call without exposing the OpenAI API key."""
+    if not OPENAI_API_KEY:
+        raise HTTPException(status_code=503, detail="Live voice is unavailable because the AI key is not configured.")
+    user = await _user_from_header(dict(request.headers))
+    if not user:
+        raise HTTPException(status_code=401, detail="Sign in to call Alira.")
+
+    patient_ctx = await _build_patient_context(user)
+    profile = user.get("profile") or {}
+    preferred_name = (profile.get("preferred_name") or user.get("name") or "").split(" ")[0].strip()
+    name_block = f"\nPATIENT PREFERRED NAME: {preferred_name}\n" if preferred_name else ""
+    live_voice_rules = """
+
+LIVE VOICE CONVERSATION RULES:
+- This is a natural spoken conversation. Speak warmly and clearly; never use markdown, headings, or lists aloud.
+- Usually answer in one to three short sentences, then pause. Ask no more than one question at a time.
+- Give the patient time to speak and think. Do not rush, finish their sentences, or comment on speech difficulty.
+- If the patient interrupts, stop speaking immediately and listen.
+- If audio is unclear, gently ask them to repeat it rather than guessing.
+- Never diagnose, prescribe, or present yourself as a therapist or emergency service.
+- For possible stroke or other emergency symptoms, clearly tell the patient to call emergency services now. In the UK, say to call 999.
+"""
+    instructions = (
+        CHAT_SYSTEM_PROMPT_BASE
+        + live_voice_rules
+        + name_block
+        + "\n----\nPATIENT CONTEXT:\n"
+        + patient_ctx
+    )
+    session_config = {
+        "type": "realtime",
+        "model": ALIRA_REALTIME_MODEL,
+        "output_modalities": ["audio"],
+        "instructions": instructions,
+        "max_output_tokens": 500,
+        "audio": {
+            "input": {
+                "noise_reduction": {"type": "near_field"},
+                "transcription": {"model": "gpt-transcribe", "language": "en"},
+                "turn_detection": {
+                    "type": "semantic_vad",
+                    "eagerness": "low",
+                    "create_response": True,
+                    "interrupt_response": True,
+                },
+            },
+            "output": {"voice": ALIRA_REALTIME_VOICE, "speed": 0.95},
+        },
+    }
+    safety_identifier = hashlib.sha256(f"rehyn:{user['id']}".encode("utf-8")).hexdigest()
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            upstream = await client.post(
+                "https://api.openai.com/v1/realtime/calls",
+                headers={
+                    "Authorization": f"Bearer {OPENAI_API_KEY}",
+                    "OpenAI-Safety-Identifier": safety_identifier,
+                },
+                files={
+                    "sdp": (None, req.sdp),
+                    "session": (None, json.dumps(session_config)),
+                },
+            )
+    except httpx.HTTPError as exc:
+        logger.error("Realtime session connection failed: %s", type(exc).__name__)
+        raise HTTPException(status_code=502, detail="Alira could not start a live call. Please try again.") from exc
+
+    if not upstream.is_success:
+        try:
+            upstream_message = str(upstream.json().get("error", {}).get("message", ""))[:300]
+        except (ValueError, AttributeError):
+            upstream_message = upstream.text[:300]
+        logger.error("Realtime session rejected (%s): %s", upstream.status_code, upstream_message)
+        raise HTTPException(status_code=502, detail="Alira could not start a live call. Please try again.")
+
+    return Response(content=upstream.text, media_type="application/sdp")
 
 
 @api_router.post("/chat/message", response_model=ChatResponse)
