@@ -130,6 +130,62 @@ TTS_MODEL = os.environ.get("TTS_MODEL", "tts-1")
 ALIRA_CHAT_MODEL = os.environ.get("ALIRA_CHAT_MODEL", "gpt-4o-mini")
 ALIRA_REALTIME_MODEL = os.environ.get("ALIRA_REALTIME_MODEL", "gpt-realtime-2.1").strip()
 ALIRA_REALTIME_VOICE = os.environ.get("ALIRA_REALTIME_VOICE", "marin").strip()
+ALIRA_NAVIGATION_DESTINATIONS = (
+    "home",
+    "journey",
+    "progress",
+    "assessment_history",
+    "alira_chat",
+    "journal_entry",
+    "pain_check_in",
+    "daily_reflection",
+    "initial_assessment",
+    "next_assessment",
+    "profile",
+    "care_facility",
+    "settings",
+    "survey_questions",
+    "privacy_policy",
+    "data_permissions",
+    "terms_of_use",
+    "personal_details",
+    "care_circle",
+    "account_security",
+    "camera_permissions",
+    "help_center",
+    "contact_support",
+    "function_summary",
+    "movement_snapshot",
+    "movement_map",
+    "rehab_plan",
+    "guided_exercise",
+    "back",
+)
+ALIRA_NAVIGATION_TOOL = {
+    "type": "function",
+    "name": "navigate_app",
+    "description": (
+        "Navigate the signed-in patient to a safe, patient-facing Rehyn page. Call this whenever the "
+        "patient asks to open, show, find, visit, go to, or be taken to an app function; do not merely "
+        "describe menu steps. Use progress for progress tracking, assessment_history for prior assessments, "
+        "function_summary for the latest function-at-a-glance page, movement_snapshot for the latest result, "
+        "movement_map for the interactive anatomy map, rehab_plan or guided_exercise for the current plan, "
+        "journal_entry to write a recovery note, and back to return to the previous page. This tool only opens "
+        "pages. It never changes settings, deletes data, submits forms, or performs clinical actions."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "destination": {
+                "type": "string",
+                "enum": list(ALIRA_NAVIGATION_DESTINATIONS),
+                "description": "The single Rehyn destination that best matches the patient's request.",
+            },
+        },
+        "required": ["destination"],
+        "additionalProperties": False,
+    },
+}
 ANALYSIS_WORKER_TOKEN = os.environ.get("ANALYSIS_WORKER_TOKEN", "").strip()
 LOCAL_GPU_WORKER_URL = os.environ.get("LOCAL_GPU_WORKER_URL", "").strip().rstrip("/")
 LOCAL_BACKEND_CALLBACK_URL = os.environ.get(
@@ -8472,6 +8528,9 @@ LIVE VOICE CONVERSATION RULES:
 - If audio is unclear, gently ask them to repeat it rather than guessing.
 - Never diagnose, prescribe, or present yourself as a therapist or emergency service.
 - For possible stroke or other emergency symptoms, clearly tell the patient to call emergency services now. In the UK, say to call 999.
+- When the patient asks where a feature is or asks you to open, show, find, or take them to a page, call navigate_app. Do not give a sequence of menu directions instead.
+- Wait for the navigation tool result before saying that a page is opening. If the requested result or plan is unavailable, explain the tool result briefly and offer the assessment or Journey page.
+- Navigation is read-only. Never claim to change a setting, submit a form, delete data, or complete an assessment for the patient.
 """
     instructions = (
         CHAT_SYSTEM_PROMPT_BASE
@@ -8486,6 +8545,8 @@ LIVE VOICE CONVERSATION RULES:
         "output_modalities": ["audio"],
         "instructions": instructions,
         "max_output_tokens": 500,
+        "tools": [ALIRA_NAVIGATION_TOOL],
+        "tool_choice": "auto",
         "audio": {
             "input": {
                 "noise_reduction": {"type": "near_field"},

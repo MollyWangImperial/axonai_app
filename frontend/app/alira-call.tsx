@@ -15,10 +15,18 @@ import { authedFetch, getUserId } from "@/src/auth";
 import { API_BASE as BASE } from "@/src/config";
 import { colors, radius, spacing } from "@/src/theme";
 import { storage } from "@/src/utils/storage";
+import { resolveAliraNavigation } from "@/src/aliraNavigation";
+import type { AliraNavigationResolution } from "@/src/aliraNavigation";
 
 type CallPhase = "ready" | "listening" | "processing" | "speaking" | "error";
 type RealtimePhase = "idle" | "connecting" | "listening" | "thinking" | "speaking" | "ended" | "error";
 type TranscriptTurn = { id: string; role: "user" | "assistant"; text: string };
+type PendingNavigation = AliraNavigationResolution & {
+  originResponseId?: string;
+  acknowledgementResponseId?: string;
+  acknowledgementDone?: boolean;
+  audioStopped?: boolean;
+};
 
 const SESSION_KEY = "alira_session_id";
 const MAX_CALL_MS = 20 * 60 * 1000;
@@ -198,6 +206,9 @@ function RealtimeWebCall() {
   const mediaStreamRef = useRef<any>(null);
   const remoteAudioRef = useRef<any>(null);
   const callTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const navigationTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingNavigationRef = useRef<PendingNavigation | null>(null);
+  const handledToolCallsRef = useRef<Set<string>>(new Set());
   const closedByUserRef = useRef(false);
   const [phase, setPhase] = useState<RealtimePhase>("idle");
   const [turns, setTurns] = useState<TranscriptTurn[]>([]);
@@ -207,7 +218,11 @@ function RealtimeWebCall() {
 
   const releaseConnection = useCallback(() => {
     if (callTimerRef.current) clearTimeout(callTimerRef.current);
+    if (navigationTimerRef.current) clearTimeout(navigationTimerRef.current);
     callTimerRef.current = null;
+    navigationTimerRef.current = null;
+    pendingNavigationRef.current = null;
+    handledToolCallsRef.current.clear();
     try { dataChannelRef.current?.close(); } catch { /* no-op */ }
     try { peerRef.current?.close(); } catch { /* no-op */ }
     try { mediaStreamRef.current?.getTracks()?.forEach((track: any) => track.stop()); } catch { /* no-op */ }
@@ -234,10 +249,88 @@ function RealtimeWebCall() {
     });
   }, []);
 
+  const completeNavigation = useCallback((pending = pendingNavigationRef.current) => {
+    if (!pending || pendingNavigationRef.current !== pending) return;
+    const { action, path } = pending;
+    pendingNavigationRef.current = null;
+    if (navigationTimerRef.current) clearTimeout(navigationTimerRef.current);
+    navigationTimerRef.current = null;
+    closedByUserRef.current = true;
+    releaseConnection();
+    if (action === "back") router.back();
+    else if (path) router.push(path as never);
+  }, [releaseConnection, router]);
+
+  const handleNavigationTool = useCallback(async (event: any) => {
+    if (event.name !== "navigate_app") return;
+    const callId = String(event.call_id || event.item_id || "");
+    if (!callId || handledToolCallsRef.current.has(callId)) return;
+    handledToolCallsRef.current.add(callId);
+
+    let destination = "";
+    try {
+      const parsed = JSON.parse(String(event.arguments || "{}"));
+      destination = String(parsed.destination || "");
+    } catch { /* validated below */ }
+
+    let resolution: AliraNavigationResolution;
+    try {
+      resolution = destination
+        ? await resolveAliraNavigation(destination)
+        : { success: false, destination: "", label: "that page", message: "I could not identify which page to open. Ask the patient to name the page again." };
+    } catch {
+      resolution = { success: false, destination, label: "that page", message: "I could not check that page right now. Ask the patient to try again." };
+    }
+
+    const channel = dataChannelRef.current;
+    if (!channel || channel.readyState !== "open") return;
+    channel.send(JSON.stringify({
+      type: "conversation.item.create",
+      item: {
+        type: "function_call_output",
+        call_id: callId,
+        output: JSON.stringify({
+          success: resolution.success,
+          destination: resolution.destination,
+          label: resolution.label,
+          message: resolution.message,
+        }),
+      },
+    }));
+
+    if (resolution.success && (resolution.path || resolution.action)) {
+      const pending: PendingNavigation = { ...resolution, originResponseId: event.response_id };
+      pendingNavigationRef.current = pending;
+      if (navigationTimerRef.current) clearTimeout(navigationTimerRef.current);
+      navigationTimerRef.current = setTimeout(() => completeNavigation(pending), 9000);
+      setPhase("thinking");
+      channel.send(JSON.stringify({
+        type: "response.create",
+        response: {
+          tool_choice: "none",
+          instructions: `Confirm warmly in one very short sentence that you are opening ${resolution.label}. Do not ask another question.`,
+        },
+      }));
+      return;
+    }
+
+    channel.send(JSON.stringify({
+      type: "response.create",
+      response: {
+        tool_choice: "none",
+        instructions: `Explain this in one or two short spoken sentences: ${resolution.message}`,
+      },
+    }));
+  }, [completeNavigation]);
+
   const handleServerEvent = useCallback((message: any) => {
     let event: any;
     try { event = JSON.parse(String(message.data || "{}")); } catch { return; }
 
+    if (event.type === "response.function_call_arguments.done") {
+      void handleNavigationTool(event);
+      return;
+    }
     if (event.type === "input_audio_buffer.speech_started") {
       setLiveReply("");
       setPhase("listening");
@@ -251,7 +344,16 @@ function RealtimeWebCall() {
       addTurn("user", event.transcript, event.item_id);
       return;
     }
-    if (event.type === "response.created" || event.type === "output_audio_buffer.started") {
+    if (event.type === "response.created") {
+      const pending = pendingNavigationRef.current;
+      const responseId = String(event.response?.id || event.response_id || "");
+      if (pending && responseId && responseId !== pending.originResponseId && !pending.acknowledgementResponseId) {
+        pending.acknowledgementResponseId = responseId;
+      }
+      setPhase("speaking");
+      return;
+    }
+    if (event.type === "output_audio_buffer.started") {
       setPhase("speaking");
       return;
     }
@@ -271,18 +373,33 @@ function RealtimeWebCall() {
         content.forEach((part: any) => addTurn("assistant", part?.transcript || part?.text, item?.id));
       });
       setLiveReply("");
-      setPhase("listening");
+      const pending = pendingNavigationRef.current;
+      const responseId = String(event.response?.id || event.response_id || "");
+      if (pending && responseId === pending.acknowledgementResponseId) {
+        pending.acknowledgementDone = true;
+        if (pending.audioStopped) completeNavigation(pending);
+        else setPhase("speaking");
+      } else {
+        setPhase(pending ? "thinking" : "listening");
+      }
       return;
     }
     if (event.type === "output_audio_buffer.stopped") {
-      setPhase("listening");
+      const pending = pendingNavigationRef.current;
+      const responseId = String(event.response_id || "");
+      if (pending && (!responseId || responseId === pending.acknowledgementResponseId)) {
+        pending.audioStopped = true;
+        if (pending.acknowledgementDone) completeNavigation(pending);
+      } else if (!pending) {
+        setPhase("listening");
+      }
       return;
     }
     if (event.type === "error") {
       setError("The live conversation had a connection problem. End the call and try again.");
       setPhase("error");
     }
-  }, [addTurn]);
+  }, [addTurn, completeNavigation, handleNavigationTool]);
 
   const endCall = useCallback((message = "Call ended") => {
     closedByUserRef.current = true;

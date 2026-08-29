@@ -1,6 +1,6 @@
 import { useCallback, useMemo, useState } from "react";
 import { ActivityIndicator, Image, Modal, Pressable, ScrollView, StyleSheet, Text, TextInput, useWindowDimensions, View } from "react-native";
-import { useFocusEffect, useRouter } from "expo-router";
+import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 
@@ -25,6 +25,7 @@ function assessmentPlanLabel(item: Assessment) {
 export default function JourneyScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
+  const { action } = useLocalSearchParams<{ action?: string }>();
   const { palette } = useDisplayPreferences();
   const { width } = useWindowDimensions();
   const wide = width >= 760;
@@ -47,6 +48,9 @@ export default function JourneyScreen() {
   }, []);
 
   useFocusEffect(useCallback(() => { void load(); }, [load]));
+  useFocusEffect(useCallback(() => {
+    if (action === "new-journal") setShowComposer(true);
+  }, [action]));
 
   const saveEntry = async () => {
     if (!draft.trim()) return;
