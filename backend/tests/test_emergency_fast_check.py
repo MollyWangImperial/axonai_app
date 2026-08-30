@@ -88,6 +88,11 @@ def test_fast_runner_and_audit_endpoint_apply_the_same_rule(monkeypatch):
     assert len(face_model.content) > 3_000_000
     assert "Emergency FAST check" in runner.text
     assert "Alira automatic check" in runner.text
+    assert 'fetch("/api/tts/generate"' in runner.text
+    assert 'body:JSON.stringify({text})' in runner.text
+    assert 'new Audio(`data:audio/mpeg;base64,${data.audio_b64}`)' in runner.text
+    assert "SpeechSynthesisUtterance" in runner.text
+    assert "browserFallback" in runner.text
     assert "Please smile and hold" in runner.text
     assert "Raise both arms and hold" in runner.text
     assert "Repeat the phrase aloud" in runner.text
@@ -101,6 +106,8 @@ def test_fast_runner_and_audit_endpoint_apply_the_same_rule(monkeypatch):
     assert "finalizeFace" in runner.text
     assert "finalizeArms" in runner.text
     assert "startSpeechCheck" in runner.text
+    assert 'speak("Face. Please smile and hold while I compare both sides.",()=>{' in runner.text
+    assert 'speak("Arms. Please raise both arms and keep them there while I watch for one arm drifting down.",()=>{' in runner.text
     assert "MediaRecorder" in runner.text
     assert 'fetch("/api/stt/transcribe"' in runner.text
     assert "SPEECH_WINDOW_MS=15000" in runner.text

@@ -166,7 +166,7 @@ const automated={
   arms:{available:false,positive:false,decision:"pending",samples:0,positive_samples:0,both_raised_samples:0,one_sided_samples:0,metric:null,quality:"pending",reason:""},
   speech:{available:false,positive:false,decision:"pending",transcript:"",similarity:null,confidence:null,quality:"pending",reason:"",provider:"openai",model:"gpt-transcribe",recording_retained:false}
 };
-let poseLandmarker=null,faceLandmarker=null,stream=null,current="intro",lastVideoTime=-1,animationId=null,stepStartedAt=0,stepTimer=null,speechRecorder=null,speechAudioStream=null,speechTimer=null,reported=false;
+let poseLandmarker=null,faceLandmarker=null,stream=null,current="intro",lastVideoTime=-1,animationId=null,stepStartedAt=0,stepTimer=null,speechRecorder=null,speechAudioStream=null,speechTimer=null,reported=false,aliraSpeechAudio=null,aliraSpeechToken=0;
 let armBaseline=null,speechSettled=false,speechAwaitingRetry=false,speechBest={transcript:"",confidence:0,score:0},speechAudioContext=null,speechVadFrame=null;
 const phrase="The sky is blue today";
 const FACE_WINDOW_MS=5600,ARMS_WINDOW_MS=6800,SPEECH_WINDOW_MS=15000,SPEECH_SILENCE_MS=1300,SPEECH_MIN_TALK_MS=900;
@@ -183,9 +183,16 @@ function startDemo911Call(){
   document.body.appendChild(overlay);document.getElementById("closeDemoCall").onclick=()=>overlay.remove();postRN({type:"demo_911_started"});
   speak("Demo only. The app is simulating a 911 call. No emergency call has been placed. In a real emergency, call 911 immediately.");
 }
+function stopAliraSpeech(){
+  aliraSpeechToken+=1;
+  if(aliraSpeechAudio){aliraSpeechAudio.onended=null;aliraSpeechAudio.onerror=null;try{aliraSpeechAudio.pause()}catch{}aliraSpeechAudio=null}
+  try{speechSynthesis.cancel()}catch{}
+}
 function speak(text,onEnd){
-  let finished=false;const done=()=>{if(finished)return;finished=true;if(onEnd)onEnd()};
-  try{speechSynthesis.cancel();const utterance=new SpeechSynthesisUtterance(text);utterance.rate=.88;utterance.pitch=1;utterance.lang="en-GB";utterance.onend=done;utterance.onerror=done;speechSynthesis.speak(utterance);if(onEnd)setTimeout(done,Math.max(2600,text.length*65))}catch{setTimeout(done,250)}
+  stopAliraSpeech();const token=aliraSpeechToken;let finished=false,fallbackStarted=false,watchdog=null;
+  const done=()=>{if(finished||token!==aliraSpeechToken)return;finished=true;if(watchdog)clearTimeout(watchdog);if(aliraSpeechAudio){aliraSpeechAudio.onended=null;aliraSpeechAudio.onerror=null;aliraSpeechAudio=null}if(onEnd)onEnd()};
+  const browserFallback=()=>{if(fallbackStarted||finished||token!==aliraSpeechToken)return;fallbackStarted=true;if(aliraSpeechAudio){aliraSpeechAudio.onended=null;aliraSpeechAudio.onerror=null;try{aliraSpeechAudio.pause()}catch{}aliraSpeechAudio=null}try{const utterance=new SpeechSynthesisUtterance(text);utterance.rate=.88;utterance.pitch=1;utterance.lang="en-GB";utterance.onend=done;utterance.onerror=done;speechSynthesis.speak(utterance);if(onEnd)watchdog=setTimeout(done,Math.max(5000,text.length*90))}catch{setTimeout(done,250)}};
+  void (async()=>{try{const response=await fetch("/api/tts/generate",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({text})});if(!response.ok)throw new Error("OpenAI voice unavailable");const data=await response.json();if(!data.audio_b64)throw new Error("OpenAI voice response was empty");if(token!==aliraSpeechToken)return;const audio=new Audio(`data:audio/mpeg;base64,${data.audio_b64}`);aliraSpeechAudio=audio;audio.onended=done;audio.onerror=browserFallback;await audio.play();if(onEnd)watchdog=setTimeout(done,Math.max(15000,text.length*150))}catch{browserFallback()}})();
 }
 function progress(index){return `<div class="progress" aria-label="FAST step ${index+1} of 4">${[0,1,2,3].map(i=>`<span class="${i<index?'done':i===index?'active':''}"></span>`).join('')}</div>`}
 function distance(a,b){return Math.hypot((a.x||0)-(b.x||0),(a.y||0)-(b.y||0))}
@@ -433,11 +440,11 @@ function renderIntro(){
 }
 function renderFace(){
   current="face";document.body.classList.remove("intro-mode");stepStartedAt=performance.now();automated.face={available:false,positive:false,decision:"pending",samples:0,positive_samples:0,engaged_samples:0,metric:null,smile_activation:null,quality:"pending",reason:""};
-  panel.innerHTML=`${progress(0)}<div class="letter">F</div><div class="eyebrow">Face · automatic observation</div><h1>Please smile and hold</h1><p>Keep your face toward the camera. Alira is checking whether both sides of the smile move evenly.</p><div class="assist" id="assist"><span class="assistDot"></span><span>Finding the face and waiting for a smile.</span></div>${automaticCard("Smile observation")}`;speak("Face. Please smile and hold while I compare both sides.");beginScan(FACE_WINDOW_MS);setStepTimer(finalizeFace,FACE_WINDOW_MS);
+  panel.innerHTML=`${progress(0)}<div class="letter">F</div><div class="eyebrow">Face · automatic observation</div><h1>Please smile and hold</h1><p>Keep your face toward the camera. Alira is checking whether both sides of the smile move evenly.</p><div class="assist" id="assist"><span class="assistDot"></span><span>Finding the face and waiting for a smile.</span></div>${automaticCard("Smile observation")}`;speak("Face. Please smile and hold while I compare both sides.",()=>{if(current!=="face")return;stepStartedAt=performance.now();automated.face={available:false,positive:false,decision:"pending",samples:0,positive_samples:0,engaged_samples:0,metric:null,smile_activation:null,quality:"pending",reason:""};beginScan(FACE_WINDOW_MS);setStepTimer(finalizeFace,FACE_WINDOW_MS)});
 }
 function renderArms(){
   current="arms";stepStartedAt=performance.now();armBaseline=null;automated.arms={available:false,positive:false,decision:"pending",samples:0,positive_samples:0,both_raised_samples:0,one_sided_samples:0,metric:null,quality:"pending",reason:""};
-  panel.innerHTML=`${progress(1)}<div class="letter">A</div><div class="eyebrow">Arms · automatic observation</div><h1>Raise both arms and hold</h1><p>Lift both arms to a comfortable level and keep them there until Alira moves on.</p><div class="assist" id="assist"><span class="assistDot"></span><span>Finding both shoulders, elbows and hands.</span></div>${automaticCard("Arm lift and drift observation")}`;speak("Arms. Please raise both arms and keep them there while I watch for one arm drifting down.");beginScan(ARMS_WINDOW_MS);setStepTimer(finalizeArms,ARMS_WINDOW_MS);
+  panel.innerHTML=`${progress(1)}<div class="letter">A</div><div class="eyebrow">Arms · automatic observation</div><h1>Raise both arms and hold</h1><p>Lift both arms to a comfortable level and keep them there until Alira moves on.</p><div class="assist" id="assist"><span class="assistDot"></span><span>Finding both shoulders, elbows and hands.</span></div>${automaticCard("Arm lift and drift observation")}`;speak("Arms. Please raise both arms and keep them there while I watch for one arm drifting down.",()=>{if(current!=="arms")return;stepStartedAt=performance.now();armBaseline=null;automated.arms={available:false,positive:false,decision:"pending",samples:0,positive_samples:0,both_raised_samples:0,one_sided_samples:0,metric:null,quality:"pending",reason:""};beginScan(ARMS_WINDOW_MS);setStepTimer(finalizeArms,ARMS_WINDOW_MS)});
 }
 function renderSpeech(){
   current="speech";speechSettled=false;speechAwaitingRetry=false;speechBest={transcript:"",confidence:0,score:0};automated.speech={available:false,positive:false,decision:"pending",transcript:"",similarity:null,confidence:null,quality:"pending",reason:"",provider:"openai",model:"gpt-transcribe",recording_retained:false};
@@ -461,8 +468,7 @@ function showResult(){
   workspace.appendChild(resultSection);
   const payload={type:"fast_check_result",answers,automated,result:{...result,status:result.call_999?"call_999":"no_fast_signs_identified",demo_call_911:result.call_999,emergency_call_mode:"simulation"},onset_time:""};postRN(payload);reported=true;
   const onset=document.getElementById("onset");if(onset)onset.onchange=()=>postRN({...payload,onset_time:onset.value});
-  speak(result.call_999?"Red flag. Call 911 now and say you suspect a stroke.":"No FAST signs were identified. This does not rule out a stroke. Call 911 if you remain concerned.");
-  if(result.call_999)setTimeout(startDemo911Call,900);
+  speak(result.call_999?"Red flag. Call 911 now and say you suspect a stroke.":"No FAST signs were identified. This does not rule out a stroke. Call 911 if you remain concerned.",result.call_999?()=>setTimeout(startDemo911Call,300):undefined);
 }
 
 window.startDemo911Call=startDemo911Call;window.postRN=postRN;renderIntro();
