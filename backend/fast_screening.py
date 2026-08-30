@@ -167,9 +167,9 @@ const automated={
   speech:{available:false,positive:false,decision:"pending",transcript:"",similarity:null,confidence:null,quality:"pending",reason:"",provider:"openai",model:"gpt-transcribe",recording_retained:false}
 };
 let poseLandmarker=null,faceLandmarker=null,stream=null,current="intro",lastVideoTime=-1,animationId=null,stepStartedAt=0,stepTimer=null,speechRecorder=null,speechAudioStream=null,speechTimer=null,reported=false;
-let armBaseline=null,speechSettled=false,speechAwaitingRetry=false,speechBest={transcript:"",confidence:0,score:0};
+let armBaseline=null,speechSettled=false,speechAwaitingRetry=false,speechBest={transcript:"",confidence:0,score:0},speechAudioContext=null,speechVadFrame=null;
 const phrase="The sky is blue today";
-const FACE_WINDOW_MS=5600,ARMS_WINDOW_MS=6800,SPEECH_WINDOW_MS=15000;
+const FACE_WINDOW_MS=5600,ARMS_WINDOW_MS=6800,SPEECH_WINDOW_MS=15000,SPEECH_SILENCE_MS=1300,SPEECH_MIN_TALK_MS=900;
 
 function postRN(data){
   const message=JSON.stringify(data);
@@ -314,8 +314,50 @@ function editDistance(a,b){const dp=Array.from({length:a.length+1},()=>Array(b.l
 function similarity(a,b){a=normalizeSpeech(a);b=normalizeSpeech(b);return Math.max(0,1-editDistance(a,b)/Math.max(a.length,b.length,1))}
 function cancelSpeechCapture(){
   if(speechTimer)clearTimeout(speechTimer);speechTimer=null;
+  stopSpeechVoiceMonitor();
   if(speechRecorder){const recorder=speechRecorder;speechRecorder=null;recorder.onstop=null;try{if(recorder.state!=="inactive")recorder.stop()}catch{}}
   if(speechAudioStream){speechAudioStream.getTracks().forEach(track=>track.stop());speechAudioStream=null}
+}
+function stopSpeechVoiceMonitor(){
+  if(speechVadFrame)cancelAnimationFrame(speechVadFrame);speechVadFrame=null;
+  if(speechAudioContext){try{speechAudioContext.close()}catch{}speechAudioContext=null}
+}
+function startSpeechVoiceMonitor(recorder){
+  const AudioCtx=window.AudioContext||window.webkitAudioContext;if(!AudioCtx||!speechAudioStream)return;
+  try{
+    speechAudioContext=new AudioCtx();
+    const source=speechAudioContext.createMediaStreamSource(speechAudioStream);
+    const analyser=speechAudioContext.createAnalyser();analyser.fftSize=1024;source.connect(analyser);
+    const samples=new Float32Array(analyser.fftSize);
+    const startedAt=performance.now();let noiseFloor=.006,lastTick=startedAt,voiceStartedAt=0,lastVoiceAt=0,talkedMs=0,heardAnnounced=false;
+    const tick=()=>{
+      speechVadFrame=null;
+      if(speechRecorder!==recorder||speechSettled||speechAwaitingRetry||recorder.state==="inactive"){stopSpeechVoiceMonitor();return}
+      analyser.getFloatTimeDomainData(samples);
+      let sum=0;for(let i=0;i<samples.length;i++)sum+=samples[i]*samples[i];
+      const rms=Math.sqrt(sum/samples.length);
+      const now=performance.now(),elapsed=Math.min(now-lastTick,120);lastTick=now;
+      if(now-startedAt<450){
+        noiseFloor=Math.max(noiseFloor,rms*1.15);
+      }else{
+        const speaking=rms>Math.max(noiseFloor*2.5,.012);
+        if(speaking){
+          if(!voiceStartedAt)voiceStartedAt=now;
+          lastVoiceAt=now;talkedMs+=elapsed;
+          if(!heardAnnounced&&talkedMs>350){heardAnnounced=true;const status=document.getElementById("transcript");if(status)status.textContent="Alira can hear you. Finish the phrase, then pause - the check continues automatically."}
+        }else{
+          noiseFloor=noiseFloor*.98+rms*.02;
+          if(voiceStartedAt&&talkedMs>=SPEECH_MIN_TALK_MS&&now-lastVoiceAt>=SPEECH_SILENCE_MS){
+            stopSpeechVoiceMonitor();
+            try{if(recorder.state!=="inactive")recorder.stop()}catch{}
+            return;
+          }
+        }
+      }
+      speechVadFrame=requestAnimationFrame(tick);
+    };
+    speechVadFrame=requestAnimationFrame(tick);
+  }catch{stopSpeechVoiceMonitor()}
 }
 function finishSpeech(decision,reason){
   if(speechSettled)return;speechSettled=true;
@@ -353,6 +395,7 @@ async function transcribeSpeechRecording(blob){
   if(speechSettled||speechAwaitingRetry)return;
   const status=document.getElementById("transcript");
   if(status)status.textContent="Alira is securely transcribing the short recording...";
+  const fill=document.getElementById("scanFill");if(fill){fill.style.transition="none";fill.style.width="100%"}
   const result=document.getElementById("autoResult");if(result)result.innerHTML="<span class=\"pulseDot\"></span><span>OpenAI speech-to-text is processing the phrase. The audio is not retained by Rehyn.</span>";
   try{
     const form=new FormData();form.append("file",blob,speechFilename(blob.type));
@@ -379,8 +422,8 @@ async function startSpeechCheck(){
     const mimeType=speechMimeType(),chunks=[];const recorder=new MediaRecorder(speechAudioStream,mimeType?{mimeType}:undefined);speechRecorder=recorder;let captureFailed=false;
     recorder.ondataavailable=event=>{if(event.data&&event.data.size>0)chunks.push(event.data)};
     recorder.onerror=()=>{captureFailed=true;pauseForIncompleteSpeech("The microphone recording was interrupted. No emergency result has been decided. Please try again.")};
-    recorder.onstop=()=>{if(speechTimer)clearTimeout(speechTimer);speechTimer=null;if(speechAudioStream){speechAudioStream.getTracks().forEach(track=>track.stop());speechAudioStream=null}if(speechRecorder===recorder)speechRecorder=null;if(captureFailed)return;const blob=new Blob(chunks,{type:recorder.mimeType||mimeType||"audio/webm"});if(!blob.size){pauseForIncompleteSpeech("No audio was captured. No emergency result has been decided. Please try again.");return}void transcribeSpeechRecording(blob)};
-    recorder.start(250);if(status)status.textContent="Listening now. Say the complete phrase at your own pace.";beginScan(SPEECH_WINDOW_MS);speechTimer=setTimeout(()=>{if(recorder.state!=="inactive")recorder.stop()},SPEECH_WINDOW_MS);
+    recorder.onstop=()=>{if(speechTimer)clearTimeout(speechTimer);speechTimer=null;stopSpeechVoiceMonitor();if(speechAudioStream){speechAudioStream.getTracks().forEach(track=>track.stop());speechAudioStream=null}if(speechRecorder===recorder)speechRecorder=null;if(captureFailed)return;const blob=new Blob(chunks,{type:recorder.mimeType||mimeType||"audio/webm"});if(!blob.size){pauseForIncompleteSpeech("No audio was captured. No emergency result has been decided. Please try again.");return}void transcribeSpeechRecording(blob)};
+    recorder.start(250);if(status)status.textContent="Listening now. Say the complete phrase, then pause - Alira notices when you finish.";beginScan(SPEECH_WINDOW_MS);startSpeechVoiceMonitor(recorder);speechTimer=setTimeout(()=>{if(recorder.state!=="inactive")recorder.stop()},SPEECH_WINDOW_MS);
   }catch(error){pauseForIncompleteSpeech("Microphone access is unavailable. No emergency result has been decided. Allow microphone access, then try again.")}
 }
 
@@ -398,7 +441,7 @@ function renderArms(){
 }
 function renderSpeech(){
   current="speech";speechSettled=false;speechAwaitingRetry=false;speechBest={transcript:"",confidence:0,score:0};automated.speech={available:false,positive:false,decision:"pending",transcript:"",similarity:null,confidence:null,quality:"pending",reason:"",provider:"openai",model:"gpt-transcribe",recording_retained:false};
-  panel.innerHTML=`${progress(2)}<div class="letter">S</div><div class="eyebrow">Speech · OpenAI transcription</div><h1>Repeat the phrase aloud</h1><p>After Alira reads the phrase, speak at your own pace. Rehyn records for up to 15 seconds, then OpenAI converts the recording to text for Alira.</p><div class="phrase">"${phrase}."</div><div class="transcript" id="transcript" aria-live="polite">Preparing the microphone...</div>${automaticCard("Speech and understanding observation")}<p class="privacyNote">This short recording is sent securely to OpenAI for transcription. Rehyn does not retain the audio. If transcription fails or only part is heard, no emergency result is decided and you can try again.</p>`;speak(`Speech. Please repeat: ${phrase}.`,startSpeechCheck);
+  panel.innerHTML=`${progress(2)}<div class="letter">S</div><div class="eyebrow">Speech · OpenAI transcription</div><h1>Repeat the phrase aloud</h1><p>After Alira reads the phrase, speak at your own pace. As soon as you finish speaking, Alira stops listening automatically and OpenAI converts the recording to text.</p><div class="phrase">"${phrase}."</div><div class="transcript" id="transcript" aria-live="polite">Preparing the microphone...</div>${automaticCard("Speech and understanding observation")}<p class="privacyNote">This short recording is sent securely to OpenAI for transcription. Rehyn does not retain the audio. If transcription fails or only part is heard, no emergency result is decided and you can try again.</p>`;speak(`Speech. Please repeat: ${phrase}.`,startSpeechCheck);
 }
 
 function outcome(){

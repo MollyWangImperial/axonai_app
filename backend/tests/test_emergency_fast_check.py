@@ -104,6 +104,13 @@ def test_fast_runner_and_audit_endpoint_apply_the_same_rule(monkeypatch):
     assert "MediaRecorder" in runner.text
     assert 'fetch("/api/stt/transcribe"' in runner.text
     assert "SPEECH_WINDOW_MS=15000" in runner.text
+    assert "SPEECH_SILENCE_MS=1300" in runner.text
+    assert "SPEECH_MIN_TALK_MS=900" in runner.text
+    assert "startSpeechVoiceMonitor" in runner.text
+    assert "stopSpeechVoiceMonitor" in runner.text
+    assert "getFloatTimeDomainData" in runner.text
+    assert "Rehyn records for up to 15 seconds" not in runner.text
+    assert "Alira stops listening automatically" in runner.text
     assert "audio/webm;codecs=opus" in runner.text
     assert "audio/ogg;codecs=opus" in runner.text
     assert "audio/mp4" in runner.text
