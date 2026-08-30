@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any, Dict, Mapping
 
 
-FAST_ALGORITHM_VERSION = "rehyn-fast-1.1-demo-911"
+FAST_ALGORITHM_VERSION = "rehyn-fast-1.2-automatic-demo-911"
 FAST_SIGNS = ("face", "arms", "speech")
 FAST_ANSWERS = {"no", "yes", "unsure"}
 
@@ -14,10 +14,10 @@ def evaluate_fast_screen(
 ) -> Dict[str, Any]:
     """Apply the NHS FAST escalation rule without presenting a diagnosis."""
     automated = automated or {}
-    normalized = {
-        sign: str(answers.get(sign) or "unsure").strip().lower()
-        for sign in FAST_SIGNS
-    }
+    normalized = {}
+    for sign in FAST_SIGNS:
+        automated_decision = (automated.get(sign) or {}).get("decision")
+        normalized[sign] = str(answers.get(sign) or automated_decision or "unsure").strip().lower()
     for sign, answer in normalized.items():
         if answer not in FAST_ANSWERS:
             raise ValueError(f"Invalid FAST answer for {sign}")
@@ -96,6 +96,16 @@ FAST_RUNNER_HTML = r"""<!DOCTYPE html>
   .assist{display:flex;align-items:flex-start;gap:10px;background:#EEF4F0;border:1px solid #D8E3DB;padding:12px;border-radius:6px;margin:0 0 18px;color:#294638;font-size:14px;line-height:1.4}
   .assistDot{width:10px;height:10px;border-radius:50%;background:#78847D;margin-top:5px;flex:0 0 auto}
   .assist.good .assistDot{background:#2F7A4D}.assist.warn .assistDot{background:#B42318}
+  .autoCard{border:1px solid #C9D4CD;background:#F7FAF8;border-radius:6px;padding:15px;margin:0 0 14px}
+  .autoTop{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:11px;color:#244536;font-size:14px;font-weight:850}
+  .autoBadge{padding:5px 9px;border-radius:4px;background:#E2EEE6;color:#175A39;font-size:12px;text-transform:uppercase;white-space:nowrap}
+  .scanTrack{height:8px;border-radius:4px;overflow:hidden;background:#DDE5E0}
+  .scanFill{height:100%;width:0;background:#2D7A4B;transition:width .18s linear}
+  .autoResult{display:flex;align-items:center;gap:10px;min-height:48px;margin-top:11px;color:#425249;font-size:14px;line-height:1.35}
+  .autoResult strong{color:#153F2D}.autoResult.warn strong{color:#8F1D14}.autoResult.clear strong{color:#1F7047}
+  .pulseDot{width:11px;height:11px;border-radius:50%;background:#2D7A4B;box-shadow:0 0 0 0 rgba(45,122,75,.35);animation:scanPulse 1.25s ease-out infinite;flex:0 0 auto}
+  @keyframes scanPulse{75%{box-shadow:0 0 0 9px rgba(45,122,75,0)}}
+  .privacyNote{font-size:13px;color:#5D6962;margin-top:8px;line-height:1.4}
   .actions{display:grid;gap:10px}
   .primary,.answer,.secondary{min-height:54px;border-radius:6px;font-weight:850;padding:13px 16px}
   .primary{border:0;background:#155B3C;color:#fff}
@@ -147,17 +157,19 @@ FAST_RUNNER_HTML = r"""<!DOCTYPE html>
   </main>
 </div>
 <script type="module">
-import { PoseLandmarker, FilesetResolver, DrawingUtils } from "/vendor/mediapipe/vision_bundle.mjs";
+import { PoseLandmarker, FaceLandmarker, FilesetResolver, DrawingUtils } from "/vendor/mediapipe/vision_bundle.mjs";
 
 const video=document.getElementById("video"),canvas=document.getElementById("canvas"),ctx=canvas.getContext("2d"),panel=document.getElementById("panel"),cameraLabel=document.getElementById("cameraLabel");
 const answers={face:null,arms:null,speech:null};
 const automated={
-  face:{available:false,positive:false,samples:0,positive_samples:0,metric:null},
-  arms:{available:false,positive:false,samples:0,positive_samples:0,metric:null},
-  speech:{available:false,positive:false,transcript:"",similarity:null,confidence:null}
+  face:{available:false,positive:false,decision:"pending",samples:0,positive_samples:0,engaged_samples:0,metric:null,quality:"pending",reason:""},
+  arms:{available:false,positive:false,decision:"pending",samples:0,positive_samples:0,both_raised_samples:0,one_sided_samples:0,metric:null,quality:"pending",reason:""},
+  speech:{available:false,positive:false,decision:"pending",transcript:"",similarity:null,confidence:null,quality:"pending",reason:""}
 };
-let landmarker=null,stream=null,current="intro",lastVideoTime=-1,animationId=null,stepStartedAt=0,reported=false;
+let poseLandmarker=null,faceLandmarker=null,stream=null,current="intro",lastVideoTime=-1,animationId=null,stepStartedAt=0,stepTimer=null,speechRecognition=null,speechTimer=null,reported=false;
+let armBaseline=null,speechAttempt=0,speechSettled=false;
 const phrase="The sky is blue today";
+const FACE_WINDOW_MS=5600,ARMS_WINDOW_MS=6800,SPEECH_WINDOW_MS=9000;
 
 function postRN(data){
   const message=JSON.stringify(data);
@@ -171,15 +183,16 @@ function startDemo911Call(){
   document.body.appendChild(overlay);document.getElementById("closeDemoCall").onclick=()=>overlay.remove();postRN({type:"demo_911_started"});
   speak("Demo only. The app is simulating a 911 call. No emergency call has been placed. In a real emergency, call 911 immediately.");
 }
-function speak(text){
-  try{speechSynthesis.cancel();const utterance=new SpeechSynthesisUtterance(text);utterance.rate=.88;utterance.pitch=1;utterance.lang="en-GB";speechSynthesis.speak(utterance)}catch{}
+function speak(text,onEnd){
+  let finished=false;const done=()=>{if(finished)return;finished=true;if(onEnd)onEnd()};
+  try{speechSynthesis.cancel();const utterance=new SpeechSynthesisUtterance(text);utterance.rate=.88;utterance.pitch=1;utterance.lang="en-GB";utterance.onend=done;utterance.onerror=done;speechSynthesis.speak(utterance);if(onEnd)setTimeout(done,Math.max(2600,text.length*65))}catch{setTimeout(done,250)}
 }
 function progress(index){return `<div class="progress" aria-label="FAST step ${index+1} of 4">${[0,1,2,3].map(i=>`<span class="${i<index?'done':i===index?'active':''}"></span>`).join('')}</div>`}
 function distance(a,b){return Math.hypot((a.x||0)-(b.x||0),(a.y||0)-(b.y||0))}
 function visible(lm,indexes){return indexes.every(i=>lm[i]&&(lm[i].visibility??1)>.55)}
 
 async function ensureCamera(){
-  if(stream&&landmarker) return true;
+  if(stream&&(poseLandmarker||faceLandmarker)) return true;
   cameraLabel.textContent="Starting private on-device camera assistance...";
   try{
     let cameraTimedOut=false;
@@ -188,100 +201,174 @@ async function ensureCamera(){
     stream=await Promise.race([cameraRequest,new Promise((_,reject)=>setTimeout(()=>{cameraTimedOut=true;reject(new Error("camera timeout"))},4500))]);
     video.srcObject=stream;await video.play();
     const files=await FilesetResolver.forVisionTasks("/vendor/mediapipe/wasm");
-    landmarker=await PoseLandmarker.createFromOptions(files,{baseOptions:{modelAssetPath:"/vendor/mediapipe/models/pose_landmarker_lite.task"},runningMode:"VIDEO",numPoses:1,minPoseDetectionConfidence:.55,minPosePresenceConfidence:.55,minTrackingConfidence:.55});
+    const models=await Promise.allSettled([
+      PoseLandmarker.createFromOptions(files,{baseOptions:{modelAssetPath:"/vendor/mediapipe/models/pose_landmarker_lite.task"},runningMode:"VIDEO",numPoses:1,minPoseDetectionConfidence:.55,minPosePresenceConfidence:.55,minTrackingConfidence:.55}),
+      FaceLandmarker.createFromOptions(files,{baseOptions:{modelAssetPath:"/vendor/mediapipe/models/face_landmarker.task"},runningMode:"VIDEO",numFaces:1,outputFaceBlendshapes:true,minFaceDetectionConfidence:.55,minFacePresenceConfidence:.55,minTrackingConfidence:.55})
+    ]);
+    if(models[0].status==="fulfilled")poseLandmarker=models[0].value;
+    if(models[1].status==="fulfilled")faceLandmarker=models[1].value;
+    if(!poseLandmarker&&!faceLandmarker)throw new Error("FAST models unavailable");
     cameraLabel.textContent="Camera assistance is ready. Video stays on this device and is not saved.";
     animationId=requestAnimationFrame(loop);
     return true;
   }catch(error){
-    cameraLabel.textContent="Camera assistance is unavailable. A carer can still complete FAST by observing the person directly.";
+    cameraLabel.textContent="Automatic camera observation is unavailable. Alira will mark the camera checks as inconclusive.";
     return false;
   }
 }
 
 function loop(){
-  if(video.readyState>=2&&landmarker&&video.currentTime!==lastVideoTime){
+  if(video.readyState>=2&&(poseLandmarker||faceLandmarker)&&video.currentTime!==lastVideoTime){
     lastVideoTime=video.currentTime;
     if(canvas.width!==video.videoWidth){canvas.width=video.videoWidth;canvas.height=video.videoHeight}
-    const result=landmarker.detectForVideo(video,performance.now());
+    const now=performance.now();
+    const poseResult=poseLandmarker?poseLandmarker.detectForVideo(video,now):null;
+    const faceResult=current==="face"&&faceLandmarker?faceLandmarker.detectForVideo(video,now):null;
     ctx.clearRect(0,0,canvas.width,canvas.height);
-    const lm=result.landmarks&&result.landmarks[0];
-    if(lm){
-      const draw=new DrawingUtils(ctx);draw.drawConnectors(lm,PoseLandmarker.POSE_CONNECTIONS,{color:"rgba(155,226,182,.78)",lineWidth:3});draw.drawLandmarks(lm,{color:"#FFFFFF",fillColor:"#B42318",radius:3});
-      if(current==="face") analyseFace(lm);
-      if(current==="arms") analyseArms(lm);
+    const poseLm=poseResult&&poseResult.landmarks&&poseResult.landmarks[0];
+    if(poseLm){
+      const draw=new DrawingUtils(ctx);draw.drawConnectors(poseLm,PoseLandmarker.POSE_CONNECTIONS,{color:"rgba(155,226,182,.78)",lineWidth:3});draw.drawLandmarks(poseLm,{color:"#FFFFFF",fillColor:"#B42318",radius:3});
     }
+    if(current==="face")analyseFace(faceResult,poseLm);
+    if(current==="arms"&&poseLm)analyseArms(poseLm);
   }
   animationId=requestAnimationFrame(loop);
 }
 
-function analyseFace(lm){
-  if(!visible(lm,[2,5,9,10])) return;
-  const faceWidth=Math.max(distance(lm[2],lm[5]),distance(lm[9],lm[10]),.02);
-  const headTilt=(lm[2].y-lm[5].y);
-  const mouthTilt=(lm[9].y-lm[10].y);
-  const corrected=Math.abs(mouthTilt-headTilt)/faceWidth;
-  automated.face.available=true;automated.face.samples+=1;automated.face.metric=Number(corrected.toFixed(3));
-  if(corrected>.24) automated.face.positive_samples+=1;
-  automated.face.positive=automated.face.samples>=12&&automated.face.positive_samples/automated.face.samples>.38;
-  updateAssist("face",automated.face.positive?"Camera assistance noticed possible unevenness. Treat this as a sign.":"Camera assistance is comparing both sides of the smile.",automated.face.positive?"warn":"good");
+function analyseFace(faceResult,poseLm){
+  const face=automated.face;
+  const faceLm=faceResult&&faceResult.faceLandmarks&&faceResult.faceLandmarks[0];
+  const categories=faceResult&&faceResult.faceBlendshapes&&faceResult.faceBlendshapes[0]&&faceResult.faceBlendshapes[0].categories;
+  if(faceLm&&categories){
+    const scores={};categories.forEach(item=>{scores[item.categoryName]=item.score||0});
+    const smileLeft=scores.mouthSmileLeft||0,smileRight=scores.mouthSmileRight||0;
+    const smileActivation=(smileLeft+smileRight)/2,blendAsymmetry=Math.abs(smileLeft-smileRight);
+    const faceWidth=Math.max(distance(faceLm[33],faceLm[263]),.04);
+    const headTilt=faceLm[33].y-faceLm[263].y,mouthTilt=faceLm[61].y-faceLm[291].y;
+    const landmarkAsymmetry=Math.abs(mouthTilt-headTilt)/faceWidth;
+    const metric=Math.max(blendAsymmetry,landmarkAsymmetry);
+    face.available=true;face.samples+=1;face.quality="face_landmarker";face.metric=Number(metric.toFixed(3));face.smile_activation=Number(smileActivation.toFixed(3));
+    if(smileActivation>.08)face.engaged_samples+=1;
+    if(smileActivation>.08&&(blendAsymmetry>.22||landmarkAsymmetry>.17))face.positive_samples+=1;
+    face.positive=face.samples>=16&&face.positive_samples/face.samples>.26;
+    updateAssist("face",face.positive?"Alira noticed persistent left-right smile unevenness.":smileActivation>.08?"Smile detected. Comparing both sides now.":"Please smile and hold while Alira observes both sides.",face.positive?"warn":"good");
+    return;
+  }
+  if(!poseLm||!visible(poseLm,[2,5,9,10]))return;
+  const faceWidth=Math.max(distance(poseLm[2],poseLm[5]),distance(poseLm[9],poseLm[10]),.02);
+  const corrected=Math.abs((poseLm[9].y-poseLm[10].y)-(poseLm[2].y-poseLm[5].y))/faceWidth;
+  face.available=true;face.samples+=1;face.quality="pose_fallback";face.metric=Number(corrected.toFixed(3));
+  if(corrected>.24)face.positive_samples+=1;
+  face.positive=face.samples>=12&&face.positive_samples/face.samples>.38;
+  updateAssist("face",face.positive?"Alira noticed possible left-right smile unevenness.":"Face found. The detailed smile model is still loading.",face.positive?"warn":"good");
 }
 
 function analyseArms(lm){
   if(!visible(lm,[11,12,13,14,15,16])) return;
+  const arms=automated.arms;
   const shoulderWidth=Math.max(distance(lm[11],lm[12]),.04);
-  const leftRaised=lm[15].y<=lm[11].y+shoulderWidth*.55;
-  const rightRaised=lm[16].y<=lm[12].y+shoulderWidth*.55;
+  const leftHeight=(lm[15].y-lm[11].y)/shoulderWidth,rightHeight=(lm[16].y-lm[12].y)/shoulderWidth;
+  const leftRaised=leftHeight<=.62,rightRaised=rightHeight<=.62;
   const wristDifference=Math.abs(lm[15].y-lm[16].y)/shoulderWidth;
-  const possibleDifference=!leftRaised||!rightRaised||wristDifference>.42;
-  automated.arms.available=true;automated.arms.samples+=1;automated.arms.metric=Number(wristDifference.toFixed(3));
-  if(possibleDifference) automated.arms.positive_samples+=1;
-  automated.arms.positive=automated.arms.samples>=18&&automated.arms.positive_samples/automated.arms.samples>.48;
-  updateAssist("arms",automated.arms.positive?"Camera assistance noticed one arm may be lower or drifting. Treat this as a sign.":"Keep both arms raised while Alira watches for drift.",automated.arms.positive?"warn":"good");
+  const oneSided=leftRaised!==rightRaised;
+  if(leftRaised&&rightRaised&&!armBaseline)armBaseline={left:leftHeight,right:rightHeight};
+  const leftDrift=armBaseline?leftHeight-armBaseline.left:0,rightDrift=armBaseline?rightHeight-armBaseline.right:0;
+  const unilateralDrift=(leftDrift>.30&&rightDrift<.16)||(rightDrift>.30&&leftDrift<.16);
+  const possibleDifference=oneSided||(leftRaised&&rightRaised&&(wristDifference>.42||unilateralDrift));
+  arms.available=true;arms.samples+=1;arms.quality="pose_landmarker";arms.metric=Number(Math.max(wristDifference,leftDrift,rightDrift).toFixed(3));
+  if(leftRaised&&rightRaised)arms.both_raised_samples+=1;
+  if(oneSided)arms.one_sided_samples+=1;
+  if(possibleDifference)arms.positive_samples+=1;
+  arms.positive=arms.samples>=18&&(arms.one_sided_samples/arms.samples>.30||(arms.both_raised_samples>=10&&arms.positive_samples/arms.samples>.42));
+  updateAssist("arms",arms.positive?"Alira noticed one arm staying lower or drifting.":leftRaised&&rightRaised?"Both arms found. Keep holding while Alira watches for drift.":oneSided?"One arm is raised. Keep trying to lift both.":"Raise both arms and hold them there.",arms.positive?"warn":"good");
 }
 
 function updateAssist(sign,text,state){
   if(current!==sign) return;const el=document.getElementById("assist");if(!el)return;el.className=`assist ${state||''}`;el.querySelector("span:last-child").textContent=text;
 }
 
+function beginScan(duration){const fill=document.getElementById("scanFill");if(!fill)return;fill.style.transition=`width ${duration}ms linear`;requestAnimationFrame(()=>{fill.style.width="100%"})}
+function setStepTimer(callback,duration){if(stepTimer)clearTimeout(stepTimer);stepTimer=setTimeout(callback,duration)}
+function automaticCard(label){return `<div class="autoCard"><div class="autoTop"><span>${label}</span><span class="autoBadge">Automatic</span></div><div class="scanTrack"><div class="scanFill" id="scanFill"></div></div><div class="autoResult" id="autoResult" aria-live="polite"><span class="pulseDot"></span><span>Observing now. Alira will move on automatically.</span></div></div>`}
+function showAutomaticDecision(sign,decision,text,next){
+  answers[sign]=decision;automated[sign].decision=decision;automated[sign].positive=decision==="yes";
+  const fill=document.getElementById("scanFill");if(fill){fill.style.transition="none";fill.style.width="100%"}
+  const el=document.getElementById("autoResult");if(el){el.className=`autoResult ${decision==="yes"||decision==="unsure"?"warn":"clear"}`;el.innerHTML=`<strong>${decision==="yes"?"Possible FAST sign detected":decision==="no"?"No FAST sign detected in this step":"Check inconclusive"}</strong><span>${text}</span>`}
+  setTimeout(next,1100);
+}
+function finalizeFace(){
+  const face=automated.face;let decision="unsure",reason="The face or smile could not be measured clearly.";
+  if(face.samples>=12&&face.positive_samples/face.samples>.26){decision="yes";reason="Persistent left-right smile unevenness was detected."}
+  else if(face.quality==="face_landmarker"&&face.samples>=18&&face.engaged_samples/face.samples>.10){decision="no";reason="A smile was detected without persistent left-right unevenness."}
+  face.reason=reason;showAutomaticDecision("face",decision,reason,renderArms);
+}
+function finalizeArms(){
+  const arms=automated.arms;let decision="unsure",reason="Both arms could not be observed in a sustained raised position.";
+  if(arms.samples>=18&&(arms.one_sided_samples/arms.samples>.30||(arms.both_raised_samples>=10&&arms.positive_samples/arms.samples>.42))){decision="yes";reason="One arm stayed lower or drifted during the hold."}
+  else if(arms.samples>=18&&arms.both_raised_samples>=12&&arms.positive_samples/arms.samples<=.42){decision="no";reason="Both arms stayed raised without persistent one-sided drift."}
+  arms.reason=reason;showAutomaticDecision("arms",decision,reason,renderSpeech);
+}
+
 function normalizeSpeech(text){return String(text||"").toLowerCase().replace(/[^a-z0-9 ]/g," ").replace(/\s+/g," ").trim()}
 function editDistance(a,b){const dp=Array.from({length:a.length+1},()=>Array(b.length+1).fill(0));for(let i=0;i<=a.length;i++)dp[i][0]=i;for(let j=0;j<=b.length;j++)dp[0][j]=j;for(let i=1;i<=a.length;i++)for(let j=1;j<=b.length;j++)dp[i][j]=Math.min(dp[i-1][j]+1,dp[i][j-1]+1,dp[i-1][j-1]+(a[i-1]===b[j-1]?0:1));return dp[a.length][b.length]}
 function similarity(a,b){a=normalizeSpeech(a);b=normalizeSpeech(b);return Math.max(0,1-editDistance(a,b)/Math.max(a.length,b.length,1))}
+function finishSpeech(decision,reason){
+  if(speechSettled)return;speechSettled=true;
+  if(speechTimer)clearTimeout(speechTimer);speechTimer=null;
+  if(speechRecognition){try{speechRecognition.stop()}catch{}speechRecognition=null}
+  automated.speech.reason=reason;showAutomaticDecision("speech",decision,reason,showResult);
+}
 function startSpeechCheck(){
   const Recognition=window.SpeechRecognition||window.webkitSpeechRecognition;
   const status=document.getElementById("transcript");
-  if(!Recognition){status.textContent="Automatic speech assistance is not supported here. Listen to the phrase and choose what you observed below.";return}
-  const recognition=new Recognition();recognition.lang="en-GB";recognition.interimResults=false;recognition.maxAlternatives=1;
-  status.textContent="Listening... Ask the person to repeat the phrase now.";speak(`Please repeat: ${phrase}.`);
-  recognition.onresult=(event)=>{const item=event.results[0][0];const transcript=item.transcript||"";const score=similarity(transcript,phrase);automated.speech={available:true,positive:score<.45&&(item.confidence||0)>.5,transcript,similarity:Number(score.toFixed(3)),confidence:Number((item.confidence||0).toFixed(3))};status.textContent=`Heard: "${transcript}". A carer should still decide whether speech sounded clear.`;if(automated.speech.positive)status.textContent+=" The repeat phrase was very different, so treat this as a possible sign."};
-  recognition.onerror=()=>{status.textContent="Speech assistance could not hear clearly. Listen directly and choose below."};
-  try{recognition.start()}catch{status.textContent="Speech assistance could not start. Listen directly and choose below."}
+  if(!Recognition){status.textContent="Automatic speech recognition is unavailable in this browser. This step is inconclusive.";setTimeout(()=>finishSpeech("unsure","Speech recognition was unavailable, so speech difficulty could not be ruled out."),900);return}
+  speechAttempt+=1;const recognition=new Recognition();speechRecognition=recognition;recognition.lang="en-GB";recognition.interimResults=false;recognition.maxAlternatives=3;recognition.continuous=false;
+  status.textContent=speechAttempt===1?"Listening automatically. Repeat the phrase now.":"Listening once more. Repeat the phrase now.";
+  recognition.onresult=(event)=>{
+    const alternatives=Array.from(event.results[0]||[]);let best={transcript:"",confidence:0,score:0};
+    alternatives.forEach(item=>{const transcript=item.transcript||"",score=similarity(transcript,phrase);if(score>best.score)best={transcript,confidence:item.confidence||0,score}});
+    const decision=best.score>=.72?"no":best.score<.48?"yes":"unsure";
+    automated.speech.available=true;automated.speech.quality="browser_speech_recognition";automated.speech.transcript=best.transcript;automated.speech.similarity=Number(best.score.toFixed(3));automated.speech.confidence=Number(best.confidence.toFixed(3));
+    status.textContent=`Phrase match ${Math.round(best.score*100)}%. Alira has completed the speech observation.`;
+    finishSpeech(decision,decision==="no"?"The repeated phrase matched clearly.":decision==="yes"?"The repeated phrase was substantially different or unclear.":"The phrase match was not clear enough to rule out a speech sign.");
+  };
+  recognition.onnomatch=()=>retryOrFinishSpeech("No clear phrase was detected.");
+  recognition.onerror=(event)=>{if(event.error==="not-allowed"||event.error==="service-not-allowed")finishSpeech("unsure","Microphone access was unavailable, so speech difficulty could not be ruled out.");else retryOrFinishSpeech("Speech was not heard clearly.")};
+  speechTimer=setTimeout(()=>retryOrFinishSpeech("The spoken phrase was not detected in time."),SPEECH_WINDOW_MS);
+  try{recognition.start()}catch{retryOrFinishSpeech("Automatic speech recognition could not start.")}
+}
+function retryOrFinishSpeech(reason){
+  if(speechSettled)return;
+  if(speechTimer)clearTimeout(speechTimer);speechTimer=null;
+  if(speechRecognition){try{speechRecognition.abort()}catch{}speechRecognition=null}
+  if(speechAttempt<2){const status=document.getElementById("transcript");if(status)status.textContent=`${reason} Alira will try once more.`;setTimeout(()=>speak(`Please repeat: ${phrase}.`,startSpeechCheck),700);return}
+  finishSpeech("unsure",`${reason} Speech difficulty could not be ruled out.`);
 }
 
 function renderIntro(){
-  current="intro";document.body.classList.add("intro-mode");panel.innerHTML=`<div class="letter">!</div><div class="eyebrow">Alira guided check</div><h1>Think FAST</h1><p>Alira will guide a carer or family member through Face, Arms and Speech, one step at a time. This brief screen is not a diagnosis.</p><div class="important">If any sign is already visible, or symptoms started suddenly, call 911 now. Do not use this check to delay a real emergency call.</div><div class="actions"><button class="primary" data-testid="fast-start" id="begin">Begin guided FAST check</button></div><p class="source">Based on CDC FAST guidance.</p>`;
+  current="intro";document.body.classList.add("intro-mode");panel.innerHTML=`<div class="letter">!</div><div class="eyebrow">Alira automatic check</div><h1>Think FAST</h1><p>Alira will guide Face, Arms and Speech, observe each response automatically, and move to the next step without asking you to judge the result.</p><div class="important">If any sign is already visible, or symptoms started suddenly, call 911 now. Do not use this check to delay a real emergency call.</div><div class="actions"><button class="primary" data-testid="fast-start" id="begin">Begin automatic FAST check</button></div><p class="privacyNote">Camera video is processed in this page and is not saved. Speech recognition may use your browser's speech service. An unavailable or unclear check will be treated as inconclusive.</p><p class="source">Based on CDC FAST guidance.</p>`;
   document.getElementById("begin").onclick=async()=>{await ensureCamera();renderFace()};
 }
 function renderFace(){
-  current="face";document.body.classList.remove("intro-mode");stepStartedAt=performance.now();automated.face={available:false,positive:false,samples:0,positive_samples:0,metric:null};
-  panel.innerHTML=`${progress(0)}<div class="letter">F</div><div class="eyebrow">Face</div><h1>Ask the person to smile</h1><p>Look at both sides of the mouth and both eyes. Has one side drooped, or is the smile uneven?</p><div class="assist" id="assist"><span class="assistDot"></span><span>Position the face clearly in the camera and ask for a smile.</span></div>${answerButtons("face")}`;speak("Face. Please smile. Look for drooping or weakness on one side of the mouth or eye.");
+  current="face";document.body.classList.remove("intro-mode");stepStartedAt=performance.now();automated.face={available:false,positive:false,decision:"pending",samples:0,positive_samples:0,engaged_samples:0,metric:null,smile_activation:null,quality:"pending",reason:""};
+  panel.innerHTML=`${progress(0)}<div class="letter">F</div><div class="eyebrow">Face · automatic observation</div><h1>Please smile and hold</h1><p>Keep your face toward the camera. Alira is checking whether both sides of the smile move evenly.</p><div class="assist" id="assist"><span class="assistDot"></span><span>Finding the face and waiting for a smile.</span></div>${automaticCard("Smile observation")}`;speak("Face. Please smile and hold while I compare both sides.");beginScan(FACE_WINDOW_MS);setStepTimer(finalizeFace,FACE_WINDOW_MS);
 }
 function renderArms(){
-  current="arms";stepStartedAt=performance.now();automated.arms={available:false,positive:false,samples:0,positive_samples:0,metric:null};
-  panel.innerHTML=`${progress(1)}<div class="letter">A</div><div class="eyebrow">Arms</div><h1>Raise both arms and hold</h1><p>Ask the person to lift both arms to a comfortable level and keep them there. Does one arm drift down or fail to lift?</p><div class="assist" id="assist"><span class="assistDot"></span><span>Keep the shoulders and both hands visible while Alira watches for a difference.</span></div>${answerButtons("arms")}`;speak("Arms. Please raise both arms and keep them there. Look for one arm drifting down or failing to lift.");
+  current="arms";stepStartedAt=performance.now();armBaseline=null;automated.arms={available:false,positive:false,decision:"pending",samples:0,positive_samples:0,both_raised_samples:0,one_sided_samples:0,metric:null,quality:"pending",reason:""};
+  panel.innerHTML=`${progress(1)}<div class="letter">A</div><div class="eyebrow">Arms · automatic observation</div><h1>Raise both arms and hold</h1><p>Lift both arms to a comfortable level and keep them there until Alira moves on.</p><div class="assist" id="assist"><span class="assistDot"></span><span>Finding both shoulders, elbows and hands.</span></div>${automaticCard("Arm lift and drift observation")}`;speak("Arms. Please raise both arms and keep them there while I watch for one arm drifting down.");beginScan(ARMS_WINDOW_MS);setStepTimer(finalizeArms,ARMS_WINDOW_MS);
 }
 function renderSpeech(){
-  current="speech";panel.innerHTML=`${progress(2)}<div class="letter">S</div><div class="eyebrow">Speech</div><h1>Listen to speech and understanding</h1><p>Ask the person to repeat this phrase. Listen for slurred, garbled or muddled speech, and check that they understand the request.</p><div class="phrase">"${phrase}."</div><button class="secondary" id="listen" style="width:100%;margin-bottom:10px">Use speech assistance</button><div class="transcript" id="transcript">A carer should listen directly. Speech recognition is only supporting evidence.</div>${answerButtons("speech")}`;speak(`Speech. Please repeat: ${phrase}.`);document.getElementById("listen").onclick=startSpeechCheck;
+  current="speech";speechAttempt=0;speechSettled=false;automated.speech={available:false,positive:false,decision:"pending",transcript:"",similarity:null,confidence:null,quality:"pending",reason:""};
+  panel.innerHTML=`${progress(2)}<div class="letter">S</div><div class="eyebrow">Speech · automatic observation</div><h1>Repeat the phrase aloud</h1><p>Alira will listen automatically and compare the spoken phrase. Speak at your normal pace.</p><div class="phrase">"${phrase}."</div><div class="transcript" id="transcript" aria-live="polite">Preparing the microphone...</div>${automaticCard("Speech and understanding observation")}<p class="privacyNote">Speech recognition may be processed by the browser's speech service. Rehyn does not save the audio recording.</p>`;beginScan(SPEECH_WINDOW_MS*2+4000);speak(`Speech. Please repeat: ${phrase}.`,startSpeechCheck);
 }
-function answerButtons(sign){return `<div class="actions"><button class="answer" data-answer="no" onclick="chooseAnswer('${sign}','no')"><span>${sign==="speech"?"Speech was clear and understood":"No sign noticed"}</span><strong>No</strong></button><button class="answer danger" data-answer="yes" onclick="chooseAnswer('${sign}','yes')"><span>${sign==="face"?"Droop or uneven smile":sign==="arms"?"One arm drifted or could not lift":"Slurred, muddled or not understood"}</span><strong>Yes</strong></button><button class="answer unsure" data-answer="unsure" onclick="chooseAnswer('${sign}','unsure')"><span>I cannot tell clearly</span><strong>Not sure</strong></button></div>`}
-function chooseAnswer(sign,value){answers[sign]=value;if(sign==="face")renderArms();else if(sign==="arms")renderSpeech();else showResult()}
 
 function outcome(){
   const observed=["face","arms","speech"].filter(sign=>answers[sign]==="yes"||automated[sign].positive);
-  const uncertain=["face","arms","speech"].filter(sign=>answers[sign]==="unsure");
+  const uncertain=["face","arms","speech"].filter(sign=>answers[sign]==="unsure"||automated[sign].decision==="unsure");
   return {call_999:observed.length>0||uncertain.length>0,observed_signs:observed,uncertain_signs:uncertain};
 }
 function showResult(){
-  current="result";if(animationId)cancelAnimationFrame(animationId);if(stream)stream.getTracks().forEach(track=>track.stop());
+  current="result";if(stepTimer)clearTimeout(stepTimer);if(speechTimer)clearTimeout(speechTimer);if(speechRecognition){try{speechRecognition.abort()}catch{}speechRecognition=null}if(animationId)cancelAnimationFrame(animationId);if(stream)stream.getTracks().forEach(track=>track.stop());
   const result=outcome();document.getElementById("cameraPane").classList.add("hidden");panel.classList.add("hidden");
   const workspace=document.getElementById("workspace");const resultSection=document.createElement("section");resultSection.className="result";
   if(result.call_999){
@@ -296,7 +383,7 @@ function showResult(){
   if(result.call_999)setTimeout(startDemo911Call,900);
 }
 
-window.startDemo911Call=startDemo911Call;window.postRN=postRN;window.chooseAnswer=chooseAnswer;renderIntro();
+window.startDemo911Call=startDemo911Call;window.postRN=postRN;renderIntro();
 </script>
 </body>
 </html>"""

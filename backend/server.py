@@ -7796,7 +7796,16 @@ async def record_emergency_fast_check(payload: FastCheckSubmit, request: Request
         safe_automated[sign] = {
             "available": bool(source.get("available")),
             "positive": bool(source.get("positive")),
+            "decision": str(source.get("decision") or "unsure")[:16],
+            "quality": str(source.get("quality") or "unknown")[:64],
+            "reason": str(source.get("reason") or "")[:240],
+            "samples": source.get("samples") if isinstance(source.get("samples"), int) else 0,
+            "positive_samples": source.get("positive_samples") if isinstance(source.get("positive_samples"), int) else 0,
+            "engaged_samples": source.get("engaged_samples") if isinstance(source.get("engaged_samples"), int) else 0,
+            "both_raised_samples": source.get("both_raised_samples") if isinstance(source.get("both_raised_samples"), int) else 0,
+            "one_sided_samples": source.get("one_sided_samples") if isinstance(source.get("one_sided_samples"), int) else 0,
             "metric": source.get("metric"),
+            "smile_activation": source.get("smile_activation"),
             "similarity": source.get("similarity"),
             "confidence": source.get("confidence"),
         }

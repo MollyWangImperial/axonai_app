@@ -34,6 +34,17 @@ def test_any_observed_or_uncertain_fast_sign_triggers_demo_911_handoff():
     assert automated["call_999"] is True
     assert automated["observed_signs"] == ["arms"]
 
+    automatic_decision = evaluate_fast_screen(
+        {},
+        {
+            "face": {"decision": "no"},
+            "arms": {"decision": "no"},
+            "speech": {"decision": "unsure"},
+        },
+    )
+    assert automatic_decision["call_999"] is True
+    assert automatic_decision["uncertain_signs"] == ["speech"]
+
 
 def test_three_clear_negatives_never_claim_the_patient_is_fine():
     result = evaluate_fast_screen({"face": "no", "arms": "no", "speech": "no"})
@@ -53,6 +64,7 @@ def test_fast_runner_and_audit_endpoint_apply_the_same_rule(monkeypatch):
     with TestClient(server.app) as client:
         runner = client.get("/api/emergency/fast-runner")
         vision_bundle = client.get("/vendor/mediapipe/vision_bundle.mjs")
+        face_model = client.get("/vendor/mediapipe/models/face_landmarker.task")
         result = client.post(
             "/api/emergency/fast-check",
             json={
@@ -70,11 +82,22 @@ def test_fast_runner_and_audit_endpoint_apply_the_same_rule(monkeypatch):
     assert vision_bundle.status_code == 200
     assert "javascript" in vision_bundle.headers["content-type"]
     assert len(vision_bundle.content) > 100_000
+    assert face_model.status_code == 200
+    assert len(face_model.content) > 3_000_000
     assert "Emergency FAST check" in runner.text
-    assert "Alira guided check" in runner.text
-    assert "Ask the person to smile" in runner.text
+    assert "Alira automatic check" in runner.text
+    assert "Please smile and hold" in runner.text
     assert "Raise both arms and hold" in runner.text
-    assert "Listen to speech and understanding" in runner.text
+    assert "Repeat the phrase aloud" in runner.text
+    assert "Begin automatic FAST check" in runner.text
+    assert "Automatic speech recognition" in runner.text
+    assert "answerButtons" not in runner.text
+    assert "chooseAnswer" not in runner.text
+    assert 'data-answer="yes"' not in runner.text
+    assert 'data-answer="no"' not in runner.text
+    assert "finalizeFace" in runner.text
+    assert "finalizeArms" in runner.text
+    assert "startSpeechCheck" in runner.text
     assert "Call 911 now" in runner.text
     assert "Simulating a 911 call" in runner.text
     assert "No emergency call has been placed" in runner.text
