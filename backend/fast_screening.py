@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any, Dict, Mapping
 
 
-FAST_ALGORITHM_VERSION = "rehyn-fast-1.3-complete-speech-window"
+FAST_ALGORITHM_VERSION = "rehyn-fast-1.4-partial-phrase-retry"
 FAST_SIGNS = ("face", "arms", "speech")
 FAST_ANSWERS = {"no", "yes", "unsure"}
 
@@ -167,7 +167,7 @@ const automated={
   speech:{available:false,positive:false,decision:"pending",transcript:"",similarity:null,confidence:null,quality:"pending",reason:""}
 };
 let poseLandmarker=null,faceLandmarker=null,stream=null,current="intro",lastVideoTime=-1,animationId=null,stepStartedAt=0,stepTimer=null,speechRecognition=null,speechTimer=null,reported=false;
-let armBaseline=null,speechAttempt=0,speechSettled=false,speechDeadline=0,speechBest={transcript:"",confidence:0,score:0};
+let armBaseline=null,speechAttempt=0,speechSettled=false,speechAwaitingRetry=false,speechDeadline=0,speechBest={transcript:"",confidence:0,score:0};
 const phrase="The sky is blue today";
 const FACE_WINDOW_MS=5600,ARMS_WINDOW_MS=6800,SPEECH_WINDOW_MS=9000;
 
@@ -314,6 +314,7 @@ function editDistance(a,b){const dp=Array.from({length:a.length+1},()=>Array(b.l
 function similarity(a,b){a=normalizeSpeech(a);b=normalizeSpeech(b);return Math.max(0,1-editDistance(a,b)/Math.max(a.length,b.length,1))}
 function finishSpeech(decision,reason){
   if(speechSettled)return;speechSettled=true;
+  speechAwaitingRetry=false;
   if(speechTimer)clearTimeout(speechTimer);speechTimer=null;
   if(speechRecognition){try{speechRecognition.stop()}catch{}speechRecognition=null}
   automated.speech.reason=reason;showAutomaticDecision("speech",decision,reason,showResult);
@@ -322,20 +323,39 @@ function rememberSpeechCandidate(transcript,confidence){
   const clean=normalizeSpeech(transcript);if(!clean)return;
   const score=similarity(clean,phrase);if(score>speechBest.score)speechBest={transcript:clean,confidence:confidence||0,score};
 }
+function isCompleteSpeechCandidate(candidate){
+  const clean=normalizeSpeech(candidate?.transcript),words=clean.split(" ").filter(Boolean);
+  return words.length>=5&&(words.includes("today")||clean.endsWith("to day"));
+}
+function pauseForIncompleteSpeech(reason){
+  if(speechSettled||speechAwaitingRetry)return;speechAwaitingRetry=true;
+  if(speechTimer)clearTimeout(speechTimer);speechTimer=null;
+  if(speechRecognition){try{speechRecognition.abort()}catch{}speechRecognition=null}
+  const best=speechBest;
+  automated.speech.available=Boolean(best.transcript);automated.speech.quality=best.transcript?"partial_phrase":"no_clear_phrase";automated.speech.transcript=best.transcript;automated.speech.similarity=best.transcript?Number(best.score.toFixed(3)):null;automated.speech.confidence=best.transcript?Number(best.confidence.toFixed(3)):null;automated.speech.reason=reason;
+  const status=document.getElementById("transcript");if(status)status.textContent="Only part of the phrase was heard. No emergency result has been decided.";
+  const result=document.getElementById("autoResult");if(result){result.className="autoResult warn";result.innerHTML=`<strong>Speech check paused</strong><span>${reason}</span>`}
+  const existing=document.getElementById("speechRetryActions");if(existing)existing.remove();
+  const actions=document.createElement("div");actions.className="actions";actions.id="speechRetryActions";actions.innerHTML=`<button class="primary" data-testid="fast-speech-retry" id="retrySpeech">Try speech again</button><button class="secondary" data-testid="fast-speech-unable" id="unableSpeech">I cannot complete the phrase</button>`;
+  const card=document.querySelector(".autoCard");if(card)card.insertAdjacentElement("afterend",actions);
+  document.getElementById("retrySpeech").onclick=()=>{speechAttempt=0;speechDeadline=0;speechBest={transcript:"",confidence:0,score:0};speechAwaitingRetry=false;actions.remove();if(status)status.textContent="Preparing to listen again...";speak(`Please repeat: ${phrase}.`,startSpeechCheck)};
+  document.getElementById("unableSpeech").onclick=()=>{actions.remove();speechAwaitingRetry=false;finishSpeech("unsure","The complete phrase could not be captured, so speech difficulty could not be ruled out.")};
+}
 function finalizeSpeechWindow(){
-  if(speechSettled)return;
+  if(speechSettled||speechAwaitingRetry)return;
   if(speechRecognition){try{speechRecognition.stop()}catch{}speechRecognition=null}
   const best=speechBest,wordCount=best.transcript?best.transcript.split(" ").filter(Boolean).length:0;
   automated.speech.available=Boolean(best.transcript);automated.speech.quality=best.transcript?"browser_speech_recognition":"no_clear_phrase";automated.speech.transcript=best.transcript;automated.speech.similarity=best.transcript?Number(best.score.toFixed(3)):null;automated.speech.confidence=best.transcript?Number(best.confidence.toFixed(3)):null;
-  const decision=best.score>=.72&&wordCount>=4?"no":best.score<.48&&wordCount>=3?"yes":"unsure";
+  if(!isCompleteSpeechCandidate(best)){pauseForIncompleteSpeech(best.transcript?"Please try the complete phrase again when you are ready.":"No complete phrase was heard. Please try again when you are ready.");return}
+  const decision=best.score>=.72?"no":best.score<.48&&wordCount>=5?"yes":"unsure";
   const reason=decision==="no"?"The complete repeated phrase matched clearly.":decision==="yes"?"The captured phrase was substantially different or unclear.":best.transcript?"Only a partial or uncertain phrase was captured, so speech difficulty could not be ruled out.":"No complete phrase was captured, so speech difficulty could not be ruled out.";
   finishSpeech(decision,reason);
 }
 function startSpeechCheck(){
-  if(speechSettled)return;
+  if(speechSettled||speechAwaitingRetry)return;
   const Recognition=window.SpeechRecognition||window.webkitSpeechRecognition;
   const status=document.getElementById("transcript");
-  if(!Recognition){status.textContent="Automatic speech recognition is unavailable in this browser. This step is inconclusive.";beginScan(1800);setTimeout(()=>finishSpeech("unsure","Speech recognition was unavailable, so speech difficulty could not be ruled out."),1800);return}
+  if(!Recognition){pauseForIncompleteSpeech("Automatic speech recognition is unavailable in this browser. No emergency result has been decided. Please use the Rehyn app or a supported browser, then try again.");return}
   if(!speechDeadline){speechDeadline=performance.now()+SPEECH_WINDOW_MS;beginScan(SPEECH_WINDOW_MS);speechTimer=setTimeout(finalizeSpeechWindow,SPEECH_WINDOW_MS)}
   if(speechAttempt>=2)return;
   speechAttempt+=1;const recognition=new Recognition();speechRecognition=recognition;recognition.lang="en-GB";recognition.interimResults=true;recognition.maxAlternatives=3;recognition.continuous=false;
@@ -345,8 +365,8 @@ function startSpeechCheck(){
     if(status&&heard)status.textContent=`Heard so far: "${heard.trim()}". Keep speaking until the bar finishes.`;
   };
   recognition.onnomatch=()=>{if(status)status.textContent="No clear words yet. Keep speaking until the bar finishes."};
-  recognition.onerror=(event)=>{if(event.error==="not-allowed"||event.error==="service-not-allowed"){if(speechTimer)clearTimeout(speechTimer);speechTimer=null;if(status)status.textContent="Microphone access is unavailable. This check is inconclusive.";setTimeout(()=>finishSpeech("unsure","Microphone access was unavailable, so speech difficulty could not be ruled out."),1800)}else if(status)status.textContent="Listening was interrupted. Alira will retry within the same timed window."};
-  recognition.onend=()=>{speechRecognition=null;const remaining=speechDeadline-performance.now();if(!speechSettled&&remaining>1800&&speechAttempt<2&&speechBest.score<.72){if(status)status.textContent="A pause was heard. Please repeat the complete phrase once more.";setTimeout(()=>speak(`Please repeat: ${phrase}.`,startSpeechCheck),350)}};
+  recognition.onerror=(event)=>{if(event.error==="not-allowed"||event.error==="service-not-allowed"){pauseForIncompleteSpeech("Microphone access is unavailable. No emergency result has been decided. Allow microphone access, then try the speech check again.")}else if(status)status.textContent="Listening was interrupted. Alira will retry within the same timed window."};
+  recognition.onend=()=>{speechRecognition=null;const remaining=speechDeadline-performance.now();if(!speechSettled&&!speechAwaitingRetry&&remaining>1800&&speechAttempt<2&&!isCompleteSpeechCandidate(speechBest)){if(status)status.textContent="A pause was heard. Please repeat the complete phrase once more.";setTimeout(()=>speak(`Please repeat: ${phrase}.`,startSpeechCheck),350)}};
   try{recognition.start()}catch{if(status)status.textContent="Listening was interrupted. Alira will retry within the same timed window.";setTimeout(startSpeechCheck,250)}
 }
 
@@ -363,8 +383,8 @@ function renderArms(){
   panel.innerHTML=`${progress(1)}<div class="letter">A</div><div class="eyebrow">Arms · automatic observation</div><h1>Raise both arms and hold</h1><p>Lift both arms to a comfortable level and keep them there until Alira moves on.</p><div class="assist" id="assist"><span class="assistDot"></span><span>Finding both shoulders, elbows and hands.</span></div>${automaticCard("Arm lift and drift observation")}`;speak("Arms. Please raise both arms and keep them there while I watch for one arm drifting down.");beginScan(ARMS_WINDOW_MS);setStepTimer(finalizeArms,ARMS_WINDOW_MS);
 }
 function renderSpeech(){
-  current="speech";speechAttempt=0;speechSettled=false;speechDeadline=0;speechBest={transcript:"",confidence:0,score:0};automated.speech={available:false,positive:false,decision:"pending",transcript:"",similarity:null,confidence:null,quality:"pending",reason:""};
-  panel.innerHTML=`${progress(2)}<div class="letter">S</div><div class="eyebrow">Speech · automatic observation</div><h1>Repeat the phrase aloud</h1><p>Alira will listen for the full timed window before checking the phrase. Speak at your normal pace.</p><div class="phrase">"${phrase}."</div><div class="transcript" id="transcript" aria-live="polite">Preparing the microphone...</div>${automaticCard("Speech and understanding observation")}<p class="privacyNote">Speech recognition may be processed by the browser's speech service. Rehyn does not save the audio recording.</p>`;speak(`Speech. Please repeat: ${phrase}.`,startSpeechCheck);
+  current="speech";speechAttempt=0;speechSettled=false;speechAwaitingRetry=false;speechDeadline=0;speechBest={transcript:"",confidence:0,score:0};automated.speech={available:false,positive:false,decision:"pending",transcript:"",similarity:null,confidence:null,quality:"pending",reason:""};
+  panel.innerHTML=`${progress(2)}<div class="letter">S</div><div class="eyebrow">Speech · automatic observation</div><h1>Repeat the phrase aloud</h1><p>Alira will listen for the complete phrase. If only part is heard, the check will pause without deciding and let you try again.</p><div class="phrase">"${phrase}."</div><div class="transcript" id="transcript" aria-live="polite">Preparing the microphone...</div>${automaticCard("Speech and understanding observation")}<p class="privacyNote">Speech recognition may be processed by the browser's speech service. Rehyn does not save the audio recording.</p>`;speak(`Speech. Please repeat: ${phrase}.`,startSpeechCheck);
 }
 
 function outcome(){

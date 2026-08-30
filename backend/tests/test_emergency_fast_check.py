@@ -26,7 +26,7 @@ def test_any_observed_or_uncertain_fast_sign_triggers_demo_911_handoff():
     )
 
     assert face["call_999"] is True
-    assert face["algorithm_version"] == "rehyn-fast-1.3-complete-speech-window"
+    assert face["algorithm_version"] == "rehyn-fast-1.4-partial-phrase-retry"
     assert face["demo_call_911"] is True
     assert face["emergency_call_mode"] == "simulation"
     assert face["observed_signs"] == ["face"]
@@ -101,6 +101,14 @@ def test_fast_runner_and_audit_endpoint_apply_the_same_rule(monkeypatch):
     assert "startSpeechCheck" in runner.text
     assert "finalizeSpeechWindow" in runner.text
     assert "speechTimer=setTimeout(finalizeSpeechWindow,SPEECH_WINDOW_MS)" in runner.text
+    assert "isCompleteSpeechCandidate" in runner.text
+    assert 'words.includes("today")' in runner.text
+    assert "pauseForIncompleteSpeech" in runner.text
+    assert 'data-testid="fast-speech-retry"' in runner.text
+    assert 'data-testid="fast-speech-unable"' in runner.text
+    assert "No emergency result has been decided" in runner.text
+    assert 'if(!Recognition){pauseForIncompleteSpeech(' in runner.text
+    assert 'if(event.error==="not-allowed"||event.error==="service-not-allowed"){pauseForIncompleteSpeech(' in runner.text
     assert "recognition.interimResults=true" in runner.text
     assert "recognition.continuous=false" in runner.text
     assert "Keep speaking until the bar finishes" in runner.text
