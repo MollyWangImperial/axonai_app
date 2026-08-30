@@ -43,6 +43,12 @@ def test_text_chat_assessment_start_intent_advances_only_when_requested():
     assert server._chat_requests_assessment_start("I am not ready for the assessment", []) is False
 
 
+def test_text_chat_identifies_only_consent_setup_loops():
+    assert server._chat_mentions_consent_setup("Please check your health-data consent settings") is True
+    assert server._chat_mentions_consent_setup("Would you like to provide consent?") is True
+    assert server._chat_mentions_consent_setup("Explain how Rehyn protects my privacy") is False
+
+
 def test_text_chat_returns_initial_assessment_navigation_without_calling_the_llm(monkeypatch):
     class _ChatSessions:
         async def find_one(self, *_args, **_kwargs):

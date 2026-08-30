@@ -65,12 +65,14 @@ export async function signIn(email: string, name: string, role: "patient" | "the
   const u: Me = await r.json();
   await storage.setItem(USER_KEY, u.id);
   await storage.setItem(USER_OBJ, JSON.stringify(u));
+  await storage.setItem(BACKEND_USER_KEY, u.id);
   return u;
 }
 
 export async function signOut() {
   await storage.removeItem(USER_KEY);
   await storage.removeItem(USER_OBJ);
+  await storage.removeItem(BACKEND_USER_KEY);
   // Retain account-scoped onboarding and assessment progress for the next sign-in.
   await storage.removeItem("onboarding_complete_v1");
   await storage.removeItem("preferred_name_v1");
@@ -96,15 +98,24 @@ export async function clearPendingConsent() {
 
 export async function hasAcceptedConsent(userId: string): Promise<boolean> {
   const value: string | null = await storage.getItem(consentAcceptedKey(userId), "" as string);
-  if (value === "1") return true;
+  const locallyAccepted = value === "1";
   try {
     const response = await authedFetch("/api/users/consent");
     if (!response.ok) return false;
     const result = await response.json();
-    if (result.accepted) await storage.setItem(consentAcceptedKey(userId), "1");
-    return Boolean(result.accepted);
-  } catch {
+    if (result.accepted) {
+      await storage.setItem(consentAcceptedKey(userId), "1");
+      return true;
+    }
+    // This account-scoped marker is written only after both required boxes are
+    // accepted. Repair older consent saved against a stale backend identity.
+    if (locallyAccepted) {
+      await setConsentAccepted(userId);
+      return true;
+    }
     return false;
+  } catch {
+    return locallyAccepted;
   }
 }
 
@@ -167,7 +178,7 @@ export async function recoverSingleAccountCache(userId: string) {
 
 export async function authedFetch(path: string, init: RequestInit = {}): Promise<Response> {
   const appUserId = await getUserId();
-  const uid = await storage.getItem(BACKEND_USER_KEY, "") || appUserId;
+  const uid = appUserId || await storage.getItem(BACKEND_USER_KEY, "");
   const headers = new Headers(init.headers as any);
   if (uid && !headers.has("X-User-Id")) headers.set("X-User-Id", uid);
   headers.set("Content-Type", "application/json");
@@ -188,6 +199,9 @@ export async function authedFetch(path: string, init: RequestInit = {}): Promise
     });
     if (!login.ok) return response;
     const rebound: Me = await login.json();
+    if (rebound.id !== cached.id) await migrateAccountCache(cached.id, rebound.id);
+    await storage.setItem(USER_KEY, rebound.id);
+    await storage.setItem(USER_OBJ, JSON.stringify(rebound));
     await storage.setItem(BACKEND_USER_KEY, rebound.id);
     if (onboardingComplete && cachedProfile) {
       await fetch(`${BASE}/api/users/onboarding`, {

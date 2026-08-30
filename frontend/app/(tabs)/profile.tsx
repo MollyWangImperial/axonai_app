@@ -180,16 +180,24 @@ export default function ProfileScreen() {
     await storage.removeItem(profilePhotoKey(userId));
   };
 
+  const performLogout = async () => {
+    await signOut();
+    router.replace("/sign-in");
+  };
+
   const logout = () => {
+    if (Platform.OS === "web") {
+      if (window.confirm("Log out of Rehyn? You can sign in again with your email.")) {
+        void performLogout();
+      }
+      return;
+    }
     Alert.alert("Log out of Rehyn?", "You can sign in again with your email.", [
       { text: "Cancel", style: "cancel" },
       {
         text: "Log out",
         style: "destructive",
-        onPress: async () => {
-          await signOut();
-          router.replace("/sign-in");
-        },
+        onPress: () => void performLogout(),
       },
     ]);
   };

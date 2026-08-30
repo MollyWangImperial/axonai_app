@@ -80,6 +80,20 @@ def test_consent_and_optional_improvement_choice_are_account_backed():
     assert "Raw movement videos are not used for model training" in data_permissions
 
 
+def test_active_account_identity_drives_consent_and_is_cleared_on_logout():
+    auth = read("frontend/src/auth.ts")
+    profile = read("frontend/app/(tabs)/profile.tsx")
+
+    assert "await storage.setItem(BACKEND_USER_KEY, u.id)" in auth
+    assert "await storage.removeItem(BACKEND_USER_KEY)" in auth
+    assert 'const uid = appUserId || await storage.getItem(BACKEND_USER_KEY, "")' in auth
+    assert "if (locallyAccepted)" in auth
+    assert "await setConsentAccepted(userId)" in auth
+    assert 'Platform.OS === "web"' in profile
+    assert 'window.confirm("Log out of Rehyn?' in profile
+    assert "void performLogout()" in profile
+
+
 def test_care_facility_has_clear_profile_privacy_note():
     profile = read("frontend/app/(tabs)/profile.tsx")
 

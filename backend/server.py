@@ -8878,6 +8878,15 @@ async def _build_patient_context(user: Optional[Dict[str, Any]]) -> str:
     assessments = await _care_assessments_for_user(user["id"])
     check_ins = await _care_check_ins_for_user(user["id"])
     activities = await _care_activities_for_user(user["id"])
+    health_data_consent = (user.get("consent") or {}).get("health_data_consent") is True
+    consent_context = (
+        "\n\nACCOUNT CONSENT STATUS:\n"
+        + (
+            "Required Terms and health-data consent are confirmed for this account. Do not ask for consent again."
+            if health_data_consent
+            else "Required health-data consent is not recorded for this account. The app must resolve this outside chat."
+        )
+    )
     doc = max(assessments, key=lambda item: item.get("created_at", ""), default=None)
     care_plan = build_adaptive_care_plan(user.get("profile") or {}, assessments, check_ins, activities)
     due_questions = [question["id"] for question in care_plan["survey"]["questions"]]
@@ -8894,14 +8903,14 @@ async def _build_patient_context(user: Optional[Dict[str, Any]]) -> str:
         "Do not invent a new clinical question, assessment, or exercise. Use only this workflow and the approved tools."
     )
     if not doc:
-        return "The patient has not completed an assessment yet." + adaptive_context
+        return "The patient has not completed an assessment yet." + consent_context + adaptive_context
     issues = [f"- {i['label']}: {i['description']}" for i in doc.get("functional_issues", [])]
     plan = [f"- {e['name']} ({e['sets']}×{e['reps']}, {e['frequency']})" for e in doc.get("rehab_plan", [])]
     return (
         "Latest assessment date: " + doc.get("created_at", "unknown") + "\n"
         "Affected side: " + doc.get("affected_side", "unknown") + "\n\n"
         "FUNCTIONAL ISSUES IDENTIFIED:\n" + ("\n".join(issues) or "(none yet)") + "\n\n"
-        "CURRENT REHAB PLAN:\n" + ("\n".join(plan) or "(no plan yet)") + adaptive_context
+        "CURRENT REHAB PLAN:\n" + ("\n".join(plan) or "(no plan yet)") + consent_context + adaptive_context
     )
 
 
@@ -8933,6 +8942,11 @@ Adaptive rehabilitation workflow:
 - Never infer a check-in answer. If the patient does not know or does not want to answer, respect that and leave it unsaved.
 - The backend safety rules decide whether the next plan is held, maintained, reduced, or eligible for a small confirmed progression. Do not override that result.
 - Patient-reported difficulty remains valid evidence even when a camera task looks normal. Missing or pending model output is never evidence of normal function.
+
+Consent handling:
+- Required Terms and health-data consent are collected and saved by the app, not through conversation.
+- When the patient context says consent is confirmed, treat it as settled. Never ask the patient to consent again or interpret a chat message as legal consent.
+- If a care tool cannot confirm saved consent, do not repeat a consent question. Explain that Rehyn could not verify the saved account setting and open Data and permissions.
 
 App navigation:
 - When the patient asks to start, continue, open, or take an assessment, call navigate_app immediately. Use initial_assessment when no assessment is complete and next_assessment after a completed assessment.
@@ -8994,6 +9008,23 @@ def _chat_requests_assessment_start(text: str, turns: Sequence[Dict[str, Any]]) 
     )
 
 
+def _chat_mentions_consent_setup(text: str) -> bool:
+    """Identify a consent setup loop without matching ordinary privacy discussion."""
+    normalized = " ".join(str(text or "").lower().split())
+    return any(
+        phrase in normalized
+        for phrase in (
+            "health-data consent",
+            "health data consent",
+            "consent settings",
+            "provide consent",
+            "give consent",
+            "consent being fully set up",
+            "consent is set up",
+        )
+    )
+
+
 async def _save_chat_session(
     session_filter: Dict[str, Any],
     local_session_key: str,
@@ -9024,6 +9055,7 @@ async def create_alira_realtime_session(req: RealtimeSessionRequest, request: Re
         raise HTTPException(status_code=401, detail="Sign in to call Alira.")
 
     patient_ctx = await _build_patient_context(user)
+    consent_confirmed = (user.get("consent") or {}).get("health_data_consent") is True
     profile = user.get("profile") or {}
     preferred_name = (profile.get("preferred_name") or user.get("name") or "").split(" ")[0].strip()
     name_block = f"\nPATIENT PREFERRED NAME: {preferred_name}\n" if preferred_name else ""
@@ -9155,9 +9187,15 @@ async def chat_message(req: ChatRequest, request: Request):
     try:
         if openai_tts_client:
             messages = [{"role": "system", "content": system_prompt}]
+            recent_turns = turns[-12:]
+            if consent_confirmed:
+                recent_turns = [
+                    turn for turn in recent_turns
+                    if not _chat_mentions_consent_setup(str(turn.get("text") or ""))
+                ]
             messages.extend(
                 {"role": turn["role"], "content": turn["text"]}
-                for turn in turns[-8:]
+                for turn in recent_turns[-8:]
                 if turn.get("role") in {"user", "assistant"}
             )
             messages.append({"role": "user", "content": req.text})
@@ -9243,7 +9281,13 @@ async def chat_message(req: ChatRequest, request: Request):
                 assistant_message = response.choices[0].message
             reply_text = str(assistant_message.content or "").strip()
         else:
-            recent = "\n".join(f"{t['role'].upper()}: {t['text']}" for t in turns[-6:])
+            recent_turns = turns[-10:]
+            if consent_confirmed:
+                recent_turns = [
+                    turn for turn in recent_turns
+                    if not _chat_mentions_consent_setup(str(turn.get("text") or ""))
+                ]
+            recent = "\n".join(f"{t['role'].upper()}: {t['text']}" for t in recent_turns[-6:])
             emergent_prompt = system_prompt + ("\n\n----\nRECENT CONVERSATION:\n" + recent if recent else "")
             chat = LlmChat(
                 api_key=EMERGENT_LLM_KEY,
@@ -9252,6 +9296,8 @@ async def chat_message(req: ChatRequest, request: Request):
             ).with_model("anthropic", "claude-sonnet-4-5-20250929")
             response = await chat.send_message(UserMessage(text=req.text))
             reply_text = response if isinstance(response, str) else str(response)
+        if consent_confirmed and _chat_mentions_consent_setup(reply_text):
+            reply_text = "Your required consent is already confirmed for this account, so I won’t ask you for it again. We can continue with your assessment or check-in."
         if not reply_text:
             raise RuntimeError("Alira returned an empty response")
     except Exception as e:

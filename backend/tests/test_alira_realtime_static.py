@@ -100,3 +100,12 @@ def test_text_chat_executes_navigation_and_downloads_its_transcript():
     assert 'testID="alira-download-chat"' in CHAT_SCREEN
     assert "URL.createObjectURL(blob)" in CHAT_SCREEN
     assert 'link.download = `rehyn-alira-chat-' in CHAT_SCREEN
+
+
+def test_alira_uses_saved_account_consent_without_reasking_in_chat():
+    assert "ACCOUNT CONSENT STATUS" in SERVER
+    assert "Do not ask for consent again" in SERVER
+    assert "Required Terms and health-data consent are collected and saved by the app" in SERVER
+    assert "if consent_confirmed:" in SERVER
+    assert "_chat_mentions_consent_setup" in SERVER
+    assert "Your required consent is already confirmed for this account" in SERVER
