@@ -18,6 +18,7 @@ import { Assessment, fetchHistory } from "@/src/api";
 import { authedFetch, getCachedUser, preferredNameKey } from "@/src/auth";
 import { DailyCheckInCard } from "@/src/components/DailyCheckInCard";
 import { colors, radius, spacing } from "@/src/theme";
+import { getScreenCache, setScreenCache } from "@/src/screenCache";
 import { storage } from "@/src/utils/storage";
 import { useDisplayPreferences } from "@/src/displayPreferences";
 
@@ -51,19 +52,28 @@ type CarePlanAssessment = {
   trigger?: string;
 };
 
+type HomeScreenCache = {
+  history: Assessment[];
+  greetName: string;
+  carePlanAssessment: CarePlanAssessment | null;
+};
+
 export default function HomeScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const { palette } = useDisplayPreferences();
   const { width } = useWindowDimensions();
   const isWide = width >= 760;
-  const [history, setHistory] = useState<Assessment[]>([]);
-  const [greetName, setGreetName] = useState("");
-  const [carePlanAssessment, setCarePlanAssessment] = useState<CarePlanAssessment | null>(null);
-  const [loading, setLoading] = useState(true);
+  const cached = getScreenCache<HomeScreenCache>("home");
+  const [history, setHistory] = useState<Assessment[]>(cached?.history ?? []);
+  const [greetName, setGreetName] = useState(cached?.greetName ?? "");
+  const [carePlanAssessment, setCarePlanAssessment] = useState<CarePlanAssessment | null>(cached?.carePlanAssessment ?? null);
+  const [loading, setLoading] = useState(!cached);
 
   const load = useCallback(async () => {
-    setLoading(true);
+    // Stale-while-revalidate: with cached data on screen, refresh silently in
+    // the background instead of blanking the tab to a spinner on every focus.
+    if (!getScreenCache<HomeScreenCache>("home")) setLoading(true);
     const user = await getCachedUser();
     const [assessments, preferredName, carePlan] = await Promise.all([
       fetchHistory().catch(() => []),
@@ -72,9 +82,12 @@ export default function HomeScreen() {
         .then(async (response) => response.ok ? response.json() : null)
         .catch(() => null),
     ]);
+    const nextGreetName = preferredName || user?.name?.split(" ")[0] || "there";
+    const nextCarePlanAssessment = carePlan?.assessment || null;
     setHistory(assessments);
-    setGreetName(preferredName || user?.name?.split(" ")[0] || "there");
-    setCarePlanAssessment(carePlan?.assessment || null);
+    setGreetName(nextGreetName);
+    setCarePlanAssessment(nextCarePlanAssessment);
+    setScreenCache<HomeScreenCache>("home", { history: assessments, greetName: nextGreetName, carePlanAssessment: nextCarePlanAssessment });
     setLoading(false);
   }, []);
 

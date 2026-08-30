@@ -1,4 +1,5 @@
 import { storage } from "@/src/utils/storage";
+import { clearScreenCache } from "@/src/screenCache";
 import { API_BASE as BASE } from "@/src/config";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
@@ -70,6 +71,7 @@ export async function signIn(email: string, name: string, role: "patient" | "the
 }
 
 export async function signOut() {
+  clearScreenCache();
   await storage.removeItem(USER_KEY);
   await storage.removeItem(USER_OBJ);
   await storage.removeItem(BACKEND_USER_KEY);

@@ -6,6 +6,7 @@ import Svg, { Circle, Path } from "react-native-svg";
 
 import { authedFetch } from "@/src/auth";
 import { DisplayPalette, useDisplayPreferences } from "@/src/displayPreferences";
+import { getScreenCache, setScreenCache } from "@/src/screenCache";
 import { radius, spacing } from "@/src/theme";
 
 type AssessmentPoint = {
@@ -223,18 +224,22 @@ export function JourneyProgressPanel({ demoMode }: { demoMode: boolean }) {
   const { width: viewportWidth } = useWindowDimensions();
   const wide = viewportWidth >= 760;
   const panelWidth = Math.max(220, viewportWidth - 96);
-  const [assessments, setAssessments] = useState<AssessmentPoint[]>([]);
-  const [loading, setLoading] = useState(true);
+  const cachedAssessments = getScreenCache<AssessmentPoint[]>("journey-progress");
+  const [assessments, setAssessments] = useState<AssessmentPoint[]>(cachedAssessments ?? []);
+  const [loading, setLoading] = useState(!cachedAssessments);
 
   const load = useCallback(async () => {
-    setLoading(true);
+    // Stale-while-revalidate: refresh silently when cached data is on screen.
+    if (!getScreenCache<AssessmentPoint[]>("journey-progress")) setLoading(true);
     try {
       const response = await authedFetch("/api/progress/summary");
       if (!response.ok) throw new Error("Unable to load progress");
       const payload = await response.json();
-      setAssessments(Array.isArray(payload.assessments) ? payload.assessments : []);
+      const next: AssessmentPoint[] = Array.isArray(payload.assessments) ? payload.assessments : [];
+      setAssessments(next);
+      setScreenCache<AssessmentPoint[]>("journey-progress", next);
     } catch {
-      setAssessments([]);
+      if (!getScreenCache<AssessmentPoint[]>("journey-progress")) setAssessments([]);
     } finally {
       setLoading(false);
     }

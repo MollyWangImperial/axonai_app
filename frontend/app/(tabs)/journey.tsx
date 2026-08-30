@@ -9,11 +9,18 @@ import { addJournalEntry, JournalEntry, loadJournalEntries } from "@/src/journal
 import { colors, radius, spacing } from "@/src/theme";
 import { DEMO_ASSESSMENT_ID } from "@/src/demoAssessment";
 import { loadUserPreferences } from "@/src/userPreferences";
+import { getScreenCache, setScreenCache } from "@/src/screenCache";
 import { useDisplayPreferences } from "@/src/displayPreferences";
 import { JourneyProgressPanel } from "@/src/components/JourneyProgressPanel";
 
 const brainImage = require("@/assets/images/journey-stroke-brain.png");
 const familyImage = require("@/assets/images/journey-family-support.png");
+
+type JourneyScreenCache = {
+  history: Assessment[];
+  entries: JournalEntry[];
+  demoMode: boolean;
+};
 
 function assessmentPlanLabel(item: Assessment) {
   if (item.rehab_plan.length) return `${item.rehab_plan.length} recommended exercise${item.rehab_plan.length === 1 ? "" : "s"}`;
@@ -30,20 +37,23 @@ export default function JourneyScreen() {
   const { palette } = useDisplayPreferences();
   const { width } = useWindowDimensions();
   const wide = width >= 760;
-  const [history, setHistory] = useState<Assessment[]>([]);
-  const [entries, setEntries] = useState<JournalEntry[]>([]);
-  const [loading, setLoading] = useState(true);
+  const cached = getScreenCache<JourneyScreenCache>("journey");
+  const [history, setHistory] = useState<Assessment[]>(cached?.history ?? []);
+  const [entries, setEntries] = useState<JournalEntry[]>(cached?.entries ?? []);
+  const [loading, setLoading] = useState(!cached);
   const [showComposer, setShowComposer] = useState(false);
   const [draft, setDraft] = useState("");
-  const [demoMode, setDemoMode] = useState(false);
+  const [demoMode, setDemoMode] = useState(cached?.demoMode ?? false);
   const initialAssessmentId = [...history].reverse().find((item) => item.assessment_package === "initial")?.id ?? history[history.length - 1]?.id;
 
   const load = useCallback(async () => {
-    setLoading(true);
+    // Stale-while-revalidate: refresh silently when cached data is on screen.
+    if (!getScreenCache<JourneyScreenCache>("journey")) setLoading(true);
     const [assessments, journal, preferences] = await Promise.all([fetchHistory().catch(() => []), loadJournalEntries(), loadUserPreferences()]);
     setHistory(assessments);
     setEntries(journal);
     setDemoMode(preferences.demoMode);
+    setScreenCache<JourneyScreenCache>("journey", { history: assessments, entries: journal, demoMode: preferences.demoMode });
     setLoading(false);
   }, []);
 
@@ -54,7 +64,9 @@ export default function JourneyScreen() {
 
   const saveEntry = async () => {
     if (!draft.trim()) return;
-    setEntries(await addJournalEntry(draft));
+    const nextEntries = await addJournalEntry(draft);
+    setEntries(nextEntries);
+    setScreenCache<JourneyScreenCache>("journey", { history, entries: nextEntries, demoMode });
     setDraft("");
     setShowComposer(false);
   };
