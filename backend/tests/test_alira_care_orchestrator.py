@@ -68,6 +68,7 @@ def test_starting_patient_gets_short_survey_and_initial_assessment():
     assert 1 <= len(plan["survey"]["questions"]) <= MAX_CHECK_IN_QUESTIONS
     assert plan["assessment"]["due"] is True
     assert plan["assessment"]["packages"] == ["initial"]
+    assert plan["assessment"]["recommended_packages"] == ["initial"]
     assert plan["assessment"]["can_start"] is False
     assert set(plan["assessment"]["missing_answers"]) == set(ASSESSMENT_READINESS_FIELDS)
 
@@ -228,6 +229,21 @@ def test_targeted_packages_follow_saved_and_observed_domains():
 
     assert plan["assessment"]["due"] is True
     assert plan["assessment"]["packages"] == ["upper_limb", "hand", "lower_limb", "balance"]
+    assert plan["assessment"]["recommended_packages"] == ["upper_limb", "hand", "lower_limb", "balance"]
+
+
+def test_recommended_packages_remain_available_for_patient_requested_assessment():
+    issues = [{"code": "HAND_OPENING", "phenotype_domain": "hand", "related_task": "H1"}]
+    plan = build_adaptive_care_plan(
+        {"months_since_stroke": 10, "affected_areas": ["right_upper"]},
+        [assessment(days_ago=2, issues=issues)],
+        [check_in(days_ago=1, sudden_change="no", function_change="about_the_same")],
+        now=NOW,
+    )
+
+    assert plan["assessment"]["due"] is False
+    assert plan["assessment"]["packages"] == []
+    assert plan["assessment"]["recommended_packages"] == ["upper_limb", "hand"]
 
 
 def test_novel_content_is_only_a_reviewable_draft():

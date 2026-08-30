@@ -113,7 +113,11 @@ export async function resolveAliraNavigation(rawDestination: string): Promise<Al
       const response = await authedFetch("/api/alira/care-plan");
       if (response.ok) {
         const carePlan = await response.json();
-        const packageId = String(carePlan?.assessment?.packages?.[0] || "initial");
+        const packageId = String(
+          carePlan?.assessment?.packages?.[0]
+          || carePlan?.assessment?.recommended_packages?.[0]
+          || "initial",
+        );
         const approvedPackages = new Set(["initial", "upper_limb", "hand", "lower_limb", "balance"]);
         const selectedPackage = approvedPackages.has(packageId) ? packageId : "initial";
         return {

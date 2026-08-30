@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { ActivityIndicator, Image, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, useWindowDimensions, View } from "react-native";
+import { ActivityIndicator, Alert, Image, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, useWindowDimensions, View } from "react-native";
 import { createAudioPlayer } from "expo-audio";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -14,6 +14,7 @@ import { authedFetch } from "@/src/auth";
 import { fetchHistory } from "@/src/api";
 import { useDisplayPreferences } from "@/src/displayPreferences";
 import AliraLivingBackground from "@/src/components/AliraLivingBackground";
+import { resolveAliraNavigation } from "@/src/aliraNavigation";
 
 type Turn = { role: "user" | "assistant"; text: string; ts: string };
 
@@ -42,6 +43,7 @@ export default function ChatScreen() {
   const [input, setInput] = useState(prompt || "");
   const [sending, setSending] = useState(false);
   const [openingAction, setOpeningAction] = useState<string | null>(null);
+  const [downloading, setDownloading] = useState(false);
   const scrollRef = useRef<ScrollView>(null);
   const inputRef = useRef<TextInput>(null);
   const wide = width >= 760;
@@ -58,6 +60,59 @@ export default function ChatScreen() {
       createAudioPlayer({ uri: `data:audio/mpeg;base64,${audio.audio_b64}` }).play();
     } catch {
       /* Voice is a helpful enhancement, not a blocker for chat. */
+    }
+  };
+
+  const openAliraDestination = async (destination: string) => {
+    setOpeningAction("navigation");
+    try {
+      const resolution = await resolveAliraNavigation(destination);
+      if (!resolution.success) {
+        Alert.alert("Page unavailable", resolution.message);
+        return;
+      }
+      if (resolution.action === "back") {
+        router.back();
+      } else if (resolution.path) {
+        router.push(resolution.path as never);
+      }
+    } finally {
+      setOpeningAction(null);
+    }
+  };
+
+  const downloadChatHistory = async () => {
+    if (!turns.length || downloading) return;
+    if (Platform.OS !== "web" || typeof document === "undefined") {
+      Alert.alert("Open Rehyn in a browser", "Chat-history downloads are currently available from the web version of Rehyn.");
+      return;
+    }
+    setDownloading(true);
+    try {
+      const generatedAt = new Date();
+      const transcript = [
+        "Rehyn - Alira chat history",
+        `Downloaded: ${generatedAt.toLocaleString()}`,
+        "",
+        ...turns.flatMap((turn) => [
+          `${turn.role === "user" ? "You" : "Alira"} (${new Date(turn.ts).toLocaleString()}):`,
+          turn.text,
+          "",
+        ]),
+      ].join("\n");
+      const blob = new Blob([transcript], { type: "text/plain;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `rehyn-alira-chat-${generatedAt.toISOString().slice(0, 10)}.txt`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+    } catch {
+      Alert.alert("Download unavailable", "Your chat history could not be prepared. Please try again.");
+    } finally {
+      setDownloading(false);
     }
   };
 
@@ -108,6 +163,9 @@ export default function ChatScreen() {
       const data = await response.json();
       setTurns((current) => [...current, { role: "assistant", text: data.text, ts: new Date().toISOString() }]);
       if (speakReply) void playAliraVoice(data.text);
+      if (data.navigation_destination) {
+        await openAliraDestination(String(data.navigation_destination));
+      }
     } catch {
       setTurns((current) => [...current, { role: "assistant", text: "I'm having trouble reaching the server. Let's try again in a moment.", ts: new Date().toISOString() }]);
     } finally {
@@ -164,9 +222,14 @@ export default function ChatScreen() {
                 <Text style={[styles.headerTitle, { color: palette.text }]}>Alira</Text>
                 <Text style={styles.headerSub}>Your recovery companion</Text>
               </View>
-              <Pressable onPress={() => startPrompt("What should I focus on today?")} style={[styles.sparkleButton, { backgroundColor: palette.soft }]} accessibilityLabel="Ask Alira for today's focus">
-                <Ionicons name="sparkles" size={22} color={palette.brand} />
-              </Pressable>
+              <View style={styles.headerActions}>
+                <Pressable testID="alira-download-chat" onPress={() => void downloadChatHistory()} disabled={!turns.length || downloading} style={[styles.sparkleButton, { backgroundColor: palette.soft }, (!turns.length || downloading) && styles.headerActionDisabled]} accessibilityLabel="Download chat history">
+                  {downloading ? <ActivityIndicator color={palette.brand} /> : <Ionicons name="download-outline" size={22} color={palette.brand} />}
+                </Pressable>
+                <Pressable onPress={() => startPrompt("What should I focus on today?")} style={[styles.sparkleButton, { backgroundColor: palette.soft }]} accessibilityLabel="Ask Alira for today's focus">
+                  <Ionicons name="sparkles" size={22} color={palette.brand} />
+                </Pressable>
+              </View>
             </View>
 
             <View style={[styles.hero, wide && styles.heroWide]}>
@@ -239,7 +302,9 @@ const styles = StyleSheet.create({
   headerCopy: { flex: 1 },
   headerTitle: { fontSize: 28, lineHeight: 32, fontWeight: "900", color: "#123326" },
   headerSub: { marginTop: 1, fontSize: 14, color: colors.brandPrimary, fontWeight: "600" },
+  headerActions: { flexDirection: "row", alignItems: "center", gap: spacing.xs },
   sparkleButton: { width: 46, height: 46, borderRadius: radius.md, backgroundColor: "#F1F5EF", alignItems: "center", justifyContent: "center" },
+  headerActionDisabled: { opacity: 0.45 },
   hero: { paddingTop: spacing.xl, alignItems: "center" },
   heroWide: { minHeight: 280, flexDirection: "row", justifyContent: "space-between" },
   heroCopy: { width: "100%", maxWidth: 420, alignSelf: "flex-start", zIndex: 1 },

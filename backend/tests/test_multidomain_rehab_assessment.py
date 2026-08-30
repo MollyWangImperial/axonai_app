@@ -2,6 +2,7 @@ import os
 import sys
 import types
 import uuid
+import asyncio
 
 from fastapi.testclient import TestClient
 
@@ -29,6 +30,48 @@ from backend.clinical_measurement_form import build_clinical_measurement_form
 from backend.rehab_goal_evidence import retrieve_goal_evidence
 from backend.rehab_goals import build_rehab_goals
 from backend.assessment_fusion import build_analysis_pipeline, build_clinical_review_gate, build_survey_consistency
+
+
+def test_text_chat_assessment_start_intent_advances_only_when_requested():
+    ready_offer = [{"role": "assistant", "text": "I can open your initial assessment now. Are you ready?"}]
+    safety_question = [{"role": "assistant", "text": "Before the assessment, have you had any sudden changes recently?"}]
+
+    assert server._chat_requests_assessment_start("Please start my assessment", []) is True
+    assert server._chat_requests_assessment_start("yes", ready_offer) is True
+    assert server._chat_requests_assessment_start("yes", safety_question) is False
+    assert server._chat_requests_assessment_start("show my assessment history", []) is False
+    assert server._chat_requests_assessment_start("I am not ready for the assessment", []) is False
+
+
+def test_text_chat_returns_initial_assessment_navigation_without_calling_the_llm(monkeypatch):
+    class _ChatSessions:
+        async def find_one(self, *_args, **_kwargs):
+            return None
+
+        async def update_one(self, *_args, **_kwargs):
+            return None
+
+    async def _signed_in_user(_headers):
+        return {"id": "patient-1", "name": "Patient", "profile": {}}
+
+    async def _empty_records(_user_id):
+        return []
+
+    monkeypatch.setattr(server, "EMERGENT_LLM_KEY", "")
+    monkeypatch.setattr(server, "openai_tts_client", None)
+    monkeypatch.setattr(server, "db", types.SimpleNamespace(chat_sessions=_ChatSessions()))
+    monkeypatch.setattr(server, "_user_from_header", _signed_in_user)
+    monkeypatch.setattr(server, "_care_assessments_for_user", _empty_records)
+    monkeypatch.setattr(server, "_care_check_ins_for_user", _empty_records)
+    monkeypatch.setattr(server, "_care_activities_for_user", _empty_records)
+
+    response = asyncio.run(server.chat_message(
+        server.ChatRequest(session_id="assessment-handoff", text="Please start my assessment"),
+        types.SimpleNamespace(headers={}),
+    ))
+
+    assert response.navigation_destination == "initial_assessment"
+    assert "opening your Initial Assessment" in response.text
 
 
 def _failed_result(package_id: str, task_id: str, step_id: str):

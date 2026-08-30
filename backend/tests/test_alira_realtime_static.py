@@ -7,6 +7,7 @@ SERVER = (ROOT / "backend" / "server.py").read_text(encoding="utf-8")
 CALL_SCREEN = (ROOT / "frontend" / "app" / "alira-call.tsx").read_text(encoding="utf-8")
 NAVIGATION = (ROOT / "frontend" / "src" / "aliraNavigation.ts").read_text(encoding="utf-8")
 JOURNEY = (ROOT / "frontend" / "app" / "(tabs)" / "journey.tsx").read_text(encoding="utf-8")
+CHAT_SCREEN = (ROOT / "frontend" / "app" / "(tabs)" / "chat.tsx").read_text(encoding="utf-8")
 
 
 def test_realtime_session_is_authenticated_and_server_side():
@@ -88,3 +89,14 @@ def test_result_navigation_uses_latest_assessment_and_journal_opens_composer():
     assert "clinical_review_gate?.rehab_access" in NAVIGATION
     assert 'path: "/(tabs)/journey?action=new-journal"' in NAVIGATION
     assert 'action === "new-journal"' in JOURNEY
+
+
+def test_text_chat_executes_navigation_and_downloads_its_transcript():
+    assert "ALIRA_CHAT_NAVIGATION_TOOL" in SERVER
+    assert "navigation_destination" in SERVER
+    assert "_chat_requests_assessment_start" in SERVER
+    assert "resolveAliraNavigation(destination)" in CHAT_SCREEN
+    assert "data.navigation_destination" in CHAT_SCREEN
+    assert 'testID="alira-download-chat"' in CHAT_SCREEN
+    assert "URL.createObjectURL(blob)" in CHAT_SCREEN
+    assert 'link.download = `rehyn-alira-chat-' in CHAT_SCREEN

@@ -11,7 +11,7 @@ import base64
 import logging
 from pathlib import Path
 from pydantic import BaseModel, Field
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Sequence
 import uuid
 import re
 import asyncio
@@ -241,6 +241,10 @@ ALIRA_RECORD_CHECKIN_TOOL = {
 ALIRA_CHAT_RECORD_CHECKIN_TOOL = {
     "type": "function",
     "function": {key: value for key, value in ALIRA_RECORD_CHECKIN_TOOL.items() if key != "type"},
+}
+ALIRA_CHAT_NAVIGATION_TOOL = {
+    "type": "function",
+    "function": {key: value for key, value in ALIRA_NAVIGATION_TOOL.items() if key != "type"},
 }
 ANALYSIS_WORKER_TOKEN = os.environ.get("ANALYSIS_WORKER_TOKEN", "").strip()
 LOCAL_GPU_WORKER_URL = os.environ.get("LOCAL_GPU_WORKER_URL", "").strip().rstrip("/")
@@ -7858,6 +7862,7 @@ class ChatResponse(BaseModel):
     session_id: str
     text: str
     turns: int
+    navigation_destination: Optional[str] = None
 
 
 class RealtimeSessionRequest(BaseModel):
@@ -8929,6 +8934,12 @@ Adaptive rehabilitation workflow:
 - The backend safety rules decide whether the next plan is held, maintained, reduced, or eligible for a small confirmed progression. Do not override that result.
 - Patient-reported difficulty remains valid evidence even when a camera task looks normal. Missing or pending model output is never evidence of normal function.
 
+App navigation:
+- When the patient asks to start, continue, open, or take an assessment, call navigate_app immediately. Use initial_assessment when no assessment is complete and next_assessment after a completed assessment.
+- If the patient says yes or that they are ready immediately after you offered to start an assessment, call navigate_app instead of asking another readiness, consent, or check-in question.
+- The assessment flow applies saved readiness answers and its required safety check. Do not recreate those screens as a chat questionnaire.
+- For any other request to open, show, find, or visit a Rehyn feature, call navigate_app rather than describing menu steps.
+
 Safety:
 - If the patient describes new facial droop, new arm weakness, new speech difficulty, sudden severe headache, collapse, chest pain, or trouble breathing, tell them to seek emergency help immediately.
 - If pain, dizziness, or fatigue appears during exercise, tell them to stop and contact their therapist or clinician before continuing.
@@ -8939,6 +8950,68 @@ When you don't know something, say so warmly and suggest asking their therapist.
 If the patient seems distressed, gently acknowledge it, sit with them, and only suggest a tiny actionable step if they seem ready.
 
 Keep replies under 4 short sentences unless the patient asks for more detail."""
+
+
+def _chat_requests_assessment_start(text: str, turns: Sequence[Dict[str, Any]]) -> bool:
+    """Recognize an explicit assessment handoff without treating unrelated yes/no answers as consent."""
+    normalized = " ".join(str(text or "").lower().split())
+    if not normalized:
+        return False
+    negative_phrases = (
+        "not ready", "don't start", "do not start", "don't want an assessment",
+        "do not want an assessment", "stop the assessment", "assessment history",
+        "assessment result", "assessment results",
+    )
+    if any(phrase in normalized for phrase in negative_phrases):
+        return False
+
+    assessment_terms = ("assessment", "movement check", "movement test", "camera test", "functional test")
+    action_terms = (
+        "start", "begin", "take", "do ", "open", "continue", "ready", "go to",
+        "want", "need", "can i", "could i", "please",
+    )
+    if any(term in normalized for term in assessment_terms) and any(term in normalized for term in action_terms):
+        return True
+
+    affirmations = {
+        "yes", "yes please", "okay", "ok", "sure", "i'm ready", "im ready",
+        "ready", "let's start", "lets start", "start now", "please do",
+    }
+    if normalized not in affirmations:
+        return False
+    last_assistant = next(
+        (str(turn.get("text") or "") for turn in reversed(turns) if turn.get("role") == "assistant"),
+        "",
+    )
+    invitation_tail = " ".join(last_assistant.lower().split())[-220:]
+    return any(
+        phrase in invitation_tail
+        for phrase in (
+            "are you ready?", "ready to begin?", "ready to start?",
+            "would you like to start?", "would you like to begin?",
+            "shall we start?", "shall we begin?", "open the assessment?",
+        )
+    )
+
+
+async def _save_chat_session(
+    session_filter: Dict[str, Any],
+    local_session_key: str,
+    session_id: str,
+    user_id: str,
+    turns: List[Dict[str, Any]],
+    updated_at: str,
+) -> None:
+    session_doc = {
+        "session_id": session_id,
+        "user_id": user_id,
+        "turns": turns,
+        "updated_at": updated_at,
+    }
+    try:
+        await db.chat_sessions.update_one(session_filter, {"$set": session_doc}, upsert=True)
+    except Exception:
+        LOCAL_CHAT_SESSIONS[local_session_key] = session_doc
 
 
 @api_router.post("/realtime/session")
@@ -9029,8 +9102,6 @@ LIVE VOICE CONVERSATION RULES:
 
 @api_router.post("/chat/message", response_model=ChatResponse)
 async def chat_message(req: ChatRequest, request: Request):
-    if not EMERGENT_LLM_KEY and not openai_tts_client:
-        raise HTTPException(status_code=503, detail="Chat unavailable — LLM key not configured.")
     user = await _user_from_header(dict(request.headers))
     if not user:
         raise HTTPException(status_code=401, detail="Sign in to talk with Alira.")
@@ -9042,6 +9113,34 @@ async def chat_message(req: ChatRequest, request: Request):
         sess = LOCAL_CHAT_SESSIONS.get(local_session_key)
     turns: List[Dict[str, Any]] = sess["turns"] if sess else []
 
+    if _chat_requests_assessment_start(req.text, turns):
+        assessments = await _care_assessments_for_user(user["id"])
+        check_ins = await _care_check_ins_for_user(user["id"])
+        activities = await _care_activities_for_user(user["id"])
+        care_plan = build_adaptive_care_plan(user.get("profile") or {}, assessments, check_ins, activities)
+        now = datetime.now(timezone.utc).isoformat()
+        navigation_destination: Optional[str] = None
+        if care_plan["assessment"]["blocked_by_safety"]:
+            reply_text = str(care_plan["safety"]["message"])
+        elif assessments:
+            navigation_destination = "next_assessment"
+            reply_text = "I’m opening the movement assessment that best matches your current recovery needs."
+        else:
+            navigation_destination = "initial_assessment"
+            reply_text = "I’m opening your Initial Assessment now. Your saved readiness answers will select suitable tasks and completed tasks will not be repeated."
+        turns.append({"role": "user", "text": req.text, "ts": now})
+        turns.append({"role": "assistant", "text": reply_text, "ts": now})
+        await _save_chat_session(session_filter, local_session_key, req.session_id, user["id"], turns, now)
+        return ChatResponse(
+            session_id=req.session_id,
+            text=reply_text,
+            turns=len(turns),
+            navigation_destination=navigation_destination,
+        )
+
+    if not EMERGENT_LLM_KEY and not openai_tts_client:
+        raise HTTPException(status_code=503, detail="Chat unavailable — LLM key not configured.")
+
     # Build patient context (refreshed every turn so new assessments propagate)
     patient_ctx = await _build_patient_context(user)
     # Inject preferred name from the signed-in user's onboarding profile, if available.
@@ -9051,6 +9150,7 @@ async def chat_message(req: ChatRequest, request: Request):
         name = (prof.get("preferred_name") or user.get("name") or "").split(" ")[0].strip()
     name_block = f"\nPATIENT PREFERRED NAME: {name}\n" if name else ""
     system_prompt = CHAT_SYSTEM_PROMPT_BASE + name_block + "\n----\nPATIENT CONTEXT:\n" + patient_ctx
+    navigation_destination: Optional[str] = None
 
     try:
         if openai_tts_client:
@@ -9066,7 +9166,7 @@ async def chat_message(req: ChatRequest, request: Request):
                 return openai_tts_client.chat.completions.create(
                     model=ALIRA_CHAT_MODEL,
                     messages=messages,
-                    tools=[ALIRA_CHAT_RECORD_CHECKIN_TOOL],
+                    tools=[ALIRA_CHAT_NAVIGATION_TOOL, ALIRA_CHAT_RECORD_CHECKIN_TOOL],
                     tool_choice="auto",
                     temperature=0.5,
                     max_tokens=260,
@@ -9092,7 +9192,18 @@ async def chat_message(req: ChatRequest, request: Request):
                     ],
                 })
                 for call in tool_calls:
-                    if call.function.name != "record_rehab_check_in":
+                    if call.function.name == "navigate_app":
+                        try:
+                            arguments = json.loads(call.function.arguments or "{}")
+                            destination = str(arguments.get("destination") or "").strip().lower()
+                        except (ValueError, TypeError):
+                            destination = ""
+                        if destination in ALIRA_NAVIGATION_DESTINATIONS:
+                            navigation_destination = destination
+                            tool_result = {"ok": True, "destination": destination, "message": "The requested Rehyn page is opening."}
+                        else:
+                            tool_result = {"ok": False, "message": "That Rehyn destination is not available."}
+                    elif call.function.name != "record_rehab_check_in":
                         tool_result = {"ok": False, "message": "Unsupported Alira care tool."}
                     else:
                         try:
@@ -9122,7 +9233,7 @@ async def chat_message(req: ChatRequest, request: Request):
                     return openai_tts_client.chat.completions.create(
                         model=ALIRA_CHAT_MODEL,
                         messages=messages,
-                        tools=[ALIRA_CHAT_RECORD_CHECKIN_TOOL],
+                        tools=[ALIRA_CHAT_NAVIGATION_TOOL, ALIRA_CHAT_RECORD_CHECKIN_TOOL],
                         tool_choice="none",
                         temperature=0.3,
                         max_tokens=220,
@@ -9150,12 +9261,13 @@ async def chat_message(req: ChatRequest, request: Request):
     now = datetime.now(timezone.utc).isoformat()
     turns.append({"role": "user", "text": req.text, "ts": now})
     turns.append({"role": "assistant", "text": reply_text, "ts": now})
-    session_doc = {"session_id": req.session_id, "user_id": user["id"], "turns": turns, "updated_at": now}
-    try:
-        await db.chat_sessions.update_one(session_filter, {"$set": session_doc}, upsert=True)
-    except Exception:
-        LOCAL_CHAT_SESSIONS[local_session_key] = session_doc
-    return ChatResponse(session_id=req.session_id, text=reply_text, turns=len(turns))
+    await _save_chat_session(session_filter, local_session_key, req.session_id, user["id"], turns, now)
+    return ChatResponse(
+        session_id=req.session_id,
+        text=reply_text,
+        turns=len(turns),
+        navigation_destination=navigation_destination,
+    )
 
 
 @api_router.get("/chat/history")

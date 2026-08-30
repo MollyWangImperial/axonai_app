@@ -550,6 +550,7 @@ def build_adaptive_care_plan(
             "due_at": assessment_due_at.isoformat(),
             "cadence_days": cadence["assessment_days"],
             "packages": packages if assessment_due else [],
+            "recommended_packages": packages,
             "task_ids": (initial_readiness or {}).get("task_ids", []) if assessment_due else [],
             "readiness": (initial_readiness or {}).get("status", "ready"),
             "can_start": bool((initial_readiness or {}).get("can_start", True)) and not safety["blocks_assessment"],
