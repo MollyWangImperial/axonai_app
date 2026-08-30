@@ -18,7 +18,8 @@ def test_visual_check_in_entry_points_show_the_preface_before_questions():
     assert "Skipping the check in does not change anything about your plan or your access to Rehyn." in modal
     assert "In an emergency, call 999." in modal
     assert "<SurveyPrefaceModal" in daily_card
-    assert "if (surveyDue) setShowPreface(true)" in daily_card
+    assert 'case "survey":' in daily_card
+    assert "setShowPreface(true)" in daily_card
     assert "<SurveyPrefaceModal" in chat
 
 

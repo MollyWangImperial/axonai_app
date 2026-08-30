@@ -714,6 +714,110 @@ def _exercise_action(
     }
 
 
+def _next_step_decision(
+    *,
+    has_initial_assessment: bool,
+    initial_can_start: bool,
+    safety: Dict[str, Any],
+    survey_reminder_due: bool,
+    assessment_due: bool,
+    assessment_trigger: str,
+    active_exercise_ids: Sequence[str],
+    remaining_exercise_ids: Sequence[str],
+    completed_today: bool,
+) -> Dict[str, Any]:
+    """Choose the single primary action Alira should show to the patient."""
+    if safety["status"] != "clear":
+        return {
+            "action": "safety_follow_up",
+            "title": safety["headline"],
+            "message": safety["message"],
+            "cta": "Get the next safe step",
+            "destination": "emergency" if safety["status"] == "emergency" else "alira",
+            "secondary_action": None,
+        }
+
+    if not has_initial_assessment:
+        return {
+            "action": "initial_assessment",
+            "title": "Complete your initial assessment",
+            "message": (
+                "Your first movement assessment is the next step. Alira has selected tasks from your readiness answers."
+                if initial_can_start
+                else "Finish the short readiness questions so Alira can select a safe first movement assessment."
+            ),
+            "cta": "Start initial assessment" if initial_can_start else "Finish assessment setup",
+            "destination": "initial_assessment" if initial_can_start else "alira",
+            "secondary_action": None,
+        }
+
+    active_ids = list(active_exercise_ids)
+    remaining_ids = list(remaining_exercise_ids)
+    if active_ids and remaining_ids:
+        remaining_count = len(remaining_ids)
+        secondary = None
+        if survey_reminder_due:
+            secondary = {
+                "action": "recovery_check_in",
+                "title": "Short recovery check-in also due",
+                "message": "It can be completed before or after today's exercises and will not replace them.",
+                "cta": "Start short check-in",
+                "destination": "survey",
+            }
+        return {
+            "action": "continue_exercises",
+            "title": "Continue today's exercise plan",
+            "message": f"Complete {remaining_count} remaining exercise{'s' if remaining_count != 1 else ''} in this round.",
+            "cta": "Continue today's plan",
+            "destination": "rehab_plan",
+            "remaining_exercise_ids": remaining_ids,
+            "secondary_action": secondary,
+        }
+
+    if survey_reminder_due:
+        return {
+            "action": "recovery_check_in",
+            "title": "Your short recovery check-in is due",
+            "message": "Alira will ask only the questions needed to keep your next plan relevant.",
+            "cta": "Start short check-in",
+            "destination": "survey",
+            "secondary_action": None,
+        }
+
+    if assessment_due:
+        return {
+            "action": "movement_assessment",
+            "title": "Your next movement assessment is ready",
+            "message": (
+                "Alira selected a focused check for the new functional problem you reported."
+                if assessment_trigger == "new_functional_issue"
+                else "This scheduled check will measure change over a meaningful interval."
+            ),
+            "cta": "Start movement assessment",
+            "destination": "assessment",
+            "secondary_action": None,
+        }
+
+    if active_ids and completed_today:
+        return {
+            "action": "round_complete",
+            "title": "Today's exercise round is complete",
+            "message": "Your next step is to rest and return for the next planned session.",
+            "cta": "See your progress",
+            "destination": "progress",
+            "secondary_action": None,
+        }
+
+    return {
+        "action": "review_progress",
+        "title": "Your recovery record is up to date",
+        "message": "No check-in or assessment is due now. You can review your latest results and progress.",
+        "cta": "See your progress",
+        "destination": "progress",
+        "secondary_action": None,
+    }
+
+
 def _content_gaps(profile: Dict[str, Any], domains: Sequence[str]) -> List[Dict[str, Any]]:
     gaps: List[Dict[str, Any]] = []
     affected = {str(item).lower() for item in profile.get("affected_areas") or []}
@@ -804,12 +908,16 @@ def build_adaptive_care_plan(
     pending_domain = str(FUNCTIONAL_ISSUE_CATALOG.get(pending_category, {}).get("domain") or "")
     if pending_domain and pending_domain not in domains:
         domains.append(pending_domain)
-    survey_due_at = _due_at(latest_check_in, cadence["survey_days"], now)
+    survey_due_at = _due_at(latest_check_in or latest_assessment, cadence["survey_days"], now)
     assessment_due_at = _due_at(latest_assessment, cadence["assessment_days"], now)
     survey_due = now >= survey_due_at
     scheduled_assessment_due = now >= assessment_due_at
     assessment_due = (scheduled_assessment_due or bool(pending_issue)) and not safety["blocks_assessment"]
     has_plan = bool((latest_assessment or {}).get("rehab_plan"))
+    has_initial_assessment = any(
+        str(item.get("assessment_package") or "initial") == "initial"
+        for item in assessments
+    )
     initial_readiness = initial_assessment_recommendation(profile) if not latest_assessment else None
     selection = _selected_assessment(domains, bool(latest_assessment), pending_issue, initial_readiness)
     if pending_issue:
@@ -822,6 +930,20 @@ def build_adaptive_care_plan(
         if (completed_at := _as_utc(item.get("completed_at"))) and now - completed_at <= timedelta(days=7)
     )
     completed_today = bool(latest_activity_at and latest_activity_at.date() == now.date())
+    exercise_plan = _exercise_action(latest_check_in, latest_assessment, safety, sessions_last_7_days)
+    active_exercise_ids = list(exercise_plan["approved_exercise_ids"])
+    completed_exercise_ids_today = list(dict.fromkeys(
+        str(item.get("exercise_id"))
+        for item in activities
+        if item.get("exercise_id")
+        and (completed_at := _as_utc(item.get("completed_at")))
+        and completed_at.date() == now.date()
+    ))
+    remaining_exercise_ids_today = [
+        exercise_id for exercise_id in active_exercise_ids
+        if exercise_id not in completed_exercise_ids_today
+    ]
+    survey_reminder_due = bool(survey_due and has_initial_assessment)
     reminder_needed = bool(has_plan and not completed_today and (not latest_activity_at or now - latest_activity_at >= timedelta(days=2)))
     if safety["status"] != "clear":
         next_day_action = "safety_follow_up"
@@ -832,20 +954,35 @@ def build_adaptive_care_plan(
     else:
         next_day_action = "none"
 
+    next_step = _next_step_decision(
+        has_initial_assessment=has_initial_assessment,
+        initial_can_start=bool((initial_readiness or {}).get("can_start", True)),
+        safety=safety,
+        survey_reminder_due=survey_reminder_due,
+        assessment_due=assessment_due,
+        assessment_trigger=selection["trigger"] if assessment_due else "not_due",
+        active_exercise_ids=active_exercise_ids,
+        remaining_exercise_ids=remaining_exercise_ids_today,
+        completed_today=completed_today,
+    )
+
     return {
         "version": CARE_POLICY_VERSION,
         "generated_at": now.isoformat(),
         "stage": stage,
         "safety": safety,
         "survey": {
-            "due": survey_due,
+            "due": survey_reminder_due,
+            "schedule_due": survey_due,
+            "reminder_due": survey_reminder_due,
+            "patient_prompt_enabled": has_initial_assessment,
             "due_at": survey_due_at.isoformat(),
             "cadence_days": cadence["survey_days"],
             "max_questions": MAX_CHECK_IN_QUESTIONS,
             "preface": SURVEY_PREFACE,
             "all_questions_optional": True,
             "may_stop_at_any_point": True,
-            "questions": _select_questions(domains, has_plan, stage, pending_issue) if survey_due else [],
+            "questions": _select_questions(domains, has_plan, stage, pending_issue) if survey_reminder_due else [],
             "reason": "The interval adapts to recovery stage and recent changes; safety and function are checked before plan changes.",
         },
         "assessment": {
@@ -870,7 +1007,7 @@ def build_adaptive_care_plan(
                 else "Only the approved camera package and tasks selected for the current recovery stage may be started."
             ),
         },
-        "exercise_plan": _exercise_action(latest_check_in, latest_assessment, safety, sessions_last_7_days),
+        "exercise_plan": exercise_plan,
         "daily_monitoring": {
             "enabled": True,
             "uses_model": False,
@@ -878,10 +1015,15 @@ def build_adaptive_care_plan(
             "notify_only_when_actionable": True,
             "sessions_last_7_days": sessions_last_7_days,
             "last_session_at": latest_activity_at.isoformat() if latest_activity_at else None,
+            "active_exercise_ids": active_exercise_ids,
+            "completed_exercise_ids_today": completed_exercise_ids_today,
+            "remaining_exercise_ids_today": remaining_exercise_ids_today,
+            "current_round_complete": bool(active_exercise_ids and not remaining_exercise_ids_today),
             "reminder_needed": reminder_needed,
             "next_day_action": next_day_action,
             "reason": "Daily activity can be checked with deterministic rules; an AI-model call is reserved for a changed or scheduled clinical state.",
         },
+        "next_step": next_step,
         "content_proposals": _content_gaps(profile, domains),
         "autonomy": {
             "may_select_approved_questions": True,

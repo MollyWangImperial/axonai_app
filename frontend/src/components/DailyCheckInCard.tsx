@@ -3,95 +3,203 @@ import { View, Text, StyleSheet, Pressable } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import * as Haptics from "expo-haptics";
+
 import { colors, spacing, radius } from "@/src/theme";
-import { authedFetch, getCachedUser } from "@/src/auth";
 import { loadSettings, rescheduleReminders } from "@/src/utils/notifications";
 import { SurveyPrefaceModal } from "@/src/components/SurveyPrefaceModal";
 
-export function DailyCheckInCard() {
+type NextStepAction = {
+  action: string;
+  title: string;
+  message: string;
+  cta: string;
+  destination: string;
+  secondary_action?: NextStepAction | null;
+};
+
+export type AliraCarePlan = {
+  survey?: {
+    due?: boolean;
+    due_at?: string;
+    patient_prompt_enabled?: boolean;
+  };
+  assessment?: {
+    due?: boolean;
+    due_at?: string;
+    blocked_by_safety?: boolean;
+    can_start?: boolean;
+    packages?: string[];
+    task_ids?: string[];
+  };
+  exercise_plan?: {
+    action?: string;
+    approved_exercise_ids?: string[];
+  };
+  next_step?: NextStepAction;
+};
+
+type Props = {
+  name: string;
+  plan: AliraCarePlan | null;
+  latestAssessmentId?: string;
+};
+
+export function DailyCheckInCard({ name, plan, latestAssessmentId }: Props) {
   const router = useRouter();
-  const [name, setName] = useState("");
-  const [surveyDue, setSurveyDue] = useState(false);
-  const [message, setMessage] = useState("Your recovery plan is up to date today.");
-  const [ready, setReady] = useState(false);
   const [showPreface, setShowPreface] = useState(false);
+  const nextStep: NextStepAction = plan?.next_step ?? {
+    action: latestAssessmentId ? "review_progress" : "initial_assessment",
+    title: latestAssessmentId ? "Review your recovery progress" : "Complete your initial assessment",
+    message: latestAssessmentId
+      ? "Your latest recovery information is ready to review."
+      : "Your first movement assessment is the next step.",
+    cta: latestAssessmentId ? "See your progress" : "Start initial assessment",
+    destination: latestAssessmentId ? "progress" : "initial_assessment",
+    secondary_action: null,
+  };
+  const secondarySurvey = nextStep.secondary_action?.action === "recovery_check_in"
+    ? nextStep.secondary_action
+    : null;
+  const surveyIsPrimary = nextStep.action === "recovery_check_in";
 
   useEffect(() => {
-    (async () => {
-      const user = await getCachedUser();
-      if (!user?.id) return;
-      setName((user.name || "").split(" ")[0] || "");
-      try {
-        const response = await authedFetch("/api/alira/care-plan");
-        if (response.ok) {
-          const plan = await response.json();
-          void loadSettings().then((settings) => rescheduleReminders(settings, plan));
-          const due = Boolean(plan?.survey?.due);
-          setSurveyDue(due);
-          if (plan?.safety?.status && plan.safety.status !== "clear") {
-            setMessage("A change needs attention before your plan continues. Talk with Alira for the next safe step.");
-          } else if (due) {
-            setMessage("A short recovery check-in is due. Alira will ask only the few questions needed for your next plan.");
-          } else if (plan?.exercise_plan?.action === "maintain") {
-            setMessage("No survey is due today. Keep following your current plan and tell Alira if anything feels different.");
-          }
-        }
-      } catch {
-        setMessage("I'm here whenever you want to share how recovery is feeling today.");
-      }
-      setReady(true);
-    })();
-  }, []);
+    if (!plan) return;
+    void loadSettings().then((settings) => rescheduleReminders(settings, plan));
+  }, [plan]);
 
-  if (!ready) return null;
-
-  const openChat = () => {
+  const openSurveyChat = () => {
     setShowPreface(false);
     router.push({
       pathname: "/(tabs)/chat" as never,
-      params: { prompt: surveyDue ? "Please begin my scheduled short recovery check-in." : "I would like to talk about how recovery is going today." },
+      params: { prompt: "Please begin my scheduled short recovery check-in." },
     });
   };
+
+  const openPrimaryAction = () => {
+    Haptics.selectionAsync();
+    switch (nextStep.destination) {
+      case "survey":
+        setShowPreface(true);
+        return;
+      case "initial_assessment":
+        router.push({
+          pathname: "/session-check" as never,
+          params: {
+            target: "assessment",
+            mode: "initial",
+            package: "initial",
+            task_ids: (plan?.assessment?.task_ids || []).join(","),
+          },
+        });
+        return;
+      case "assessment":
+        router.push({
+          pathname: "/session-check" as never,
+          params: {
+            target: "assessment",
+            mode: "followup",
+            package: plan?.assessment?.packages?.[0] || "upper_limb",
+            task_ids: (plan?.assessment?.task_ids || []).join(","),
+          },
+        });
+        return;
+      case "rehab_plan":
+        if (latestAssessmentId) router.push({ pathname: "/rehab-plan", params: { id: latestAssessmentId } });
+        else router.push("/(tabs)/journey" as never);
+        return;
+      case "emergency":
+        router.push("/(tabs)/emergency" as never);
+        return;
+      case "alira":
+        router.push({
+          pathname: "/(tabs)/chat" as never,
+          params: {
+            prompt: nextStep.action === "initial_assessment"
+              ? "Please help me finish my initial assessment setup."
+              : "Please guide me through the next safe step.",
+          },
+        });
+        return;
+      default:
+        router.push("/progress" as never);
+    }
+  };
+
+  const iconName = nextStep.action === "continue_exercises"
+    ? "fitness-outline"
+    : nextStep.action === "initial_assessment" || nextStep.action === "movement_assessment"
+      ? "clipboard-outline"
+      : nextStep.action === "safety_follow_up"
+        ? "warning-outline"
+        : nextStep.action === "recovery_check_in"
+          ? "chatbubble-ellipses-outline"
+          : "trending-up-outline";
 
   return (
     <>
       <View style={styles.card} testID="daily-checkin-card">
-        <View style={styles.avatar}><Ionicons name="sparkles" size={20} color={colors.onBrandPrimary} /></View>
-        <View style={{ flex: 1, minWidth: 0 }}>
-          <View style={styles.topRow}>
-            <Text style={styles.from}>Alira</Text>
-            {surveyDue ? <View style={styles.duePill}><Text style={styles.dueText}>Check-in due</Text></View> : null}
+        {secondarySurvey ? (
+          <View style={styles.surveyBanner} testID="next-step-survey-secondary">
+            <View style={styles.surveyBannerCopy}>
+              <Text style={styles.surveyBannerTitle}>{secondarySurvey.title}</Text>
+              <Text style={styles.surveyBannerBody}>{secondarySurvey.message}</Text>
+            </View>
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => {
+                Haptics.selectionAsync();
+                setShowPreface(true);
+              }}
+              style={styles.surveyButton}
+            >
+              <Text style={styles.surveyButtonText}>Start</Text>
+            </Pressable>
           </View>
-          <Text style={styles.greeting}>{name ? `Hi ${name}, ` : "Hi there, "}{surveyDue ? "shall we check in?" : "your plan is on track."}</Text>
-          <Text style={styles.body}>{message}</Text>
-          <Pressable
-            testID="daily-checkin-chat"
-            onPress={() => {
-              Haptics.selectionAsync();
-              if (surveyDue) setShowPreface(true);
-              else openChat();
-            }}
-            style={styles.cta}
-          >
-            <Ionicons name="chatbubble-ellipses-outline" size={16} color={colors.brandPrimary} />
-            <Text style={styles.ctaText}>{surveyDue ? "Start short check-in" : "Talk to Alira"}</Text>
-          </Pressable>
+        ) : null}
+
+        <View style={styles.nextRow}>
+          <View style={styles.avatar}><Ionicons name={iconName} size={21} color={colors.onBrandPrimary} /></View>
+          <View style={styles.copy}>
+            <View style={styles.topRow}>
+              <Text style={styles.from}>Alira: Next step</Text>
+              {surveyIsPrimary ? <View style={styles.duePill}><Text style={styles.dueText}>Check-in due</Text></View> : null}
+            </View>
+            <Text style={styles.greeting}>{name ? `${name}, ` : ""}{nextStep.title}</Text>
+            <Text style={styles.body}>{nextStep.message}</Text>
+            <Pressable
+              testID="daily-checkin-chat"
+              accessibilityRole="button"
+              onPress={openPrimaryAction}
+              style={styles.cta}
+            >
+              <Ionicons name="arrow-forward-circle-outline" size={17} color={colors.onBrandPrimary} />
+              <Text style={styles.ctaText}>{nextStep.cta}</Text>
+            </Pressable>
+          </View>
         </View>
       </View>
-      <SurveyPrefaceModal visible={showPreface} onBegin={openChat} onClose={() => setShowPreface(false)} />
+      <SurveyPrefaceModal visible={showPreface} onBegin={openSurveyChat} onClose={() => setShowPreface(false)} />
     </>
   );
 }
 
 const styles = StyleSheet.create({
-  card: { flexDirection: "row", gap: spacing.sm, padding: spacing.md, borderRadius: radius.md, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, marginBottom: spacing.md },
-  avatar: { width: 40, height: 40, borderRadius: 20, alignItems: "center", justifyContent: "center", backgroundColor: colors.brandPrimary },
-  topRow: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
-  from: { fontSize: 13, fontWeight: "900", color: colors.brandPrimary, letterSpacing: 0.3 },
+  card: { padding: spacing.md, borderRadius: radius.md, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, marginBottom: spacing.md },
+  surveyBanner: { flexDirection: "row", alignItems: "center", gap: spacing.sm, padding: spacing.sm, marginBottom: spacing.md, borderRadius: radius.sm, backgroundColor: "#F8F1E8", borderWidth: 1, borderColor: "#E8CFAD" },
+  surveyBannerCopy: { flex: 1, minWidth: 0 },
+  surveyBannerTitle: { color: "#7B4A18", fontSize: 13, fontWeight: "900" },
+  surveyBannerBody: { color: "#715B43", fontSize: 12, lineHeight: 17, marginTop: 2 },
+  surveyButton: { minHeight: 36, paddingHorizontal: 14, alignItems: "center", justifyContent: "center", borderRadius: radius.pill, backgroundColor: "#FFFFFF" },
+  surveyButtonText: { color: "#7B4A18", fontSize: 12, fontWeight: "900" },
+  nextRow: { flexDirection: "row", gap: spacing.sm },
+  avatar: { width: 42, height: 42, borderRadius: 21, alignItems: "center", justifyContent: "center", backgroundColor: colors.brandPrimary },
+  copy: { flex: 1, minWidth: 0 },
+  topRow: { flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: spacing.sm },
+  from: { fontSize: 13, fontWeight: "900", color: colors.brandPrimary, letterSpacing: 0 },
   duePill: { paddingHorizontal: 8, paddingVertical: 3, borderRadius: radius.pill, backgroundColor: "#FCE9DA" },
   dueText: { fontSize: 12, fontWeight: "800", color: "#A94D1B" },
-  greeting: { fontSize: 15, fontWeight: "800", color: colors.onSurface, marginTop: 3 },
+  greeting: { fontSize: 16, lineHeight: 22, fontWeight: "800", color: colors.onSurface, marginTop: 3 },
   body: { fontSize: 13, lineHeight: 19, color: colors.onSurfaceSecondary, marginTop: 3 },
-  cta: { flexDirection: "row", alignItems: "center", alignSelf: "flex-start", gap: 6, marginTop: spacing.sm, paddingVertical: 8, paddingHorizontal: 12, borderRadius: radius.pill, backgroundColor: colors.brandTertiary },
-  ctaText: { fontSize: 13, fontWeight: "800", color: colors.brandPrimary },
+  cta: { flexDirection: "row", alignItems: "center", alignSelf: "flex-start", gap: 6, marginTop: spacing.sm, minHeight: 40, paddingVertical: 8, paddingHorizontal: 14, borderRadius: radius.pill, backgroundColor: colors.brandPrimary },
+  ctaText: { fontSize: 13, fontWeight: "800", color: colors.onBrandPrimary },
 });

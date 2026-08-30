@@ -48,7 +48,7 @@ export async function saveSettings(s: ReminderSettings) {
 }
 
 type AdaptiveReminderPlan = {
-  survey?: { due?: boolean; due_at?: string };
+  survey?: { due?: boolean; due_at?: string; patient_prompt_enabled?: boolean };
   assessment?: { due?: boolean; due_at?: string; blocked_by_safety?: boolean };
   exercise_plan?: { action?: string; approved_exercise_ids?: string[] };
 };
@@ -93,7 +93,9 @@ export async function rescheduleReminders(s: ReminderSettings, suppliedPlan?: Ad
       });
     }
 
-    const surveyDate = futureReminderDate(plan?.survey?.due_at);
+    const surveyDate = plan?.survey?.patient_prompt_enabled === false
+      ? null
+      : futureReminderDate(plan?.survey?.due_at);
     if (surveyDate) {
       await Notifications.scheduleNotificationAsync({
         identifier: "adaptive_recovery_check_in",

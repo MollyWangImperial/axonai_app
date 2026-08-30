@@ -16,7 +16,7 @@ import * as Haptics from "expo-haptics";
 
 import { Assessment, fetchHistory } from "@/src/api";
 import { authedFetch, getCachedUser, preferredNameKey } from "@/src/auth";
-import { DailyCheckInCard } from "@/src/components/DailyCheckInCard";
+import { AliraCarePlan, DailyCheckInCard } from "@/src/components/DailyCheckInCard";
 import { colors, radius, spacing } from "@/src/theme";
 import { getScreenCache, setScreenCache } from "@/src/screenCache";
 import { storage } from "@/src/utils/storage";
@@ -55,7 +55,7 @@ type CarePlanAssessment = {
 type HomeScreenCache = {
   history: Assessment[];
   greetName: string;
-  carePlanAssessment: CarePlanAssessment | null;
+  carePlan: AliraCarePlan | null;
 };
 
 export default function HomeScreen() {
@@ -67,7 +67,7 @@ export default function HomeScreen() {
   const cached = getScreenCache<HomeScreenCache>("home");
   const [history, setHistory] = useState<Assessment[]>(cached?.history ?? []);
   const [greetName, setGreetName] = useState(cached?.greetName ?? "");
-  const [carePlanAssessment, setCarePlanAssessment] = useState<CarePlanAssessment | null>(cached?.carePlanAssessment ?? null);
+  const [carePlan, setCarePlan] = useState<AliraCarePlan | null>(cached?.carePlan ?? null);
   const [loading, setLoading] = useState(!cached);
 
   const load = useCallback(async () => {
@@ -83,17 +83,18 @@ export default function HomeScreen() {
         .catch(() => null),
     ]);
     const nextGreetName = preferredName || user?.name?.split(" ")[0] || "there";
-    const nextCarePlanAssessment = carePlan?.assessment || null;
+    const nextCarePlan = carePlan || null;
     setHistory(assessments);
     setGreetName(nextGreetName);
-    setCarePlanAssessment(nextCarePlanAssessment);
-    setScreenCache<HomeScreenCache>("home", { history: assessments, greetName: nextGreetName, carePlanAssessment: nextCarePlanAssessment });
+    setCarePlan(nextCarePlan);
+    setScreenCache<HomeScreenCache>("home", { history: assessments, greetName: nextGreetName, carePlan: nextCarePlan });
     setLoading(false);
   }, []);
 
   useFocusEffect(useCallback(() => { void load(); }, [load]));
 
   const latest = history[0];
+  const carePlanAssessment = (carePlan?.assessment || null) as CarePlanAssessment | null;
   const hasInitialAssessment = history.some((item) => item.assessment_package === "initial");
   const isInitialAssessment = !hasInitialAssessment;
   const followUpDue = Boolean(carePlanAssessment?.due && carePlanAssessment?.can_start);
@@ -179,7 +180,7 @@ export default function HomeScreen() {
             <Ionicons name="chevron-forward" size={22} color="#FFFFFF" />
           </Pressable>
 
-          {!loading && <DailyCheckInCard />}
+          {!loading && <DailyCheckInCard name={greetName} plan={carePlan} latestAssessmentId={latest?.id} />}
 
           {loading ? (
             <View style={styles.loadingState}>

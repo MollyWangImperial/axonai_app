@@ -10004,6 +10004,7 @@ async def get_alira_care_plan(request: Request):
             "assessment_due": plan["assessment"]["due"],
             "exercise_action": plan["exercise_plan"]["action"],
             "daily_action": plan["daily_monitoring"]["next_day_action"],
+            "next_action": (plan.get("next_step") or {}).get("action"),
         },
     )
     return plan
@@ -10831,10 +10832,23 @@ async def chat_history(session_id: str, request: Request):
     return {"session_id": session_id, "turns": (sess or {}).get("turns", [])}
 
 
+def _alira_next_step_message(plan: Dict[str, Any], name: str = "") -> str:
+    step = plan.get("next_step") or {}
+    greeting = f"Hi, {name}." if name else "Hi."
+    title = str(step.get("title") or "Your next recovery step is ready.")
+    message = str(step.get("message") or "Open your plan to see what to do next.")
+    secondary = step.get("secondary_action") or {}
+    survey_note = (
+        " A short recovery check-in is also due, but it does not replace today's exercises."
+        if secondary.get("action") == "recovery_check_in"
+        else ""
+    )
+    return f"{greeting} {title}. {message}{survey_note}"
+
+
 @api_router.post("/chat/proactive")
 async def chat_proactive(req: ChatRequest, request: Request):
-    """Returns a warm spontaneous check-in line. Uses preferred_name if available."""
-    import random
+    """Return the care-plan action the patient should take next."""
     user = await _user_from_header(dict(request.headers))
     name = ""
     if user:
@@ -10848,37 +10862,8 @@ async def chat_proactive(req: ChatRequest, request: Request):
     except Exception:
         sess = LOCAL_CHAT_SESSIONS.get(f"{user['id']}:{req.session_id}") if user else None
     has_history = bool(sess and sess.get("turns"))
-    has_assessment = False
-    if user:
-        try:
-            has_assessment = bool(await db.assessments.find_one({"user_id": user["id"]}, {"_id": 1}))
-        except Exception:
-            has_assessment = any(item.get("user_id") == user["id"] for item in LOCAL_ASSESSMENTS)
-    n = f", {name}" if name else ""
-
-    if not has_assessment:
-        pool = [
-            f"Hi{n}. I'm Alira — your recovery companion. Whenever you're ready, taking that first assessment will help me support you. How are you feeling today?",
-            f"Hello{n}. I'm here whenever you need to talk. Have you had a chance to do your first movement check yet?",
-            f"Hi{n}, I'm Alira. How are you doing today?",
-        ]
-    elif not has_history:
-        pool = [
-            f"Hi{n}, I'm Alira. I saw your assessment results — thank you for trusting me. How are you feeling today, gently?",
-            f"Hello{n}. I'm here for the journey. Want to tell me how the morning has been?",
-            f"Hi{n}. Recovery has good days and tougher days. Which one is today?",
-        ]
-    else:
-        pool = [
-            f"How are you doing today{n}? Anything on your mind?",
-            f"I've been thinking about you{n}. How did the exercises feel this morning?",
-            f"Just checking in{n}. Did you sleep okay last night?",
-            f"How is your shoulder feeling today{n}? Easier, harder, or about the same?",
-            f"Small reminder{n}: every tiny step counts. How are you, really?",
-            f"Hi{n}. What's one thing — big or small — that went well for you today?",
-            f"Hello{n}. I'm holding space for you. What would feel good to talk about right now?",
-        ]
-    selected_message = random.choice(pool)
+    care_plan = await _adaptive_care_plan_for_user(user) if user else {}
+    selected_message = _alira_next_step_message(care_plan, name)
     if user:
         _record_alira_action(
             "proactive_check_in_selected",
@@ -10886,9 +10871,9 @@ async def chat_proactive(req: ChatRequest, request: Request):
             user_id=user["id"],
             session_id=req.session_id,
             details={
-                "has_assessment": has_assessment,
                 "has_chat_history": has_history,
-                "message_variant_count": len(pool),
+                "next_action": (care_plan.get("next_step") or {}).get("action"),
+                "survey_due": (care_plan.get("survey") or {}).get("due"),
             },
         )
     return {"text": selected_message}
@@ -10896,34 +10881,23 @@ async def chat_proactive(req: ChatRequest, request: Request):
 
 @api_router.get("/chat/proactive/messages")
 async def chat_proactive_messages(request: Request, n: int = 3):
-    """Returns N varied caring proactive messages for the floating Alira bubble on Home."""
-    import random
+    """Return only an actionable care-plan reminder for the floating Alira bubble."""
     user = await _user_from_header(dict(request.headers))
     name = ""
     if user:
         profile = user.get("profile") or {}
         name = (profile.get("preferred_name") or user.get("name") or "").split(" ")[0].strip()
-    suffix = f", {name}" if name else ""
-    pool = [
-        f"How are you{suffix}?",
-        f"Hi{suffix} — just checking in. How is today going?",
-        f"Thinking of you{suffix}. Did you sleep well?",
-        f"How are your hands feeling today{suffix}?",
-        f"Anything on your mind{suffix}? I'm here.",
-        f"Want to share one small win from today{suffix}?",
-        f"Quick check-in{suffix}: feeling lighter, heavier, or the same?",
-        f"Hi{suffix}. Be gentle with yourself today.",
-        f"How was the morning{suffix}? I'd love to hear.",
-        f"Hey{suffix} — your body is healing in ways you can't see. How are you feeling?",
-    ]
-    random.shuffle(pool)
-    selected_messages = pool[:max(1, min(n, len(pool)))]
+    care_plan = await _adaptive_care_plan_for_user(user) if user else {}
+    selected_messages = [_alira_next_step_message(care_plan, name)]
     if user:
         _record_alira_action(
             "proactive_messages_selected",
             source="app",
             user_id=user["id"],
-            details={"message_count": len(selected_messages)},
+            details={
+                "message_count": len(selected_messages),
+                "next_action": (care_plan.get("next_step") or {}).get("action"),
+            },
         )
     return {"messages": selected_messages, "name": name}
 

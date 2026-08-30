@@ -44,6 +44,15 @@ def sample_plan():
         "exercise_plan": {"action": "maintain"},
         "safety": {"status": "clear", "blocks_exercise": False},
         "daily_monitoring": {"next_day_action": "none"},
+        "next_step": {
+            "action": "continue_exercises",
+            "title": "Continue today's exercise plan",
+            "message": "Complete 1 remaining exercise in this round.",
+            "secondary_action": {
+                "action": "recovery_check_in",
+                "title": "Short recovery check-in also due",
+            },
+        },
     }
 
 
@@ -72,6 +81,27 @@ def test_care_plan_requires_health_data_consent(monkeypatch):
 
     assert response.status_code == 403
     assert "consent" in response.json()["detail"].lower()
+
+
+def test_proactive_alira_message_uses_next_step_instead_of_generic_daily_check_in(monkeypatch):
+    async def user_from_header(_headers):
+        return signed_in_user()
+
+    async def plan_for_user(_user):
+        return sample_plan()
+
+    monkeypatch.setattr(server, "_user_from_header", user_from_header)
+    monkeypatch.setattr(server, "_adaptive_care_plan_for_user", plan_for_user)
+    response = TestClient(server.app).post(
+        "/api/chat/proactive",
+        headers={"X-User-Id": "u_alira_care"},
+        json={"session_id": "next-step-test", "text": ""},
+    )
+
+    assert response.status_code == 200
+    assert "Continue today's exercise plan" in response.json()["text"]
+    assert "does not replace today's exercises" in response.json()["text"]
+    assert "How are you feeling today" not in response.json()["text"]
 
 
 def test_initial_recommendation_uses_saved_capabilities(monkeypatch):
