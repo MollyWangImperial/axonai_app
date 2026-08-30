@@ -15,7 +15,7 @@ def test_full_terms_and_privacy_content_are_present():
     assert "13. Changes to this notice" in legal
     assert "IMPORTANT SAFETY INFORMATION" not in legal  # headings use patient-friendly sentence case
     assert "Build note" not in legal
-    assert "Accepting these Terms is not that consent" in legal
+    assert "Accepting these Terms is not consent for this purpose" in legal
 
 
 def test_terms_gate_requires_two_separate_acknowledgements():
@@ -77,7 +77,7 @@ def test_consent_and_optional_improvement_choice_are_account_backed():
     assert '@api_router.post("/users/data-permissions")' in server
     assert 'authedFetch("/api/users/consent"' in auth
     assert "Off by default" in data_permissions
-    assert "Raw movement videos are not used for model training" in data_permissions
+    assert "Your raw videos are used only to take the measurements and are then deleted. They are not used for training." in data_permissions
 
 
 def test_active_account_identity_drives_consent_and_is_cleared_on_logout():

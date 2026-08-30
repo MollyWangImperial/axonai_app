@@ -348,11 +348,12 @@ export default function AccountCenterScreen() {
       <Modal visible={showDeleteModal} transparent animationType="fade" onRequestClose={() => setShowDeleteModal(false)}>
         <View style={styles.deleteBackdrop}>
           <View style={[styles.deleteCard, { backgroundColor: palette.surface }]} testID="account-delete-modal">
-            <Text style={[styles.deleteTitle, { color: palette.text }]}>Delete your account?</Text>
-            <Text style={[styles.deleteBody, { color: palette.muted }]}>This removes your profile, survey answers, and assessments from Rehyn. This cannot be undone from the app.</Text>
+            <Text style={[styles.deleteTitle, { color: palette.text }]}>Delete your account</Text>
+            <Text style={[styles.deleteBody, { color: palette.muted }]}>This deletes your account, your rehabilitation plan, your assessments and your measurements. It cannot be undone.</Text>
+            <Text style={[styles.deleteBody, { color: palette.muted }]}>Information already used in a model we have released cannot always be separated out, and we may need to keep a small amount of information where the law requires it. The Privacy Notice explains this.</Text>
             <View style={styles.deleteActions}>
               <Pressable testID="account-delete-cancel" disabled={deleting} onPress={() => setShowDeleteModal(false)} style={[styles.deleteCancel, { borderColor: palette.border }]}><Text style={[styles.deleteCancelText, { color: palette.text }]}>Cancel</Text></Pressable>
-              <Pressable testID="account-delete-confirm" disabled={deleting} onPress={async () => { setDeleting(true); try { await deleteAccount(); router.replace("/sign-in"); } catch { setDeleting(false); setShowDeleteModal(false); } }} style={styles.deleteConfirm}>{deleting ? <ActivityIndicator color="#FFFFFF" /> : <Text style={styles.deleteConfirmText}>Delete</Text>}</Pressable>
+              <Pressable testID="account-delete-confirm" disabled={deleting} onPress={async () => { setDeleting(true); try { await deleteAccount(); router.replace("/sign-in"); } catch { setDeleting(false); setShowDeleteModal(false); } }} style={styles.deleteConfirm}>{deleting ? <ActivityIndicator color="#FFFFFF" /> : <Text style={styles.deleteConfirmText}>Delete everything</Text>}</Pressable>
             </View>
           </View>
         </View>

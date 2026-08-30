@@ -145,7 +145,7 @@ FAST_RUNNER_HTML = r"""<!DOCTYPE html>
 </head>
 <body>
 <div class="shell">
-  <div class="emergencyBar"><span>Prototype only: any 911 call shown here is simulated. If this is a real emergency, use a phone to call 911 now.</span></div>
+  <div class="emergencyBar"><span>Prototype only: any 999 call shown here is simulated. If this is a real emergency, use a phone to call 999 now.</span></div>
   <div class="top"><button class="exit" type="button" onclick="postRN({type:'exit'})">Exit</button><strong>Emergency FAST check</strong><span style="width:44px"></span></div>
   <main class="workspace" id="workspace">
     <section class="camera" id="cameraPane">
@@ -179,9 +179,9 @@ function postRN(data){
 function startDemo911Call(){
   if(document.getElementById("demoCallOverlay")) return;
   const overlay=document.createElement("div");overlay.className="callOverlay";overlay.id="demoCallOverlay";overlay.setAttribute("data-testid","fast-demo-911");
-  overlay.innerHTML=`<div class="callCard"><div class="demoBadge">Demo only</div><div class="callPulse">911</div><h2>Simulating a 911 call...</h2><p>This prototype is demonstrating the emergency handoff that follows a red FAST result.</p><div class="demoWarning">No emergency call has been placed.</div><p class="small">In a real emergency, use a phone to call 911 immediately and say that you suspect a stroke.</p><button class="secondary" id="closeDemoCall" style="width:100%">Close simulation</button></div>`;
+  overlay.innerHTML=`<div class="callCard"><div class="demoBadge">Demo only</div><div class="callPulse">999</div><h2>Simulating a 999 call...</h2><p>This prototype is demonstrating the emergency handoff that follows a red FAST result.</p><div class="demoWarning">No emergency call has been placed.</div><p class="small">In a real emergency, use a phone to call 999 immediately and say that you suspect a stroke.</p><button class="secondary" id="closeDemoCall" style="width:100%">Close simulation</button></div>`;
   document.body.appendChild(overlay);document.getElementById("closeDemoCall").onclick=()=>overlay.remove();postRN({type:"demo_911_started"});
-  speak("Demo only. The app is simulating a 911 call. No emergency call has been placed. In a real emergency, call 911 immediately.");
+  speak("Demo only. The app is simulating a 999 call. No emergency call has been placed. In a real emergency, call 999 immediately.");
 }
 function stopAliraSpeech(){
   aliraSpeechToken+=1;
@@ -244,6 +244,7 @@ function loop(){
 
 function analyseFace(faceResult,poseLm){
   const face=automated.face;
+  if(face.decision!=="pending")return;
   const faceLm=faceResult&&faceResult.faceLandmarks&&faceResult.faceLandmarks[0];
   const categories=faceResult&&faceResult.faceBlendshapes&&faceResult.faceBlendshapes[0]&&faceResult.faceBlendshapes[0].categories;
   if(faceLm&&categories){
@@ -258,6 +259,9 @@ function analyseFace(faceResult,poseLm){
     if(smileActivation>.08)face.engaged_samples+=1;
     if(smileActivation>.08&&(blendAsymmetry>.22||landmarkAsymmetry>.17))face.positive_samples+=1;
     face.positive=face.samples>=16&&face.positive_samples/face.samples>.26;
+    if(!face.positive&&performance.now()-stepStartedAt>=2600&&face.engaged_samples>=40&&face.positive_samples/face.samples<=.15){
+      if(stepTimer)clearTimeout(stepTimer);updateAssist("face","A steady, even smile was seen. Moving on.","good");finalizeFace();return;
+    }
     updateAssist("face",face.positive?"Alira noticed persistent left-right smile unevenness.":smileActivation>.08?"Smile detected. Comparing both sides now.":"Please smile and hold while Alira observes both sides.",face.positive?"warn":"good");
     return;
   }
@@ -271,6 +275,7 @@ function analyseFace(faceResult,poseLm){
 }
 
 function analyseArms(lm){
+  if(automated.arms.decision!=="pending")return;
   if(!visible(lm,[11,12,13,14,15,16])) return;
   const arms=automated.arms;
   const shoulderWidth=Math.max(distance(lm[11],lm[12]),.04);
@@ -287,6 +292,9 @@ function analyseArms(lm){
   if(oneSided)arms.one_sided_samples+=1;
   if(possibleDifference)arms.positive_samples+=1;
   arms.positive=arms.samples>=18&&(arms.one_sided_samples/arms.samples>.30||(arms.both_raised_samples>=10&&arms.positive_samples/arms.samples>.42));
+  if(!arms.positive&&performance.now()-stepStartedAt>=3000&&arms.both_raised_samples>=45&&arms.one_sided_samples/arms.samples<=.12&&arms.positive_samples/arms.samples<=.2){
+    if(stepTimer)clearTimeout(stepTimer);updateAssist("arms","Both arms held steady. Moving on.","good");finalizeArms();return;
+  }
   updateAssist("arms",arms.positive?"Alira noticed one arm staying lower or drifting.":leftRaised&&rightRaised?"Both arms found. Keep holding while Alira watches for drift.":oneSided?"One arm is raised. Keep trying to lift both.":"Raise both arms and hold them there.",arms.positive?"warn":"good");
 }
 
@@ -435,7 +443,7 @@ async function startSpeechCheck(){
 }
 
 function renderIntro(){
-  current="intro";document.body.classList.add("intro-mode");panel.innerHTML=`<div class="letter">!</div><div class="eyebrow">Alira automatic check</div><h1>Think FAST</h1><p>Alira will guide Face, Arms and Speech, observe each response automatically, and move to the next step without asking you to judge the result.</p><div class="important">If any sign is already visible, or symptoms started suddenly, call 911 now. Do not use this check to delay a real emergency call.</div><div class="actions"><button class="primary" data-testid="fast-start" id="begin">Begin automatic FAST check</button></div><p class="privacyNote">Camera video is processed in this page and is not saved. For Speech, a short recording is sent securely to OpenAI for transcription and is not retained by Rehyn. A technical failure will pause the check without deciding a medical result.</p><p class="source">Based on CDC FAST guidance.</p>`;
+  current="intro";document.body.classList.add("intro-mode");panel.innerHTML=`<div class="letter">!</div><div class="eyebrow">Alira automatic check</div><h1>Think FAST</h1><p>Alira will guide Face, Arms and Speech, observe each response automatically, and move to the next step without asking you to judge the result.</p><div class="important">If any sign is already visible, or symptoms started suddenly, call 999 now. Do not use this check to delay a real emergency call.</div><div class="actions"><button class="primary" data-testid="fast-start" id="begin">Begin automatic FAST check</button></div><p class="privacyNote">Camera video is processed in this page and is not saved. For Speech, a short recording is sent securely to OpenAI for transcription and is not retained by Rehyn. A technical failure will pause the check without deciding a medical result.</p><p class="source">Based on CDC FAST guidance.</p>`;
   document.getElementById("begin").onclick=async()=>{await ensureCamera();renderFace()};
 }
 function renderFace(){
@@ -461,14 +469,14 @@ function showResult(){
   const result=outcome();document.getElementById("cameraPane").classList.add("hidden");panel.classList.add("hidden");
   const workspace=document.getElementById("workspace");const resultSection=document.createElement("section");resultSection.className="result";
   if(result.call_999){
-    resultSection.innerHTML=`<div class="resultInner">${progress(3)}<div class="resultIcon">!</div><div class="eyebrow">T - Time · Red flag</div><h1>Call 911 now</h1><p>A FAST sign was noticed or could not be ruled out. Say that you suspect a stroke. Do not wait to see if it passes.</p><button class="callButton" data-testid="fast-show-demo-911" onclick="startDemo911Call()">Show demo 911 call</button><div class="onset"><label for="onset">When did the symptoms start? (if known)</label><input id="onset" type="datetime-local" /></div><p class="small">Stay with the person. In a real emergency, call 911 for an ambulance rather than driving to the hospital.</p><button class="secondary" style="width:100%;margin-top:12px" onclick="location.reload()">Restart check</button><p class="source">If symptoms fade, urgent medical help is still needed.</p></div>`;
+    resultSection.innerHTML=`<div class="resultInner">${progress(3)}<div class="resultIcon">!</div><div class="eyebrow">T - Time · Red flag</div><h1>Call 999 now</h1><p>A FAST sign was noticed or could not be ruled out. Say that you suspect a stroke. Do not wait to see if it passes.</p><button class="callButton" data-testid="fast-show-demo-911" onclick="startDemo911Call()">Show demo 999 call</button><div class="onset"><label for="onset">When did the symptoms start? (if known)</label><input id="onset" type="datetime-local" /></div><p class="small">Stay with the person. In a real emergency, call 999 for an ambulance rather than driving to the hospital.</p><button class="secondary" style="width:100%;margin-top:12px" onclick="location.reload()">Restart check</button><p class="source">If symptoms fade, urgent medical help is still needed.</p></div>`;
   }else{
-    resultSection.innerHTML=`<div class="resultInner clear">${progress(3)}<div class="resultIcon">&#10003;</div><div class="eyebrow" style="color:#1F7047">T - Time · Green check</div><h1>No FAST signs identified</h1><p>This brief screen did not identify a FAST sign. It does not prove the person is fine and cannot rule out a stroke or TIA.</p><div class="important">Call 911 if symptoms were sudden, have faded, there are other stroke symptoms, or you remain concerned.</div><button class="secondary" style="width:100%" onclick="location.reload()">Restart check</button></div>`;
+    resultSection.innerHTML=`<div class="resultInner clear">${progress(3)}<div class="resultIcon">&#10003;</div><div class="eyebrow" style="color:#1F7047">T - Time · Green check</div><h1>No FAST signs identified</h1><p>This brief screen did not identify a FAST sign. It does not prove the person is fine and cannot rule out a stroke or TIA.</p><div class="important">Call 999 if symptoms were sudden, have faded, there are other stroke symptoms, or you remain concerned.</div><button class="secondary" style="width:100%" onclick="location.reload()">Restart check</button></div>`;
   }
   workspace.appendChild(resultSection);
   const payload={type:"fast_check_result",answers,automated,result:{...result,status:result.call_999?"call_999":"no_fast_signs_identified",demo_call_911:result.call_999,emergency_call_mode:"simulation"},onset_time:""};postRN(payload);reported=true;
   const onset=document.getElementById("onset");if(onset)onset.onchange=()=>postRN({...payload,onset_time:onset.value});
-  speak(result.call_999?"Red flag. Call 911 now and say you suspect a stroke.":"No FAST signs were identified. This does not rule out a stroke. Call 911 if you remain concerned.",result.call_999?()=>setTimeout(startDemo911Call,300):undefined);
+  speak(result.call_999?"Red flag. Call 999 now and say you suspect a stroke.":"No FAST signs were identified. This does not rule out a stroke. Call 999 if you remain concerned.",result.call_999?()=>setTimeout(startDemo911Call,300):undefined);
 }
 
 window.startDemo911Call=startDemo911Call;window.postRN=postRN;renderIntro();

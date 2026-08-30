@@ -9196,6 +9196,27 @@ class PatientOnboarding(BaseModel):
 
 
 CURRENT_TERMS_VERSION = "1.0"
+CURRENT_PRIVACY_VERSION = "1.0"
+SUPPORTED_DATA_PERMISSIONS = ("model_improvement", "marketing_updates", "reminders")
+DATA_PERMISSION_DEFAULTS = {"model_improvement": False, "marketing_updates": False, "reminders": True}
+
+
+def _consent_audit_entry(entry_type: str, enabled: bool) -> Dict[str, Any]:
+    """Audit record for any consent or permission change.
+
+    Per the Data and Permissions specification, every change records the new
+    state, a timestamp and the versions of both the Terms of Use and the
+    Privacy Notice in force at that moment. Declines and withdrawals are
+    logged with the same detail as consents.
+    """
+    return {
+        "type": entry_type,
+        "enabled": enabled,
+        "version": CURRENT_TERMS_VERSION,
+        "terms_version": CURRENT_TERMS_VERSION,
+        "privacy_version": CURRENT_PRIVACY_VERSION,
+        "changed_at": datetime.now(timezone.utc).isoformat(),
+    }
 
 
 class ConsentAcceptance(BaseModel):
@@ -9233,14 +9254,15 @@ async def accept_user_consent(payload: ConsentAcceptance, request: Request):
         raise HTTPException(status_code=409, detail="Please review the current Terms of Use")
     if not payload.terms_accepted or not payload.health_data_consent:
         raise HTTPException(status_code=400, detail="Both required acknowledgements must be accepted")
-    accepted_at = datetime.now(timezone.utc).isoformat()
+    audit = _consent_audit_entry("required_consent", True)
+    accepted_at = audit["changed_at"]
     consent = {
         "terms_version": CURRENT_TERMS_VERSION,
+        "privacy_version": CURRENT_PRIVACY_VERSION,
         "terms_accepted": True,
         "health_data_consent": True,
         "accepted_at": accepted_at,
     }
-    audit = {"type": "required_consent", "enabled": True, "version": CURRENT_TERMS_VERSION, "changed_at": accepted_at}
     try:
         result = await db.users.update_one(
             {"id": user["id"]},
@@ -9256,13 +9278,59 @@ async def accept_user_consent(payload: ConsentAcceptance, request: Request):
     return {"ok": True, "accepted": True, "consent": consent}
 
 
+class HealthConsentUpdate(BaseModel):
+    enabled: bool
+
+
+@api_router.post("/users/consent/health")
+async def update_health_consent(payload: HealthConsentUpdate, request: Request):
+    """Give or withdraw health-data consent from the Data and permissions screen.
+
+    Withdrawing must be as easy as giving: one call, no extra conditions.
+    Withdrawal stops plan generation (enforced by _require_health_data_consent),
+    keeps the account open, and can be reversed at any time while the accepted
+    Terms version is current.
+    """
+    user = await _user_from_header(dict(request.headers))
+    if not user:
+        raise HTTPException(status_code=401, detail="Sign in required")
+    consent = dict(user.get("consent") or {})
+    if payload.enabled and not (
+        consent.get("terms_accepted") is True and consent.get("terms_version") == CURRENT_TERMS_VERSION
+    ):
+        raise HTTPException(status_code=409, detail="Please review and accept the current Terms of Use first")
+    audit = _consent_audit_entry("required_consent", payload.enabled)
+    consent["health_data_consent"] = payload.enabled
+    if payload.enabled:
+        consent["health_consent_given_at"] = audit["changed_at"]
+        consent.pop("health_consent_withdrawn_at", None)
+    else:
+        consent["health_consent_withdrawn_at"] = audit["changed_at"]
+    try:
+        result = await db.users.update_one(
+            {"id": user["id"]},
+            {"$set": {"consent": consent}, "$push": {"consent_audit": audit}},
+        )
+        if getattr(result, "matched_count", 0) == 0 and user["id"] in LOCAL_USERS:
+            raise RuntimeError("local user")
+    except Exception as e:
+        logger.warning(f"Mongo unavailable for health-consent update; using local fallback: {str(e)[:120]}")
+        local_user = {**user, "consent": consent, "consent_audit": [*(user.get("consent_audit") or []), audit]}
+        LOCAL_USERS[user["id"]] = local_user
+        _persist_local_dict(LOCAL_USERS_FILE, LOCAL_USERS)
+    return {"ok": True, "health_data_consent": payload.enabled, "consent": consent, "changed_at": audit["changed_at"]}
+
+
 @api_router.get("/users/data-permissions")
 async def get_data_permissions(request: Request):
     user = await _user_from_header(dict(request.headers))
     if not user:
         raise HTTPException(status_code=401, detail="Sign in required")
     permissions = user.get("data_permissions") or {}
-    return {"model_improvement": bool(permissions.get("model_improvement", False))}
+    return {
+        key: bool(permissions.get(key, DATA_PERMISSION_DEFAULTS[key]))
+        for key in SUPPORTED_DATA_PERMISSIONS
+    }
 
 
 @api_router.post("/users/data-permissions")
@@ -9270,10 +9338,10 @@ async def update_data_permission(payload: DataPermissionUpdate, request: Request
     user = await _user_from_header(dict(request.headers))
     if not user:
         raise HTTPException(status_code=401, detail="Sign in required")
-    if payload.key != "model_improvement":
+    if payload.key not in SUPPORTED_DATA_PERMISSIONS:
         raise HTTPException(status_code=400, detail="Unsupported data permission")
-    changed_at = datetime.now(timezone.utc).isoformat()
-    audit = {"type": payload.key, "enabled": payload.enabled, "version": payload.version, "changed_at": changed_at}
+    audit = _consent_audit_entry(payload.key, payload.enabled)
+    changed_at = audit["changed_at"]
     next_permissions = {**(user.get("data_permissions") or {}), payload.key: payload.enabled}
     try:
         result = await db.users.update_one(
@@ -9287,7 +9355,7 @@ async def update_data_permission(payload: DataPermissionUpdate, request: Request
         local_user = {**user, "data_permissions": next_permissions, "consent_audit": [*(user.get("consent_audit") or []), audit]}
         LOCAL_USERS[user["id"]] = local_user
         _persist_local_dict(LOCAL_USERS_FILE, LOCAL_USERS)
-    return {"ok": True, "model_improvement": bool(next_permissions["model_improvement"]), "changed_at": changed_at}
+    return {"ok": True, payload.key: bool(next_permissions[payload.key]), "model_improvement": bool(next_permissions.get("model_improvement", False)), "changed_at": changed_at}
 
 
 @api_router.post("/users/onboarding")
@@ -9317,6 +9385,55 @@ async def get_patient_onboarding(request: Request):
         "onboarding_complete": bool(user.get("onboarding_complete")),
         "profile": user.get("profile"),
     }
+
+
+DATA_EXPORT_COLLECTIONS = (
+    "assessments",
+    "assessment_task_progress",
+    "chat_sessions",
+    "bookings",
+    "credit_log",
+    "plan_signoffs",
+    "alira_activities",
+    "alira_check_ins",
+    "alira_care_reviews",
+    "alira_functional_issue_reports",
+)
+
+
+@api_router.get("/users/data-export")
+async def export_user_data(request: Request):
+    """Machine-readable copy of the information Rehyn holds about the signed-in user.
+
+    Fulfils the in-app "Download my data" action on the Data and permissions
+    screen: the download must be producible in the app, not only by email,
+    and must be in a format the person can open and keep.
+    """
+    user = await _user_from_header(dict(request.headers))
+    if not user:
+        raise HTTPException(status_code=401, detail="Sign in required")
+    export: Dict[str, Any] = {
+        "format": "application/json",
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "controller": "Rehyn Ltd, company number 17417716, info@rehyn.com",
+        "terms_version": CURRENT_TERMS_VERSION,
+        "privacy_version": CURRENT_PRIVACY_VERSION,
+        "account": {key: value for key, value in user.items() if key != "_id"},
+        "records": {},
+        "notes": (
+            "Raw movement videos are not included because they are deleted after "
+            "measurements are taken, as described in the Privacy Notice. "
+            "Questions: info@rehyn.com."
+        ),
+    }
+    for collection in DATA_EXPORT_COLLECTIONS:
+        try:
+            documents = await db[collection].find({"user_id": user["id"]}, {"_id": 0}).to_list(1000)
+        except Exception:
+            documents = []
+        if documents:
+            export["records"][collection] = documents
+    return export
 
 
 @api_router.delete("/users/account")

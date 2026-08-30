@@ -138,8 +138,8 @@ def test_fast_runner_and_audit_endpoint_apply_the_same_rule(monkeypatch):
     transcription_failure_handler = transcription_function.split("}catch(error){", 1)[1].split("}", 1)[0]
     assert "pauseForIncompleteSpeech" in transcription_failure_handler
     assert "finishSpeech(" not in transcription_failure_handler
-    assert "Call 911 now" in runner.text
-    assert "Simulating a 911 call" in runner.text
+    assert "Call 999 now" in runner.text
+    assert "Simulating a 999 call" in runner.text
     assert "No emergency call has been placed" in runner.text
     assert 'window.location.href="tel:' not in runner.text
     assert "No FAST signs identified" in runner.text

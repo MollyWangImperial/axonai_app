@@ -22,7 +22,7 @@ function AuthGate() {
       const u = await getCachedUser();
       const seg0 = segments[0] || "";
       // Public routes that should be reachable without auth (e.g., legal pages linked from sign-in footer).
-      const publicRoutes = ["sign-in", "consent", "privacy-policy", "terms-of-use", "data-permissions"];
+      const publicRoutes = ["sign-in", "consent", "privacy-policy", "terms-of-use", "data-permissions", "movement-videos"];
       // If not signed in and not on a public route, redirect
       if (!u && !publicRoutes.includes(seg0)) {
         router.replace("/consent");
@@ -58,7 +58,7 @@ function AuthGate() {
           return;
         }
         const localFlag = await storage.getItem(onboardingCompleteKey(u.id), "");
-        const allowedDuringOnboarding = ["onboarding", "sign-in", "consent", "privacy-policy", "terms-of-use", "data-permissions"];
+        const allowedDuringOnboarding = ["onboarding", "sign-in", "consent", "privacy-policy", "terms-of-use", "data-permissions", "movement-videos"];
         if (!localFlag && !allowedDuringOnboarding.includes(seg0)) {
           // double-check with backend (in case user signed in on a fresh device)
           try {
