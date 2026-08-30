@@ -187,6 +187,7 @@ OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "").strip()
 EMERGENT_LLM_KEY = os.environ.get("EMERGENT_LLM_KEY", "").strip()
 TTS_VOICE = os.environ.get("TTS_VOICE", "nova")  # warm/encouraging default
 TTS_MODEL = os.environ.get("TTS_MODEL", "tts-1")
+STT_MODEL = os.environ.get("STT_MODEL", "gpt-transcribe").strip() or "gpt-transcribe"
 ALIRA_CHAT_MODEL = os.environ.get("ALIRA_CHAT_MODEL", "gpt-4o-mini")
 ALIRA_REALTIME_MODEL = os.environ.get("ALIRA_REALTIME_MODEL", "gpt-realtime-2.1").strip()
 ALIRA_REALTIME_VOICE = os.environ.get("ALIRA_REALTIME_VOICE", "marin").strip()
@@ -2437,9 +2438,10 @@ async def transcribe_speech(file: UploadFile = File(...)):
 
     def run_transcription():
         return openai_tts_client.audio.transcriptions.create(
-            model="whisper-1",
+            model=STT_MODEL,
             file=(filename, audio, content_type),
             response_format="json",
+            language="en",
         )
 
     try:
@@ -2447,7 +2449,12 @@ async def transcribe_speech(file: UploadFile = File(...)):
         text = str(getattr(result, "text", "") or "").strip()
         if not text:
             raise HTTPException(status_code=422, detail="No speech was detected. Please try again.")
-        return {"text": text}
+        return {
+            "text": text,
+            "provider": "openai",
+            "model": STT_MODEL,
+            "recording_retained": False,
+        }
     except HTTPException:
         raise
     except Exception as exc:
@@ -7808,6 +7815,9 @@ async def record_emergency_fast_check(payload: FastCheckSubmit, request: Request
             "smile_activation": source.get("smile_activation"),
             "similarity": source.get("similarity"),
             "confidence": source.get("confidence"),
+            "provider": str(source.get("provider") or "unknown")[:32],
+            "model": str(source.get("model") or "unknown")[:64],
+            "recording_retained": False,
         }
 
     try:

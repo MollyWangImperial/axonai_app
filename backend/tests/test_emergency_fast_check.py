@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
@@ -26,7 +27,7 @@ def test_any_observed_or_uncertain_fast_sign_triggers_demo_911_handoff():
     )
 
     assert face["call_999"] is True
-    assert face["algorithm_version"] == "rehyn-fast-1.4-partial-phrase-retry"
+    assert face["algorithm_version"] == "rehyn-fast-1.5-openai-stt"
     assert face["demo_call_911"] is True
     assert face["emergency_call_mode"] == "simulation"
     assert face["observed_signs"] == ["face"]
@@ -91,7 +92,8 @@ def test_fast_runner_and_audit_endpoint_apply_the_same_rule(monkeypatch):
     assert "Raise both arms and hold" in runner.text
     assert "Repeat the phrase aloud" in runner.text
     assert "Begin automatic FAST check" in runner.text
-    assert "Automatic speech recognition" in runner.text
+    assert "Speech · OpenAI transcription" in runner.text
+    assert "OpenAI speech-to-text is processing the phrase" in runner.text
     assert "answerButtons" not in runner.text
     assert "chooseAnswer" not in runner.text
     assert 'data-answer="yes"' not in runner.text
@@ -99,23 +101,29 @@ def test_fast_runner_and_audit_endpoint_apply_the_same_rule(monkeypatch):
     assert "finalizeFace" in runner.text
     assert "finalizeArms" in runner.text
     assert "startSpeechCheck" in runner.text
-    assert "finalizeSpeechWindow" in runner.text
-    assert "speechTimer=setTimeout(finalizeSpeechWindow,SPEECH_WINDOW_MS)" in runner.text
+    assert "MediaRecorder" in runner.text
+    assert 'fetch("/api/stt/transcribe"' in runner.text
+    assert "SPEECH_WINDOW_MS=15000" in runner.text
+    assert "audio/webm;codecs=opus" in runner.text
+    assert "audio/ogg;codecs=opus" in runner.text
+    assert "audio/mp4" in runner.text
+    assert "finalizeSpeechWindow" not in runner.text
+    assert "window.SpeechRecognition" not in runner.text
+    assert "window.webkitSpeechRecognition" not in runner.text
     assert "isCompleteSpeechCandidate" in runner.text
     assert 'words.includes("today")' in runner.text
     assert "pauseForIncompleteSpeech" in runner.text
     assert 'data-testid="fast-speech-retry"' in runner.text
     assert 'data-testid="fast-speech-unable"' in runner.text
     assert "No emergency result has been decided" in runner.text
-    assert 'if(!Recognition){pauseForIncompleteSpeech(' in runner.text
-    assert 'if(event.error==="not-allowed"||event.error==="service-not-allowed"){pauseForIncompleteSpeech(' in runner.text
-    assert "recognition.interimResults=true" in runner.text
-    assert "recognition.continuous=false" in runner.text
-    assert "Keep speaking until the bar finishes" in runner.text
-    speech_result_handler = runner.text.split("recognition.onresult=(event)=>{", 1)[1].split(
-        "recognition.onnomatch", 1
+    assert "A technical failure will pause the check without deciding a medical result" in runner.text
+    assert "Rehyn does not retain the audio" in runner.text
+    transcription_function = runner.text.split("async function transcribeSpeechRecording", 1)[1].split(
+        "async function startSpeechCheck", 1
     )[0]
-    assert "finishSpeech(" not in speech_result_handler
+    transcription_failure_handler = transcription_function.split("}catch(error){", 1)[1].split("}", 1)[0]
+    assert "pauseForIncompleteSpeech" in transcription_failure_handler
+    assert "finishSpeech(" not in transcription_failure_handler
     assert "Call 911 now" in runner.text
     assert "Simulating a 911 call" in runner.text
     assert "No emergency call has been placed" in runner.text
@@ -128,6 +136,45 @@ def test_fast_runner_and_audit_endpoint_apply_the_same_rule(monkeypatch):
     assert events[0][1]["details"]["raw_video_saved"] is False
     assert events[0][1]["details"]["raw_audio_saved"] is False
     assert events[0][1]["details"]["automated"]["speech"].get("transcript") is None
+    assert events[0][1]["details"]["automated"]["speech"]["provider"] == "unknown"
+    assert events[0][1]["details"]["automated"]["speech"]["recording_retained"] is False
+
+
+def test_stt_endpoint_uses_openai_transcribe_without_writing_audio(monkeypatch):
+    captured = {}
+
+    class FakeTranscriptions:
+        def create(self, **kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(text="The sky is blue today")
+
+    fake_client = SimpleNamespace(
+        audio=SimpleNamespace(transcriptions=FakeTranscriptions()),
+    )
+    monkeypatch.setattr(server, "openai_tts_client", fake_client)
+    monkeypatch.setattr(server, "STT_MODEL", "gpt-transcribe")
+
+    with TestClient(server.app) as client:
+        response = client.post(
+            "/api/stt/transcribe",
+            files={"file": ("fast-speech.webm", b"short in-memory audio", "audio/webm")},
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "text": "The sky is blue today",
+        "provider": "openai",
+        "model": "gpt-transcribe",
+        "recording_retained": False,
+    }
+    assert captured["model"] == "gpt-transcribe"
+    assert captured["language"] == "en"
+    assert captured["response_format"] == "json"
+    assert captured["file"] == (
+        "fast-speech.webm",
+        b"short in-memory audio",
+        "audio/webm",
+    )
 
 
 def test_emergency_entry_is_prominent_and_alira_can_open_it():

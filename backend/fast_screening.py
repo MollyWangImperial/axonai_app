@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any, Dict, Mapping
 
 
-FAST_ALGORITHM_VERSION = "rehyn-fast-1.4-partial-phrase-retry"
+FAST_ALGORITHM_VERSION = "rehyn-fast-1.5-openai-stt"
 FAST_SIGNS = ("face", "arms", "speech")
 FAST_ANSWERS = {"no", "yes", "unsure"}
 
@@ -164,12 +164,12 @@ const answers={face:null,arms:null,speech:null};
 const automated={
   face:{available:false,positive:false,decision:"pending",samples:0,positive_samples:0,engaged_samples:0,metric:null,quality:"pending",reason:""},
   arms:{available:false,positive:false,decision:"pending",samples:0,positive_samples:0,both_raised_samples:0,one_sided_samples:0,metric:null,quality:"pending",reason:""},
-  speech:{available:false,positive:false,decision:"pending",transcript:"",similarity:null,confidence:null,quality:"pending",reason:""}
+  speech:{available:false,positive:false,decision:"pending",transcript:"",similarity:null,confidence:null,quality:"pending",reason:"",provider:"openai",model:"gpt-transcribe",recording_retained:false}
 };
-let poseLandmarker=null,faceLandmarker=null,stream=null,current="intro",lastVideoTime=-1,animationId=null,stepStartedAt=0,stepTimer=null,speechRecognition=null,speechTimer=null,reported=false;
-let armBaseline=null,speechAttempt=0,speechSettled=false,speechAwaitingRetry=false,speechDeadline=0,speechBest={transcript:"",confidence:0,score:0};
+let poseLandmarker=null,faceLandmarker=null,stream=null,current="intro",lastVideoTime=-1,animationId=null,stepStartedAt=0,stepTimer=null,speechRecorder=null,speechAudioStream=null,speechTimer=null,reported=false;
+let armBaseline=null,speechSettled=false,speechAwaitingRetry=false,speechBest={transcript:"",confidence:0,score:0};
 const phrase="The sky is blue today";
-const FACE_WINDOW_MS=5600,ARMS_WINDOW_MS=6800,SPEECH_WINDOW_MS=9000;
+const FACE_WINDOW_MS=5600,ARMS_WINDOW_MS=6800,SPEECH_WINDOW_MS=15000;
 
 function postRN(data){
   const message=JSON.stringify(data);
@@ -287,7 +287,7 @@ function updateAssist(sign,text,state){
   if(current!==sign) return;const el=document.getElementById("assist");if(!el)return;el.className=`assist ${state||''}`;el.querySelector("span:last-child").textContent=text;
 }
 
-function beginScan(duration){const fill=document.getElementById("scanFill");if(!fill)return;fill.style.transition=`width ${duration}ms linear`;requestAnimationFrame(()=>{fill.style.width="100%"})}
+function beginScan(duration){const fill=document.getElementById("scanFill");if(!fill)return;fill.style.transition="none";fill.style.width="0";requestAnimationFrame(()=>{fill.style.transition=`width ${duration}ms linear`;requestAnimationFrame(()=>{fill.style.width="100%"})})}
 function setStepTimer(callback,duration){if(stepTimer)clearTimeout(stepTimer);stepTimer=setTimeout(callback,duration)}
 function automaticCard(label){return `<div class="autoCard"><div class="autoTop"><span>${label}</span><span class="autoBadge">Automatic</span></div><div class="scanTrack"><div class="scanFill" id="scanFill"></div></div><div class="autoResult" id="autoResult" aria-live="polite"><span class="pulseDot"></span><span>Observing now. Alira will move on automatically.</span></div></div>`}
 function showAutomaticDecision(sign,decision,text,next){
@@ -312,11 +312,15 @@ function finalizeArms(){
 function normalizeSpeech(text){return String(text||"").toLowerCase().replace(/[^a-z0-9 ]/g," ").replace(/\s+/g," ").trim()}
 function editDistance(a,b){const dp=Array.from({length:a.length+1},()=>Array(b.length+1).fill(0));for(let i=0;i<=a.length;i++)dp[i][0]=i;for(let j=0;j<=b.length;j++)dp[0][j]=j;for(let i=1;i<=a.length;i++)for(let j=1;j<=b.length;j++)dp[i][j]=Math.min(dp[i-1][j]+1,dp[i][j-1]+1,dp[i-1][j-1]+(a[i-1]===b[j-1]?0:1));return dp[a.length][b.length]}
 function similarity(a,b){a=normalizeSpeech(a);b=normalizeSpeech(b);return Math.max(0,1-editDistance(a,b)/Math.max(a.length,b.length,1))}
+function cancelSpeechCapture(){
+  if(speechTimer)clearTimeout(speechTimer);speechTimer=null;
+  if(speechRecorder){const recorder=speechRecorder;speechRecorder=null;recorder.onstop=null;try{if(recorder.state!=="inactive")recorder.stop()}catch{}}
+  if(speechAudioStream){speechAudioStream.getTracks().forEach(track=>track.stop());speechAudioStream=null}
+}
 function finishSpeech(decision,reason){
   if(speechSettled)return;speechSettled=true;
   speechAwaitingRetry=false;
-  if(speechTimer)clearTimeout(speechTimer);speechTimer=null;
-  if(speechRecognition){try{speechRecognition.stop()}catch{}speechRecognition=null}
+  cancelSpeechCapture();
   automated.speech.reason=reason;showAutomaticDecision("speech",decision,reason,showResult);
 }
 function rememberSpeechCandidate(transcript,confidence){
@@ -329,8 +333,7 @@ function isCompleteSpeechCandidate(candidate){
 }
 function pauseForIncompleteSpeech(reason){
   if(speechSettled||speechAwaitingRetry)return;speechAwaitingRetry=true;
-  if(speechTimer)clearTimeout(speechTimer);speechTimer=null;
-  if(speechRecognition){try{speechRecognition.abort()}catch{}speechRecognition=null}
+  cancelSpeechCapture();
   const best=speechBest;
   automated.speech.available=Boolean(best.transcript);automated.speech.quality=best.transcript?"partial_phrase":"no_clear_phrase";automated.speech.transcript=best.transcript;automated.speech.similarity=best.transcript?Number(best.score.toFixed(3)):null;automated.speech.confidence=best.transcript?Number(best.confidence.toFixed(3)):null;automated.speech.reason=reason;
   const status=document.getElementById("transcript");if(status)status.textContent="Only part of the phrase was heard. No emergency result has been decided.";
@@ -338,40 +341,51 @@ function pauseForIncompleteSpeech(reason){
   const existing=document.getElementById("speechRetryActions");if(existing)existing.remove();
   const actions=document.createElement("div");actions.className="actions";actions.id="speechRetryActions";actions.innerHTML=`<button class="primary" data-testid="fast-speech-retry" id="retrySpeech">Try speech again</button><button class="secondary" data-testid="fast-speech-unable" id="unableSpeech">I cannot complete the phrase</button>`;
   const card=document.querySelector(".autoCard");if(card)card.insertAdjacentElement("afterend",actions);
-  document.getElementById("retrySpeech").onclick=()=>{speechAttempt=0;speechDeadline=0;speechBest={transcript:"",confidence:0,score:0};speechAwaitingRetry=false;actions.remove();if(status)status.textContent="Preparing to listen again...";speak(`Please repeat: ${phrase}.`,startSpeechCheck)};
+  document.getElementById("retrySpeech").onclick=()=>{speechBest={transcript:"",confidence:0,score:0};speechAwaitingRetry=false;actions.remove();if(status)status.textContent="Preparing to listen again...";speak(`Please repeat: ${phrase}.`,startSpeechCheck)};
   document.getElementById("unableSpeech").onclick=()=>{actions.remove();speechAwaitingRetry=false;finishSpeech("unsure","The complete phrase could not be captured, so speech difficulty could not be ruled out.")};
 }
-function finalizeSpeechWindow(){
-  if(speechSettled||speechAwaitingRetry)return;
-  if(speechRecognition){try{speechRecognition.stop()}catch{}speechRecognition=null}
-  const best=speechBest,wordCount=best.transcript?best.transcript.split(" ").filter(Boolean).length:0;
-  automated.speech.available=Boolean(best.transcript);automated.speech.quality=best.transcript?"browser_speech_recognition":"no_clear_phrase";automated.speech.transcript=best.transcript;automated.speech.similarity=best.transcript?Number(best.score.toFixed(3)):null;automated.speech.confidence=best.transcript?Number(best.confidence.toFixed(3)):null;
-  if(!isCompleteSpeechCandidate(best)){pauseForIncompleteSpeech(best.transcript?"Please try the complete phrase again when you are ready.":"No complete phrase was heard. Please try again when you are ready.");return}
-  const decision=best.score>=.72?"no":best.score<.48&&wordCount>=5?"yes":"unsure";
-  const reason=decision==="no"?"The complete repeated phrase matched clearly.":decision==="yes"?"The captured phrase was substantially different or unclear.":best.transcript?"Only a partial or uncertain phrase was captured, so speech difficulty could not be ruled out.":"No complete phrase was captured, so speech difficulty could not be ruled out.";
-  finishSpeech(decision,reason);
+function speechMimeType(){
+  if(typeof MediaRecorder==="undefined"||typeof MediaRecorder.isTypeSupported!=="function")return "";
+  return ["audio/webm;codecs=opus","audio/ogg;codecs=opus","audio/mp4"].find(type=>MediaRecorder.isTypeSupported(type))||"";
 }
-function startSpeechCheck(){
+function speechFilename(type){const value=String(type||"").toLowerCase();return value.includes("ogg")?"fast-speech.ogg":value.includes("mp4")?"fast-speech.mp4":"fast-speech.webm"}
+async function transcribeSpeechRecording(blob){
   if(speechSettled||speechAwaitingRetry)return;
-  const Recognition=window.SpeechRecognition||window.webkitSpeechRecognition;
   const status=document.getElementById("transcript");
-  if(!Recognition){pauseForIncompleteSpeech("Automatic speech recognition is unavailable in this browser. No emergency result has been decided. Please use the Rehyn app or a supported browser, then try again.");return}
-  if(!speechDeadline){speechDeadline=performance.now()+SPEECH_WINDOW_MS;beginScan(SPEECH_WINDOW_MS);speechTimer=setTimeout(finalizeSpeechWindow,SPEECH_WINDOW_MS)}
-  if(speechAttempt>=2)return;
-  speechAttempt+=1;const recognition=new Recognition();speechRecognition=recognition;recognition.lang="en-GB";recognition.interimResults=true;recognition.maxAlternatives=3;recognition.continuous=false;
-  status.textContent=speechAttempt===1?"Listening for the full phrase. Keep speaking until the bar finishes.":"Listening once more. Please say the complete phrase.";
-  recognition.onresult=(event)=>{
-    let heard="";for(let i=event.resultIndex;i<event.results.length;i++){const alternatives=Array.from(event.results[i]||[]);alternatives.forEach(item=>rememberSpeechCandidate(item.transcript||"",item.confidence||0));heard=[heard,event.results[i][0]?.transcript||""].filter(Boolean).join(" ")}
-    if(status&&heard)status.textContent=`Heard so far: "${heard.trim()}". Keep speaking until the bar finishes.`;
-  };
-  recognition.onnomatch=()=>{if(status)status.textContent="No clear words yet. Keep speaking until the bar finishes."};
-  recognition.onerror=(event)=>{if(event.error==="not-allowed"||event.error==="service-not-allowed"){pauseForIncompleteSpeech("Microphone access is unavailable. No emergency result has been decided. Allow microphone access, then try the speech check again.")}else if(status)status.textContent="Listening was interrupted. Alira will retry within the same timed window."};
-  recognition.onend=()=>{speechRecognition=null;const remaining=speechDeadline-performance.now();if(!speechSettled&&!speechAwaitingRetry&&remaining>1800&&speechAttempt<2&&!isCompleteSpeechCandidate(speechBest)){if(status)status.textContent="A pause was heard. Please repeat the complete phrase once more.";setTimeout(()=>speak(`Please repeat: ${phrase}.`,startSpeechCheck),350)}};
-  try{recognition.start()}catch{if(status)status.textContent="Listening was interrupted. Alira will retry within the same timed window.";setTimeout(startSpeechCheck,250)}
+  if(status)status.textContent="Alira is securely transcribing the short recording...";
+  const result=document.getElementById("autoResult");if(result)result.innerHTML="<span class=\"pulseDot\"></span><span>OpenAI speech-to-text is processing the phrase. The audio is not retained by Rehyn.</span>";
+  try{
+    const form=new FormData();form.append("file",blob,speechFilename(blob.type));
+    const response=await fetch("/api/stt/transcribe",{method:"POST",body:form});
+    const data=await response.json().catch(()=>({}));
+    if(!response.ok)throw new Error(data.detail||"Transcription failed");
+    const transcript=String(data.text||"").trim();rememberSpeechCandidate(transcript,0);
+    const best=speechBest,wordCount=best.transcript?best.transcript.split(" ").filter(Boolean).length:0;
+    automated.speech.available=Boolean(best.transcript);automated.speech.quality=best.transcript?"openai_transcription":"no_clear_phrase";automated.speech.transcript=best.transcript;automated.speech.similarity=best.transcript?Number(best.score.toFixed(3)):null;automated.speech.confidence=null;automated.speech.provider=String(data.provider||"openai");automated.speech.model=String(data.model||"gpt-transcribe");automated.speech.recording_retained=false;
+    if(status&&transcript)status.textContent=`Alira heard: "${transcript}"`;
+    if(!isCompleteSpeechCandidate(best)){pauseForIncompleteSpeech(best.transcript?"Only part of the phrase was transcribed. Please try the complete phrase again when you are ready.":"No complete phrase was transcribed. Please try again when you are ready.");return}
+    const decision=best.score>=.72?"no":best.score<.48&&wordCount>=5?"yes":"unsure";
+    const reason=decision==="no"?"The complete repeated phrase matched clearly.":decision==="yes"?"The complete phrase was substantially different or unclear.":"The complete phrase could not be matched clearly enough to rule out a speech sign.";
+    finishSpeech(decision,reason);
+  }catch(error){pauseForIncompleteSpeech("The transcription service could not process the recording. No emergency result has been decided. Please try again.")}
+}
+async function startSpeechCheck(){
+  if(speechSettled||speechAwaitingRetry)return;
+  const status=document.getElementById("transcript");
+  if(!navigator.mediaDevices?.getUserMedia||typeof MediaRecorder==="undefined"){pauseForIncompleteSpeech("Audio recording is unavailable on this device. No emergency result has been decided.");return}
+  cancelSpeechCapture();
+  try{
+    speechAudioStream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true,channelCount:1},video:false});
+    const mimeType=speechMimeType(),chunks=[];const recorder=new MediaRecorder(speechAudioStream,mimeType?{mimeType}:undefined);speechRecorder=recorder;let captureFailed=false;
+    recorder.ondataavailable=event=>{if(event.data&&event.data.size>0)chunks.push(event.data)};
+    recorder.onerror=()=>{captureFailed=true;pauseForIncompleteSpeech("The microphone recording was interrupted. No emergency result has been decided. Please try again.")};
+    recorder.onstop=()=>{if(speechTimer)clearTimeout(speechTimer);speechTimer=null;if(speechAudioStream){speechAudioStream.getTracks().forEach(track=>track.stop());speechAudioStream=null}if(speechRecorder===recorder)speechRecorder=null;if(captureFailed)return;const blob=new Blob(chunks,{type:recorder.mimeType||mimeType||"audio/webm"});if(!blob.size){pauseForIncompleteSpeech("No audio was captured. No emergency result has been decided. Please try again.");return}void transcribeSpeechRecording(blob)};
+    recorder.start(250);if(status)status.textContent="Listening now. Say the complete phrase at your own pace.";beginScan(SPEECH_WINDOW_MS);speechTimer=setTimeout(()=>{if(recorder.state!=="inactive")recorder.stop()},SPEECH_WINDOW_MS);
+  }catch(error){pauseForIncompleteSpeech("Microphone access is unavailable. No emergency result has been decided. Allow microphone access, then try again.")}
 }
 
 function renderIntro(){
-  current="intro";document.body.classList.add("intro-mode");panel.innerHTML=`<div class="letter">!</div><div class="eyebrow">Alira automatic check</div><h1>Think FAST</h1><p>Alira will guide Face, Arms and Speech, observe each response automatically, and move to the next step without asking you to judge the result.</p><div class="important">If any sign is already visible, or symptoms started suddenly, call 911 now. Do not use this check to delay a real emergency call.</div><div class="actions"><button class="primary" data-testid="fast-start" id="begin">Begin automatic FAST check</button></div><p class="privacyNote">Camera video is processed in this page and is not saved. Speech recognition may use your browser's speech service. An unavailable or unclear check will be treated as inconclusive.</p><p class="source">Based on CDC FAST guidance.</p>`;
+  current="intro";document.body.classList.add("intro-mode");panel.innerHTML=`<div class="letter">!</div><div class="eyebrow">Alira automatic check</div><h1>Think FAST</h1><p>Alira will guide Face, Arms and Speech, observe each response automatically, and move to the next step without asking you to judge the result.</p><div class="important">If any sign is already visible, or symptoms started suddenly, call 911 now. Do not use this check to delay a real emergency call.</div><div class="actions"><button class="primary" data-testid="fast-start" id="begin">Begin automatic FAST check</button></div><p class="privacyNote">Camera video is processed in this page and is not saved. For Speech, a short recording is sent securely to OpenAI for transcription and is not retained by Rehyn. A technical failure will pause the check without deciding a medical result.</p><p class="source">Based on CDC FAST guidance.</p>`;
   document.getElementById("begin").onclick=async()=>{await ensureCamera();renderFace()};
 }
 function renderFace(){
@@ -383,8 +397,8 @@ function renderArms(){
   panel.innerHTML=`${progress(1)}<div class="letter">A</div><div class="eyebrow">Arms · automatic observation</div><h1>Raise both arms and hold</h1><p>Lift both arms to a comfortable level and keep them there until Alira moves on.</p><div class="assist" id="assist"><span class="assistDot"></span><span>Finding both shoulders, elbows and hands.</span></div>${automaticCard("Arm lift and drift observation")}`;speak("Arms. Please raise both arms and keep them there while I watch for one arm drifting down.");beginScan(ARMS_WINDOW_MS);setStepTimer(finalizeArms,ARMS_WINDOW_MS);
 }
 function renderSpeech(){
-  current="speech";speechAttempt=0;speechSettled=false;speechAwaitingRetry=false;speechDeadline=0;speechBest={transcript:"",confidence:0,score:0};automated.speech={available:false,positive:false,decision:"pending",transcript:"",similarity:null,confidence:null,quality:"pending",reason:""};
-  panel.innerHTML=`${progress(2)}<div class="letter">S</div><div class="eyebrow">Speech · automatic observation</div><h1>Repeat the phrase aloud</h1><p>Alira will listen for the complete phrase. If only part is heard, the check will pause without deciding and let you try again.</p><div class="phrase">"${phrase}."</div><div class="transcript" id="transcript" aria-live="polite">Preparing the microphone...</div>${automaticCard("Speech and understanding observation")}<p class="privacyNote">Speech recognition may be processed by the browser's speech service. Rehyn does not save the audio recording.</p>`;speak(`Speech. Please repeat: ${phrase}.`,startSpeechCheck);
+  current="speech";speechSettled=false;speechAwaitingRetry=false;speechBest={transcript:"",confidence:0,score:0};automated.speech={available:false,positive:false,decision:"pending",transcript:"",similarity:null,confidence:null,quality:"pending",reason:"",provider:"openai",model:"gpt-transcribe",recording_retained:false};
+  panel.innerHTML=`${progress(2)}<div class="letter">S</div><div class="eyebrow">Speech · OpenAI transcription</div><h1>Repeat the phrase aloud</h1><p>After Alira reads the phrase, speak at your own pace. Rehyn records for up to 15 seconds, then OpenAI converts the recording to text for Alira.</p><div class="phrase">"${phrase}."</div><div class="transcript" id="transcript" aria-live="polite">Preparing the microphone...</div>${automaticCard("Speech and understanding observation")}<p class="privacyNote">This short recording is sent securely to OpenAI for transcription. Rehyn does not retain the audio. If transcription fails or only part is heard, no emergency result is decided and you can try again.</p>`;speak(`Speech. Please repeat: ${phrase}.`,startSpeechCheck);
 }
 
 function outcome(){
@@ -393,7 +407,7 @@ function outcome(){
   return {call_999:observed.length>0||uncertain.length>0,observed_signs:observed,uncertain_signs:uncertain};
 }
 function showResult(){
-  current="result";if(stepTimer)clearTimeout(stepTimer);if(speechTimer)clearTimeout(speechTimer);if(speechRecognition){try{speechRecognition.abort()}catch{}speechRecognition=null}if(animationId)cancelAnimationFrame(animationId);if(stream)stream.getTracks().forEach(track=>track.stop());
+  current="result";if(stepTimer)clearTimeout(stepTimer);cancelSpeechCapture();if(animationId)cancelAnimationFrame(animationId);if(stream)stream.getTracks().forEach(track=>track.stop());
   const result=outcome();document.getElementById("cameraPane").classList.add("hidden");panel.classList.add("hidden");
   const workspace=document.getElementById("workspace");const resultSection=document.createElement("section");resultSection.className="result";
   if(result.call_999){
