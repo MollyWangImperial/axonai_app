@@ -37,12 +37,13 @@ def readiness_user(**overrides):
 
 def sample_plan():
     return {
-        "version": "alira-care-v1",
+        "version": "alira-care-v2",
         "stage": "active",
         "survey": {"due": True, "questions": [{"id": "function_change"}]},
         "assessment": {"due": False, "packages": []},
         "exercise_plan": {"action": "maintain"},
         "safety": {"status": "clear", "blocks_exercise": False},
+        "daily_monitoring": {"next_day_action": "none"},
     }
 
 
@@ -169,3 +170,107 @@ def test_completed_exercise_activity_is_an_authenticated_care_event(monkeypatch)
     assert response.status_code == 200
     assert response.json()["activity"]["id"] == "aca_test"
     assert captured["completed_reps"] == 6
+
+
+def test_follow_up_assessment_is_locked_until_current_care_plan_is_due(monkeypatch):
+    async def user_from_header(_headers):
+        return readiness_user()
+
+    async def assessments(_user_id):
+        return [{"id": "a1", "created_at": "2026-08-29T12:00:00+00:00"}]
+
+    async def plan_for_user(_user, **_kwargs):
+        return {
+            "assessment": {
+                "due": False,
+                "due_at": "2026-09-26T12:00:00+00:00",
+                "can_start": True,
+                "packages": [],
+                "task_ids": [],
+            }
+        }
+
+    monkeypatch.setattr(server, "_user_from_header", user_from_header)
+    monkeypatch.setattr(server, "_care_assessments_for_user", assessments)
+    monkeypatch.setattr(server, "_adaptive_care_plan_for_user", plan_for_user)
+    response = TestClient(server.app).get(
+        "/api/assessment/tasks?package=upper_limb&task_ids=T1,T2,T3",
+        headers={"X-User-Id": "u_alira_care"},
+    )
+
+    assert response.status_code == 409
+    assert "not due yet" in response.json()["detail"]
+    assert "2026-09-26" in response.json()["detail"]
+
+
+def test_new_issue_grant_serves_only_alira_selected_package_and_tasks(monkeypatch):
+    async def user_from_header(_headers):
+        return readiness_user()
+
+    async def assessments(_user_id):
+        return [{"id": "a1", "created_at": "2026-08-29T12:00:00+00:00"}]
+
+    async def plan_for_user(_user, **_kwargs):
+        return {
+            "assessment": {
+                "due": True,
+                "due_at": "2026-08-30T12:00:00+00:00",
+                "can_start": True,
+                "trigger": "new_functional_issue",
+                "issue_report_id": "afi-hand",
+                "packages": ["hand"],
+                "task_ids": ["H1", "H3"],
+            }
+        }
+
+    monkeypatch.setattr(server, "_user_from_header", user_from_header)
+    monkeypatch.setattr(server, "_care_assessments_for_user", assessments)
+    monkeypatch.setattr(server, "_adaptive_care_plan_for_user", plan_for_user)
+    client = TestClient(server.app)
+    selected = client.get(
+        "/api/assessment/tasks?package=hand&task_ids=H1,H3",
+        headers={"X-User-Id": "u_alira_care"},
+    )
+    wrong_package = client.get(
+        "/api/assessment/tasks?package=upper_limb&task_ids=T1,T2,T3",
+        headers={"X-User-Id": "u_alira_care"},
+    )
+
+    assert selected.status_code == 200
+    assert selected.json()["assigned_task_ids"] == ["H1", "H3"]
+    assert wrong_package.status_code == 422
+    assert "selected the hand assessment" in wrong_package.json()["detail"]
+
+
+def test_functional_issue_endpoint_preserves_patient_report_and_source(monkeypatch):
+    captured = {}
+
+    async def user_from_header(_headers):
+        return signed_in_user()
+
+    async def persist(_user, payload):
+        captured.update(payload.model_dump())
+        return {
+            "ok": True,
+            "is_new": True,
+            "message": "Targeted assessment added.",
+            "report": {"id": "afi-1", "category": payload.category},
+            "care_plan": {"assessment": {"due": True, "packages": ["hand"], "task_ids": ["H1", "H3"]}},
+        }
+
+    monkeypatch.setattr(server, "_user_from_header", user_from_header)
+    monkeypatch.setattr(server, "_persist_functional_issue_report", persist)
+    response = TestClient(server.app).post(
+        "/api/alira/functional-issues",
+        headers={"X-User-Id": "u_alira_care"},
+        json={
+            "category": "hand_opening",
+            "description": "Opening my hand became difficult this week.",
+            "source": "realtime_voice",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["is_new"] is True
+    assert captured["category"] == "hand_opening"
+    assert captured["source"] == "realtime_voice"

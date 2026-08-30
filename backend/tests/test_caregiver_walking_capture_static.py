@@ -70,6 +70,7 @@ def test_walking_uses_device_specific_capture_controls_instead_of_target_circles
     source = server.POSE_RUNNER_HTML
     assert 'data-testid="walking-capture"' in source
     assert 'data-testid="walking-desktop-actions"' in source
+    assert 'data-testid="walking-video-drop-zone"' in source
     assert 'data-testid="walking-mobile-actions"' in source
     assert 'data-testid="walking-choose-video"' in source
     assert 'data-testid="walking-start-recording"' in source
@@ -93,6 +94,7 @@ def test_desktop_walking_upload_keeps_mismatch_blocking_but_framing_advisory():
 def test_desktop_video_picker_receives_the_user_gesture_directly():
     source = server.POSE_RUNNER_HTML
     assert 'id="walkingVideoInput" type="file" accept="video/*"' in source
+    assert '#walkingPickerButton{position:relative;width:100%}' in source
     assert '#walkingVideoInput{position:absolute;inset:0;width:100%;height:100%;opacity:0' in source
     assert '#walkingChooseVideoBtn{pointer-events:none}' in source
     assert 'walkingVideoInput.addEventListener("click"' in source
@@ -100,13 +102,28 @@ def test_desktop_video_picker_receives_the_user_gesture_directly():
     assert 'walkingVideoInput.click()' not in source
 
 
+def test_desktop_walking_video_supports_drag_and_drop_through_the_picker_pipeline():
+    source = server.POSE_RUNNER_HTML
+    assert 'data-testid="walking-video-drop-zone"' in source
+    assert 'walkingVideoDropZone.addEventListener("dragenter"' in source
+    assert 'walkingVideoDropZone.addEventListener("dragover"' in source
+    assert 'walkingVideoDropZone.addEventListener("dragleave"' in source
+    assert 'walkingVideoDropZone.addEventListener("drop"' in source
+    assert 'event.dataTransfer && event.dataTransfer.files' in source
+    assert 'processWalkingVideoFile(file, "drop")' in source
+    assert 'processWalkingVideoFile(file, "picker")' in source
+    assert 'function isWalkingVideoFile(file)' in source
+
+
 def test_walking_video_picker_recovers_after_validation_errors():
     source = server.POSE_RUNNER_HTML
-    change_handler = source[source.index('walkingVideoInput.addEventListener("change"') : source.index('walkingRecordBtn.addEventListener')]
-    assert 'walkingDesktopActions.classList.add("busy")' in change_handler
-    assert 'catch(error)' in change_handler
-    assert 'walkingDesktopActions.classList.remove("busy")' in change_handler
-    assert 'walkingVideoInput.value = ""' in change_handler
+    processor = source[source.index('async function processWalkingVideoFile') : source.index('let walkingVideoDragDepth')]
+    assert 'walkingDesktopActions.classList.add("busy")' in processor
+    assert 'walkingVideoDropZone.classList.add("busy")' in processor
+    assert 'catch(error)' in processor
+    assert 'walkingDesktopActions.classList.remove("busy")' in processor
+    assert 'walkingVideoDropZone.classList.remove("busy", "dragover")' in processor
+    assert 'walkingVideoInput.value = ""' in processor
 
 
 def test_walking_upload_checks_same_patient_locally_before_accepting_video():

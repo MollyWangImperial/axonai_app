@@ -113,30 +113,55 @@ export async function resolveAliraNavigation(rawDestination: string): Promise<Al
       const response = await authedFetch("/api/alira/care-plan");
       if (response.ok) {
         const carePlan = await response.json();
+        if (!carePlan?.assessment?.due || !carePlan?.assessment?.can_start) {
+          const dueAt = String(carePlan?.assessment?.due_at || "").slice(0, 10);
+          return {
+            success: false,
+            destination,
+            label: target.label,
+            message: dueAt
+              ? `The next routine assessment is scheduled for ${dueAt}. Ask about a new movement problem if something genuinely changed.`
+              : "The next assessment is not due yet. Ask about a new movement problem if something genuinely changed.",
+          };
+        }
         const packageId = String(
           carePlan?.assessment?.packages?.[0]
-          || carePlan?.assessment?.recommended_packages?.[0]
-          || "initial",
+          || "",
         );
         const approvedPackages = new Set(["initial", "upper_limb", "hand", "lower_limb", "balance"]);
-        const selectedPackage = approvedPackages.has(packageId) ? packageId : "initial";
+        if (!approvedPackages.has(packageId)) {
+          return {
+            success: false,
+            destination,
+            label: target.label,
+            message: "Alira could not select a safe assessment package right now.",
+          };
+        }
+        const taskIds = Array.isArray(carePlan?.assessment?.task_ids)
+          ? carePlan.assessment.task_ids.map(String).filter(Boolean)
+          : [];
+        const query = new URLSearchParams({
+          target: "assessment",
+          mode: packageId === "initial" ? "initial" : "followup",
+          package: packageId,
+        });
+        if (taskIds.length) query.set("task_ids", taskIds.join(","));
         return {
           success: true,
           destination,
           label: target.label,
-          path: `/session-check?target=assessment&mode=followup&package=${encodeURIComponent(selectedPackage)}`,
+          path: `/session-check?${query.toString()}`,
           message: `Opening ${target.label}.`,
         };
       }
     } catch {
-      // Fall back to the established initial package when the adaptive plan is unavailable.
+      // Assessment access stays closed when the current schedule cannot be verified.
     }
     return {
-      success: true,
+      success: false,
       destination,
       label: target.label,
-      path: "/session-check?target=assessment&mode=followup&package=initial",
-      message: `Opening ${target.label}.`,
+      message: "I could not verify whether an assessment is due. Please try again when Rehyn is connected.",
     };
   }
 

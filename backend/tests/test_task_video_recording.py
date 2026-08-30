@@ -38,7 +38,8 @@ def test_frontend_tracks_saved_video_events_without_showing_a_task_picker():
     assert "tasks.map(" not in intro
     assert 'authedFetch(`/api/assessment/task-videos?package=' in api
     assert "const serverCompleted = Object.fromEntries(" in intro
-    assert "const completed = { ...deviceCompleted, ...serverCompleted }" in intro
+    assert "const completed = serverProgressResult.available ? serverCompleted : deviceCompleted" in intro
+    assert "if (!res.ok) throw new Error(`Could not load task progress" in api
 
 
 def test_task_video_falls_back_to_persistent_local_storage(monkeypatch, tmp_path):

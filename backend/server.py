@@ -49,11 +49,14 @@ try:
     from backend.patient_insights import build_patient_insights
     from backend.alira_care_orchestrator import (
         QUESTION_BANK as ALIRA_CARE_QUESTION_BANK,
+        FUNCTIONAL_ISSUE_CATALOG,
+        approved_functional_issue_categories,
         approved_question_ids,
         build_adaptive_care_plan,
         initial_assessment_recommendation,
         validate_check_in_answers,
     )
+    from backend.alira_action_log import AliraActionLogger
 except ImportError:
     from rehab_assessment import (
         build_biomechanical_estimates,
@@ -83,11 +86,14 @@ except ImportError:
     from patient_insights import build_patient_insights
     from alira_care_orchestrator import (
         QUESTION_BANK as ALIRA_CARE_QUESTION_BANK,
+        FUNCTIONAL_ISSUE_CATALOG,
+        approved_functional_issue_categories,
         approved_question_ids,
         build_adaptive_care_plan,
         initial_assessment_recommendation,
         validate_check_in_answers,
     )
+    from alira_action_log import AliraActionLogger
 
 try:
     from openai import OpenAI
@@ -114,6 +120,30 @@ LOCAL_STATE_DIR = ROOT_DIR / ".local_state"
 LOCAL_USERS_FILE = LOCAL_STATE_DIR / "users.json"
 LOCAL_TASK_PROGRESS_FILE = LOCAL_STATE_DIR / "task_progress.json"
 LOCAL_CARE_STATE_FILE = LOCAL_STATE_DIR / "alira_care_state.json"
+ALIRA_ACTION_LOGGER = AliraActionLogger()
+
+
+def _record_alira_action(
+    action: str,
+    *,
+    source: str,
+    user_id: Optional[str] = None,
+    session_id: Optional[str] = None,
+    status: str = "completed",
+    details: Optional[Dict[str, Any]] = None,
+) -> None:
+    try:
+        ALIRA_ACTION_LOGGER.record(
+            action,
+            source=source,
+            user_id=user_id,
+            session_id=session_id,
+            status=status,
+            details=details,
+        )
+    except Exception as exc:
+        # Audit logging must never interrupt patient-facing care flows.
+        logger.error("Could not write Alira action log: %s", type(exc).__name__)
 
 
 def _load_local_dict(path: Path) -> Dict[str, Dict[str, Any]]:
@@ -238,6 +268,31 @@ ALIRA_RECORD_CHECKIN_TOOL = {
         "additionalProperties": False,
     },
 }
+ALIRA_REPORT_FUNCTIONAL_ISSUE_TOOL = {
+    "type": "function",
+    "name": "report_new_functional_issue",
+    "description": (
+        "Record a genuinely new movement problem reported by the patient, such as new difficulty reaching, "
+        "opening the hand, grasping, walking, transferring, or balancing. Use the closest approved category. "
+        "The backend prevents duplicate exception assessments and returns a targeted assessment only when the "
+        "problem is new. Do not use this for a known problem that is already being monitored."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "category": {
+                "type": "string",
+                "enum": list(FUNCTIONAL_ISSUE_CATALOG),
+            },
+            "description": {
+                "type": "string",
+                "description": "A short patient-reported description without adding a diagnosis.",
+            },
+        },
+        "required": ["category"],
+        "additionalProperties": False,
+    },
+}
 ALIRA_CHAT_RECORD_CHECKIN_TOOL = {
     "type": "function",
     "function": {key: value for key, value in ALIRA_RECORD_CHECKIN_TOOL.items() if key != "type"},
@@ -245,6 +300,10 @@ ALIRA_CHAT_RECORD_CHECKIN_TOOL = {
 ALIRA_CHAT_NAVIGATION_TOOL = {
     "type": "function",
     "function": {key: value for key, value in ALIRA_NAVIGATION_TOOL.items() if key != "type"},
+}
+ALIRA_CHAT_REPORT_FUNCTIONAL_ISSUE_TOOL = {
+    "type": "function",
+    "function": {key: value for key, value in ALIRA_REPORT_FUNCTIONAL_ISSUE_TOOL.items() if key != "type"},
 }
 ANALYSIS_WORKER_TOKEN = os.environ.get("ANALYSIS_WORKER_TOKEN", "").strip()
 LOCAL_GPU_WORKER_URL = os.environ.get("LOCAL_GPU_WORKER_URL", "").strip().rstrip("/")
@@ -899,6 +958,56 @@ def _validated_assigned_task_ids(package_id: str, requested: Optional[List[str]]
     return [task_id for task_id in allowed if task_id in set(selected)]
 
 
+async def _assessment_access_plan(
+    user: Dict[str, Any],
+    package_id: str,
+    requested_task_ids: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    """Enforce Alira's current one-time assessment grant on every backend entry."""
+    _require_health_data_consent(user)
+    assessments = await _care_assessments_for_user(user["id"])
+    if package_id == "initial":
+        if assessments:
+            raise HTTPException(
+                status_code=409,
+                detail="Your Initial Assessment is already complete. The next assessment opens only when Alira's schedule says it is due.",
+            )
+        recommendation = initial_assessment_recommendation(user.get("profile") or {})
+        if not recommendation["can_start"]:
+            raise HTTPException(status_code=409, detail=recommendation["message"])
+        expected_task_ids = list(recommendation["task_ids"])
+        if requested_task_ids is not None and set(requested_task_ids) != set(expected_task_ids):
+            raise HTTPException(status_code=422, detail="Assigned initial tasks do not match the saved readiness survey")
+        return {
+            "due": True,
+            "trigger": "initial",
+            "packages": ["initial"],
+            "task_ids": expected_task_ids,
+            "issue_report_id": None,
+        }
+
+    if not assessments:
+        raise HTTPException(status_code=409, detail="Complete the Initial Assessment before starting a follow-up assessment.")
+    plan = await _adaptive_care_plan_for_user(user, assessments=assessments)
+    assessment = plan["assessment"]
+    if not assessment.get("due") or not assessment.get("can_start"):
+        due_at = str(assessment.get("due_at") or "")
+        raise HTTPException(
+            status_code=409,
+            detail=f"Your next assessment is not due yet. It is scheduled for {due_at[:10]} so changes can be measured meaningfully.",
+        )
+    selected_package = str((assessment.get("packages") or [""])[0])
+    if package_id != selected_package:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Alira selected the {selected_package} assessment for this check-in, not {package_id}.",
+        )
+    expected_task_ids = list(assessment.get("task_ids") or [])
+    if requested_task_ids is not None and set(requested_task_ids) != set(expected_task_ids):
+        raise HTTPException(status_code=422, detail="Assigned tasks do not match Alira's current assessment selection")
+    return assessment
+
+
 def _expected_domains_for_tasks(package_id: str, task_ids: List[str]) -> Optional[tuple[str, ...]]:
     if package_id != "initial":
         return None
@@ -1227,10 +1336,31 @@ def build_rehab_plan(
                 "frequency": frequency,
                 "selection_reason": reason + ".",
                 "safety_note": " ".join(safety_notes),
-                "requires_clinician_confirmation": True,
+                "requires_clinician_confirmation": False,
             }))
             seen.add(ex.id)
     return plan
+
+
+def _merge_targeted_rehab_plan(
+    new_plan: List[RehabExercise],
+    latest_assessment: Optional[Dict[str, Any]],
+) -> List[RehabExercise]:
+    """Add a targeted new-domain plan without dramatically replacing active exercises."""
+    merged: List[RehabExercise] = []
+    seen = set()
+    for exercise in [*new_plan, *((latest_assessment or {}).get("rehab_plan") or [])]:
+        try:
+            model = exercise if isinstance(exercise, RehabExercise) else RehabExercise(**exercise)
+        except (TypeError, ValueError):
+            continue
+        if model.id in seen:
+            continue
+        merged.append(model.model_copy(update={"requires_clinician_confirmation": False}))
+        seen.add(model.id)
+        if len(merged) >= 6:
+            break
+    return merged
 
 
 def merge_validated_model_issues(
@@ -1292,25 +1422,25 @@ async def get_status_checks():
 @api_router.get("/assessment/tasks")
 async def get_tasks(request: Request, package: str = "upper_limb", task_ids: Optional[str] = None):
     selected = ASSESSMENT_PACKAGES.get(package, ASSESSMENT_PACKAGES["upper_limb"])
-    selected_tasks = selected["tasks"]
-    if selected["id"] == "initial":
-        user = await _user_from_header(dict(request.headers))
-        if not user:
-            raise HTTPException(status_code=401, detail="Sign in required")
-        _require_health_data_consent(user)
-        recommendation = initial_assessment_recommendation(user.get("profile") or {})
-        if not recommendation["can_start"]:
-            raise HTTPException(status_code=409, detail=recommendation["message"])
-        recommended_ids = recommendation["task_ids"]
-        if task_ids is not None:
-            requested = [item.strip() for item in task_ids.split(",") if item.strip()]
-            if set(requested) != set(recommended_ids):
-                raise HTTPException(status_code=422, detail="Assigned initial tasks do not match the saved readiness survey")
-        selected_tasks = [task for task in selected_tasks if task["id"] in set(recommended_ids)]
-    elif task_ids is not None:
-        requested = [item.strip() for item in task_ids.split(",") if item.strip()]
-        selected_ids = _validated_assigned_task_ids(selected["id"], requested)
-        selected_tasks = [task for task in selected_tasks if task["id"] in set(selected_ids)]
+    user = await _user_from_header(dict(request.headers))
+    if not user:
+        raise HTTPException(status_code=401, detail="Sign in required")
+    requested = [item.strip() for item in task_ids.split(",") if item.strip()] if task_ids is not None else None
+    access = await _assessment_access_plan(user, selected["id"], requested)
+    selected_ids = _validated_assigned_task_ids(selected["id"], list(access.get("task_ids") or []))
+    selected_tasks = [task for task in selected["tasks"] if task["id"] in set(selected_ids)]
+    _record_alira_action(
+        "assessment_tasks_served",
+        source="assessment_runner",
+        user_id=user["id"],
+        details={
+            "package_id": selected["id"],
+            "task_ids": [task["id"] for task in selected_tasks],
+            "selection_trigger": access.get("trigger"),
+            "issue_report_id": access.get("issue_report_id"),
+            "task_order": "alira_selected_approved_order",
+        },
+    )
     packages = [
         {
             "id": item["id"],
@@ -1339,7 +1469,26 @@ async def get_assessment_recommendation(request: Request, package: str = "initia
     _require_health_data_consent(user)
     if package != "initial":
         raise HTTPException(status_code=422, detail="Capability screening is currently available for the initial assessment only")
-    return initial_assessment_recommendation(user.get("profile") or {})
+    recommendation = initial_assessment_recommendation(user.get("profile") or {})
+    _record_alira_action(
+        "assessment_tasks_selected",
+        source="assessment_recommendation",
+        user_id=user["id"],
+        status="completed" if recommendation.get("can_start") else "blocked",
+        details={
+            "package_id": package,
+            "selection_policy": "saved_readiness_survey",
+            "task_ids": recommendation.get("task_ids") or [],
+            "excluded_task_ids": [
+                task_id
+                for exclusion in recommendation.get("excluded") or []
+                for task_id in exclusion.get("task_ids") or []
+            ],
+            "readiness_status": recommendation.get("status"),
+            "requires_helper": recommendation.get("requires_helper", False),
+        },
+    )
+    return recommendation
 
 
 @api_router.get("/assessment/modeling-spec")
@@ -1679,6 +1828,12 @@ async def save_task_progress(request: Request, package_id: str, task_id: str):
         LOCAL_TASK_PROGRESS.pop(_task_progress_key(user["id"], safe_package, "__reset__"), None)
         LOCAL_TASK_PROGRESS[_task_progress_key(user["id"], safe_package, task_id)] = record
         _persist_local_dict(LOCAL_TASK_PROGRESS_FILE, LOCAL_TASK_PROGRESS)
+    _record_alira_action(
+        "guided_assessment_task_completed",
+        source="assessment_runner",
+        user_id=user["id"],
+        details={"package_id": safe_package, "task_id": task_id},
+    )
     return {"ok": True, **record}
 
 
@@ -1746,6 +1901,12 @@ async def reset_task_progress(request: Request, package: str = "initial"):
         }
         LOCAL_TASK_PROGRESS[_task_progress_key(user["id"], safe_package, "__reset__")] = reset_record
         _persist_local_dict(LOCAL_TASK_PROGRESS_FILE, LOCAL_TASK_PROGRESS)
+    _record_alira_action(
+        "assessment_progress_reset",
+        source="app",
+        user_id=user["id"],
+        details={"package_id": safe_package},
+    )
     return {"ok": True, "completed_task_ids": []}
 
 
@@ -1975,21 +2136,14 @@ def _assessment_patient_parameters(
 @api_router.post("/assessment/submit", response_model=Assessment)
 async def submit_assessment(payload: AssessmentSubmit, request: Request):
     user = await _user_from_header(dict(request.headers))
-    if user:
-        await consume_credits(user["id"], "assessment")
+    if not user:
+        raise HTTPException(status_code=401, detail="Sign in required")
+    assigned_task_ids = _validated_assigned_task_ids(payload.assessment_package, payload.assigned_task_ids)
+    access = await _assessment_access_plan(user, payload.assessment_package, assigned_task_ids)
+    await consume_credits(user["id"], "assessment")
     patient_parameters = _assessment_patient_parameters(payload.patient_parameters, user)
     assessment_id = str(uuid.uuid4())
     task_ids = [task.task_id for task in payload.task_results]
-    assigned_task_ids = _validated_assigned_task_ids(payload.assessment_package, payload.assigned_task_ids)
-    if payload.assessment_package == "initial":
-        if not user:
-            raise HTTPException(status_code=401, detail="Sign in required")
-        _require_health_data_consent(user)
-        recommendation = initial_assessment_recommendation(user.get("profile") or {})
-        if not recommendation["can_start"]:
-            raise HTTPException(status_code=409, detail=recommendation["message"])
-        if set(assigned_task_ids) != set(recommendation["task_ids"]):
-            raise HTTPException(status_code=422, detail="Assigned initial tasks do not match the saved readiness survey")
     if set(task_ids) != set(assigned_task_ids):
         raise HTTPException(status_code=422, detail="Submitted task results must match the assigned assessment tasks")
     patient_parameters["assigned_task_ids"] = assigned_task_ids
@@ -2064,7 +2218,11 @@ async def submit_assessment(payload: AssessmentSubmit, request: Request):
         expected_task_count,
     )
     plan = build_rehab_plan(issues, patient_parameters) if clinical_review_gate.get("rehab_access") == "allowed" else []
-    if user and plan:
+    previous_assessments = await _care_assessments_for_user(user["id"])
+    latest_previous = max(previous_assessments, key=lambda item: item.get("created_at", ""), default=None)
+    if access.get("trigger") == "new_functional_issue":
+        plan = _merge_targeted_rehab_plan(plan, latest_previous)
+    if plan:
         await consume_credits(user["id"], "rehab_plan")
     assessment = Assessment(
         id=assessment_id,
@@ -2096,13 +2254,28 @@ async def submit_assessment(payload: AssessmentSubmit, request: Request):
     doc["patient_insights"] = build_patient_insights(
         body_function_summary, {}, {}, model_analysis
     )
-    if user:
-        doc["user_id"] = user["id"]
+    doc["user_id"] = user["id"]
+    doc["assessment_trigger"] = access.get("trigger")
+    doc["functional_issue_report_id"] = access.get("issue_report_id")
     try:
         await db.assessments.insert_one(doc)
     except Exception as e:
         logger.warning(f"Mongo unavailable for assessment insert; using local fallback: {str(e)[:120]}")
         LOCAL_ASSESSMENTS.append(doc.copy())
+    await _mark_functional_issue_assessed(user["id"], access.get("issue_report_id"), assessment_id)
+    _record_alira_action(
+        "assessment_completed",
+        source="assessment_runner",
+        user_id=user["id"],
+        details={
+            "assessment_id": assessment_id,
+            "package_id": payload.assessment_package,
+            "task_ids": assigned_task_ids,
+            "selection_trigger": access.get("trigger"),
+            "issue_report_id": access.get("issue_report_id"),
+            "exercise_ids": [exercise.id for exercise in plan],
+        },
+    )
     if LOCAL_GPU_WORKER_URL and ANALYSIS_WORKER_TOKEN and (payload.motion_data or video_records):
         asyncio.create_task(_queue_local_gpu_stage(
             assessment_id,
@@ -2671,7 +2844,14 @@ POSE_RUNNER_HTML = r"""<!DOCTYPE html>
   #walkingCapture li{font-size:14px;line-height:1.4;margin:6px 0;color:#303632}
   #walkingCapture button{width:100%;border:none;border-radius:8px;padding:15px 16px;background:#4A7856;color:#fff;font-size:16px;font-weight:800;cursor:pointer}
   #walkingCapture button:disabled{background:#C9D2CB;color:#667068;cursor:not-allowed}
-  #walkingDesktopActions{position:relative;width:100%}
+  #walkingDesktopActions{width:100%}
+  #walkingVideoDropZone{width:100%;border:2px dashed #97AA9B;border-radius:8px;padding:18px;background:#F6F8F5;text-align:center;transition:border-color .18s ease,background .18s ease,box-shadow .18s ease}
+  #walkingVideoDropZone.dragover{border-color:#315D3D;background:#E6F0E8;box-shadow:0 0 0 3px rgba(74,120,86,.16)}
+  #walkingVideoDropZone.busy{opacity:.65;cursor:wait}
+  .walkingDropIcon{width:42px;height:42px;margin:0 auto 8px;border-radius:50%;display:flex;align-items:center;justify-content:center;background:#D9E5DC;color:#315D3D;font-size:25px;font-weight:800;line-height:1}
+  .walkingDropTitle{font-size:16px;font-weight:800;color:#1C201D}
+  .walkingDropHint{font-size:13px;color:#59615B;margin:4px 0 12px}
+  #walkingPickerButton{position:relative;width:100%}
   #walkingChooseVideoBtn{pointer-events:none}
   #walkingVideoInput{position:absolute;inset:0;width:100%;height:100%;opacity:0;cursor:pointer;z-index:2;font-size:0}
   #walkingDesktopActions.busy #walkingVideoInput{pointer-events:none;cursor:not-allowed}
@@ -2772,8 +2952,15 @@ POSE_RUNNER_HTML = r"""<!DOCTYPE html>
         <li>Do not zoom, walk backward, cross the patient's path, or film while providing hands-on support.</li>
       </ul>
       <div id="walkingDesktopActions" class="hidden" data-testid="walking-desktop-actions">
-        <button id="walkingChooseVideoBtn" type="button" data-testid="walking-choose-video">Choose walking video</button>
-        <input id="walkingVideoInput" type="file" accept="video/*" aria-label="Choose walking video" data-testid="walking-video-input" />
+        <div id="walkingVideoDropZone" data-testid="walking-video-drop-zone">
+          <div class="walkingDropIcon" aria-hidden="true">&#8593;</div>
+          <div class="walkingDropTitle">Drag your walking video here</div>
+          <div class="walkingDropHint">or choose it from this computer</div>
+          <div id="walkingPickerButton">
+            <button id="walkingChooseVideoBtn" type="button" tabindex="-1" data-testid="walking-choose-video">Choose walking video</button>
+            <input id="walkingVideoInput" type="file" accept="video/*" aria-label="Choose walking video" data-testid="walking-video-input" />
+          </div>
+        </div>
       </div>
       <div id="walkingMobileActions" class="hidden" data-testid="walking-mobile-actions">
         <button id="walkingRecordBtn" type="button" data-testid="walking-start-recording">Start recording walking</button>
@@ -2870,6 +3057,7 @@ const walkingCaptureTitle = document.getElementById("walkingCaptureTitle");
 const walkingCaptureLead = document.getElementById("walkingCaptureLead");
 const walkingDesktopActions = document.getElementById("walkingDesktopActions");
 const walkingMobileActions = document.getElementById("walkingMobileActions");
+const walkingVideoDropZone = document.getElementById("walkingVideoDropZone");
 const walkingChooseVideoBtn = document.getElementById("walkingChooseVideoBtn");
 const walkingVideoInput = document.getElementById("walkingVideoInput");
 const walkingRecordBtn = document.getElementById("walkingRecordBtn");
@@ -3683,7 +3871,7 @@ async function showWalkingCapture(task){
   walkingMobileActions.classList.toggle("hidden", !IS_MOBILE_CAPTURE_DEVICE);
   setWalkingCaptureStatus(IS_MOBILE_CAPTURE_DEVICE
     ? "When everyone is safely positioned, tap Start recording walking."
-    : "Choose the walking video. Rehyn will confirm that it is the same patient before uploading; framing notes will not block the video.");
+    : "Drag a walking video here, or choose it from this computer. Rehyn will confirm that it is the same patient before uploading; framing notes will not block the video.");
   walkingCapture.classList.remove("hidden");
   ui.classList.add("hidden");
   renderDots();
@@ -6619,15 +6807,32 @@ walkingVideoInput.addEventListener("click", () => {
   setWalkingCaptureStatus("Choose the walking video from this computer.");
 });
 
-walkingVideoInput.addEventListener("change", async () => {
-  const file = walkingVideoInput.files && walkingVideoInput.files[0];
+function isWalkingVideoFile(file){
+  if(!file) return false;
+  if(String(file.type || "").toLowerCase().startsWith("video/")) return true;
+  return /\.(mp4|mov|m4v|webm|avi|mpeg|mpg|mkv|3gp)$/i.test(String(file.name || ""));
+}
+
+async function processWalkingVideoFile(file, source="picker"){
   if(!file){
-    setWalkingCaptureStatus("No video was selected. Choose a walking video when ready.");
+    setWalkingCaptureStatus(source === "drop"
+      ? "No video was dropped. Drag one video here when ready."
+      : "No video was selected. Choose a walking video when ready.");
     return;
   }
+  if(!isWalkingVideoFile(file)){
+    setWalkingCaptureStatus("That file is not a video. Drop or choose a walking video instead.", "warn");
+    return;
+  }
+  pendingUnconfirmedWalkingVideo = null;
+  pendingUnconfirmedWalkingValidation = null;
+  walkingProceedUnconfirmedBtn.classList.add("hidden");
   walkingChooseVideoBtn.disabled = true;
   walkingDesktopActions.classList.add("busy");
-  setWalkingCaptureStatus("Opening the walking video on this device...");
+  walkingVideoDropZone.classList.add("busy");
+  setWalkingCaptureStatus(source === "drop"
+    ? "Opening the dropped walking video on this device..."
+    : "Opening the walking video on this device...");
   try{
     const validation = await validateWalkingVideo(file, progress => {
       setWalkingCaptureStatus(progress.message || "Checking the walking video...");
@@ -6651,8 +6856,48 @@ walkingVideoInput.addEventListener("change", async () => {
   }finally{
     walkingChooseVideoBtn.disabled = false;
     walkingDesktopActions.classList.remove("busy");
+    walkingVideoDropZone.classList.remove("busy", "dragover");
     walkingVideoInput.value = "";
   }
+}
+
+let walkingVideoDragDepth = 0;
+
+walkingVideoDropZone.addEventListener("dragenter", event => {
+  event.preventDefault();
+  if(walkingDesktopActions.classList.contains("busy")) return;
+  walkingVideoDragDepth += 1;
+  walkingVideoDropZone.classList.add("dragover");
+});
+
+walkingVideoDropZone.addEventListener("dragover", event => {
+  event.preventDefault();
+  if(event.dataTransfer) event.dataTransfer.dropEffect = "copy";
+});
+
+walkingVideoDropZone.addEventListener("dragleave", event => {
+  event.preventDefault();
+  walkingVideoDragDepth = Math.max(0, walkingVideoDragDepth - 1);
+  if(walkingVideoDragDepth === 0) walkingVideoDropZone.classList.remove("dragover");
+});
+
+walkingVideoDropZone.addEventListener("drop", event => {
+  event.preventDefault();
+  walkingVideoDragDepth = 0;
+  walkingVideoDropZone.classList.remove("dragover");
+  if(walkingDesktopActions.classList.contains("busy")) return;
+  const droppedFiles = event.dataTransfer && event.dataTransfer.files;
+  if(droppedFiles && droppedFiles.length > 1){
+    setWalkingCaptureStatus("Drop one walking video at a time.", "warn");
+    return;
+  }
+  const file = droppedFiles && droppedFiles[0];
+  void processWalkingVideoFile(file, "drop");
+});
+
+walkingVideoInput.addEventListener("change", () => {
+  const file = walkingVideoInput.files && walkingVideoInput.files[0];
+  void processWalkingVideoFile(file, "picker");
 });
 
 walkingProceedUnconfirmedBtn.addEventListener("click", async () => {
@@ -7867,6 +8112,7 @@ class ChatResponse(BaseModel):
 
 class RealtimeSessionRequest(BaseModel):
     sdp: str = Field(min_length=64, max_length=200_000)
+    session_id: Optional[str] = Field(default=None, max_length=160)
 
 
 class AliraCheckInSubmit(BaseModel):
@@ -7881,6 +8127,29 @@ class AliraActivitySubmit(BaseModel):
     completed_reps: int = Field(default=0, ge=0, le=500)
     average_score: Optional[float] = Field(default=None, ge=0, le=100)
     completed_at: Optional[str] = None
+
+
+class AliraFunctionalIssueSubmit(BaseModel):
+    category: str = Field(min_length=1, max_length=80)
+    description: Optional[str] = Field(default=None, max_length=500)
+    source: str = Field(default="app", pattern="^(app|text_chat|realtime_voice)$")
+
+
+class AliraNavigationEventSubmit(BaseModel):
+    destination: str = Field(min_length=1, max_length=80, pattern="^[a-z0-9_-]+$")
+    resolved_destination: Optional[str] = Field(default=None, max_length=80, pattern="^[a-z0-9_-]+$")
+    success: bool
+    source: str = Field(default="realtime_voice", pattern="^(realtime_voice|text_chat|app)$")
+    session_id: Optional[str] = Field(default=None, max_length=160)
+
+
+class AliraAssessmentResumeEventSubmit(BaseModel):
+    package_id: str = Field(min_length=1, max_length=80, pattern="^[a-z0-9_-]+$")
+    task_ids: List[str] = Field(default_factory=list, max_length=100)
+    completed_task_ids: List[str] = Field(default_factory=list, max_length=100)
+    next_task_id: Optional[str] = Field(default=None, max_length=80, pattern="^[A-Za-z0-9_-]+$")
+    progress_source: str = Field(default="unknown", pattern="^(server|device_fallback|unknown)$")
+    ignored_device_completed_task_ids: List[str] = Field(default_factory=list, max_length=100)
 
 
 # ============ Therapists routes ============
@@ -8668,11 +8937,22 @@ async def _care_activities_for_user(user_id: str) -> List[Dict[str, Any]]:
         return [item.copy() for item in (LOCAL_CARE_STATE.get(user_id) or {}).get("activities", [])]
 
 
+async def _care_issue_reports_for_user(user_id: str) -> List[Dict[str, Any]]:
+    try:
+        return await db.alira_functional_issue_reports.find(
+            {"user_id": user_id},
+            {"_id": 0},
+        ).sort("created_at", -1).to_list(100)
+    except Exception:
+        return [item.copy() for item in (LOCAL_CARE_STATE.get(user_id) or {}).get("functional_issue_reports", [])]
+
+
 async def _adaptive_care_plan_for_user(
     user: Dict[str, Any],
     assessments: Optional[List[Dict[str, Any]]] = None,
     check_ins: Optional[List[Dict[str, Any]]] = None,
     activities: Optional[List[Dict[str, Any]]] = None,
+    issue_reports: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     if assessments is None:
         assessments = await _care_assessments_for_user(user["id"])
@@ -8680,13 +8960,105 @@ async def _adaptive_care_plan_for_user(
         check_ins = await _care_check_ins_for_user(user["id"])
     if activities is None:
         activities = await _care_activities_for_user(user["id"])
-    return build_adaptive_care_plan(user.get("profile") or {}, assessments, check_ins, activities)
+    if issue_reports is None:
+        issue_reports = await _care_issue_reports_for_user(user["id"])
+    return build_adaptive_care_plan(user.get("profile") or {}, assessments, check_ins, activities, issue_reports)
 
 
 def _require_health_data_consent(user: Dict[str, Any]) -> None:
     consent = user.get("consent") or {}
     if consent.get("health_data_consent") is not True:
         raise HTTPException(status_code=403, detail="Health-data consent is required before Alira can adapt care.")
+
+
+async def _persist_functional_issue_report(
+    user: Dict[str, Any],
+    payload: AliraFunctionalIssueSubmit,
+) -> Dict[str, Any]:
+    _require_health_data_consent(user)
+    category = payload.category.strip().lower()
+    if category not in FUNCTIONAL_ISSUE_CATALOG:
+        raise HTTPException(status_code=422, detail="That functional issue is not mapped to an approved assessment yet.")
+
+    reports = await _care_issue_reports_for_user(user["id"])
+    duplicate = next(
+        (
+            item for item in reports
+            if item.get("category") == category and item.get("status", "pending") == "pending"
+        ),
+        None,
+    )
+    if duplicate:
+        care_plan = await _adaptive_care_plan_for_user(user, issue_reports=reports)
+        return {
+            "ok": True,
+            "is_new": False,
+            "message": "This problem is already being monitored, so another exception assessment was not added.",
+            "report": duplicate,
+            "care_plan": care_plan,
+        }
+
+    report = {
+        "id": "afi_" + uuid.uuid4().hex[:16],
+        "user_id": user["id"],
+        "category": category,
+        "description": (payload.description or "").strip(),
+        "status": "pending",
+        "source": payload.source,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "assessment_id": None,
+    }
+    try:
+        await db.alira_functional_issue_reports.insert_one(report.copy())
+    except Exception as exc:
+        logger.warning("Mongo unavailable for Alira functional issue; using local fallback: %s", str(exc)[:120])
+        state = dict(LOCAL_CARE_STATE.get(user["id"]) or {})
+        state["functional_issue_reports"] = [*(state.get("functional_issue_reports") or []), report.copy()][-100:]
+        LOCAL_CARE_STATE[user["id"]] = state
+        _persist_local_dict(LOCAL_CARE_STATE_FILE, LOCAL_CARE_STATE)
+
+    reports.append(report.copy())
+    care_plan = await _adaptive_care_plan_for_user(user, issue_reports=reports)
+    _record_alira_action(
+        "new_functional_issue_recorded",
+        source=payload.source,
+        user_id=user["id"],
+        details={
+            "report_id": report["id"],
+            "category": category,
+            "assessment_package": (care_plan["assessment"].get("packages") or [None])[0],
+            "assessment_task_ids": care_plan["assessment"].get("task_ids") or [],
+        },
+    )
+    return {
+        "ok": True,
+        "is_new": True,
+        "message": "Alira added one targeted assessment for this new functional problem.",
+        "report": report,
+        "care_plan": care_plan,
+    }
+
+
+async def _mark_functional_issue_assessed(user_id: str, report_id: Optional[str], assessment_id: str) -> None:
+    if not report_id:
+        return
+    now = datetime.now(timezone.utc).isoformat()
+    try:
+        await db.alira_functional_issue_reports.update_one(
+            {"id": report_id, "user_id": user_id, "status": "pending"},
+            {"$set": {"status": "assessed", "assessment_id": assessment_id, "assessed_at": now}},
+        )
+    except Exception:
+        state = dict(LOCAL_CARE_STATE.get(user_id) or {})
+        reports = []
+        for item in state.get("functional_issue_reports") or []:
+            updated = dict(item)
+            if updated.get("id") == report_id and updated.get("status", "pending") == "pending":
+                updated.update({"status": "assessed", "assessment_id": assessment_id, "assessed_at": now})
+            reports.append(updated)
+        state["functional_issue_reports"] = reports
+        LOCAL_CARE_STATE[user_id] = state
+        _persist_local_dict(LOCAL_CARE_STATE_FILE, LOCAL_CARE_STATE)
 
 
 async def _persist_alira_check_in(user: Dict[str, Any], payload: AliraCheckInSubmit) -> Dict[str, Any]:
@@ -8727,9 +9099,10 @@ async def _persist_alira_check_in(user: Dict[str, Any], payload: AliraCheckInSub
     assessments = await _care_assessments_for_user(user["id"])
     check_ins = await _care_check_ins_for_user(user["id"])
     activities = await _care_activities_for_user(user["id"])
+    issue_reports = await _care_issue_reports_for_user(user["id"])
     if not any(item.get("id") == check_in["id"] for item in check_ins):
         check_ins.append(check_in.copy())
-    care_plan = build_adaptive_care_plan(user.get("profile") or {}, assessments, check_ins, activities)
+    care_plan = build_adaptive_care_plan(user.get("profile") or {}, assessments, check_ins, activities, issue_reports)
     review = {
         "id": "acr_" + uuid.uuid4().hex[:16],
         "user_id": user["id"],
@@ -8753,6 +9126,28 @@ async def _persist_alira_check_in(user: Dict[str, Any], payload: AliraCheckInSub
         state["latest_plan"] = care_plan
         LOCAL_CARE_STATE[user["id"]] = state
         _persist_local_dict(LOCAL_CARE_STATE_FILE, LOCAL_CARE_STATE)
+    _record_alira_action(
+        "check_in_recorded",
+        source=payload.source,
+        user_id=user["id"],
+        details={
+            "check_in_id": check_in["id"],
+            "question_ids": check_in["question_ids"],
+            "safety_status": care_plan["safety"]["status"],
+        },
+    )
+    _record_alira_action(
+        "care_plan_updated",
+        source=payload.source,
+        user_id=user["id"],
+        details={
+            "trigger": "patient_check_in",
+            "stage": care_plan["stage"],
+            "assessment_task_ids": care_plan["assessment"].get("task_ids") or [],
+            "exercise_action": care_plan["exercise_plan"]["action"],
+            "daily_action": care_plan["daily_monitoring"]["next_day_action"],
+        },
+    )
     return {"ok": True, "check_in": check_in, "care_plan": care_plan}
 
 
@@ -8792,9 +9187,10 @@ async def _persist_alira_activity(user: Dict[str, Any], payload: AliraActivitySu
         _persist_local_dict(LOCAL_CARE_STATE_FILE, LOCAL_CARE_STATE)
     check_ins = await _care_check_ins_for_user(user["id"])
     activities = await _care_activities_for_user(user["id"])
+    issue_reports = await _care_issue_reports_for_user(user["id"])
     if not any(item.get("id") == activity["id"] for item in activities):
         activities.append(activity.copy())
-    care_plan = build_adaptive_care_plan(user.get("profile") or {}, assessments, check_ins, activities)
+    care_plan = build_adaptive_care_plan(user.get("profile") or {}, assessments, check_ins, activities, issue_reports)
     review = {
         "id": "acr_" + uuid.uuid4().hex[:16],
         "user_id": user["id"],
@@ -8816,6 +9212,28 @@ async def _persist_alira_activity(user: Dict[str, Any], payload: AliraActivitySu
         state["latest_plan"] = care_plan
         LOCAL_CARE_STATE[user["id"]] = state
         _persist_local_dict(LOCAL_CARE_STATE_FILE, LOCAL_CARE_STATE)
+    _record_alira_action(
+        "exercise_activity_recorded",
+        source="guided_exercise",
+        user_id=user["id"],
+        details={
+            "activity_id": activity["id"],
+            "exercise_id": activity["exercise_id"],
+            "completed_reps": activity["completed_reps"],
+            "average_score": activity["average_score"],
+        },
+    )
+    _record_alira_action(
+        "care_plan_updated",
+        source="guided_exercise",
+        user_id=user["id"],
+        details={
+            "trigger": "exercise_activity",
+            "stage": care_plan["stage"],
+            "exercise_action": care_plan["exercise_plan"]["action"],
+            "daily_action": care_plan["daily_monitoring"]["next_day_action"],
+        },
+    )
     return {"ok": True, "activity": activity, "care_plan": care_plan}
 
 
@@ -8825,7 +9243,20 @@ async def get_alira_care_plan(request: Request):
     if not user:
         raise HTTPException(status_code=401, detail="Sign in required")
     _require_health_data_consent(user)
-    return await _adaptive_care_plan_for_user(user)
+    plan = await _adaptive_care_plan_for_user(user)
+    _record_alira_action(
+        "care_plan_reviewed",
+        source="app",
+        user_id=user["id"],
+        details={
+            "stage": plan["stage"],
+            "survey_due": plan["survey"]["due"],
+            "assessment_due": plan["assessment"]["due"],
+            "exercise_action": plan["exercise_plan"]["action"],
+            "daily_action": plan["daily_monitoring"]["next_day_action"],
+        },
+    )
+    return plan
 
 
 @api_router.get("/alira/check-in/questions")
@@ -8835,6 +9266,17 @@ async def get_alira_check_in_questions(request: Request):
         raise HTTPException(status_code=401, detail="Sign in required")
     _require_health_data_consent(user)
     plan = await _adaptive_care_plan_for_user(user)
+    _record_alira_action(
+        "survey_questions_selected",
+        source="adaptive_care_plan",
+        user_id=user["id"],
+        status="completed" if plan["survey"]["due"] else "not_due",
+        details={
+            "stage": plan["stage"],
+            "due": plan["survey"]["due"],
+            "question_ids": [question["id"] for question in plan["survey"]["questions"]],
+        },
+    )
     return {
         "due": plan["survey"]["due"],
         "due_at": plan["survey"]["due_at"],
@@ -8850,6 +9292,28 @@ async def submit_alira_check_in(payload: AliraCheckInSubmit, request: Request):
     if not user:
         raise HTTPException(status_code=401, detail="Sign in required")
     return await _persist_alira_check_in(user, payload)
+
+
+@api_router.post("/alira/functional-issues")
+async def submit_alira_functional_issue(payload: AliraFunctionalIssueSubmit, request: Request):
+    user = await _user_from_header(dict(request.headers))
+    if not user:
+        raise HTTPException(status_code=401, detail="Sign in required")
+    return await _persist_functional_issue_report(user, payload)
+
+
+@api_router.get("/alira/functional-issues")
+async def list_alira_functional_issues(request: Request, limit: int = 20):
+    user = await _user_from_header(dict(request.headers))
+    if not user:
+        raise HTTPException(status_code=401, detail="Sign in required")
+    _require_health_data_consent(user)
+    items = await _care_issue_reports_for_user(user["id"])
+    items.sort(key=lambda item: item.get("created_at", ""), reverse=True)
+    return {
+        "functional_issues": items[:max(1, min(limit, 100))],
+        "approved_categories": approved_functional_issue_categories(),
+    }
 
 
 @api_router.get("/alira/check-ins")
@@ -8871,6 +9335,58 @@ async def submit_alira_activity(payload: AliraActivitySubmit, request: Request):
     return await _persist_alira_activity(user, payload)
 
 
+@api_router.post("/alira/navigation-events")
+async def record_alira_navigation_event(payload: AliraNavigationEventSubmit, request: Request):
+    user = await _user_from_header(dict(request.headers))
+    if not user:
+        raise HTTPException(status_code=401, detail="Sign in required")
+    _record_alira_action(
+        "navigation_executed" if payload.success else "navigation_failed",
+        source=payload.source,
+        user_id=user["id"],
+        session_id=payload.session_id,
+        status="completed" if payload.success else "failed",
+        details={
+            "requested_destination": payload.destination,
+            "resolved_destination": payload.resolved_destination,
+        },
+    )
+    return {"ok": True}
+
+
+@api_router.post("/alira/assessment-resume-events")
+async def record_alira_assessment_resume_event(payload: AliraAssessmentResumeEventSubmit, request: Request):
+    user = await _user_from_header(dict(request.headers))
+    if not user:
+        raise HTTPException(status_code=401, detail="Sign in required")
+    safe_package = _safe_video_token(payload.package_id, "assessment")
+    valid_task_ids = set(_valid_package_task_ids(safe_package))
+    if not set(payload.task_ids).issubset(valid_task_ids):
+        raise HTTPException(status_code=422, detail="Assigned tasks do not match the assessment package")
+    if not set(payload.completed_task_ids).issubset(set(payload.task_ids)):
+        raise HTTPException(status_code=422, detail="Completed tasks do not match the assigned assessment")
+    if not set(payload.ignored_device_completed_task_ids).issubset(set(payload.task_ids)):
+        raise HTTPException(status_code=422, detail="Ignored device tasks do not match the assigned assessment")
+    if payload.next_task_id and payload.next_task_id not in set(payload.task_ids):
+        raise HTTPException(status_code=422, detail="Next task does not match the assigned assessment")
+    _record_alira_action(
+        "assessment_resume_selected",
+        source="task_intro",
+        user_id=user["id"],
+        status="completed" if payload.next_task_id else "assessment_complete",
+        details={
+            "package_id": safe_package,
+            "task_ids": payload.task_ids,
+            "completed_task_ids": payload.completed_task_ids,
+            "next_task_id": payload.next_task_id,
+            "task_order": "fixed_approved_order",
+            "progress_source": payload.progress_source,
+            "ignored_device_completed_task_ids": payload.ignored_device_completed_task_ids,
+        },
+    )
+    return {"ok": True}
+
+
 async def _build_patient_context(user: Optional[Dict[str, Any]]) -> str:
     """Pull the signed-in patient's latest assessment and care schedule for Alira."""
     if not user:
@@ -8878,6 +9394,7 @@ async def _build_patient_context(user: Optional[Dict[str, Any]]) -> str:
     assessments = await _care_assessments_for_user(user["id"])
     check_ins = await _care_check_ins_for_user(user["id"])
     activities = await _care_activities_for_user(user["id"])
+    issue_reports = await _care_issue_reports_for_user(user["id"])
     health_data_consent = (user.get("consent") or {}).get("health_data_consent") is True
     consent_context = (
         "\n\nACCOUNT CONSENT STATUS:\n"
@@ -8888,7 +9405,7 @@ async def _build_patient_context(user: Optional[Dict[str, Any]]) -> str:
         )
     )
     doc = max(assessments, key=lambda item: item.get("created_at", ""), default=None)
-    care_plan = build_adaptive_care_plan(user.get("profile") or {}, assessments, check_ins, activities)
+    care_plan = build_adaptive_care_plan(user.get("profile") or {}, assessments, check_ins, activities, issue_reports)
     due_questions = [question["id"] for question in care_plan["survey"]["questions"]]
     adaptive_context = (
         "\n\nALIRA ADAPTIVE CARE WORKFLOW:\n"
@@ -8898,9 +9415,11 @@ async def _build_patient_context(user: Optional[Dict[str, Any]]) -> str:
         f"Approved questions to ask now: {', '.join(due_questions) or '(none due)'}\n"
         f"Camera assessment due: {care_plan['assessment']['due']}\n"
         f"Approved assessment packages: {', '.join(care_plan['assessment']['packages']) or '(none due)'}\n"
+        f"Assessment trigger: {care_plan['assessment']['trigger']}\n"
+        f"Approved assessment task ids: {', '.join(care_plan['assessment']['task_ids']) or '(none due)'}\n"
         f"Next exercise-plan action: {care_plan['exercise_plan']['action']}\n"
         f"Daily activity action: {care_plan['daily_monitoring']['next_day_action']}\n"
-        "Do not invent a new clinical question, assessment, or exercise. Use only this workflow and the approved tools."
+        "Autonomously follow these approved selections without asking for per-decision approval. Never bypass a safety hold or activate unapproved clinical content."
     )
     if not doc:
         return "The patient has not completed an assessment yet." + consent_context + adaptive_context
@@ -8934,13 +9453,15 @@ What you DO NOT do:
 - Make false promises about recovery timelines
 - Use clinical jargon — speak in plain, kind language
 - Change, add, or delete app functionality
-- Invent or activate a new clinical survey question, camera assessment, or exercise. Novel ideas must remain reviewable drafts and must never be assigned to a patient.
+- Activate clinical content outside the approved question, assessment-task, and guided-exercise libraries. Novel ideas remain non-active drafts.
 
 Adaptive rehabilitation workflow:
 - Follow the ALIRA ADAPTIVE CARE WORKFLOW in the patient context. It is generated from saved survey answers, check-ins, validated assessment evidence, and the approved exercise library.
 - Ask a short check-in only when it is due. Ask only the listed approved questions, one at a time, and call record_rehab_check_in after the patient answers.
 - Never infer a check-in answer. If the patient does not know or does not want to answer, respect that and leave it unsaved.
-- The backend safety rules decide whether the next plan is held, maintained, reduced, or eligible for a small confirmed progression. Do not override that result.
+- Autonomously follow the backend choice of approved questions, tasks, exercises, sets, repetitions, and weekly frequency. No per-decision approval is required during testing.
+- Never bypass the assessment due date. A genuinely new movement problem may open one targeted exception assessment only through report_new_functional_issue.
+- Every exercise change must remain incremental and within the backend dose limit. Do not override a safety hold.
 - Patient-reported difficulty remains valid evidence even when a camera task looks normal. Missing or pending model output is never evidence of normal function.
 
 Consent handling:
@@ -8949,7 +9470,8 @@ Consent handling:
 - If a care tool cannot confirm saved consent, do not repeat a consent question. Explain that Rehyn could not verify the saved account setting and open Data and permissions.
 
 App navigation:
-- When the patient asks to start, continue, open, or take an assessment, call navigate_app immediately. Use initial_assessment when no assessment is complete and next_assessment after a completed assessment.
+- When the patient asks to start, continue, open, or take an assessment, call navigate_app immediately. Use initial_assessment when no assessment is complete and next_assessment after a completed assessment; the navigation tool will refuse a follow-up that is not due.
+- When a patient describes a genuinely new reaching, hand, walking, transfer, or balance problem, call report_new_functional_issue with the closest approved category. Do not file repeated known difficulty as new.
 - If the patient says yes or that they are ready immediately after you offered to start an assessment, call navigate_app instead of asking another readiness, consent, or check-in question.
 - The assessment flow applies saved readiness answers and its required safety check. Do not recreate those screens as a chat questionnaire.
 - For any other request to open, show, find, or visit a Rehyn feature, call navigate_app rather than describing menu steps.
@@ -9054,6 +9576,15 @@ async def create_alira_realtime_session(req: RealtimeSessionRequest, request: Re
     if not user:
         raise HTTPException(status_code=401, detail="Sign in to call Alira.")
 
+    _record_alira_action(
+        "realtime_call_requested",
+        source="realtime_voice",
+        user_id=user["id"],
+        session_id=req.session_id,
+        status="started",
+        details={"model": ALIRA_REALTIME_MODEL, "voice": ALIRA_REALTIME_VOICE},
+    )
+
     patient_ctx = await _build_patient_context(user)
     consent_confirmed = (user.get("consent") or {}).get("health_data_consent") is True
     profile = user.get("profile") or {}
@@ -9072,6 +9603,9 @@ LIVE VOICE CONVERSATION RULES:
 - When the patient asks where a feature is or asks you to open, show, find, or take them to a page, call navigate_app. Do not give a sequence of menu directions instead.
 - Wait for the navigation tool result before saying that a page is opening. If the requested result or plan is unavailable, explain the tool result briefly and offer the assessment or Journey page.
 - Navigation is read-only. Never claim to change a setting, submit a form, delete data, or complete an assessment for the patient.
+- Respect the assessment schedule returned by the backend. Never send a patient to a routine assessment that is not due.
+- When the patient reports a genuinely new movement problem, identify the closest approved category and call report_new_functional_issue. Do not create duplicate exception assessments for a known problem.
+- Alira may autonomously choose approved survey questions, assessment tasks, exercises, sets, repetitions, and frequency. Follow backend safety stops exactly and never activate unapproved clinical content.
 """
     instructions = (
         CHAT_SYSTEM_PROMPT_BASE
@@ -9086,7 +9620,7 @@ LIVE VOICE CONVERSATION RULES:
         "output_modalities": ["audio"],
         "instructions": instructions,
         "max_output_tokens": 500,
-        "tools": [ALIRA_NAVIGATION_TOOL, ALIRA_RECORD_CHECKIN_TOOL],
+        "tools": [ALIRA_NAVIGATION_TOOL, ALIRA_RECORD_CHECKIN_TOOL, ALIRA_REPORT_FUNCTIONAL_ISSUE_TOOL],
         "tool_choice": "auto",
         "audio": {
             "input": {
@@ -9119,6 +9653,14 @@ LIVE VOICE CONVERSATION RULES:
             )
     except httpx.HTTPError as exc:
         logger.error("Realtime session connection failed: %s", type(exc).__name__)
+        _record_alira_action(
+            "realtime_call_start_failed",
+            source="realtime_voice",
+            user_id=user["id"],
+            session_id=req.session_id,
+            status="failed",
+            details={"failure_type": type(exc).__name__},
+        )
         raise HTTPException(status_code=502, detail="Alira could not start a live call. Please try again.") from exc
 
     if not upstream.is_success:
@@ -9127,8 +9669,27 @@ LIVE VOICE CONVERSATION RULES:
         except (ValueError, AttributeError):
             upstream_message = upstream.text[:300]
         logger.error("Realtime session rejected (%s): %s", upstream.status_code, upstream_message)
+        _record_alira_action(
+            "realtime_call_start_failed",
+            source="realtime_voice",
+            user_id=user["id"],
+            session_id=req.session_id,
+            status="failed",
+            details={"upstream_status": upstream.status_code},
+        )
         raise HTTPException(status_code=502, detail="Alira could not start a live call. Please try again.")
 
+    _record_alira_action(
+        "realtime_call_started",
+        source="realtime_voice",
+        user_id=user["id"],
+        session_id=req.session_id,
+        details={
+            "model": ALIRA_REALTIME_MODEL,
+            "voice": ALIRA_REALTIME_VOICE,
+            "tools": ["navigate_app", "record_rehab_check_in", "report_new_functional_issue"],
+        },
+    )
     return Response(content=upstream.text, media_type="application/sdp")
 
 
@@ -9137,6 +9698,7 @@ async def chat_message(req: ChatRequest, request: Request):
     user = await _user_from_header(dict(request.headers))
     if not user:
         raise HTTPException(status_code=401, detail="Sign in to talk with Alira.")
+    consent_confirmed = (user.get("consent") or {}).get("health_data_consent") is True
     session_filter = {"session_id": req.session_id, "user_id": user["id"]}
     local_session_key = f"{user['id']}:{req.session_id}"
     try:
@@ -9149,20 +9711,40 @@ async def chat_message(req: ChatRequest, request: Request):
         assessments = await _care_assessments_for_user(user["id"])
         check_ins = await _care_check_ins_for_user(user["id"])
         activities = await _care_activities_for_user(user["id"])
-        care_plan = build_adaptive_care_plan(user.get("profile") or {}, assessments, check_ins, activities)
+        issue_reports = await _care_issue_reports_for_user(user["id"])
+        care_plan = build_adaptive_care_plan(user.get("profile") or {}, assessments, check_ins, activities, issue_reports)
         now = datetime.now(timezone.utc).isoformat()
         navigation_destination: Optional[str] = None
         if care_plan["assessment"]["blocked_by_safety"]:
             reply_text = str(care_plan["safety"]["message"])
-        elif assessments:
+        elif assessments and care_plan["assessment"]["due"]:
             navigation_destination = "next_assessment"
             reply_text = "I’m opening the movement assessment that best matches your current recovery needs."
-        else:
+        elif not assessments:
             navigation_destination = "initial_assessment"
             reply_text = "I’m opening your Initial Assessment now. Your saved readiness answers will select suitable tasks and completed tasks will not be repeated."
+        else:
+            due_date = str(care_plan["assessment"].get("due_at") or "")[:10]
+            reply_text = (
+                f"Your next assessment is scheduled for {due_date}, so we can measure meaningful change rather than repeat it too soon. "
+                "If you have a genuinely new movement problem, tell me what has changed and I’ll check whether a targeted assessment is appropriate."
+            )
         turns.append({"role": "user", "text": req.text, "ts": now})
         turns.append({"role": "assistant", "text": reply_text, "ts": now})
         await _save_chat_session(session_filter, local_session_key, req.session_id, user["id"], turns, now)
+        _record_alira_action(
+            "assessment_navigation_selected",
+            source="text_chat",
+            user_id=user["id"],
+            session_id=req.session_id,
+            status="completed" if navigation_destination else "blocked",
+            details={
+                "destination": navigation_destination,
+                "blocked_by_safety": care_plan["assessment"]["blocked_by_safety"],
+                "task_ids": care_plan["assessment"].get("task_ids") or [],
+                "selection_policy": "adaptive_care_plan",
+            },
+        )
         return ChatResponse(
             session_id=req.session_id,
             text=reply_text,
@@ -9183,6 +9765,8 @@ async def chat_message(req: ChatRequest, request: Request):
     name_block = f"\nPATIENT PREFERRED NAME: {name}\n" if name else ""
     system_prompt = CHAT_SYSTEM_PROMPT_BASE + name_block + "\n----\nPATIENT CONTEXT:\n" + patient_ctx
     navigation_destination: Optional[str] = None
+    model_used = ALIRA_CHAT_MODEL if openai_tts_client else "claude-sonnet-4-5-20250929"
+    tool_actions: List[Dict[str, Any]] = []
 
     try:
         if openai_tts_client:
@@ -9204,7 +9788,7 @@ async def chat_message(req: ChatRequest, request: Request):
                 return openai_tts_client.chat.completions.create(
                     model=ALIRA_CHAT_MODEL,
                     messages=messages,
-                    tools=[ALIRA_CHAT_NAVIGATION_TOOL, ALIRA_CHAT_RECORD_CHECKIN_TOOL],
+                    tools=[ALIRA_CHAT_NAVIGATION_TOOL, ALIRA_CHAT_RECORD_CHECKIN_TOOL, ALIRA_CHAT_REPORT_FUNCTIONAL_ISSUE_TOOL],
                     tool_choice="auto",
                     temperature=0.5,
                     max_tokens=260,
@@ -9241,9 +9825,50 @@ async def chat_message(req: ChatRequest, request: Request):
                             tool_result = {"ok": True, "destination": destination, "message": "The requested Rehyn page is opening."}
                         else:
                             tool_result = {"ok": False, "message": "That Rehyn destination is not available."}
-                    elif call.function.name != "record_rehab_check_in":
-                        tool_result = {"ok": False, "message": "Unsupported Alira care tool."}
-                    else:
+                        tool_actions.append({
+                            "tool": "navigate_app",
+                            "destination": destination,
+                            "success": bool(tool_result["ok"]),
+                        })
+                        _record_alira_action(
+                            "navigation_selected" if tool_result["ok"] else "navigation_failed",
+                            source="text_chat",
+                            user_id=user["id"],
+                            session_id=req.session_id,
+                            status="completed" if tool_result["ok"] else "failed",
+                            details={"destination": destination},
+                        )
+                    elif call.function.name == "report_new_functional_issue":
+                        try:
+                            arguments = json.loads(call.function.arguments or "{}")
+                            saved = await _persist_functional_issue_report(
+                                user,
+                                AliraFunctionalIssueSubmit(
+                                    category=str(arguments.get("category") or ""),
+                                    description=arguments.get("description"),
+                                    source="text_chat",
+                                ),
+                            )
+                            next_assessment = saved["care_plan"]["assessment"]
+                            if saved["is_new"] and next_assessment.get("due"):
+                                navigation_destination = "next_assessment"
+                            tool_result = {
+                                "ok": True,
+                                "is_new": saved["is_new"],
+                                "message": saved["message"],
+                                "next_assessment": next_assessment,
+                            }
+                            tool_actions.append({
+                                "tool": "report_new_functional_issue",
+                                "category": arguments.get("category"),
+                                "success": True,
+                                "is_new": saved["is_new"],
+                            })
+                        except (ValueError, TypeError, HTTPException) as exc:
+                            detail = exc.detail if isinstance(exc, HTTPException) else str(exc)
+                            tool_result = {"ok": False, "message": detail}
+                            tool_actions.append({"tool": "report_new_functional_issue", "success": False})
+                    elif call.function.name == "record_rehab_check_in":
                         try:
                             arguments = json.loads(call.function.arguments or "{}")
                             submitted = AliraCheckInSubmit(
@@ -9258,9 +9883,13 @@ async def chat_message(req: ChatRequest, request: Request):
                                 "next_exercise_action": saved["care_plan"]["exercise_plan"]["action"],
                                 "next_assessment": saved["care_plan"]["assessment"],
                             }
+                            tool_actions.append({"tool": "record_rehab_check_in", "success": True})
                         except (ValueError, TypeError, HTTPException) as exc:
                             detail = exc.detail if isinstance(exc, HTTPException) else str(exc)
                             tool_result = {"ok": False, "message": detail}
+                            tool_actions.append({"tool": "record_rehab_check_in", "success": False})
+                    else:
+                        tool_result = {"ok": False, "message": "Unsupported Alira care tool."}
                     messages.append({
                         "role": "tool",
                         "tool_call_id": call.id,
@@ -9271,7 +9900,7 @@ async def chat_message(req: ChatRequest, request: Request):
                     return openai_tts_client.chat.completions.create(
                         model=ALIRA_CHAT_MODEL,
                         messages=messages,
-                        tools=[ALIRA_CHAT_NAVIGATION_TOOL, ALIRA_CHAT_RECORD_CHECKIN_TOOL],
+                        tools=[ALIRA_CHAT_NAVIGATION_TOOL, ALIRA_CHAT_RECORD_CHECKIN_TOOL, ALIRA_CHAT_REPORT_FUNCTIONAL_ISSUE_TOOL],
                         tool_choice="none",
                         temperature=0.3,
                         max_tokens=220,
@@ -9302,12 +9931,32 @@ async def chat_message(req: ChatRequest, request: Request):
             raise RuntimeError("Alira returned an empty response")
     except Exception as e:
         logger.error(f"Chat error: {e}")
+        _record_alira_action(
+            "chat_response_failed",
+            source="text_chat",
+            user_id=user["id"],
+            session_id=req.session_id,
+            status="failed",
+            details={"model": model_used, "failure_type": type(e).__name__},
+        )
         raise HTTPException(status_code=502, detail=f"Chat error: {str(e)[:200]}")
 
     now = datetime.now(timezone.utc).isoformat()
     turns.append({"role": "user", "text": req.text, "ts": now})
     turns.append({"role": "assistant", "text": reply_text, "ts": now})
     await _save_chat_session(session_filter, local_session_key, req.session_id, user["id"], turns, now)
+    _record_alira_action(
+        "chat_response_generated",
+        source="text_chat",
+        user_id=user["id"],
+        session_id=req.session_id,
+        details={
+            "model": model_used,
+            "tools": tool_actions,
+            "navigation_destination": navigation_destination,
+            "turn_count": len(turns),
+        },
+    )
     return ChatResponse(
         session_id=req.session_id,
         text=reply_text,
@@ -9375,7 +10024,20 @@ async def chat_proactive(req: ChatRequest, request: Request):
             f"Hi{n}. What's one thing — big or small — that went well for you today?",
             f"Hello{n}. I'm holding space for you. What would feel good to talk about right now?",
         ]
-    return {"text": random.choice(pool)}
+    selected_message = random.choice(pool)
+    if user:
+        _record_alira_action(
+            "proactive_check_in_selected",
+            source="text_chat",
+            user_id=user["id"],
+            session_id=req.session_id,
+            details={
+                "has_assessment": has_assessment,
+                "has_chat_history": has_history,
+                "message_variant_count": len(pool),
+            },
+        )
+    return {"text": selected_message}
 
 
 @api_router.get("/chat/proactive/messages")
@@ -9401,7 +10063,15 @@ async def chat_proactive_messages(request: Request, n: int = 3):
         f"Hey{suffix} — your body is healing in ways you can't see. How are you feeling?",
     ]
     random.shuffle(pool)
-    return {"messages": pool[:max(1, min(n, len(pool)))], "name": name}
+    selected_messages = pool[:max(1, min(n, len(pool)))]
+    if user:
+        _record_alira_action(
+            "proactive_messages_selected",
+            source="app",
+            user_id=user["id"],
+            details={"message_count": len(selected_messages)},
+        )
+    return {"messages": selected_messages, "name": name}
 
 
 # Mount routes

@@ -1,8 +1,8 @@
-"""Bounded adaptive care orchestration for Alira.
+"""Adaptive care orchestration for Alira.
 
 The module makes repeatable scheduling and content-selection decisions from
-patient-reported and assessment evidence. It deliberately cannot activate
-novel clinical content; unsupported ideas are emitted as reviewable drafts.
+patient-reported and assessment evidence. Alira may autonomously select from
+approved clinical libraries; unsupported ideas remain non-active drafts.
 """
 
 from __future__ import annotations
@@ -11,7 +11,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 
-CARE_POLICY_VERSION = "alira-care-v1"
+CARE_POLICY_VERSION = "alira-care-v2"
 MAX_CHECK_IN_QUESTIONS = 4
 APPROVED_ASSESSMENT_PACKAGES = {"initial", "upper_limb", "hand", "lower_limb", "balance"}
 INITIAL_ASSESSMENT_TASK_IDS = ("T1", "T2", "T3", "H1", "H3", "H4", "L6")
@@ -99,6 +99,42 @@ QUESTION_BANK: Dict[str, Dict[str, Any]] = {
         "options": ["not_at_all", "a_little", "often", "most_activities"],
         "required": False,
     },
+    "arm_use": {
+        "id": "arm_use",
+        "domain": "upper_limb",
+        "question": "How comfortable was reaching, lifting, or bringing your affected arm toward your face today?",
+        "type": "single",
+        "options": ["not_tried", "comfortable", "needed_more_effort", "needed_help", "unable"],
+        "required": False,
+    },
+    "balance_confidence": {
+        "id": "balance_confidence",
+        "domain": "balance",
+        "question": "How steady did you feel during sitting, standing, or transfers today?",
+        "type": "single",
+        "options": ["not_applicable", "steady", "a_little_unsteady", "very_unsteady", "needed_help"],
+        "required": False,
+    },
+}
+
+
+FUNCTIONAL_ISSUE_CATALOG: Dict[str, Dict[str, Any]] = {
+    "reaching": {"domain": "upper_limb", "package": "upper_limb", "task_ids": ["T1", "T2", "T3"]},
+    "arm_lifting": {"domain": "upper_limb", "package": "upper_limb", "task_ids": ["T2"]},
+    "hand_to_mouth": {"domain": "upper_limb", "package": "upper_limb", "task_ids": ["T3"]},
+    "hand_opening": {"domain": "hand", "package": "hand", "task_ids": ["H1", "H3"]},
+    "grasping": {"domain": "hand", "package": "hand", "task_ids": ["H2", "H4"]},
+    "pinching": {"domain": "hand", "package": "hand", "task_ids": ["H3", "H5"]},
+    "walking": {"domain": "lower_limb", "package": "lower_limb", "task_ids": ["L6"]},
+    "transfers": {"domain": "lower_limb", "package": "lower_limb", "task_ids": ["L2", "L3"]},
+    "balance": {"domain": "lower_limb", "package": "balance", "task_ids": ["B1", "B2", "B3"]},
+}
+
+DEFAULT_FOLLOW_UP_TASKS: Dict[str, List[str]] = {
+    "upper_limb": ["T1", "T2", "T3"],
+    "hand": ["H1", "H3", "H4"],
+    "lower_limb": ["L1", "L2", "L6"],
+    "balance": ["B1", "B2", "B3"],
 }
 
 
@@ -373,10 +409,59 @@ def _assessment_packages(domains: Sequence[str], has_assessment: bool) -> List[s
         packages.append("hand")
     if "lower_limb" in domains:
         packages.extend(["lower_limb", "balance"])
-    return packages or ["initial"]
+    return packages or ["upper_limb"]
 
 
-def _select_questions(domains: Sequence[str], has_plan: bool, stage: str) -> List[Dict[str, Any]]:
+def _pending_issue_report(issue_reports: Sequence[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    pending = [
+        item for item in issue_reports
+        if str(item.get("status") or "pending") == "pending"
+        and str(item.get("category") or "") in FUNCTIONAL_ISSUE_CATALOG
+    ]
+    return _latest(pending)
+
+
+def _selected_assessment(
+    domains: Sequence[str],
+    has_assessment: bool,
+    pending_issue: Optional[Dict[str, Any]],
+    initial_readiness: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    if not has_assessment:
+        return {
+            "packages": ["initial"],
+            "task_ids": list((initial_readiness or {}).get("task_ids") or []),
+            "trigger": "initial",
+            "issue_report_id": None,
+            "issue_category": None,
+        }
+    if pending_issue:
+        category = str(pending_issue.get("category") or "")
+        selection = FUNCTIONAL_ISSUE_CATALOG[category]
+        return {
+            "packages": [selection["package"]],
+            "task_ids": list(selection["task_ids"]),
+            "trigger": "new_functional_issue",
+            "issue_report_id": pending_issue.get("id"),
+            "issue_category": category,
+        }
+    packages = _assessment_packages(domains, True)
+    package = packages[0]
+    return {
+        "packages": [package],
+        "task_ids": list(DEFAULT_FOLLOW_UP_TASKS.get(package, [])),
+        "trigger": "scheduled",
+        "issue_report_id": None,
+        "issue_category": None,
+    }
+
+
+def _select_questions(
+    domains: Sequence[str],
+    has_plan: bool,
+    stage: str,
+    pending_issue: Optional[Dict[str, Any]] = None,
+) -> List[Dict[str, Any]]:
     ids = ["sudden_change", "function_change"]
     if has_plan:
         ids.append("exercise_tolerance")
@@ -384,7 +469,12 @@ def _select_questions(domains: Sequence[str], has_plan: bool, stage: str) -> Lis
         ids.append("walking_confidence")
     else:
         ids.append("pain")
-    if "hand" in domains:
+    pending_category = str((pending_issue or {}).get("category") or "")
+    if pending_category in {"reaching", "arm_lifting", "hand_to_mouth"}:
+        ids.append("arm_use")
+    elif pending_category == "balance":
+        ids.append("balance_confidence")
+    elif "hand" in domains:
         ids.append("hand_use")
     elif "lower_limb" in domains:
         ids.append("falls")
@@ -396,31 +486,69 @@ def _select_questions(domains: Sequence[str], has_plan: bool, stage: str) -> Lis
     return [dict(QUESTION_BANK[question_id]) for question_id in unique]
 
 
-def _exercise_action(latest_check_in: Optional[Dict[str, Any]], latest_assessment: Optional[Dict[str, Any]], safety: Dict[str, Any]) -> Dict[str, Any]:
-    active_ids = [str(item.get("id")) for item in (latest_assessment or {}).get("rehab_plan") or [] if item.get("id")]
+def _weekly_frequency(frequency: Any) -> int:
+    text = str(frequency or "").lower()
+    if "twice daily" in text or "daily" in text:
+        return 7
+    match = next((int(value) for value in text.split() if value.isdigit()), None)
+    return max(1, min(7, match)) if match else 3
+
+
+def _exercise_action(
+    latest_check_in: Optional[Dict[str, Any]],
+    latest_assessment: Optional[Dict[str, Any]],
+    safety: Dict[str, Any],
+    sessions_last_7_days: int = 0,
+) -> Dict[str, Any]:
+    active_plan = [dict(item) for item in (latest_assessment or {}).get("rehab_plan") or [] if item.get("id")]
+    active_ids = [str(item["id"]) for item in active_plan]
     if safety["blocks_exercise"]:
-        return {"action": "hold", "dose_change_percent": 0, "reason": safety["message"], "approved_exercise_ids": active_ids}
-    tolerance = str(_answer(latest_check_in, "exercise_tolerance", "")).lower()
-    function_change = str(_answer(latest_check_in, "function_change", "")).lower()
-    if tolerance == "too_hard" or function_change == "a_little_harder":
-        return {
-            "action": "reduce_next_session",
-            "dose_change_percent": -20,
-            "reason": "The patient reported that movement or the current dose felt harder. Keep the same approved exercises and reduce the next session dose.",
-            "approved_exercise_ids": active_ids,
-        }
-    if tolerance == "too_easy" and function_change in {"much_easier", "a_little_easier"} and latest_assessment:
-        return {
-            "action": "small_progression_after_confirmation",
-            "dose_change_percent": 10,
-            "reason": "The current plan felt easy and function was reported as easier. A small progression may be offered only within the approved exercise definition.",
-            "approved_exercise_ids": active_ids,
-        }
+        action = "hold"
+        dose_change = 0
+        reason = safety["message"]
+    else:
+        tolerance = str(_answer(latest_check_in, "exercise_tolerance", "")).lower()
+        function_change = str(_answer(latest_check_in, "function_change", "")).lower()
+        if tolerance == "too_hard" or function_change == "a_little_harder":
+            action = "reduce_next_session"
+            dose_change = -20
+            reason = "The patient reported that movement or the current dose felt harder, so Alira selected a small reduction within the approved plan."
+        elif tolerance == "too_easy" and function_change in {"much_easier", "a_little_easier"} and latest_assessment:
+            action = "small_progression"
+            dose_change = 10
+            reason = "The current plan felt easy and function was reported as easier, so Alira selected a small progression within the approved plan."
+        else:
+            action = "maintain"
+            dose_change = 0
+            reason = "Alira kept the current approved plan because the latest survey, assessment, and activity evidence did not support a dose change."
+
+    prescriptions: List[Dict[str, Any]] = []
+    factor = 1 + dose_change / 100
+    for exercise in active_plan:
+        base_reps = max(1, int(exercise.get("reps") or 1))
+        base_sets = max(1, int(exercise.get("sets") or 1))
+        base_frequency = _weekly_frequency(exercise.get("frequency"))
+        weekly_frequency = base_frequency
+        if action == "reduce_next_session" and base_frequency > 1:
+            weekly_frequency = base_frequency - 1
+        elif action == "small_progression" and sessions_last_7_days >= base_frequency and base_frequency < 7:
+            weekly_frequency = base_frequency + 1
+        prescriptions.append({
+            "exercise_id": str(exercise["id"]),
+            "sets": base_sets,
+            "reps": max(1, round(base_reps * factor)),
+            "weekly_frequency": weekly_frequency,
+            "frequency": f"{weekly_frequency} days per week",
+        })
+
     return {
-        "action": "maintain",
-        "dose_change_percent": 0,
-        "reason": "Keep the current approved plan until new patient-reported or objective evidence supports a change.",
+        "action": action,
+        "dose_change_percent": dose_change,
+        "reason": reason,
         "approved_exercise_ids": active_ids,
+        "prescriptions": prescriptions,
+        "decision_mode": "autonomous_approved_library",
+        "requires_approval": False,
     }
 
 
@@ -492,6 +620,7 @@ def build_adaptive_care_plan(
     assessments: Optional[Sequence[Dict[str, Any]]],
     check_ins: Optional[Sequence[Dict[str, Any]]],
     activities: Optional[Sequence[Dict[str, Any]]] = None,
+    issue_reports: Optional[Sequence[Dict[str, Any]]] = None,
     *,
     now: Optional[datetime] = None,
 ) -> Dict[str, Any]:
@@ -501,19 +630,28 @@ def build_adaptive_care_plan(
     assessments = list(assessments or [])
     check_ins = list(check_ins or [])
     activities = list(activities or [])
+    issue_reports = list(issue_reports or [])
     latest_assessment = _latest(assessments)
     latest_check_in = _latest(check_ins)
+    pending_issue = _pending_issue_report(issue_reports) if latest_assessment else None
     safety = _safety_status(latest_check_in)
     stage = _stage(profile, assessments, check_ins, safety)
     cadence = _cadence(stage)
     domains = _issue_domains(latest_assessment, profile)
+    pending_category = str((pending_issue or {}).get("category") or "")
+    pending_domain = str(FUNCTIONAL_ISSUE_CATALOG.get(pending_category, {}).get("domain") or "")
+    if pending_domain and pending_domain not in domains:
+        domains.append(pending_domain)
     survey_due_at = _due_at(latest_check_in, cadence["survey_days"], now)
     assessment_due_at = _due_at(latest_assessment, cadence["assessment_days"], now)
     survey_due = now >= survey_due_at
-    assessment_due = now >= assessment_due_at and not safety["blocks_assessment"]
+    scheduled_assessment_due = now >= assessment_due_at
+    assessment_due = (scheduled_assessment_due or bool(pending_issue)) and not safety["blocks_assessment"]
     has_plan = bool((latest_assessment or {}).get("rehab_plan"))
-    packages = _assessment_packages(domains, bool(latest_assessment))
     initial_readiness = initial_assessment_recommendation(profile) if not latest_assessment else None
+    selection = _selected_assessment(domains, bool(latest_assessment), pending_issue, initial_readiness)
+    if pending_issue:
+        assessment_due_at = now
     latest_activity = _latest(activities, key="completed_at")
     latest_activity_at = _as_utc((latest_activity or {}).get("completed_at"))
     sessions_last_7_days = sum(
@@ -542,24 +680,32 @@ def build_adaptive_care_plan(
             "due_at": survey_due_at.isoformat(),
             "cadence_days": cadence["survey_days"],
             "max_questions": MAX_CHECK_IN_QUESTIONS,
-            "questions": _select_questions(domains, has_plan, stage) if survey_due else [],
+            "questions": _select_questions(domains, has_plan, stage, pending_issue) if survey_due else [],
             "reason": "The interval adapts to recovery stage and recent changes; safety and function are checked before plan changes.",
         },
         "assessment": {
             "due": assessment_due,
             "due_at": assessment_due_at.isoformat(),
             "cadence_days": cadence["assessment_days"],
-            "packages": packages if assessment_due else [],
-            "recommended_packages": packages,
-            "task_ids": (initial_readiness or {}).get("task_ids", []) if assessment_due else [],
+            "packages": selection["packages"] if assessment_due else [],
+            "recommended_packages": selection["packages"],
+            "task_ids": selection["task_ids"] if assessment_due else [],
+            "trigger": selection["trigger"] if assessment_due else "not_due",
+            "exception_for_new_issue": bool(pending_issue) and assessment_due,
+            "issue_report_id": selection["issue_report_id"] if assessment_due else None,
+            "issue_category": selection["issue_category"] if assessment_due else None,
             "readiness": (initial_readiness or {}).get("status", "ready"),
             "can_start": bool((initial_readiness or {}).get("can_start", True)) and not safety["blocks_assessment"],
             "missing_answers": (initial_readiness or {}).get("missing_answers", []),
             "selection_message": (initial_readiness or {}).get("message"),
             "blocked_by_safety": safety["blocks_assessment"],
-            "reason": "Only approved camera packages matching the affected functional domains are selected.",
+            "reason": (
+                "A new functional problem opened one targeted assessment outside the routine schedule."
+                if pending_issue and assessment_due
+                else "Only the approved camera package and tasks selected for the current recovery stage may be started."
+            ),
         },
-        "exercise_plan": _exercise_action(latest_check_in, latest_assessment, safety),
+        "exercise_plan": _exercise_action(latest_check_in, latest_assessment, safety, sessions_last_7_days),
         "daily_monitoring": {
             "enabled": True,
             "uses_model": False,
@@ -576,6 +722,8 @@ def build_adaptive_care_plan(
             "may_select_approved_questions": True,
             "may_select_approved_assessments": True,
             "may_adjust_approved_exercise_dose": True,
+            "may_choose_approved_sets_repetitions_and_frequency": True,
+            "requires_per_decision_approval": False,
             "maximum_automatic_dose_change_percent": 20,
             "may_change_app_features": False,
             "may_activate_novel_clinical_content": False,
@@ -589,6 +737,8 @@ def build_adaptive_care_plan(
             "assessment_count": len(assessments),
             "check_in_count": len(check_ins),
             "activity_count": len(activities),
+            "functional_issue_report_count": len(issue_reports),
+            "pending_functional_issue_report_id": (pending_issue or {}).get("id"),
             "functional_domains": domains,
             "latest_assessment_id": (latest_assessment or {}).get("id"),
             "latest_check_in_id": (latest_check_in or {}).get("id"),
@@ -624,3 +774,7 @@ def validate_check_in_answers(answers: Dict[str, Any]) -> Dict[str, Any]:
 
 def approved_question_ids() -> List[str]:
     return list(QUESTION_BANK)
+
+
+def approved_functional_issue_categories() -> List[str]:
+    return list(FUNCTIONAL_ISSUE_CATALOG)

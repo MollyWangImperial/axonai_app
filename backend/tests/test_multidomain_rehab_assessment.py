@@ -395,9 +395,43 @@ def test_profile_goal_is_merged_into_assessment_parameters():
     assert merged["dominant_hand"] == "right"
 
 
-def test_routes_expose_packages_modeling_contract_and_multidomain_results():
+def test_routes_expose_packages_modeling_contract_and_multidomain_results(monkeypatch):
+    selected = {"package": "hand", "task_ids": []}
+
+    async def user_from_header(_headers):
+        return {
+            "id": "u_multidomain_routes",
+            "credits": 10000,
+            "profile": {"months_since_stroke": 8},
+            "consent": {"health_data_consent": True},
+        }
+
+    async def prior_assessments(_user_id):
+        return [{"id": "prior", "created_at": "2026-01-01T00:00:00+00:00"}]
+
+    async def care_plan(_user, **_kwargs):
+        return {
+            "assessment": {
+                "due": True,
+                "can_start": True,
+                "trigger": "scheduled",
+                "issue_report_id": None,
+                "packages": [selected["package"]],
+                "task_ids": selected["task_ids"],
+            }
+        }
+
+    async def no_credit_charge(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(server, "_user_from_header", user_from_header)
+    monkeypatch.setattr(server, "_care_assessments_for_user", prior_assessments)
+    monkeypatch.setattr(server, "_adaptive_care_plan_for_user", care_plan)
+    monkeypatch.setattr(server, "consume_credits", no_credit_charge)
     with TestClient(server.app) as client:
         for package_id in ("hand", "lower_limb", "balance"):
+            selected["package"] = package_id
+            selected["task_ids"] = [task["id"] for task in server.ASSESSMENT_PACKAGES[package_id]["tasks"]]
             response = client.get(f"/api/assessment/tasks?package={package_id}")
             assert response.status_code == 200
             payload = response.json()
@@ -410,6 +444,8 @@ def test_routes_expose_packages_modeling_contract_and_multidomain_results():
         assert "external loads" in " ".join(spec.json()["required_inputs"]).lower()
 
         result = _failed_result("lower_limb", "L3", "L3-S2")
+        selected["package"] = "lower_limb"
+        selected["task_ids"] = ["L3"]
         submitted = client.post(
             "/api/assessment/submit",
             json={

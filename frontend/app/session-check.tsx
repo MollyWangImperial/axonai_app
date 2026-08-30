@@ -13,7 +13,7 @@ type SessionActor = "patient" | "carer";
 export default function SessionCheckScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
-  const params = useLocalSearchParams<{ target?: string; id?: string; mode?: string; package?: string }>();
+  const params = useLocalSearchParams<{ target?: string; id?: string; mode?: string; package?: string; task_ids?: string }>();
   const [actor, setActor] = useState<SessionActor | null>(null);
   const [safetyAck, setSafetyAck] = useState(false);
 
@@ -27,7 +27,12 @@ export default function SessionCheckScreen() {
     }
     router.replace({
       pathname: "/task-intro",
-      params: { mode: params.mode || "initial", session_actor: actor, package: params.package || "initial" },
+      params: {
+        mode: params.mode || "initial",
+        session_actor: actor,
+        package: params.package || "initial",
+        task_ids: params.task_ids || "",
+      },
     });
   };
 

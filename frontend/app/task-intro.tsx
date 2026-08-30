@@ -39,10 +39,19 @@ type InitialAssessmentRecommendation = {
   message: string;
 };
 
+type AdaptiveAssessmentSelection = {
+  due: boolean;
+  due_at?: string;
+  can_start: boolean;
+  packages: AssessmentPackageId[];
+  task_ids: string[];
+  trigger?: "scheduled" | "new_functional_issue" | "initial" | "not_due";
+};
+
 export default function TaskIntro() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
-  const params = useLocalSearchParams<{ mode?: string; package?: string }>();
+  const params = useLocalSearchParams<{ mode?: string; package?: string; task_ids?: string }>();
   const isInitial = params.mode !== "followup";
   const allowedPackages: AssessmentPackageId[] = ["initial", "upper_limb", "hand", "lower_limb", "balance"];
   const packageId: AssessmentPackageId = allowedPackages.includes(params.package as AssessmentPackageId)
@@ -66,7 +75,7 @@ export default function TaskIntro() {
         const uid = await getUserId();
         if (!uid) throw new Error("Please sign in again.");
         setUserId(uid);
-        const [profileResponse, recommendationResponse] = await Promise.all([
+        const [profileResponse, recommendationResponse, adaptiveSelection] = await Promise.all([
           authedFetch("/api/users/onboarding").then((r) => r.json()).catch(() => null),
           isInitial
             ? authedFetch("/api/assessment/recommendation?package=initial")
@@ -74,6 +83,14 @@ export default function TaskIntro() {
                 const body = await response.json().catch(() => null);
                 if (!response.ok) throw new Error(body?.detail || "Could not select suitable assessment tasks.");
                 return body as InitialAssessmentRecommendation;
+              })
+            : Promise.resolve(null),
+          !isInitial
+            ? authedFetch("/api/alira/care-plan")
+              .then(async (response) => {
+                const body = await response.json().catch(() => null);
+                if (!response.ok) throw new Error(body?.detail || "Could not verify the assessment schedule.");
+                return body?.assessment as AdaptiveAssessmentSelection;
               })
             : Promise.resolve(null),
         ]);
@@ -89,27 +106,64 @@ export default function TaskIntro() {
           setSavedVideoCount(0);
           return;
         }
-        const assignedTaskIds = recommendationResponse?.task_ids;
-        const [taskResponse, rawCompleted, rawSavedVideos, savedVideos, serverProgress] = await Promise.all([
+        if (adaptiveSelection && (!adaptiveSelection.due || !adaptiveSelection.can_start)) {
+          const dueDate = String(adaptiveSelection.due_at || "").slice(0, 10);
+          throw new Error(`Your next assessment is not due yet${dueDate ? `; it is scheduled for ${dueDate}` : ""}.`);
+        }
+        const selectedPackage = adaptiveSelection?.packages?.[0];
+        if (selectedPackage && selectedPackage !== packageId) {
+          throw new Error(`Alira selected the ${selectedPackage.replace("_", " ")} assessment for this check-in.`);
+        }
+        const assignedTaskIds = recommendationResponse?.task_ids || adaptiveSelection?.task_ids;
+        const routeTaskIds = String(params.task_ids || "").split(",").map((item) => item.trim()).filter(Boolean);
+        if (routeTaskIds.length && assignedTaskIds) {
+          const expected = new Set(assignedTaskIds);
+          if (new Set(routeTaskIds).size !== expected.size || routeTaskIds.some((taskId) => !expected.has(taskId))) {
+            throw new Error("The assessment link no longer matches Alira's current task selection.");
+          }
+        }
+        const [taskResponse, rawCompleted, rawSavedVideos, savedVideos, serverProgressResult] = await Promise.all([
           fetchTasks(packageId, assignedTaskIds),
           storage.getItem(completedTasksKey(uid, packageId), ""),
           storage.getItem(savedTaskVideosKey(uid, packageId), ""),
           fetchTaskVideos(packageId).catch(() => []),
-          fetchTaskProgress(packageId).catch(() => []),
+          fetchTaskProgress(packageId)
+            .then((completedTaskIds) => ({ available: true as const, completedTaskIds }))
+            .catch(() => ({ available: false as const, completedTaskIds: [] as string[] })),
         ]);
         const deviceCompleted = parseCompletedTasks(rawCompleted || "");
         const deviceSavedVideos = parseCompletedTasks(rawSavedVideos || "");
         const serverCompleted = Object.fromEntries(
-          serverProgress
+          serverProgressResult.completedTaskIds
             .filter(Boolean)
             .map((taskId) => [taskId, true]),
         );
-        const completed = { ...deviceCompleted, ...serverCompleted };
-        if (Object.keys(serverCompleted).length > 0) {
+        // A successful server response is authoritative, including an empty list.
+        // Device state is used only when progress cannot be reached at all.
+        const completed = serverProgressResult.available ? serverCompleted : deviceCompleted;
+        if (serverProgressResult.available) {
           await storage.setItem(completedTasksKey(uid, packageId), JSON.stringify(completed));
         }
         const nextTask = taskResponse.tasks.find((task) => !completed[task.id]);
-        setTaskIds(taskResponse.tasks.reduce<string[]>((ids, task) => [...ids, task.id], []));
+        const loadedTaskIds = taskResponse.tasks.reduce<string[]>((ids, task) => [...ids, task.id], []);
+        const completedTaskIds = loadedTaskIds.filter((taskId) => completed[taskId]);
+        const ignoredDeviceCompletedTaskIds = serverProgressResult.available
+          ? loadedTaskIds.filter((taskId) => deviceCompleted[taskId] && !serverCompleted[taskId])
+          : [];
+        try {
+          await authedFetch("/api/alira/assessment-resume-events", {
+            method: "POST",
+            body: JSON.stringify({
+              package_id: packageId,
+              task_ids: loadedTaskIds,
+              completed_task_ids: completedTaskIds,
+              next_task_id: nextTask?.id || null,
+              progress_source: serverProgressResult.available ? "server" : "device_fallback",
+              ignored_device_completed_task_ids: ignoredDeviceCompletedTaskIds,
+            }),
+          });
+        } catch { /* action logging must not block the assessment */ }
+        setTaskIds(loadedTaskIds);
         setCompletedTasks(completed);
         setNextTaskId(nextTask?.id || null);
         setSavedVideoCount(Math.max(savedVideos.length, Object.keys(deviceSavedVideos).length));
@@ -119,7 +173,7 @@ export default function TaskIntro() {
         setLoading(false);
       }
     })();
-  }, [isInitial, packageId]);
+  }, [isInitial, packageId, params.task_ids]);
 
   const onBegin = async () => {
     if (isInitial && recommendation && !recommendation.can_start) {

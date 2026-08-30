@@ -367,9 +367,7 @@ export async function fetchTasks(packageId: AssessmentPackageId = "upper_limb", 
 }> {
   const query = new URLSearchParams({ package: packageId });
   if (assignedTaskIds) query.set("task_ids", assignedTaskIds.join(","));
-  const res = packageId === "initial"
-    ? await authedFetch(`/api/assessment/tasks?${query.toString()}`)
-    : await fetch(`${BASE}/api/assessment/tasks?${query.toString()}`);
+  const res = await authedFetch(`/api/assessment/tasks?${query.toString()}`);
   if (!res.ok) {
     const body = await res.json().catch(() => null);
     throw new Error(body?.detail || "Could not load assessment tasks");
@@ -391,7 +389,7 @@ export async function fetchTaskVideos(packageId: AssessmentPackageId = "initial"
 
 export async function fetchTaskProgress(packageId: AssessmentPackageId = "initial"): Promise<string[]> {
   const res = await authedFetch(`/api/assessment/task-progress?package=${encodeURIComponent(packageId)}`);
-  if (!res.ok) return [];
+  if (!res.ok) throw new Error(`Could not load task progress (${res.status})`);
   const data = await res.json();
   return Array.isArray(data?.completed_task_ids) ? data.completed_task_ids.map(String) : [];
 }

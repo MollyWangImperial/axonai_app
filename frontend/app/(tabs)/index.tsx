@@ -15,7 +15,7 @@ import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 
 import { Assessment, fetchHistory } from "@/src/api";
-import { getCachedUser, preferredNameKey } from "@/src/auth";
+import { authedFetch, getCachedUser, preferredNameKey } from "@/src/auth";
 import { DailyCheckInCard } from "@/src/components/DailyCheckInCard";
 import { colors, radius, spacing } from "@/src/theme";
 import { storage } from "@/src/utils/storage";
@@ -42,6 +42,15 @@ const assessmentBenefits = [
   },
 ];
 
+type CarePlanAssessment = {
+  due: boolean;
+  due_at?: string;
+  can_start: boolean;
+  packages: string[];
+  task_ids: string[];
+  trigger?: string;
+};
+
 export default function HomeScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
@@ -50,17 +59,22 @@ export default function HomeScreen() {
   const isWide = width >= 760;
   const [history, setHistory] = useState<Assessment[]>([]);
   const [greetName, setGreetName] = useState("");
+  const [carePlanAssessment, setCarePlanAssessment] = useState<CarePlanAssessment | null>(null);
   const [loading, setLoading] = useState(true);
 
   const load = useCallback(async () => {
     setLoading(true);
     const user = await getCachedUser();
-    const [assessments, preferredName] = await Promise.all([
+    const [assessments, preferredName, carePlan] = await Promise.all([
       fetchHistory().catch(() => []),
       user?.id ? storage.getItem(preferredNameKey(user.id), "") : Promise.resolve(""),
+      authedFetch("/api/alira/care-plan")
+        .then(async (response) => response.ok ? response.json() : null)
+        .catch(() => null),
     ]);
     setHistory(assessments);
     setGreetName(preferredName || user?.name?.split(" ")[0] || "there");
+    setCarePlanAssessment(carePlan?.assessment || null);
     setLoading(false);
   }, []);
 
@@ -69,14 +83,32 @@ export default function HomeScreen() {
   const latest = history[0];
   const hasInitialAssessment = history.some((item) => item.assessment_package === "initial");
   const isInitialAssessment = !hasInitialAssessment;
+  const followUpDue = Boolean(carePlanAssessment?.due && carePlanAssessment?.can_start);
+  const nextDueDate = String(carePlanAssessment?.due_at || "").slice(0, 10);
   const assessmentDescription = isInitialAssessment
     ? "Alira selects suitable guided arm, hand, and walking observations from your readiness answers."
-    : "A fresh guided check of your arm, hand, and walking.";
-  const assessmentButtonLabel = isInitialAssessment ? "Start Initial Assessment" : "Start Next Assessment";
+    : followUpDue
+      ? carePlanAssessment?.trigger === "new_functional_issue"
+        ? "Alira selected a focused check for the new movement problem you reported."
+        : "Your scheduled movement check-in is ready."
+      : `Your next assessment is scheduled${nextDueDate ? ` for ${nextDueDate}` : " later"} so progress is measured over a meaningful interval.`;
+  const assessmentButtonLabel = isInitialAssessment
+    ? "Start Initial Assessment"
+    : followUpDue ? "Start Recommended Assessment" : "Assessment Not Due Yet";
 
   const startNextSession = () => {
+    if (!isInitialAssessment && !followUpDue) return;
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    router.push({ pathname: "/session-check" as any, params: { target: "assessment", mode: isInitialAssessment ? "initial" : "followup" } });
+    const selectedPackage = isInitialAssessment ? "initial" : carePlanAssessment?.packages?.[0];
+    router.push({
+      pathname: "/session-check" as any,
+      params: {
+        target: "assessment",
+        mode: isInitialAssessment ? "initial" : "followup",
+        package: selectedPackage || "initial",
+        task_ids: (carePlanAssessment?.task_ids || []).join(","),
+      },
+    });
   };
 
   const viewLatestResults = () => {
@@ -142,8 +174,13 @@ export default function HomeScreen() {
                   <View style={styles.primaryActions}>
                     <Pressable
                       testID="home-start-next-session"
+                      disabled={!isInitialAssessment && !followUpDue}
                       onPress={startNextSession}
-                      style={({ pressed }) => [styles.startButton, pressed && styles.startButtonPressed]}
+                      style={({ pressed }) => [
+                        styles.startButton,
+                        !isInitialAssessment && !followUpDue && styles.startButtonDisabled,
+                        pressed && (isInitialAssessment || followUpDue) && styles.startButtonPressed,
+                      ]}
                     >
                       <Ionicons name="play" size={18} color={colors.onBrandPrimary} />
                       <Text style={styles.startButtonText}>
@@ -307,6 +344,7 @@ const styles = StyleSheet.create({
     elevation: 3,
   },
   startButtonPressed: { backgroundColor: "#174F43", transform: [{ scale: 0.99 }] },
+  startButtonDisabled: { backgroundColor: "#8A9892", shadowOpacity: 0 },
   startButtonText: { color: colors.onBrandPrimary, fontSize: 16, fontWeight: "800" },
   durationRow: { flexDirection: "row", alignItems: "center", gap: 6 },
   durationText: { color: colors.onSurfaceTertiary, fontSize: 13, fontWeight: "700" },

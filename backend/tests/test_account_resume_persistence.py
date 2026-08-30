@@ -95,5 +95,8 @@ def test_frontend_resume_state_is_scoped_to_the_signed_in_account():
     assert 'authedFetch("/api/users/onboarding", {' in sign_in
     assert "JSON.stringify(cachedProfile)" in sign_in
     assert "fetchTaskProgress(packageId)" in intro
+    assert "serverProgressResult.available ? serverCompleted : deviceCompleted" in intro
+    assert "progress_source: serverProgressResult.available ? \"server\" : \"device_fallback\"" in intro
+    assert "ignored_device_completed_task_ids: ignoredDeviceCompletedTaskIds" in intro
     assert 'testID="task-intro-start-over"' in intro
     assert 'query.set("completed_tasks", completedTasksParam)' in assessment

@@ -228,8 +228,9 @@ def test_targeted_packages_follow_saved_and_observed_domains():
     )
 
     assert plan["assessment"]["due"] is True
-    assert plan["assessment"]["packages"] == ["upper_limb", "hand", "lower_limb", "balance"]
-    assert plan["assessment"]["recommended_packages"] == ["upper_limb", "hand", "lower_limb", "balance"]
+    assert plan["assessment"]["packages"] == ["upper_limb"]
+    assert plan["assessment"]["task_ids"] == ["T1", "T2", "T3"]
+    assert plan["assessment"]["recommended_packages"] == ["upper_limb"]
 
 
 def test_recommended_packages_remain_available_for_patient_requested_assessment():
@@ -243,7 +244,68 @@ def test_recommended_packages_remain_available_for_patient_requested_assessment(
 
     assert plan["assessment"]["due"] is False
     assert plan["assessment"]["packages"] == []
-    assert plan["assessment"]["recommended_packages"] == ["upper_limb", "hand"]
+    assert plan["assessment"]["recommended_packages"] == ["upper_limb"]
+
+
+def test_new_functional_issue_opens_one_targeted_assessment_before_routine_due_date():
+    issue_report = {
+        "id": "afi-new-hand",
+        "category": "hand_opening",
+        "status": "pending",
+        "created_at": iso_days_ago(0),
+    }
+    plan = build_adaptive_care_plan(
+        ready_profile(months_since_stroke=10),
+        [assessment(days_ago=2)],
+        [check_in(days_ago=1, sudden_change="no", function_change="about_the_same")],
+        [],
+        [issue_report],
+        now=NOW,
+    )
+
+    assert plan["assessment"]["due"] is True
+    assert plan["assessment"]["trigger"] == "new_functional_issue"
+    assert plan["assessment"]["exception_for_new_issue"] is True
+    assert plan["assessment"]["packages"] == ["hand"]
+    assert plan["assessment"]["task_ids"] == ["H1", "H3"]
+    assert plan["assessment"]["issue_report_id"] == "afi-new-hand"
+
+
+def test_alira_autonomously_applies_only_incremental_approved_dose_changes():
+    current = assessment(days_ago=2, plan=[{
+        "id": "ex_reach",
+        "sets": 3,
+        "reps": 10,
+        "frequency": "3 days per week",
+    }])
+    plan = build_adaptive_care_plan(
+        ready_profile(months_since_stroke=8),
+        [current],
+        [check_in(
+            pain=0,
+            sudden_change="no",
+            function_change="a_little_easier",
+            exercise_tolerance="too_easy",
+        )],
+        [
+            {"id": f"activity-{index}", "completed_at": iso_days_ago(index), "exercise_id": "ex_reach"}
+            for index in range(3)
+        ],
+        now=NOW,
+    )
+
+    decision = plan["exercise_plan"]
+    assert decision["action"] == "small_progression"
+    assert decision["dose_change_percent"] == 10
+    assert decision["requires_approval"] is False
+    assert decision["prescriptions"] == [{
+        "exercise_id": "ex_reach",
+        "sets": 3,
+        "reps": 11,
+        "weekly_frequency": 4,
+        "frequency": "4 days per week",
+    }]
+    assert plan["autonomy"]["requires_per_decision_approval"] is False
 
 
 def test_novel_content_is_only_a_reviewable_draft():
@@ -314,7 +376,7 @@ def test_frontend_connects_voice_check_in_targeted_assessment_and_plan_guardrail
     assert 'authedFetch("/api/alira/care-plan"' in navigation
     assert "package: params.package || \"initial\"" in session_check
     assert "allowedPackages.includes(params.package as AssessmentPackageId)" in task_intro
-    assert "reduce_next_session" in rehab_plan
+    assert "prescriptions" in rehab_plan
     assert "blocks_exercise" in rehab_plan
     assert 'authedFetch("/api/alira/activities"' in exercise
     assert 'identifier: "adaptive_recovery_check_in"' in notifications

@@ -210,6 +210,7 @@ function RealtimeWebCall() {
   const pendingNavigationRef = useRef<PendingNavigation | null>(null);
   const handledToolCallsRef = useRef<Set<string>>(new Set());
   const closedByUserRef = useRef(false);
+  const callSessionIdRef = useRef(makeSessionId());
   const [phase, setPhase] = useState<RealtimePhase>("idle");
   const [turns, setTurns] = useState<TranscriptTurn[]>([]);
   const [liveReply, setLiveReply] = useState("");
@@ -281,6 +282,19 @@ function RealtimeWebCall() {
     } catch {
       resolution = { success: false, destination, label: "that page", message: "I could not check that page right now. Ask the patient to try again." };
     }
+
+    try {
+      await authedFetch("/api/alira/navigation-events", {
+        method: "POST",
+        body: JSON.stringify({
+          destination: destination || "unknown",
+          resolved_destination: resolution.destination || undefined,
+          success: resolution.success,
+          source: "realtime_voice",
+          session_id: callSessionIdRef.current,
+        }),
+      });
+    } catch { /* action logging must not interrupt the call */ }
 
     const channel = dataChannelRef.current;
     if (!channel || channel.readyState !== "open") return;
@@ -376,6 +390,79 @@ function RealtimeWebCall() {
     }));
   }, []);
 
+  const handleFunctionalIssueTool = useCallback(async (event: any) => {
+    if (event.name !== "report_new_functional_issue") return;
+    const callId = String(event.call_id || event.item_id || "");
+    if (!callId || handledToolCallsRef.current.has(callId)) return;
+    handledToolCallsRef.current.add(callId);
+
+    let toolResult: Record<string, unknown>;
+    let navigation: AliraNavigationResolution | null = null;
+    try {
+      const parsed = JSON.parse(String(event.arguments || "{}"));
+      const response = await authedFetch("/api/alira/functional-issues", {
+        method: "POST",
+        body: JSON.stringify({
+          category: parsed.category || "",
+          description: parsed.description || "",
+          source: "realtime_voice",
+        }),
+      });
+      const saved = await response.json();
+      if (!response.ok) throw new Error(saved?.detail || "The movement problem could not be saved.");
+      if (saved.is_new && saved.care_plan?.assessment?.due) {
+        navigation = await resolveAliraNavigation("next_assessment");
+      }
+      toolResult = {
+        ok: true,
+        is_new: saved.is_new,
+        message: saved.message,
+        next_assessment: saved.care_plan?.assessment,
+        navigation_ready: Boolean(navigation?.success),
+      };
+    } catch (caught) {
+      toolResult = {
+        ok: false,
+        message: caught instanceof Error ? caught.message : "The movement problem could not be saved.",
+      };
+    }
+
+    const channel = dataChannelRef.current;
+    if (!channel || channel.readyState !== "open") return;
+    channel.send(JSON.stringify({
+      type: "conversation.item.create",
+      item: {
+        type: "function_call_output",
+        call_id: callId,
+        output: JSON.stringify(toolResult),
+      },
+    }));
+
+    if (navigation?.success && (navigation.path || navigation.action)) {
+      const pending: PendingNavigation = { ...navigation, originResponseId: event.response_id };
+      pendingNavigationRef.current = pending;
+      if (navigationTimerRef.current) clearTimeout(navigationTimerRef.current);
+      navigationTimerRef.current = setTimeout(() => completeNavigation(pending), 9000);
+      channel.send(JSON.stringify({
+        type: "response.create",
+        response: {
+          tool_choice: "none",
+          instructions: "Briefly confirm that this new problem was saved and that you are opening the targeted assessment. Do not ask another question.",
+        },
+      }));
+      return;
+    }
+    channel.send(JSON.stringify({
+      type: "response.create",
+      response: {
+        tool_choice: "none",
+        instructions: toolResult.ok
+          ? "Explain the returned message briefly. If this is already monitored, say that another assessment was not added."
+          : "Say briefly that the movement problem could not be saved and ask the patient to try again later.",
+      },
+    }));
+  }, [completeNavigation]);
+
   const handleServerEvent = useCallback((message: any) => {
     let event: any;
     try { event = JSON.parse(String(message.data || "{}")); } catch { return; }
@@ -383,6 +470,7 @@ function RealtimeWebCall() {
     if (event.type === "response.function_call_arguments.done") {
       void handleNavigationTool(event);
       void handleCheckInTool(event);
+      void handleFunctionalIssueTool(event);
       return;
     }
     if (event.type === "input_audio_buffer.speech_started") {
@@ -453,7 +541,7 @@ function RealtimeWebCall() {
       setError("The live conversation had a connection problem. End the call and try again.");
       setPhase("error");
     }
-  }, [addTurn, completeNavigation, handleCheckInTool, handleNavigationTool]);
+  }, [addTurn, completeNavigation, handleCheckInTool, handleFunctionalIssueTool, handleNavigationTool]);
 
   const endCall = useCallback((message = "Call ended") => {
     closedByUserRef.current = true;
@@ -474,6 +562,7 @@ function RealtimeWebCall() {
     }
 
     releaseConnection();
+    callSessionIdRef.current = makeSessionId();
     closedByUserRef.current = false;
     setError("");
     setTurns([]);
@@ -531,7 +620,7 @@ function RealtimeWebCall() {
       await peer.setLocalDescription(offer);
       const response = await authedFetch("/api/realtime/session", {
         method: "POST",
-        body: JSON.stringify({ sdp: offer.sdp }),
+        body: JSON.stringify({ sdp: offer.sdp, session_id: callSessionIdRef.current }),
       });
       const answerSdp = await response.text();
       if (!response.ok) {

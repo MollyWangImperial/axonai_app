@@ -55,7 +55,7 @@ def test_realtime_registers_the_same_allowlisted_destinations_as_the_client():
 
     assert server_destinations == client_destinations
     assert {"progress", "movement_snapshot", "movement_map", "rehab_plan", "guided_exercise"} <= server_destinations
-    assert '"tools": [ALIRA_NAVIGATION_TOOL, ALIRA_RECORD_CHECKIN_TOOL]' in SERVER
+    assert '"tools": [ALIRA_NAVIGATION_TOOL, ALIRA_RECORD_CHECKIN_TOOL, ALIRA_REPORT_FUNCTIONAL_ISSUE_TOOL]' in SERVER
     assert '"tool_choice": "auto"' in SERVER
     assert '"additionalProperties": False' in SERVER
 
@@ -83,6 +83,17 @@ def test_web_call_can_save_an_adaptive_recovery_check_in():
     assert "next_exercise_action" in realtime
 
 
+def test_alira_can_open_one_targeted_assessment_for_a_new_functional_issue():
+    realtime = CALL_SCREEN.split("function RealtimeWebCall()", 1)[1].split(
+        "const realtimeStyles", 1
+    )[0]
+    assert "ALIRA_REPORT_FUNCTIONAL_ISSUE_TOOL" in SERVER
+    assert 'event.name !== "report_new_functional_issue"' in realtime
+    assert 'authedFetch("/api/alira/functional-issues"' in realtime
+    assert 'resolveAliraNavigation("next_assessment")' in realtime
+    assert "Never bypass the assessment due date" in SERVER
+
+
 def test_result_navigation_uses_latest_assessment_and_journal_opens_composer():
     assert "fetchHistory()" in NAVIGATION
     assert "newestFirst(history)" in NAVIGATION
@@ -100,6 +111,15 @@ def test_text_chat_executes_navigation_and_downloads_its_transcript():
     assert 'testID="alira-download-chat"' in CHAT_SCREEN
     assert "URL.createObjectURL(blob)" in CHAT_SCREEN
     assert 'link.download = `rehyn-alira-chat-' in CHAT_SCREEN
+
+
+def test_text_chat_enter_sends_without_breaking_shift_enter_or_ime_composition():
+    assert "handleComposerKeyPress" in CHAT_SCREEN
+    assert 'key !== "Enter"' in CHAT_SCREEN
+    assert "webEvent.shiftKey" in CHAT_SCREEN
+    assert "webEvent.nativeEvent.isComposing" in CHAT_SCREEN
+    assert "event.preventDefault()" in CHAT_SCREEN
+    assert "onKeyPress={handleComposerKeyPress}" in CHAT_SCREEN
 
 
 def test_alira_uses_saved_account_consent_without_reasking_in_chat():

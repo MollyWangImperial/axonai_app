@@ -34,7 +34,18 @@ type ExerciseProgress = {
 
 type AdaptiveCarePlan = {
   safety?: { status?: string; message?: string; blocks_exercise?: boolean };
-  exercise_plan?: { action?: string; dose_change_percent?: number; reason?: string };
+  exercise_plan?: {
+    action?: string;
+    dose_change_percent?: number;
+    reason?: string;
+    prescriptions?: Array<{
+      exercise_id: string;
+      sets: number;
+      reps: number;
+      frequency: string;
+      weekly_frequency?: number;
+    }>;
+  };
 };
 
 const SUPPORTED_REACH_IMAGE = require("../assets/images/rehab-supported-forward-reach.png") as ImageSourcePropType;
@@ -68,15 +79,30 @@ function exerciseSafety(exercise: RehabExercise): string {
 
 function applyAdaptiveDose(plan: Assessment, carePlan: AdaptiveCarePlan | null): Assessment {
   const adjustment = carePlan?.exercise_plan;
-  if (adjustment?.action !== "reduce_next_session" || (adjustment.dose_change_percent || 0) >= 0) return plan;
-  const factor = Math.max(0.5, 1 + Number(adjustment.dose_change_percent || 0) / 100);
+  if (!adjustment || adjustment.action === "hold") return plan;
+  const prescriptions = new Map(
+    (adjustment.prescriptions || []).map((item) => [item.exercise_id, item]),
+  );
+  const change = Math.max(-20, Math.min(20, Number(adjustment.dose_change_percent || 0)));
+  const factor = 1 + change / 100;
   return {
     ...plan,
-    rehab_plan: plan.rehab_plan.map((exercise) => ({
-      ...exercise,
-      reps: Math.max(1, Math.floor(exercise.reps * factor)),
-      selection_reason: `${exercise.selection_reason || "Selected from the approved exercise library."} Alira reduced the next-session dose after the latest check-in.`,
-    })),
+    rehab_plan: plan.rehab_plan.map((exercise) => {
+      const prescription = prescriptions.get(exercise.id);
+      const actionText = change > 0
+        ? "Alira made a small progression after reviewing the latest check-in and activity record."
+        : change < 0
+          ? "Alira made a small reduction after reviewing the latest check-in and activity record."
+          : "Alira maintained this dose after reviewing the latest check-in and activity record.";
+      return {
+        ...exercise,
+        sets: prescription?.sets ?? exercise.sets,
+        reps: prescription?.reps ?? Math.max(1, Math.round(exercise.reps * factor)),
+        frequency: prescription?.frequency ?? exercise.frequency,
+        requires_clinician_confirmation: false,
+        selection_reason: `${exercise.selection_reason || "Selected from the approved exercise library."} ${actionText}`,
+      };
+    }),
   };
 }
 

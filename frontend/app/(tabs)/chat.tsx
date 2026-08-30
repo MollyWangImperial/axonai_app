@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { ActivityIndicator, Alert, Image, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, useWindowDimensions, View } from "react-native";
+import type { TextInputKeyPressEvent } from "react-native";
 import { createAudioPlayer } from "expo-audio";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -67,6 +68,18 @@ export default function ChatScreen() {
     setOpeningAction("navigation");
     try {
       const resolution = await resolveAliraNavigation(destination);
+      try {
+        await authedFetch("/api/alira/navigation-events", {
+          method: "POST",
+          body: JSON.stringify({
+            destination,
+            resolved_destination: resolution.destination || undefined,
+            success: resolution.success,
+            source: "text_chat",
+            session_id: sessionId,
+          }),
+        });
+      } catch { /* action logging must not interrupt navigation */ }
       if (!resolution.success) {
         Alert.alert("Page unavailable", resolution.message);
         return;
@@ -176,6 +189,22 @@ export default function ChatScreen() {
 
   const send = async () => sendMessage(input);
 
+  const handleComposerKeyPress = (event: TextInputKeyPressEvent) => {
+    if (Platform.OS !== "web") return;
+
+    const webEvent = event as TextInputKeyPressEvent & {
+      key?: string;
+      shiftKey?: boolean;
+      nativeEvent: TextInputKeyPressEvent["nativeEvent"] & { isComposing?: boolean };
+    };
+    const key = webEvent.key ?? webEvent.nativeEvent.key;
+    if (key !== "Enter" || webEvent.shiftKey || webEvent.nativeEvent.isComposing) return;
+
+    event.preventDefault();
+    if (sending || !input.trim()) return;
+    void send();
+  };
+
   const startGuidedExercise = async () => {
     setOpeningAction("exercise");
     try {
@@ -281,7 +310,18 @@ export default function ChatScreen() {
             <Pressable onPress={() => playAliraVoice("I'm listening. Tell me how I can help.")} style={[styles.micButton, { backgroundColor: palette.surface, borderColor: palette.border }]} accessibilityLabel="Hear Alira">
               <Ionicons name="mic" size={23} color={colors.brandPrimary} />
             </Pressable>
-            <TextInput ref={inputRef} value={input} onChangeText={setInput} placeholder="Message Alira..." placeholderTextColor={palette.muted} style={[styles.input, { backgroundColor: palette.surface, borderColor: palette.border, color: palette.text }]} multiline maxLength={500} testID="chat-input" />
+            <TextInput
+              ref={inputRef}
+              value={input}
+              onChangeText={setInput}
+              onKeyPress={handleComposerKeyPress}
+              placeholder="Message Alira..."
+              placeholderTextColor={palette.muted}
+              style={[styles.input, { backgroundColor: palette.surface, borderColor: palette.border, color: palette.text }]}
+              multiline
+              maxLength={500}
+              testID="chat-input"
+            />
             <Pressable onPress={send} disabled={sending || !input.trim()} style={[styles.sendBtn, (sending || !input.trim()) && styles.sendBtnDisabled]} testID="chat-send">
               <Ionicons name="send" size={21} color="#FFFFFF" />
             </Pressable>
