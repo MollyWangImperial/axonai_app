@@ -125,6 +125,14 @@ def test_fast_runner_and_audit_endpoint_apply_the_same_rule(monkeypatch):
     assert "window.SpeechRecognition" not in runner.text
     assert "window.webkitSpeechRecognition" not in runner.text
     assert "isCompleteSpeechCandidate" in runner.text
+    # Started-but-not-sustained holds escalate as possible FAST signs.
+    assert "The smile faded quickly and could not be held" in runner.text
+    assert "The raised position was lost quickly and could not be held" in runner.text
+    # Unclear or partial speech escalates immediately instead of offering a retry.
+    assert "so a possible speech sign is treated as present" in runner.text
+    incomplete_branch = runner.text.split("if(!isCompleteSpeechCandidate(best)){", 1)[1].split("const decision", 1)[0]
+    assert 'finishSpeech("yes"' in incomplete_branch
+    assert "pauseForIncompleteSpeech" not in incomplete_branch
     assert 'words.includes("today")' in runner.text
     assert "pauseForIncompleteSpeech" in runner.text
     assert 'data-testid="fast-speech-retry"' in runner.text

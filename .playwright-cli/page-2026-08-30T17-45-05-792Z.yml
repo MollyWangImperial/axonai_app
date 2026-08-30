@@ -1,0 +1,14 @@
+- generic [ref=e2]:
+  - generic [ref=e3]: "Prototype only: any 911 call shown here is simulated. If this is a real emergency, use a phone to call 911 now."
+  - generic [ref=e5]:
+    - button "Exit" [ref=e6] [cursor=pointer]
+    - strong [ref=e7]: Emergency FAST check
+  - main [ref=e8]:
+    - generic [ref=e9]:
+      - generic [ref=e10]: "!"
+      - generic [ref=e11]: Alira guided check
+      - heading "Think FAST" [level=1] [ref=e12]
+      - paragraph [ref=e13]: Alira will guide a carer or family member through Face, Arms and Speech, one step at a time. This brief screen is not a diagnosis.
+      - generic [ref=e14]: If any sign is already visible, or symptoms started suddenly, call 911 now. Do not use this check to delay a real emergency call.
+      - button "Begin guided FAST check" [ref=e16] [cursor=pointer]
+      - paragraph [ref=e17]: Based on CDC FAST guidance.

@@ -1,0 +1,24 @@
+- generic [ref=f2e2]:
+  - generic [ref=f2e3]: "Prototype only: any 911 call shown here is simulated. If this is a real emergency, use a phone to call 911 now."
+  - generic [ref=f2e5]:
+    - button "Exit" [ref=f2e6] [cursor=pointer]
+    - strong [ref=f2e7]: Emergency FAST check
+  - main [ref=f2e8]:
+    - generic [ref=f2e18]: Camera assistance is unavailable. A carer can still complete FAST by observing the person directly.
+    - generic [ref=f2e9]:
+      - generic "FAST step 1 of 4" [ref=f2e21]
+      - generic [ref=f2e26]: F
+      - generic [ref=f2e27]: Face
+      - heading "Ask the person to smile" [level=1] [ref=f2e28]
+      - paragraph [ref=f2e29]: Look at both sides of the mouth and both eyes. Has one side drooped, or is the smile uneven?
+      - generic [ref=f2e30]: Position the face clearly in the camera and ask for a smile.
+      - generic [ref=f2e33]:
+        - button "No sign noticed No" [ref=f2e34] [cursor=pointer]:
+          - generic [ref=f2e35]: No sign noticed
+          - strong [ref=f2e36]: "No"
+        - button "Droop or uneven smile Yes" [ref=f2e37] [cursor=pointer]:
+          - generic [ref=f2e38]: Droop or uneven smile
+          - strong [ref=f2e39]: "Yes"
+        - button "I cannot tell clearly Not sure" [ref=f2e40] [cursor=pointer]:
+          - generic [ref=f2e41]: I cannot tell clearly
+          - strong [ref=f2e42]: Not sure

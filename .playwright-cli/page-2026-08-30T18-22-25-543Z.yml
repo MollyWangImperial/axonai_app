@@ -1,0 +1,15 @@
+- generic [ref=e2]:
+  - generic [ref=e3]: "Prototype only: any 911 call shown here is simulated. If this is a real emergency, use a phone to call 911 now."
+  - generic [ref=e5]:
+    - button "Exit" [ref=e6] [cursor=pointer]
+    - strong [ref=e7]: Emergency FAST check
+  - main [ref=e8]:
+    - generic [ref=e9]:
+      - generic [ref=e10]: "!"
+      - generic [ref=e11]: Alira automatic check
+      - heading "Think FAST" [level=1] [ref=e12]
+      - paragraph [ref=e13]: Alira will guide Face, Arms and Speech, observe each response automatically, and move to the next step without asking you to judge the result.
+      - generic [ref=e14]: If any sign is already visible, or symptoms started suddenly, call 911 now. Do not use this check to delay a real emergency call.
+      - button "Begin automatic FAST check" [active] [ref=e16] [cursor=pointer]
+      - paragraph [ref=e17]: Camera video is processed in this page and is not saved. Speech recognition may use your browser's speech service. An unavailable or unclear check will be treated as inconclusive.
+      - paragraph [ref=e18]: Based on CDC FAST guidance.

@@ -1,0 +1,26 @@
+- generic [ref=e2]:
+  - generic [ref=e3]: "Prototype only: any 911 call shown here is simulated. If this is a real emergency, use a phone to call 911 now."
+  - generic [ref=e5]:
+    - button "Exit" [ref=e6] [cursor=pointer]
+    - strong [ref=e7]: Emergency FAST check
+  - main [ref=e8]:
+    - generic [ref=e18]: Camera assistance is unavailable. A carer can still complete FAST by observing the person directly.
+    - generic [ref=e9]:
+      - generic "FAST step 3 of 4" [ref=e65]
+      - generic [ref=e70]: S
+      - generic [ref=e71]: Speech
+      - heading "Listen to speech and understanding" [level=1] [ref=e72]
+      - paragraph [ref=e73]: Ask the person to repeat this phrase. Listen for slurred, garbled or muddled speech, and check that they understand the request.
+      - generic [ref=e74]: "\"The sky is blue today.\""
+      - button "Use speech assistance" [ref=e75] [cursor=pointer]
+      - generic [ref=e76]: A carer should listen directly. Speech recognition is only supporting evidence.
+      - generic [ref=e77]:
+        - button "Speech was clear and understood No" [ref=e78] [cursor=pointer]:
+          - generic [ref=e79]: Speech was clear and understood
+          - strong [ref=e80]: "No"
+        - button "Slurred, muddled or not understood Yes" [ref=e81] [cursor=pointer]:
+          - generic [ref=e82]: Slurred, muddled or not understood
+          - strong [ref=e83]: "Yes"
+        - button "I cannot tell clearly Not sure" [ref=e84] [cursor=pointer]:
+          - generic [ref=e85]: I cannot tell clearly
+          - strong [ref=e86]: Not sure

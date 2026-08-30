@@ -6,6 +6,7 @@ import { useLocalSearchParams, useRouter } from "expo-router";
 import * as Haptics from "expo-haptics";
 import { colors, spacing, radius } from "@/src/theme";
 import { storage } from "@/src/utils/storage";
+import { localDateString } from "@/src/components/DailyCheckInCalendar";
 import { API_BASE as BASE } from "@/src/config";
 import { loadUserPreferences } from "@/src/userPreferences";
 import { authedFetch } from "@/src/auth";
@@ -116,6 +117,15 @@ export default function ExerciseScreen() {
             });
           } catch {
             // Local exercise progress remains available and can sync on a later session.
+          }
+          try {
+            // Earn today's check mark on the daily check-in calendar.
+            await authedFetch("/api/users/daily-checkin/complete", {
+              method: "POST",
+              body: JSON.stringify({ date: localDateString() }),
+            });
+          } catch {
+            // The calendar refreshes from the server on the next Home focus.
           }
         }
         setTimeout(() => router.back(), 2400);

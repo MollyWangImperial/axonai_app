@@ -1,0 +1,14 @@
+- generic [ref=f2e2]:
+  - generic [ref=f2e3]: "Prototype only: any 911 call shown here is simulated. If this is a real emergency, use a phone to call 911 now."
+  - generic [ref=f2e5]:
+    - button "Exit" [ref=f2e6] [cursor=pointer]
+    - strong [ref=f2e7]: Emergency FAST check
+  - main [ref=f2e8]:
+    - generic [ref=f2e88]:
+      - generic "FAST step 4 of 4" [ref=f2e89]
+      - generic [ref=f2e94]: ✓
+      - generic [ref=f2e95]: T - Time · Green check
+      - heading "No FAST signs identified" [level=1] [ref=f2e96]
+      - paragraph [ref=f2e97]: This brief screen did not identify a FAST sign. It does not prove the person is fine and cannot rule out a stroke or TIA.
+      - generic [ref=f2e98]: Call 911 if symptoms were sudden, have faded, there are other stroke symptoms, or you remain concerned.
+      - button "Restart check" [ref=f2e99] [cursor=pointer]

@@ -10089,6 +10089,91 @@ async def submit_alira_activity(payload: AliraActivitySubmit, request: Request):
     return await _persist_alira_activity(user, payload)
 
 
+# ============ Daily check-in calendar ============
+# The patient taps "Check in" after signing in, which marks the day as
+# in progress on their calendar. The day only earns its complete check mark
+# once the day's exercises are actually completed. Dates are the patient's
+# local calendar dates, supplied by the client, so a late-evening session
+# never lands on the wrong day because of time zones.
+
+DAILY_CHECKIN_DATE_PATTERN = re.compile(r"^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$")
+DAILY_CHECKIN_HISTORY_LIMIT = 400
+
+
+class DailyCheckInSubmit(BaseModel):
+    date: str = Field(min_length=10, max_length=10)
+
+
+def _validated_checkin_date(value: str) -> str:
+    if not DAILY_CHECKIN_DATE_PATTERN.match(value):
+        raise HTTPException(status_code=422, detail="date must be a YYYY-MM-DD calendar date")
+    return value
+
+
+async def _save_daily_checkins(user: Dict[str, Any], checkins: Dict[str, Dict[str, Any]]) -> None:
+    if len(checkins) > DAILY_CHECKIN_HISTORY_LIMIT:
+        checkins = dict(sorted(checkins.items())[-DAILY_CHECKIN_HISTORY_LIMIT:])
+    try:
+        result = await db.users.update_one({"id": user["id"]}, {"$set": {"daily_checkins": checkins}})
+        if getattr(result, "matched_count", 0) == 0 and user["id"] in LOCAL_USERS:
+            raise RuntimeError("local user")
+    except Exception as e:
+        logger.warning(f"Mongo unavailable for daily check-in; using local fallback: {str(e)[:120]}")
+        LOCAL_USERS[user["id"]] = {**user, "daily_checkins": checkins}
+        _persist_local_dict(LOCAL_USERS_FILE, LOCAL_USERS)
+
+
+def _daily_checkin_response(date: str, checkins: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
+    entry = checkins.get(date) or {}
+    return {
+        "ok": True,
+        "date": date,
+        "status": entry.get("status") or "not_checked_in",
+        "days": [
+            {"date": day, "status": record.get("status") or "in_progress"}
+            for day, record in sorted(checkins.items())
+        ],
+    }
+
+
+@api_router.get("/users/daily-checkin")
+async def get_daily_checkins(request: Request):
+    user = await _user_from_header(dict(request.headers))
+    if not user:
+        raise HTTPException(status_code=401, detail="Sign in required")
+    today = datetime.now(timezone.utc).date().isoformat()
+    return _daily_checkin_response(today, dict(user.get("daily_checkins") or {}))
+
+
+@api_router.post("/users/daily-checkin")
+async def start_daily_checkin(payload: DailyCheckInSubmit, request: Request):
+    user = await _user_from_header(dict(request.headers))
+    if not user:
+        raise HTTPException(status_code=401, detail="Sign in required")
+    date = _validated_checkin_date(payload.date)
+    checkins = dict(user.get("daily_checkins") or {})
+    if date not in checkins:
+        checkins[date] = {"status": "in_progress", "checked_in_at": datetime.now(timezone.utc).isoformat()}
+        await _save_daily_checkins(user, checkins)
+    return _daily_checkin_response(date, checkins)
+
+
+@api_router.post("/users/daily-checkin/complete")
+async def complete_daily_checkin(payload: DailyCheckInSubmit, request: Request):
+    user = await _user_from_header(dict(request.headers))
+    if not user:
+        raise HTTPException(status_code=401, detail="Sign in required")
+    date = _validated_checkin_date(payload.date)
+    checkins = dict(user.get("daily_checkins") or {})
+    entry = dict(checkins.get(date) or {"checked_in_at": datetime.now(timezone.utc).isoformat()})
+    if entry.get("status") != "complete":
+        entry["status"] = "complete"
+        entry["completed_at"] = datetime.now(timezone.utc).isoformat()
+        checkins[date] = entry
+        await _save_daily_checkins(user, checkins)
+    return _daily_checkin_response(date, checkins)
+
+
 @api_router.post("/alira/navigation-events")
 async def record_alira_navigation_event(payload: AliraNavigationEventSubmit, request: Request):
     user = await _user_from_header(dict(request.headers))

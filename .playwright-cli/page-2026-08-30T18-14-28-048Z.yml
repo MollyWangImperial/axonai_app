@@ -1,0 +1,19 @@
+- generic [ref=e2]:
+  - generic [ref=e3]: "Prototype only: any 911 call shown here is simulated. If this is a real emergency, use a phone to call 911 now."
+  - generic [ref=e5]:
+    - button "Exit" [ref=e6] [cursor=pointer]
+    - strong [ref=e7]: Emergency FAST check
+  - main [ref=e8]:
+    - generic [ref=e19]: Camera assistance is ready. Video stays on this device and is not saved.
+    - generic [ref=e9]:
+      - generic "FAST step 1 of 4" [ref=e22]
+      - generic [ref=e27]: F
+      - generic [ref=e28]: Face · automatic observation
+      - heading "Please smile and hold" [level=1] [ref=e29]
+      - paragraph [ref=e30]: Keep your face toward the camera. Alira is checking whether both sides of the smile move evenly.
+      - generic [ref=e31]: Finding the face and waiting for a smile.
+      - generic [ref=e34]:
+        - generic [ref=e35]:
+          - generic [ref=e36]: Smile observation
+          - generic [ref=e37]: Automatic
+        - generic [ref=e40]: Observing now. Alira will move on automatically.

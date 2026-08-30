@@ -1,0 +1,13 @@
+[   73407ms] [WARNING] W0830 18:22:25.905000 1880752 face_landmarker_graph.cc:180] Sets FaceBlendshapesGraph acceleration to xnnpack by default. @ https://rehyn.onrender.com/vendor/mediapipe/wasm/vision_wasm_internal.js:8
+[   73455ms] [LOG] I0830 18:22:25.954000 1880752 gl_context.cc:374] GL version: 3.0 (OpenGL ES 3.0 (WebGL 2.0 (OpenGL ES 3.0 Chromium))), renderer: WebKit WebGL @ https://rehyn.onrender.com/vendor/mediapipe/wasm/vision_wasm_internal.js:8
+[   73456ms] [WARNING] W0830 18:22:25.955000 1880752 gl_context.cc:1060] OpenGL error checking is disabled @ https://rehyn.onrender.com/vendor/mediapipe/wasm/vision_wasm_internal.js:8
+[   73459ms] [LOG] Graph successfully started running. @ https://rehyn.onrender.com/vendor/mediapipe/wasm/vision_wasm_internal.js:8
+[   74169ms] [LOG] I0830 18:22:26.668000 1880752 gl_context.cc:374] GL version: 3.0 (OpenGL ES 3.0 (WebGL 2.0 (OpenGL ES 3.0 Chromium))), renderer: WebKit WebGL @ https://rehyn.onrender.com/vendor/mediapipe/wasm/vision_wasm_internal.js:8
+[   74170ms] [WARNING] W0830 18:22:26.669000 1880752 gl_context.cc:1060] OpenGL error checking is disabled @ https://rehyn.onrender.com/vendor/mediapipe/wasm/vision_wasm_internal.js:8
+[   74171ms] [LOG] Graph successfully started running. @ https://rehyn.onrender.com/vendor/mediapipe/wasm/vision_wasm_internal.js:8
+[   74193ms] [ERROR] INFO: Created TensorFlow Lite XNNPACK delegate for CPU. @ https://rehyn.onrender.com/vendor/mediapipe/wasm/vision_wasm_internal.js:8
+[   74290ms] [WARNING] W0830 18:22:26.789000 1880752 inference_feedback_manager.cc:121] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors. @ https://rehyn.onrender.com/vendor/mediapipe/wasm/vision_wasm_internal.js:8
+[   74303ms] [WARNING] W0830 18:22:26.803000 1880752 inference_feedback_manager.cc:121] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors. @ https://rehyn.onrender.com/vendor/mediapipe/wasm/vision_wasm_internal.js:8
+[   74367ms] [ERROR] INFO: Created TensorFlow Lite XNNPACK delegate for CPU. @ https://rehyn.onrender.com/vendor/mediapipe/wasm/vision_wasm_internal.js:8
+[   74368ms] [WARNING] W0830 18:22:26.867000 1880752 inference_feedback_manager.cc:121] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors. @ https://rehyn.onrender.com/vendor/mediapipe/wasm/vision_wasm_internal.js:8
+[   74378ms] [WARNING] W0830 18:22:26.877000 1880752 inference_feedback_manager.cc:121] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors. @ https://rehyn.onrender.com/vendor/mediapipe/wasm/vision_wasm_internal.js:8

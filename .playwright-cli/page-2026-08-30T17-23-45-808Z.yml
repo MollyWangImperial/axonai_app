@@ -1,0 +1,7 @@
+- generic [ref=e2]:
+  - generic [ref=e3]: "Prototype only: any 911 call shown here is simulated. If this is a real emergency, use a phone to call 911 now."
+  - generic [ref=e5]:
+    - button "Exit" [ref=e6] [cursor=pointer]
+    - strong [ref=e7]: Emergency FAST check
+  - main [ref=e8]:
+    - generic [ref=e9]: Camera assistance starts only when you begin. A carer or family member should make the final observation.

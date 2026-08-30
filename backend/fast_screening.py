@@ -256,11 +256,14 @@ function analyseFace(faceResult,poseLm){
     const landmarkAsymmetry=Math.abs(mouthTilt-headTilt)/faceWidth;
     const metric=Math.max(blendAsymmetry,landmarkAsymmetry);
     face.available=true;face.samples+=1;face.quality="face_landmarker";face.metric=Number(metric.toFixed(3));face.smile_activation=Number(smileActivation.toFixed(3));
-    if(smileActivation>.08)face.engaged_samples+=1;
+    if(smileActivation>.08){face.engaged_samples+=1;face.last_engaged_at=performance.now()}
     if(smileActivation>.08&&(blendAsymmetry>.22||landmarkAsymmetry>.17))face.positive_samples+=1;
     face.positive=face.samples>=16&&face.positive_samples/face.samples>.26;
     if(!face.positive&&performance.now()-stepStartedAt>=2600&&face.engaged_samples>=40&&face.positive_samples/face.samples<=.15){
       if(stepTimer)clearTimeout(stepTimer);updateAssist("face","A steady, even smile was seen. Moving on.","good");finalizeFace();return;
+    }
+    if(!face.positive&&face.engaged_samples>=8&&face.engaged_samples<40&&face.last_engaged_at&&performance.now()-face.last_engaged_at>=1200){
+      if(stepTimer)clearTimeout(stepTimer);finalizeFace();return;
     }
     updateAssist("face",face.positive?"Alira noticed persistent left-right smile unevenness.":smileActivation>.08?"Smile detected. Comparing both sides now.":"Please smile and hold while Alira observes both sides.",face.positive?"warn":"good");
     return;
@@ -288,12 +291,15 @@ function analyseArms(lm){
   const unilateralDrift=(leftDrift>.30&&rightDrift<.16)||(rightDrift>.30&&leftDrift<.16);
   const possibleDifference=oneSided||(leftRaised&&rightRaised&&(wristDifference>.42||unilateralDrift));
   arms.available=true;arms.samples+=1;arms.quality="pose_landmarker";arms.metric=Number(Math.max(wristDifference,leftDrift,rightDrift).toFixed(3));
-  if(leftRaised&&rightRaised)arms.both_raised_samples+=1;
+  if(leftRaised&&rightRaised){arms.both_raised_samples+=1;arms.last_both_raised_at=performance.now()}
   if(oneSided)arms.one_sided_samples+=1;
   if(possibleDifference)arms.positive_samples+=1;
   arms.positive=arms.samples>=18&&(arms.one_sided_samples/arms.samples>.30||(arms.both_raised_samples>=10&&arms.positive_samples/arms.samples>.42));
   if(!arms.positive&&performance.now()-stepStartedAt>=3000&&arms.both_raised_samples>=45&&arms.one_sided_samples/arms.samples<=.12&&arms.positive_samples/arms.samples<=.2){
     if(stepTimer)clearTimeout(stepTimer);updateAssist("arms","Both arms held steady. Moving on.","good");finalizeArms();return;
+  }
+  if(!arms.positive&&arms.both_raised_samples>=8&&arms.both_raised_samples<45&&arms.last_both_raised_at&&performance.now()-arms.last_both_raised_at>=1200){
+    if(stepTimer)clearTimeout(stepTimer);finalizeArms();return;
   }
   updateAssist("arms",arms.positive?"Alira noticed one arm staying lower or drifting.":leftRaised&&rightRaised?"Both arms found. Keep holding while Alira watches for drift.":oneSided?"One arm is raised. Keep trying to lift both.":"Raise both arms and hold them there.",arms.positive?"warn":"good");
 }
@@ -314,13 +320,15 @@ function showAutomaticDecision(sign,decision,text,next){
 function finalizeFace(){
   const face=automated.face;let decision="unsure",reason="The face or smile could not be measured clearly.";
   if(face.samples>=12&&face.positive_samples/face.samples>.26){decision="yes";reason="Persistent left-right smile unevenness was detected."}
-  else if(face.quality==="face_landmarker"&&face.samples>=18&&face.engaged_samples/face.samples>.10){decision="no";reason="A smile was detected without persistent left-right unevenness."}
+  else if(face.quality==="face_landmarker"&&face.engaged_samples>=8&&face.engaged_samples<40){decision="yes";reason="The smile faded quickly and could not be held, which is treated as a possible facial sign."}
+  else if(face.quality==="face_landmarker"&&face.samples>=18&&face.engaged_samples>=40&&face.positive_samples/face.samples<=.26){decision="no";reason="A smile was held without persistent left-right unevenness."}
   face.reason=reason;showAutomaticDecision("face",decision,reason,renderArms);
 }
 function finalizeArms(){
   const arms=automated.arms;let decision="unsure",reason="Both arms could not be observed in a sustained raised position.";
   if(arms.samples>=18&&(arms.one_sided_samples/arms.samples>.30||(arms.both_raised_samples>=10&&arms.positive_samples/arms.samples>.42))){decision="yes";reason="One arm stayed lower or drifted during the hold."}
-  else if(arms.samples>=18&&arms.both_raised_samples>=12&&arms.positive_samples/arms.samples<=.42){decision="no";reason="Both arms stayed raised without persistent one-sided drift."}
+  else if(arms.both_raised_samples>=8&&arms.both_raised_samples<45){decision="yes";reason="The raised position was lost quickly and could not be held, which is treated as a possible arm sign."}
+  else if(arms.samples>=18&&arms.both_raised_samples>=45&&arms.positive_samples/arms.samples<=.42){decision="no";reason="Both arms stayed raised without persistent one-sided drift."}
   arms.reason=reason;showAutomaticDecision("arms",decision,reason,renderSpeech);
 }
 
@@ -393,7 +401,7 @@ function pauseForIncompleteSpeech(reason){
   cancelSpeechCapture();
   const best=speechBest;
   automated.speech.available=Boolean(best.transcript);automated.speech.quality=best.transcript?"partial_phrase":"no_clear_phrase";automated.speech.transcript=best.transcript;automated.speech.similarity=best.transcript?Number(best.score.toFixed(3)):null;automated.speech.confidence=best.transcript?Number(best.confidence.toFixed(3)):null;automated.speech.reason=reason;
-  const status=document.getElementById("transcript");if(status)status.textContent="Only part of the phrase was heard. No emergency result has been decided.";
+  const status=document.getElementById("transcript");if(status)status.textContent="The check was interrupted by a technical problem. No emergency result has been decided.";
   const result=document.getElementById("autoResult");if(result){result.className="autoResult warn";result.innerHTML=`<strong>Speech check paused</strong><span>${reason}</span>`}
   const existing=document.getElementById("speechRetryActions");if(existing)existing.remove();
   const actions=document.createElement("div");actions.className="actions";actions.id="speechRetryActions";actions.innerHTML=`<button class="primary" data-testid="fast-speech-retry" id="retrySpeech">Try speech again</button><button class="secondary" data-testid="fast-speech-unable" id="unableSpeech">I cannot complete the phrase</button>`;
@@ -421,7 +429,13 @@ async function transcribeSpeechRecording(blob){
     const best=speechBest,wordCount=best.transcript?best.transcript.split(" ").filter(Boolean).length:0;
     automated.speech.available=Boolean(best.transcript);automated.speech.quality=best.transcript?"openai_transcription":"no_clear_phrase";automated.speech.transcript=best.transcript;automated.speech.similarity=best.transcript?Number(best.score.toFixed(3)):null;automated.speech.confidence=null;automated.speech.provider=String(data.provider||"openai");automated.speech.model=String(data.model||"gpt-transcribe");automated.speech.recording_retained=false;
     if(status&&transcript)status.textContent=`Alira heard: "${transcript}"`;
-    if(!isCompleteSpeechCandidate(best)){pauseForIncompleteSpeech(best.transcript?"Only part of the phrase was transcribed. Please try the complete phrase again when you are ready.":"No complete phrase was transcribed. Please try again when you are ready.");return}
+    if(!isCompleteSpeechCandidate(best)){
+      // The recording and transcription worked, but the patient's phrase was
+      // not heard clearly or completely. That is treated as a possible speech
+      // sign and escalates immediately - it is not a technical failure.
+      finishSpeech("yes",best.transcript?"Only part of the phrase could be heard clearly, so a possible speech sign is treated as present.":"No clear speech could be heard when repeating the phrase, so a possible speech sign is treated as present.");
+      return;
+    }
     const decision=best.score>=.72?"no":best.score<.48&&wordCount>=5?"yes":"unsure";
     const reason=decision==="no"?"The complete repeated phrase matched clearly.":decision==="yes"?"The complete phrase was substantially different or unclear.":"The complete phrase could not be matched clearly enough to rule out a speech sign.";
     finishSpeech(decision,reason);
@@ -456,7 +470,7 @@ function renderArms(){
 }
 function renderSpeech(){
   current="speech";speechSettled=false;speechAwaitingRetry=false;speechBest={transcript:"",confidence:0,score:0};automated.speech={available:false,positive:false,decision:"pending",transcript:"",similarity:null,confidence:null,quality:"pending",reason:"",provider:"openai",model:"gpt-transcribe",recording_retained:false};
-  panel.innerHTML=`${progress(2)}<div class="letter">S</div><div class="eyebrow">Speech · OpenAI transcription</div><h1>Repeat the phrase aloud</h1><p>After Alira reads the phrase, speak at your own pace. As soon as you finish speaking, Alira stops listening automatically and OpenAI converts the recording to text.</p><div class="phrase">"${phrase}."</div><div class="transcript" id="transcript" aria-live="polite">Preparing the microphone...</div>${automaticCard("Speech and understanding observation")}<p class="privacyNote">This short recording is sent securely to OpenAI for transcription. Rehyn does not retain the audio. If transcription fails or only part is heard, no emergency result is decided and you can try again.</p>`;speak(`Speech. Please repeat: ${phrase}.`,startSpeechCheck);
+  panel.innerHTML=`${progress(2)}<div class="letter">S</div><div class="eyebrow">Speech · OpenAI transcription</div><h1>Repeat the phrase aloud</h1><p>After Alira reads the phrase, speak at your own pace. As soon as you finish speaking, Alira stops listening automatically and OpenAI converts the recording to text.</p><div class="phrase">"${phrase}."</div><div class="transcript" id="transcript" aria-live="polite">Preparing the microphone...</div>${automaticCard("Speech and understanding observation")}<p class="privacyNote">This short recording is sent securely to OpenAI for transcription. Rehyn does not retain the audio. If the recording or transcription fails for a technical reason, no emergency result is decided and you can try again. If the phrase cannot be heard clearly, Alira treats it as a possible speech sign.</p>`;speak(`Speech. Please repeat: ${phrase}.`,startSpeechCheck);
 }
 
 function outcome(){

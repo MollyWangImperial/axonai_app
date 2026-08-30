@@ -17,6 +17,7 @@ import * as Haptics from "expo-haptics";
 import { Assessment, fetchHistory } from "@/src/api";
 import { authedFetch, getCachedUser, preferredNameKey } from "@/src/auth";
 import { AliraCarePlan, DailyCheckInCard } from "@/src/components/DailyCheckInCard";
+import { DailyCheckInCalendar } from "@/src/components/DailyCheckInCalendar";
 import { colors, radius, spacing } from "@/src/theme";
 import { getScreenCache, setScreenCache } from "@/src/screenCache";
 import { storage } from "@/src/utils/storage";
@@ -180,6 +181,7 @@ export default function HomeScreen() {
             <Ionicons name="chevron-forward" size={22} color="#FFFFFF" />
           </Pressable>
 
+          {!loading && <DailyCheckInCalendar />}
           {!loading && <DailyCheckInCard name={greetName} plan={carePlan} latestAssessmentId={latest?.id} />}
 
           {loading ? (

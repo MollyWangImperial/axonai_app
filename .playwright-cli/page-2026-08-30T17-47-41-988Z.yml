@@ -1,0 +1,19 @@
+- generic [ref=e2]:
+  - generic [ref=e3]: "Prototype only: any 911 call shown here is simulated. If this is a real emergency, use a phone to call 911 now."
+  - generic [ref=e5]:
+    - button "Exit" [ref=e6] [cursor=pointer]
+    - strong [ref=e7]: Emergency FAST check
+  - main [ref=e8]:
+    - generic [ref=e88]:
+      - generic "FAST step 4 of 4" [ref=e89]
+      - generic [ref=e94]: "!"
+      - generic [ref=e95]: T - Time · Red flag
+      - heading "Call 911 now" [level=1] [ref=e96]
+      - paragraph [ref=e97]: A FAST sign was noticed or could not be ruled out. Say that you suspect a stroke. Do not wait to see if it passes.
+      - button "Show demo 911 call" [ref=e98] [cursor=pointer]
+      - generic [ref=e99]:
+        - generic [ref=e100]: When did the symptoms start? (if known)
+        - textbox "When did the symptoms start? (if known)" [ref=e101]
+      - paragraph [ref=e102]: Stay with the person. In a real emergency, call 911 for an ambulance rather than driving to the hospital.
+      - button "Restart check" [ref=e103] [cursor=pointer]
+      - paragraph [ref=e104]: If symptoms fade, urgent medical help is still needed.

@@ -1,0 +1,14 @@
+[     510ms] [ERROR] Failed to load resource: the server responded with a status of 404 (Not Found) @ http://127.0.0.1:8002/favicon.ico:0
+[   69577ms] [LOG] I0830 18:14:27.196000 1880752 gl_context.cc:374] GL version: 3.0 (OpenGL ES 3.0 (WebGL 2.0 (OpenGL ES 3.0 Chromium))), renderer: WebKit WebGL @ http://127.0.0.1:8002/vendor/mediapipe/wasm/vision_wasm_internal.js:8
+[   69578ms] [WARNING] W0830 18:14:27.199000 1880752 gl_context.cc:1060] OpenGL error checking is disabled @ http://127.0.0.1:8002/vendor/mediapipe/wasm/vision_wasm_internal.js:8
+[   69583ms] [LOG] Graph successfully started running. @ http://127.0.0.1:8002/vendor/mediapipe/wasm/vision_wasm_internal.js:8
+[   69709ms] [WARNING] W0830 18:14:27.330000 1880752 face_landmarker_graph.cc:180] Sets FaceBlendshapesGraph acceleration to xnnpack by default. @ http://127.0.0.1:8002/vendor/mediapipe/wasm/vision_wasm_internal.js:8
+[   69779ms] [LOG] I0830 18:14:27.400000 1880752 gl_context.cc:374] GL version: 3.0 (OpenGL ES 3.0 (WebGL 2.0 (OpenGL ES 3.0 Chromium))), renderer: WebKit WebGL @ http://127.0.0.1:8002/vendor/mediapipe/wasm/vision_wasm_internal.js:8
+[   69780ms] [WARNING] W0830 18:14:27.402000 1880752 gl_context.cc:1060] OpenGL error checking is disabled @ http://127.0.0.1:8002/vendor/mediapipe/wasm/vision_wasm_internal.js:8
+[   69782ms] [LOG] Graph successfully started running. @ http://127.0.0.1:8002/vendor/mediapipe/wasm/vision_wasm_internal.js:8
+[   69846ms] [ERROR] INFO: Created TensorFlow Lite XNNPACK delegate for CPU. @ http://127.0.0.1:8002/vendor/mediapipe/wasm/vision_wasm_internal.js:8
+[   70153ms] [WARNING] W0830 18:14:27.774000 1880752 inference_feedback_manager.cc:121] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors. @ http://127.0.0.1:8002/vendor/mediapipe/wasm/vision_wasm_internal.js:8
+[   70187ms] [WARNING] W0830 18:14:27.808000 1880752 inference_feedback_manager.cc:121] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors. @ http://127.0.0.1:8002/vendor/mediapipe/wasm/vision_wasm_internal.js:8
+[   70313ms] [ERROR] INFO: Created TensorFlow Lite XNNPACK delegate for CPU. @ http://127.0.0.1:8002/vendor/mediapipe/wasm/vision_wasm_internal.js:8
+[   70316ms] [WARNING] W0830 18:14:27.938000 1880752 inference_feedback_manager.cc:121] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors. @ http://127.0.0.1:8002/vendor/mediapipe/wasm/vision_wasm_internal.js:8
+[   70343ms] [WARNING] W0830 18:14:27.964000 1880752 inference_feedback_manager.cc:121] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors. @ http://127.0.0.1:8002/vendor/mediapipe/wasm/vision_wasm_internal.js:8

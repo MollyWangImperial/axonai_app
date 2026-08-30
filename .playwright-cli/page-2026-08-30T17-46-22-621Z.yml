@@ -1,0 +1,24 @@
+- generic [ref=e2]:
+  - generic [ref=e3]: "Prototype only: any 911 call shown here is simulated. If this is a real emergency, use a phone to call 911 now."
+  - generic [ref=e5]:
+    - button "Exit" [ref=e6] [cursor=pointer]
+    - strong [ref=e7]: Emergency FAST check
+  - main [ref=e8]:
+    - generic [ref=e18]: Camera assistance is unavailable. A carer can still complete FAST by observing the person directly.
+    - generic [ref=e9]:
+      - generic "FAST step 2 of 4" [ref=e43]
+      - generic [ref=e48]: A
+      - generic [ref=e49]: Arms
+      - heading "Raise both arms and hold" [level=1] [ref=e50]
+      - paragraph [ref=e51]: Ask the person to lift both arms to a comfortable level and keep them there. Does one arm drift down or fail to lift?
+      - generic [ref=e52]: Keep the shoulders and both hands visible while Alira watches for a difference.
+      - generic [ref=e55]:
+        - button "No sign noticed No" [ref=e56] [cursor=pointer]:
+          - generic [ref=e57]: No sign noticed
+          - strong [ref=e58]: "No"
+        - button "One arm drifted or could not lift Yes" [ref=e59] [cursor=pointer]:
+          - generic [ref=e60]: One arm drifted or could not lift
+          - strong [ref=e61]: "Yes"
+        - button "I cannot tell clearly Not sure" [ref=e62] [cursor=pointer]:
+          - generic [ref=e63]: I cannot tell clearly
+          - strong [ref=e64]: Not sure
