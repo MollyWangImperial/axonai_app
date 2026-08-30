@@ -102,7 +102,8 @@ def test_advanced_marker_tasks_keep_seven_task_contract():
     assert 'package_id: ASSESSMENT_PACKAGE' in html_source
     assert "taskResults.filter(Boolean)" in html_source
     assert '"id": "H1-S3"' in html_source
-    assert '"r": 0.20' in html_source
+    assert '"landmark": "LAP_DYNAMIC"' in html_source
+    assert '"r": 0.10' in html_source
     assert "palm_facing_score" in html_source
     assert "responsiveVideoSettings(640, 480)" in html_source
     assert "#cameraFrame video,#cameraFrame canvas{position:absolute;inset:0;width:100%;height:100%" in html_source
@@ -115,9 +116,11 @@ def test_advanced_marker_tasks_keep_seven_task_contract():
     assert '"recommended_objects": ["empty plastic cup", "soft ball", "foam cylinder", "small paper box"]' in html_source
 
 
-def test_initial_intro_stays_guided_without_package_choice():
+def test_initial_intro_stays_guided_while_honoring_aliras_selected_package():
     intro_source = TASK_INTRO.read_text(encoding="utf-8")
-    assert 'const packageId: AssessmentPackageId = "initial"' in intro_source
+    assert 'const allowedPackages: AssessmentPackageId[] = ["initial", "upper_limb", "hand", "lower_limb", "balance"]' in intro_source
+    assert 'allowedPackages.includes(params.package as AssessmentPackageId)' in intro_source
+    assert ': "initial";' in intro_source
     assert "launch your next guided task automatically" in intro_source
     assert "PACKAGE_OPTIONS" not in intro_source
     assert "task-package-card-${option.id}" not in intro_source

@@ -36,17 +36,19 @@ async function markTaskVideoSaved(userId: string, packageId: AssessmentPackageId
 
 export default function AssessmentScreen() {
   const router = useRouter();
-  const params = useLocalSearchParams<{ package?: string; start_task?: string; completed_tasks?: string; affected_side?: string; task_ids?: string }>();
+  const params = useLocalSearchParams<{ package?: string; start_task?: string; completed_tasks?: string; affected_side?: string; task_ids?: string; library_test?: string }>();
   const packageParam = params["package"];
   const startTaskParam = params["start_task"];
   const affectedSideParam = params["affected_side"];
   const completedTasksParam = params["completed_tasks"];
   const assignedTaskIdsParam = params["task_ids"];
+  const isLibraryTest = params["library_test"] === "1";
   const webRef = useRef<WebView>(null);
   const userIdRef = useRef<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [runnerUri, setRunnerUri] = useState<string | null>(null);
+  const [testComplete, setTestComplete] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -63,9 +65,10 @@ export default function AssessmentScreen() {
       if (selectedStartTask) query.set("start_task", selectedStartTask);
       if (typeof completedTasksParam === "string" && completedTasksParam) query.set("completed_tasks", completedTasksParam);
       if (typeof assignedTaskIdsParam === "string" && assignedTaskIdsParam) query.set("task_ids", assignedTaskIdsParam);
+      if (isLibraryTest) query.set("library_test", "1");
       setRunnerUri(`${POSE_RUNNER_URL}?${query.toString()}`);
     })();
-  }, [packageParam, startTaskParam, completedTasksParam, affectedSideParam, assignedTaskIdsParam]);
+  }, [packageParam, startTaskParam, completedTasksParam, affectedSideParam, assignedTaskIdsParam, isLibraryTest]);
 
   const onMessage = (e: WebViewMessageEvent) => {
     try {
@@ -76,12 +79,12 @@ export default function AssessmentScreen() {
         Haptics.selectionAsync();
       } else if (msg.type === "task_complete") {
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-        if (msg.task_id && userIdRef.current) {
+        if (!isLibraryTest && msg.task_id && userIdRef.current) {
           const packageId = (msg.package_id || packageParam || "upper_limb") as AssessmentPackageId;
           void markTaskComplete(userIdRef.current, packageId, String(msg.task_id));
         }
       } else if (msg.type === "task_video_saved") {
-        if (msg.task_id && userIdRef.current) {
+        if (!isLibraryTest && msg.task_id && userIdRef.current) {
           const packageId = (msg.package_id || packageParam || "upper_limb") as AssessmentPackageId;
           void markTaskVideoSaved(userIdRef.current, packageId, String(msg.task_id), Boolean(msg.cloud_saved));
         }
@@ -97,6 +100,9 @@ export default function AssessmentScreen() {
       } else if (msg.type === "assessment_complete") {
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
         router.replace({ pathname: "/results", params: { id: msg.assessment.id } });
+      } else if (msg.type === "library_test_complete") {
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        setTestComplete(true);
       } else if (msg.type === "assessment_error") {
         setError("Could not save assessment. Please try again.");
       }
@@ -157,6 +163,18 @@ export default function AssessmentScreen() {
           </Pressable>
         </View>
       )}
+
+      {testComplete && (
+        <View style={styles.testCompleteWrap} testID="assessment-library-test-complete">
+          <Ionicons name="checkmark-circle" size={58} color={colors.success} />
+          <Text style={styles.testCompleteTitle}>Task test complete</Text>
+          <Text style={styles.testCompleteBody}>This test was not added to Assessment history, Progress, or your care plan.</Text>
+          <Pressable onPress={() => router.back()} style={styles.testCompleteButton} testID="assessment-library-back">
+            <Ionicons name="arrow-back" size={20} color="#FFFFFF" />
+            <Text style={styles.testCompleteButtonText}>Back to library</Text>
+          </Pressable>
+        </View>
+      )}
     </View>
   );
 }
@@ -170,4 +188,9 @@ const styles = StyleSheet.create({
   errorTitle: { color: colors.onSurfaceInverse, fontSize: 16, textAlign: "center", lineHeight: 22 },
   errorBtn: { backgroundColor: colors.brandPrimary, paddingHorizontal: spacing.lg, paddingVertical: spacing.md, borderRadius: radius.lg },
   errorBtnText: { color: "#fff", fontWeight: "700" },
+  testCompleteWrap: { ...StyleSheet.absoluteFillObject, alignItems: "center", justifyContent: "center", padding: spacing.xl, gap: spacing.md, backgroundColor: "#F8FBF8" },
+  testCompleteTitle: { color: colors.onSurface, fontSize: 24, lineHeight: 30, fontWeight: "800", textAlign: "center" },
+  testCompleteBody: { maxWidth: 420, color: colors.onSurfaceSecondary, fontSize: 15, lineHeight: 22, textAlign: "center" },
+  testCompleteButton: { minHeight: 54, minWidth: 210, marginTop: spacing.sm, paddingHorizontal: spacing.lg, borderRadius: radius.md, backgroundColor: colors.brandPrimary, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: spacing.sm },
+  testCompleteButtonText: { color: "#FFFFFF", fontSize: 16, fontWeight: "800" },
 });

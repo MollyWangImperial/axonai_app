@@ -42,6 +42,46 @@ export type AssessmentPackage = {
   task_count: number;
 };
 
+export type TestingAssessmentTask = {
+  id: string;
+  title: string;
+  view: string;
+  focus: string;
+  step_count: number;
+  safety_tier: "seated" | "spotter_required";
+  safety_note?: string | null;
+};
+
+export type TestingAssessmentPackage = {
+  id: Exclude<AssessmentPackageId, "initial">;
+  title: string;
+  subtitle: string;
+  tasks: TestingAssessmentTask[];
+};
+
+export type TestingExercise = {
+  id: string;
+  name: string;
+  description: string;
+  sets: number;
+  reps: number;
+  guided_reps: number;
+  frequency: string;
+  targets_issue: string;
+  source: string;
+  safety_note?: string | null;
+  pose_mode: "body" | "tap" | "guided";
+  support_required: boolean;
+};
+
+export type TestingLibrary = {
+  assessment_task_count: number;
+  exercise_count: number;
+  assessment_packages: TestingAssessmentPackage[];
+  exercises: TestingExercise[];
+  test_runs_are_recorded: false;
+};
+
 export type TaskVideo = {
   id: string;
   user_id: string;
@@ -86,6 +126,73 @@ export type PatientInsights = {
   reporting_rule: string;
 };
 
+export type MovementSnapshotDecision = {
+  version: string;
+  status: string;
+  affected_side: "left" | "right";
+  step_outcomes: {
+    task_id: string;
+    step_id: string;
+    completed: boolean;
+    failure_code?: string | null;
+  }[];
+  triggered_thresholds: {
+    task_id: string;
+    source: string;
+    metric: string;
+    observed: number | boolean;
+    operator: string;
+    threshold: number | boolean;
+    finding_code: string;
+    severity_rule?: string;
+  }[];
+  functional_findings: {
+    code: string;
+    label: string;
+    severity: string;
+    related_task: string;
+    related_step?: string | null;
+    phenotype_domain?: string | null;
+    category: "upper_limb" | "hand" | "lower_limb" | "other";
+  }[];
+  body_function_domains: {
+    domain: string;
+    status: string;
+    findings_count: number;
+    step_completion_percent: number;
+  }[];
+  model_status: {
+    overall: string;
+    gpu_stage: Record<string, unknown>;
+    musculoskeletal_stage: Record<string, unknown>;
+  };
+  primary_finding?: {
+    code: string;
+    label: string;
+    category: "upper_limb" | "hand" | "lower_limb" | "other";
+  } | null;
+  selection_rule: {
+    strategy: string;
+    candidate_issue_codes: string[];
+    selected_issue_code?: string | null;
+    no_issue_sentinel_excluded: boolean;
+  };
+  presentation: {
+    eyebrow: string;
+    title: string;
+    summary: string;
+    tone: "attention" | "pending" | "well";
+  };
+  anatomy_marker: {
+    visible: boolean;
+    region?: string | null;
+    side?: "left" | "right" | null;
+    source_issue_code?: string | null;
+    coordinate_source?: string | null;
+    reason: string;
+  };
+};
+
 export type PatientAssessmentSummary = {
   id: string;
   created_at: string;
@@ -106,9 +213,44 @@ export type PatientAssessmentSummary = {
     domains: BodyFunctionDomainSummary[];
     reporting_rule: string;
   };
+  movement_snapshot_decision?: MovementSnapshotDecision;
+  functional_metrics?: FunctionalMetrics;
   rehab_plan_ready: boolean;
   clinical_review_gate: ClinicalReviewGate;
   insights: PatientInsights;
+};
+
+export type FunctionalMetrics = {
+  shoulder_flexion_deg?: number | null;
+  trunk_lean_deg?: number | null;
+  reach_completion?: number | null;
+  bilateral_symmetry?: number | null;
+  pinch_grip?: number | null;
+  hand_opening?: number | null;
+  walking_skipped?: boolean;
+  domains?: {
+    upper_limb?: {
+      observed?: boolean;
+      step_completion_percent?: number | null;
+      shoulder_elevation_deg?: number | null;
+      trunk_lean_deg?: number | null;
+      shoulder_hike_detected?: boolean;
+    };
+    hand?: {
+      observed?: boolean;
+      step_completion_percent?: number | null;
+      hand_opening_percent?: number | null;
+      pinch_control_percent?: number | null;
+    };
+    lower_limb?: {
+      observed?: boolean;
+      skipped?: boolean;
+      step_completion_percent?: number | null;
+      bilateral_motion_symmetry_percent?: number | null;
+      full_body_visibility_percent?: number | null;
+      video_duration_seconds?: number | null;
+    };
+  };
 };
 
 export type BodyFunctionDomainSummary = {
@@ -173,6 +315,7 @@ export type Assessment = {
   affected_side: string;
   assessment_package?: AssessmentPackageId;
   assigned_task_ids?: string[];
+  metrics?: FunctionalMetrics;
   patient_parameters?: { age_band?: string; [key: string]: unknown };
   functional_issues: FunctionalIssue[];
   rehab_plan: RehabExercise[];
@@ -249,6 +392,7 @@ export type Assessment = {
   analysis_pipeline?: AnalysisPipeline;
   clinical_review_gate?: ClinicalReviewGate;
   patient_insights?: PatientInsights;
+  movement_snapshot_decision?: MovementSnapshotDecision;
   rehabilitation_goals?: {
     version: string;
     method: string;
@@ -375,6 +519,15 @@ export async function fetchTasks(packageId: AssessmentPackageId = "upper_limb", 
   return res.json();
 }
 
+export async function fetchTestingLibrary(): Promise<TestingLibrary> {
+  const res = await authedFetch("/api/testing/library");
+  if (!res.ok) {
+    const body = await res.json().catch(() => null);
+    throw new Error(body?.detail || "Could not load the testing library");
+  }
+  return res.json();
+}
+
 export async function fetchHistory(): Promise<Assessment[]> {
   const res = await authedFetch("/api/assessment/history");
   return res.json();
@@ -400,12 +553,13 @@ export async function resetTaskProgress(packageId: AssessmentPackageId = "initia
 }
 
 export async function fetchAssessment(id: string): Promise<Assessment> {
-  const res = await fetch(`${BASE}/api/assessment/${id}`);
+  const res = await authedFetch(`/api/assessment/${id}`);
+  if (!res.ok) throw new Error(`Could not load assessment (${res.status})`);
   return res.json();
 }
 
 export async function fetchPatientAssessmentSummary(id: string): Promise<PatientAssessmentSummary> {
-  const res = await fetch(`${BASE}/api/assessment/${id}/patient-summary`);
+  const res = await authedFetch(`/api/assessment/${id}/patient-summary`);
   if (!res.ok) throw new Error(`Could not load assessment summary (${res.status})`);
   return res.json();
 }

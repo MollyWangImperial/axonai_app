@@ -16,8 +16,15 @@ import { fetchHistory } from "@/src/api";
 import { useDisplayPreferences } from "@/src/displayPreferences";
 import AliraLivingBackground from "@/src/components/AliraLivingBackground";
 import { resolveAliraNavigation } from "@/src/aliraNavigation";
+import { SurveyPrefaceModal } from "@/src/components/SurveyPrefaceModal";
+import { EmergencyCallButton } from "@/src/components/EmergencyCallButton";
 
-type Turn = { role: "user" | "assistant"; text: string; ts: string };
+type Turn = {
+  role: "user" | "assistant";
+  text: string;
+  ts: string;
+  emergency_call_available?: boolean;
+};
 
 const SESSION_KEY = "alira_session_id";
 const LOCAL_GREETING = "Hi there! I'm Alira, your recovery companion. I'm here to support you - body, mind, and progress. How are you feeling today?";
@@ -45,6 +52,7 @@ export default function ChatScreen() {
   const [sending, setSending] = useState(false);
   const [openingAction, setOpeningAction] = useState<string | null>(null);
   const [downloading, setDownloading] = useState(false);
+  const [pendingCheckInPrompt, setPendingCheckInPrompt] = useState<string | null>(null);
   const scrollRef = useRef<ScrollView>(null);
   const inputRef = useRef<TextInput>(null);
   const wide = width >= 760;
@@ -174,7 +182,12 @@ export default function ChatScreen() {
       });
       if (!response.ok) throw new Error("chat fail");
       const data = await response.json();
-      setTurns((current) => [...current, { role: "assistant", text: data.text, ts: new Date().toISOString() }]);
+      setTurns((current) => [...current, {
+        role: "assistant",
+        text: data.text,
+        ts: new Date().toISOString(),
+        emergency_call_available: Boolean(data.emergency_call_available),
+      }]);
       if (speakReply) void playAliraVoice(data.text);
       if (data.navigation_destination) {
         await openAliraDestination(String(data.navigation_destination));
@@ -235,7 +248,7 @@ export default function ChatScreen() {
   const actions = [
     { id: "progress", icon: "trending-up-outline" as const, text: "Check My Progress", tone: preferences.darkMode ? palette.soft : "#EFF6F4", onPress: () => router.push("/progress") },
     { id: "exercise", icon: "walk-outline" as const, text: "Start Guided Exercise", tone: preferences.darkMode ? palette.soft : "#F1F4EC", onPress: () => void startGuidedExercise() },
-    { id: "pain", icon: "heart" as const, text: "Pain Check-in", tone: preferences.darkMode ? palette.soft : "#F5F0FA", onPress: () => void sendMessage("Please guide me through a gentle pain check-in. Ask me one short question at a time, beginning with where I feel pain and how strong it is from zero to ten.", true) },
+    { id: "pain", icon: "heart" as const, text: "Pain Check-in", tone: preferences.darkMode ? palette.soft : "#F5F0FA", onPress: () => setPendingCheckInPrompt("Please guide me through a gentle pain check-in. Ask me one short optional question at a time, beginning with where I feel pain and how strong it is from zero to ten.") },
     { id: "reflect", icon: "book-outline" as const, text: "Reflect on Today", tone: preferences.darkMode ? palette.soft : "#FAF3EA", onPress: () => void sendMessage("Please guide me through a short reflection on today's recovery. Ask me one encouraging question at a time and help me notice one small win.", true) },
   ];
 
@@ -297,6 +310,7 @@ export default function ChatScreen() {
                 {item.role === "assistant" && <View style={styles.messageAvatar}><Ionicons name="heart" size={17} color="#FFFFFF" /></View>}
                 <View style={[styles.bubble, item.role === "user" ? styles.userBubble : styles.assistantBubble, { backgroundColor: item.role === "user" ? palette.soft : palette.surface, borderColor: palette.border }]}>
                   <Text style={[styles.bubbleText, { color: palette.text }]}>{item.text}</Text>
+                  {item.role === "assistant" && item.emergency_call_available ? <EmergencyCallButton compact /> : null}
                   <Text style={[styles.timeText, { color: palette.muted }]}>{formatTime(item.ts)}</Text>
                 </View>
               </View>
@@ -328,6 +342,15 @@ export default function ChatScreen() {
           </View>
         </View>
       </KeyboardAvoidingView>
+      <SurveyPrefaceModal
+        visible={Boolean(pendingCheckInPrompt)}
+        onClose={() => setPendingCheckInPrompt(null)}
+        onBegin={() => {
+          const checkInPrompt = pendingCheckInPrompt;
+          setPendingCheckInPrompt(null);
+          if (checkInPrompt) void sendMessage(checkInPrompt, true);
+        }}
+      />
     </View>
   );
 }

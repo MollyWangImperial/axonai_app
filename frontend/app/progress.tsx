@@ -29,6 +29,7 @@ type AssessmentPoint = {
   bilateral_symmetry: number | null;
   pinch_grip: number | null;
   hand_opening: number | null;
+  walking_skipped?: boolean;
   issues_count: number;
   exercises_count: number;
 };
@@ -163,6 +164,10 @@ function buildRealView(summary: Summary, sessionsCompleted: number): ProgressVie
     supportiveText = "Your results are ready to review together.";
   }
 
+  const walkingRow = latest?.walking_skipped
+    ? { id: "walking" as const, label: "Walking", icon: "walk-outline" as const, status: "Not observed", value: "Skipped", direction: "steady" as const }
+    : movementRow("walking", "Walking", "walk-outline", walkingChange, "steadier", hasWalking);
+
   return {
     headline,
     headlineValue,
@@ -171,7 +176,7 @@ function buildRealView(summary: Summary, sessionsCompleted: number): ProgressVie
     movementRows: [
       movementRow("reach", "Reaching", "accessibility-outline", reachChange, "easier", hasReach),
       movementRow("hand", "Hand control", "hand-left-outline", handChange, "steadier", hasHand),
-      movementRow("walking", "Walking", "walk-outline", walkingChange, "steadier", hasWalking),
+      walkingRow,
     ],
     sessionsCompleted: cappedSessions,
     sessionsGoal: sessionGoal,

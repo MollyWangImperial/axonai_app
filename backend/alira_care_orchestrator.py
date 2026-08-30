@@ -12,7 +12,12 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 
 CARE_POLICY_VERSION = "alira-care-v2"
-MAX_CHECK_IN_QUESTIONS = 4
+MAX_CHECK_IN_QUESTIONS = 5
+SURVEY_PREFACE = (
+    "A few short questions about how you have been getting on. Your answers help Rehyn adjust your plan to suit you better.\n\n"
+    "This takes about two minutes. Every question is optional and you can stop at any point. Skipping the check in does not change anything about your plan or your access to Rehyn.\n\n"
+    "This is not a way to get help. If something is wrong, contact your GP or physiotherapist. In an emergency, call 999."
+)
 APPROVED_ASSESSMENT_PACKAGES = {"initial", "upper_limb", "hand", "lower_limb", "balance"}
 INITIAL_ASSESSMENT_TASK_IDS = ("T1", "T2", "T3", "H1", "H3", "H4", "L6")
 ASSESSMENT_READINESS_FIELDS = (
@@ -32,7 +37,7 @@ QUESTION_BANK: Dict[str, Dict[str, Any]] = {
         "question": "Since your last check-in, have you had any sudden new weakness, facial droop, speech change, severe headache, collapse, chest pain, or trouble breathing?",
         "type": "single",
         "options": ["no", "yes"],
-        "required": True,
+        "required": False,
     },
     "falls": {
         "id": "falls",
@@ -40,7 +45,7 @@ QUESTION_BANK: Dict[str, Dict[str, Any]] = {
         "question": "Have you fallen or nearly fallen since your last check-in?",
         "type": "single",
         "options": ["no", "near_fall", "fall_no_injury", "fall_with_injury"],
-        "required": True,
+        "required": False,
     },
     "pain": {
         "id": "pain",
@@ -49,7 +54,7 @@ QUESTION_BANK: Dict[str, Dict[str, Any]] = {
         "type": "number",
         "min": 0,
         "max": 10,
-        "required": True,
+        "required": False,
     },
     "fatigue": {
         "id": "fatigue",
@@ -65,7 +70,7 @@ QUESTION_BANK: Dict[str, Dict[str, Any]] = {
         "question": "Compared with your last check-in, do your everyday movements feel easier, about the same, or harder?",
         "type": "single",
         "options": ["much_easier", "a_little_easier", "about_the_same", "a_little_harder", "much_harder"],
-        "required": True,
+        "required": False,
     },
     "exercise_tolerance": {
         "id": "exercise_tolerance",
@@ -113,6 +118,14 @@ QUESTION_BANK: Dict[str, Dict[str, Any]] = {
         "question": "How steady did you feel during sitting, standing, or transfers today?",
         "type": "single",
         "options": ["not_applicable", "steady", "a_little_unsteady", "very_unsteady", "needed_help"],
+        "required": False,
+    },
+    "emotional_safety": {
+        "id": "emotional_safety",
+        "domain": "safety",
+        "question": "Have you had thoughts of harming yourself, or felt unable to keep yourself safe?",
+        "type": "single",
+        "options": ["no", "thoughts_but_safe", "cannot_keep_safe", "prefer_not_to_say"],
         "required": False,
     },
 }
@@ -314,9 +327,41 @@ def _issue_domains(assessment: Optional[Dict[str, Any]], profile: Dict[str, Any]
     return [domain for domain in ("upper_limb", "hand", "lower_limb") if domain in domains]
 
 
-def _safety_status(check_in: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+def _contains_any(text: str, phrases: Sequence[str]) -> bool:
+    return any(phrase in text for phrase in phrases)
+
+
+def _safety_outcome(
+    status: str,
+    code: str,
+    headline: str,
+    message: str,
+    *,
+    blocks_assessment: bool,
+    blocks_exercise: bool,
+    requires_clinician_review: bool,
+    call_999: bool = False,
+    offer_call_999: bool = False,
+) -> Dict[str, Any]:
+    return {
+        "status": status,
+        "code": code,
+        "headline": headline,
+        "message": message,
+        "call_999": call_999,
+        "offer_call_999": call_999 or offer_call_999,
+        "blocks_assessment": blocks_assessment,
+        "blocks_exercise": blocks_exercise,
+        "requires_clinician_review": requires_clinician_review,
+    }
+
+
+def evaluate_survey_safety(check_in: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Return deterministic crisis routing from optional survey answers and patient wording."""
     sudden_change = str(_answer(check_in, "sudden_change", "no")).lower() == "yes"
     fall = str(_answer(check_in, "falls", "no")).lower()
+    emotional_safety = str(_answer(check_in, "emotional_safety", "no")).lower()
+    note = " ".join(str((check_in or {}).get("patient_note") or "").lower().split())
     try:
         pain = float(_answer(check_in, "pain", 0) or 0)
     except (TypeError, ValueError):
@@ -324,37 +369,154 @@ def _safety_status(check_in: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     function_change = str(_answer(check_in, "function_change", "")).lower()
     tolerance = str(_answer(check_in, "exercise_tolerance", "")).lower()
 
-    if sudden_change:
-        return {
-            "status": "emergency",
-            "message": "Possible new stroke or medical emergency symptoms were reported. Stop the app activity and call emergency services now; in the UK call 999.",
-            "blocks_assessment": True,
-            "blocks_exercise": True,
-            "requires_clinician_review": True,
-        }
+    self_harm_denials = (
+        "no suicidal thoughts", "not suicidal", "no thoughts of harming myself",
+        "do not want to die", "don't want to die",
+    )
+    immediate_self_harm_phrases = (
+        "cannot keep myself safe", "can't keep myself safe", "i have a suicide plan",
+        "i have a plan to kill myself", "about to kill myself", "going to kill myself",
+        "i might kill myself", "i am going to hurt myself", "i have taken an overdose", "i overdosed",
+    )
+    self_harm_phrases = (
+        "i have suicidal thoughts", "i've had suicidal thoughts", "i am suicidal", "i'm suicidal",
+        "thinking about suicide", "thoughts of harming myself", "thoughts of killing myself",
+        "thinking of harming myself", "thinking of hurting myself", "i want to die", "end my life",
+        "i don't want to live", "i do not want to live", "i would be better off dead",
+    )
+    immediate_self_harm = emotional_safety == "cannot_keep_safe" or _contains_any(note, immediate_self_harm_phrases)
+    self_harm_thoughts = emotional_safety == "thoughts_but_safe" or (
+        not _contains_any(note, self_harm_denials) and _contains_any(note, self_harm_phrases)
+    )
+
+    emergency_sign_groups = (
+        (("my face is drooping", "my face has drooped", "new facial droop", "new face droop"), ("no facial droop", "no face droop")),
+        (("my arm is suddenly weak", "new arm weakness"), ("no arm weakness",)),
+        (("my speech is slurred", "new slurred speech", "i suddenly cannot speak"), ("no slurred speech", "no speech change")),
+        (("sudden severe headache",), ("no severe headache", "no sudden headache")),
+        (("i collapsed",), ("did not collapse", "haven't collapsed", "have not collapsed")),
+        (("i have chest pain",), ("no chest pain",)),
+        (("i can't breathe", "i cannot breathe", "trouble breathing"), ("no trouble breathing", "not having trouble breathing")),
+    )
+    note_reports_emergency = any(
+        _contains_any(note, signs) and not _contains_any(note, denials)
+        for signs, denials in emergency_sign_groups
+    )
+    note_reports_fall = (
+        _contains_any(note, ("i fell today", "i have fallen", "i've fallen", "i had a fall", "i fell over"))
+        and not _contains_any(note, ("i have not fallen", "i haven't fallen", "no falls"))
+    )
+
+    if sudden_change or note_reports_emergency:
+        return _safety_outcome(
+            "emergency",
+            "possible_stroke_or_medical_emergency",
+            "Call 999 now",
+            "New stroke or other emergency symptoms may be present. Stop using Rehyn and call 999 now. Say that you suspect a stroke, note when the symptoms started if you can, and do not wait even if the symptoms improve.",
+            blocks_assessment=True,
+            blocks_exercise=True,
+            requires_clinician_review=True,
+            call_999=True,
+        )
+    if immediate_self_harm:
+        return _safety_outcome(
+            "emergency",
+            "cannot_keep_self_safe",
+            "Get emergency help now",
+            "Your safety matters. Call 999 or go to A&E now because you may not be able to keep yourself safe. If someone is with you, tell them now and ask them to stay with you while help is arranged.",
+            blocks_assessment=True,
+            blocks_exercise=True,
+            requires_clinician_review=True,
+            call_999=True,
+        )
+    if self_harm_thoughts:
+        return _safety_outcome(
+            "urgent_review",
+            "thoughts_of_self_harm",
+            "Please get urgent support today",
+            "You deserve support with this today. Call NHS 111 and select the mental health option, or ask for an urgent GP appointment. You can also call Samaritans on 116 123. If you may act on these thoughts or cannot keep yourself safe, call 999 or go to A&E now.",
+            blocks_assessment=True,
+            blocks_exercise=True,
+            requires_clinician_review=True,
+            offer_call_999=True,
+        )
     if fall == "fall_with_injury":
-        return {
-            "status": "urgent_review",
-            "message": "A fall with possible injury was reported. Do not continue unsupervised exercise until urgent clinical advice has been obtained.",
-            "blocks_assessment": True,
-            "blocks_exercise": True,
-            "requires_clinician_review": True,
-        }
-    if pain >= 7 or tolerance == "stopped_for_symptoms" or function_change == "much_harder" or fall == "fall_no_injury":
-        return {
-            "status": "clinical_review",
-            "message": "A meaningful change was reported. Pause progression and contact the stroke rehabilitation team before changing the plan.",
-            "blocks_assessment": False,
-            "blocks_exercise": tolerance == "stopped_for_symptoms" or pain >= 7,
-            "requires_clinician_review": True,
-        }
-    return {
-        "status": "clear",
-        "message": "No immediate safety trigger was reported in the latest check-in.",
-        "blocks_assessment": False,
-        "blocks_exercise": False,
-        "requires_clinician_review": False,
-    }
+        return _safety_outcome(
+            "urgent_review",
+            "fall_with_possible_injury",
+            "A fall can be serious",
+            "Stop the check-in and do not continue exercises. Call 999 now if you may have injured your head, back, neck or hip, or if you cannot get up. Otherwise, if you may be in pain, injured or unwell, contact NHS 111 now and tell your GP or physiotherapist about the fall.",
+            blocks_assessment=True,
+            blocks_exercise=True,
+            requires_clinician_review=True,
+            offer_call_999=True,
+        )
+    if fall == "no" and note_reports_fall:
+        return _safety_outcome(
+            "urgent_review",
+            "fall_details_needed",
+            "A fall can be serious",
+            "Stop the check-in and do not continue exercises. Call 999 now if you cannot get up or may have injured your head, back, neck or hip. If you may be in pain, injured or unwell, contact NHS 111 now. Otherwise, rest and tell your GP or physiotherapist about the fall.",
+            blocks_assessment=True,
+            blocks_exercise=True,
+            requires_clinician_review=True,
+            offer_call_999=True,
+        )
+    if function_change == "much_harder" or _contains_any(note, ("massive regression", "major regression", "much worse than before")):
+        return _safety_outcome(
+            "urgent_review",
+            "major_functional_decline",
+            "A major change needs urgent review",
+            "Stop exercises and contact your stroke team, physiotherapist or GP today. If this change happened suddenly, or includes new face droop, arm weakness, speech difficulty, severe headache or collapse, call 999 now even if the symptoms improve. If you cannot reach your care team, contact NHS 111.",
+            blocks_assessment=True,
+            blocks_exercise=True,
+            requires_clinician_review=True,
+            offer_call_999=True,
+        )
+    if fall == "fall_no_injury":
+        return _safety_outcome(
+            "clinical_review",
+            "fall_without_reported_injury",
+            "Please pause and check how you feel",
+            "A fall is important even when no injury is obvious. Do not continue exercises today if you have pain, dizziness or feel unwell, and tell your GP or physiotherapist. Call 999 if you cannot get up or may have injured your head, back, neck or hip; contact NHS 111 if you are in pain, injured, unwell or unsure.",
+            blocks_assessment=False,
+            blocks_exercise=True,
+            requires_clinician_review=True,
+            offer_call_999=True,
+        )
+    if fall == "near_fall":
+        return _safety_outcome(
+            "caution",
+            "near_fall",
+            "A near fall is worth following up",
+            "Pause and make sure you feel steady before continuing. Tell your physiotherapist or GP about the near fall, especially if this is new or happening more often. If you develop sudden stroke symptoms or are in immediate danger, call 999.",
+            blocks_assessment=False,
+            blocks_exercise=False,
+            requires_clinician_review=True,
+        )
+    if pain >= 7 or tolerance == "stopped_for_symptoms":
+        return _safety_outcome(
+            "clinical_review",
+            "exercise_symptoms_or_severe_pain",
+            "Pause your plan",
+            "Stop exercises and contact your physiotherapist, stroke team or GP before continuing. If symptoms are sudden or severe, or you have new face, arm or speech changes, call 999.",
+            blocks_assessment=False,
+            blocks_exercise=True,
+            requires_clinician_review=True,
+        )
+    return _safety_outcome(
+        "clear",
+        "no_immediate_trigger_reported",
+        "No immediate safety trigger reported",
+        "No immediate safety trigger was reported in the latest check-in.",
+        blocks_assessment=False,
+        blocks_exercise=False,
+        requires_clinician_review=False,
+    )
+
+
+def _safety_status(check_in: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    return evaluate_survey_safety(check_in)
 
 
 def _supports_stable_classification(assessment: Optional[Dict[str, Any]]) -> bool:
@@ -462,7 +624,7 @@ def _select_questions(
     stage: str,
     pending_issue: Optional[Dict[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
-    ids = ["sudden_change", "function_change"]
+    ids = ["sudden_change", "falls", "emotional_safety", "function_change"]
     if has_plan:
         ids.append("exercise_tolerance")
     elif "lower_limb" in domains:
@@ -477,7 +639,7 @@ def _select_questions(
     elif "hand" in domains:
         ids.append("hand_use")
     elif "lower_limb" in domains:
-        ids.append("falls")
+        ids.append("walking_confidence")
     elif stage in {"early", "needs_review"}:
         ids.append("fatigue")
     else:
@@ -680,6 +842,9 @@ def build_adaptive_care_plan(
             "due_at": survey_due_at.isoformat(),
             "cadence_days": cadence["survey_days"],
             "max_questions": MAX_CHECK_IN_QUESTIONS,
+            "preface": SURVEY_PREFACE,
+            "all_questions_optional": True,
+            "may_stop_at_any_point": True,
             "questions": _select_questions(domains, has_plan, stage, pending_issue) if survey_due else [],
             "reason": "The interval adapts to recovery stage and recent changes; safety and function are checked before plan changes.",
         },

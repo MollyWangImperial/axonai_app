@@ -131,7 +131,39 @@ def test_runner_persists_failure_code_from_step_metadata():
         assert landmark in server_source
 
 
-def test_live_tasks_and_runner_routes_expose_step_failure_contract():
+def test_live_tasks_and_runner_routes_expose_step_failure_contract(monkeypatch):
+    selected_task_ids = [task["id"] for task in server.ASSESSMENT_PACKAGES["upper_limb"]["tasks"]]
+
+    async def user_from_header(_headers):
+        return {
+            "id": "u_upper_limb_contract",
+            "credits": 1000,
+            "consent": {"health_data_consent": True},
+            "profile": {},
+        }
+
+    async def prior_assessments(_user_id):
+        return [{"id": "prior", "created_at": "2026-01-01T00:00:00+00:00"}]
+
+    async def care_plan(_user, **_kwargs):
+        return {
+            "assessment": {
+                "due": True,
+                "can_start": True,
+                "trigger": "scheduled",
+                "packages": ["upper_limb"],
+                "task_ids": list(selected_task_ids),
+                "issue_report_id": None,
+            }
+        }
+
+    async def no_credit_charge(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(server, "_user_from_header", user_from_header)
+    monkeypatch.setattr(server, "_care_assessments_for_user", prior_assessments)
+    monkeypatch.setattr(server, "_adaptive_care_plan_for_user", care_plan)
+    monkeypatch.setattr(server, "consume_credits", no_credit_charge)
     with TestClient(server.app) as client:
         tasks_response = client.get("/api/assessment/tasks?package=upper_limb")
         assert tasks_response.status_code == 200
@@ -151,10 +183,13 @@ def test_live_tasks_and_runner_routes_expose_step_failure_contract():
         assert "failure_code: skipped && step.failure_phenotype" in runner_response.text
 
         task_result = _task_result_with_failures("T4", {"T4-S6"})
+        selected_task_ids[:] = ["T4"]
         submit_response = client.post(
             "/api/assessment/submit",
             json={
                 "affected_side": "right",
+                "assessment_package": "upper_limb",
+                "assigned_task_ids": ["T4"],
                 "task_results": [task_result.model_dump()],
             },
         )

@@ -119,6 +119,18 @@ export default function SettingsScreen() {
             />
           </SettingsGroup>
 
+          <SettingsGroup label="TESTING" palette={palette}>
+            <SettingsLink
+              testID="settings-testing-library"
+              icon="fitness-outline"
+              title="Task & exercise library"
+              subtitle="Open every guided item one at a time"
+              onPress={() => router.push("/testing-library" as never)}
+              palette={palette}
+              scale={scale}
+            />
+          </SettingsGroup>
+
           <SettingsGroup label="DEMO" palette={palette}>
             <SettingsToggle testID="settings-demo-mode" icon="sparkles-outline" title="Enable demo mode" subtitle="Show a sample movement story in Assessment history" value={preferences.demoMode} onValueChange={(value) => updatePreference("demoMode", value, value ? "Demo mode is on. Open Journey to view the sample story." : "Demo mode is off.")} palette={palette} scale={scale} />
           </SettingsGroup>

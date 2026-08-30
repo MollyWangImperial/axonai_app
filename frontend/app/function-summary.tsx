@@ -19,6 +19,8 @@ type DomainPresentation = {
   tone: "attention" | "well" | "pending" | "quiet";
 };
 
+type DetailMetric = { label: string; value: string };
+
 const domainOrder: DomainId[] = ["upper_limb", "hand", "lower_limb"];
 
 const tones = {
@@ -34,7 +36,7 @@ function presentationFor(domain: BodyFunctionDomainSummary | undefined, id: Doma
     return { id, title, status: "Not observed", message: `${title} was not captured this time.`, tone: "quiet" };
   }
   if (domain.status === "analysis_pending") {
-    return { id, title, status: "Reviewing", message: `${title} is still being analysed.`, tone: "pending" };
+    return { id, title, status: "Captured", message: `${title} results were recorded. Open this area to see what was measured.`, tone: "pending" };
   }
   if (domain.status === "review_recommended") {
     const message = id === "upper_limb"
@@ -75,14 +77,18 @@ function DomainIcon({ domain, compact }: { domain: DomainPresentation; compact: 
   );
 }
 
-function DomainFigure({ domain, compact }: { domain: DomainPresentation; compact: boolean }) {
+function DomainFigure({ domain, compact, selected, onPress }: { domain: DomainPresentation; compact: boolean; selected: boolean; onPress: () => void }) {
   const tone = tones[domain.tone];
   return (
-    <View
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={`Open ${domain.title} details`}
+      onPress={onPress}
       style={[
         styles.domainCard,
         compact && styles.domainCardCompact,
         { borderColor: "#DFE4DF", borderTopColor: tone.strong },
+        selected && { borderColor: tone.strong },
       ]}
       testID={`function-summary-${domain.id}`}
     >
@@ -92,8 +98,54 @@ function DomainFigure({ domain, compact }: { domain: DomainPresentation; compact
       <Text style={[styles.domainTitle, compact && styles.domainTitleCompact]}>{domain.title}</Text>
       <View style={[styles.statusPill, { backgroundColor: tone.strong }]}><Text style={styles.statusText}>{domain.status}</Text></View>
       <Text style={[styles.domainMessage, compact && styles.domainMessageCompact]}>{domain.message}</Text>
-    </View>
+      <View style={styles.openRow}><Text style={[styles.openText, { color: tone.strong }]}>{selected ? "Hide details" : "View details"}</Text><Ionicons name={selected ? "chevron-up" : "chevron-down"} size={20} color={tone.strong} /></View>
+    </Pressable>
   );
+}
+
+function formatPercent(value: number | null | undefined) {
+  return typeof value === "number" ? `${Math.round(value)}%` : null;
+}
+
+function domainDetail(data: PatientAssessmentSummary, domain: DomainPresentation) {
+  const values = data.functional_metrics?.domains?.[domain.id];
+  const category = domain.id === "upper_limb" ? "upper_limb" : domain.id === "hand" ? "hand" : "lower_limb";
+  const findings = (data.movement_snapshot_decision?.functional_findings || [])
+    .filter((finding) => finding.category === category)
+    .map((finding) => finding.label);
+  const metrics: DetailMetric[] = [];
+
+  if (domain.id === "upper_limb") {
+    const upper = values && "shoulder_elevation_deg" in values ? values : undefined;
+    const completion = formatPercent(upper?.step_completion_percent);
+    if (completion) metrics.push({ label: "Steps completed", value: completion });
+    if (typeof upper?.shoulder_elevation_deg === "number") metrics.push({ label: "Arm elevation", value: `${Math.round(upper.shoulder_elevation_deg)}°` });
+    if (typeof upper?.trunk_lean_deg === "number") metrics.push({ label: "Peak trunk movement", value: `${Math.round(upper.trunk_lean_deg)}°` });
+  } else if (domain.id === "hand") {
+    const hand = values && "hand_opening_percent" in values ? values : undefined;
+    const completion = formatPercent(hand?.step_completion_percent);
+    if (completion) metrics.push({ label: "Steps completed", value: completion });
+    const opening = formatPercent(hand?.hand_opening_percent);
+    if (opening) metrics.push({ label: "Hand opening", value: opening });
+    const pinch = formatPercent(hand?.pinch_control_percent);
+    if (pinch) metrics.push({ label: "Pinch control", value: pinch });
+  } else {
+    const walking = values && "bilateral_motion_symmetry_percent" in values ? values : undefined;
+    if (walking?.skipped) {
+      metrics.push({ label: "Walking observation", value: "Skipped" });
+    } else {
+      const symmetry = formatPercent(walking?.bilateral_motion_symmetry_percent);
+      if (symmetry) metrics.push({ label: "Leg-motion symmetry", value: symmetry });
+      if (typeof walking?.video_duration_seconds === "number") metrics.push({ label: "Walk observed", value: `${walking.video_duration_seconds}s` });
+      const visibility = formatPercent(walking?.full_body_visibility_percent);
+      if (visibility) metrics.push({ label: "Usable full-body frames", value: visibility });
+    }
+  }
+
+  let explanation = findings[0] || "No task-level problem was flagged in this area.";
+  if (domain.status === "Not observed") explanation = domain.message;
+  else if (!findings.length && domain.status === "Captured") explanation = "The task measures are saved. Deeper model analysis can add more detail later.";
+  return { findings, metrics, explanation };
 }
 
 export default function FunctionSummaryScreen() {
@@ -103,6 +155,7 @@ export default function FunctionSummaryScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const [data, setData] = useState<PatientAssessmentSummary | null>(null);
   const [loading, setLoading] = useState(true);
+  const [selectedDomain, setSelectedDomain] = useState<DomainId | null>(null);
   const isDemo = id === DEMO_ASSESSMENT_ID;
   const isWide = width >= 760;
 
@@ -126,6 +179,8 @@ export default function FunctionSummaryScreen() {
   const domains = useMemo(() => domainOrder.map((domainId) => (
     presentationFor(data?.body_function_summary.domains.find((domain) => domain.domain === domainId), domainId)
   )), [data?.body_function_summary.domains]);
+  const selectedPresentation = domains.find((domain) => domain.id === selectedDomain);
+  const selectedDetail = data && selectedPresentation ? domainDetail(data, selectedPresentation) : null;
 
   if (loading) {
     return <View style={[styles.container, styles.center]}><ActivityIndicator color={colors.brandPrimary} /><Text style={styles.loadingText}>Preparing your function summary...</Text></View>;
@@ -161,8 +216,32 @@ export default function FunctionSummaryScreen() {
           </View>
 
           <View style={[styles.domainList, isWide && styles.domainListWide]}>
-            {domains.map((domain) => <DomainFigure key={domain.id} domain={domain} compact={!isWide} />)}
+            {domains.map((domain) => (
+              <DomainFigure
+                key={domain.id}
+                domain={domain}
+                compact={!isWide}
+                selected={selectedDomain === domain.id}
+                onPress={() => setSelectedDomain((current) => current === domain.id ? null : domain.id)}
+              />
+            ))}
           </View>
+
+          {selectedPresentation && selectedDetail && (
+            <View style={styles.detailSection} testID={`function-detail-${selectedPresentation.id}`}>
+              <View style={styles.detailHeader}>
+                <View><Text style={styles.detailEyebrow}>WHY THIS RESULT</Text><Text style={styles.detailTitle}>{selectedPresentation.title}</Text></View>
+                <Pressable accessibilityLabel="Close details" onPress={() => setSelectedDomain(null)} style={styles.detailClose}><Ionicons name="close" size={22} color="#174834" /></Pressable>
+              </View>
+              <Text style={styles.detailExplanation}>{selectedDetail.explanation}</Text>
+              {selectedDetail.findings.length > 1 && <Text style={styles.detailSecondary}>{selectedDetail.findings.slice(1).join(" · ")}</Text>}
+              {!!selectedDetail.metrics.length && (
+                <View style={styles.metricRow}>
+                  {selectedDetail.metrics.map((metric) => <View key={metric.label} style={styles.metricItem}><Text style={styles.metricValue}>{metric.value}</Text><Text style={styles.metricLabel}>{metric.label}</Text></View>)}
+                </View>
+              )}
+            </View>
+          )}
 
           <Pressable testID="function-summary-view-snapshot" onPress={() => router.push({ pathname: "/results", params: { id } })} style={[styles.primaryButton, isWide && styles.primaryButtonWide]}>
             <Text style={[styles.primaryButtonText, isWide && styles.primaryButtonTextWide]}>View movement snapshot</Text>
@@ -209,6 +288,19 @@ const styles = StyleSheet.create({
   statusText: { color: "#FFFFFF", fontSize: 16, lineHeight: 20, fontWeight: "900" },
   domainMessage: { maxWidth: 272, marginTop: 18, color: "#303A35", fontSize: 17, lineHeight: 26, fontWeight: "500", textAlign: "center" },
   domainMessageCompact: { maxWidth: 310, marginTop: 14, fontSize: 15, lineHeight: 22 },
+  openRow: { marginTop: "auto", paddingTop: spacing.md, flexDirection: "row", alignItems: "center", gap: 4 },
+  openText: { fontSize: 14, lineHeight: 19, fontWeight: "800" },
+  detailSection: { marginTop: spacing.md, padding: spacing.lg, borderWidth: 1, borderColor: "#CEDBCF", borderRadius: radius.sm, backgroundColor: "#F7FAF5" },
+  detailHeader: { flexDirection: "row", alignItems: "flex-start", justifyContent: "space-between", gap: spacing.md },
+  detailEyebrow: { color: "#4A7856", fontSize: 11, lineHeight: 15, fontWeight: "900" },
+  detailTitle: { marginTop: 4, color: "#12392B", fontSize: 25, lineHeight: 31, fontWeight: "900" },
+  detailClose: { width: 40, height: 40, alignItems: "center", justifyContent: "center", borderWidth: 1, borderColor: "#D6DED5", borderRadius: 20, backgroundColor: "#FFFFFF" },
+  detailExplanation: { maxWidth: 720, marginTop: spacing.sm, color: "#303A35", fontSize: 16, lineHeight: 24, fontWeight: "600" },
+  detailSecondary: { marginTop: 6, color: "#5C665F", fontSize: 14, lineHeight: 21 },
+  metricRow: { marginTop: spacing.lg, flexDirection: "row", flexWrap: "wrap", gap: spacing.sm },
+  metricItem: { minWidth: 150, flexGrow: 1, paddingVertical: spacing.md, paddingHorizontal: spacing.md, borderTopWidth: 3, borderTopColor: "#4B9362", backgroundColor: "#FFFFFF" },
+  metricValue: { color: "#14543B", fontSize: 26, lineHeight: 32, fontWeight: "900" },
+  metricLabel: { marginTop: 3, color: "#5C665F", fontSize: 13, lineHeight: 18, fontWeight: "700" },
   primaryButton: { minHeight: 56, marginTop: spacing.lg, paddingHorizontal: spacing.lg, borderRadius: radius.sm, backgroundColor: "#15543C", flexDirection: "row", alignItems: "center", justifyContent: "center", gap: spacing.sm },
   primaryButtonWide: { minHeight: 84, marginTop: 36 },
   primaryButtonText: { color: "#FFFFFF", fontSize: 16, fontWeight: "800" },

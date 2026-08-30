@@ -6,6 +6,7 @@ import * as Haptics from "expo-haptics";
 import { colors, spacing, radius } from "@/src/theme";
 import { authedFetch, getCachedUser } from "@/src/auth";
 import { loadSettings, rescheduleReminders } from "@/src/utils/notifications";
+import { SurveyPrefaceModal } from "@/src/components/SurveyPrefaceModal";
 
 export function DailyCheckInCard() {
   const router = useRouter();
@@ -13,6 +14,7 @@ export function DailyCheckInCard() {
   const [surveyDue, setSurveyDue] = useState(false);
   const [message, setMessage] = useState("Your recovery plan is up to date today.");
   const [ready, setReady] = useState(false);
+  const [showPreface, setShowPreface] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -43,32 +45,41 @@ export function DailyCheckInCard() {
 
   if (!ready) return null;
 
+  const openChat = () => {
+    setShowPreface(false);
+    router.push({
+      pathname: "/(tabs)/chat" as never,
+      params: { prompt: surveyDue ? "Please begin my scheduled short recovery check-in." : "I would like to talk about how recovery is going today." },
+    });
+  };
+
   return (
-    <View style={styles.card} testID="daily-checkin-card">
-      <View style={styles.avatar}><Ionicons name="sparkles" size={20} color={colors.onBrandPrimary} /></View>
-      <View style={{ flex: 1, minWidth: 0 }}>
-        <View style={styles.topRow}>
-          <Text style={styles.from}>Alira</Text>
-          {surveyDue ? <View style={styles.duePill}><Text style={styles.dueText}>Check-in due</Text></View> : null}
+    <>
+      <View style={styles.card} testID="daily-checkin-card">
+        <View style={styles.avatar}><Ionicons name="sparkles" size={20} color={colors.onBrandPrimary} /></View>
+        <View style={{ flex: 1, minWidth: 0 }}>
+          <View style={styles.topRow}>
+            <Text style={styles.from}>Alira</Text>
+            {surveyDue ? <View style={styles.duePill}><Text style={styles.dueText}>Check-in due</Text></View> : null}
+          </View>
+          <Text style={styles.greeting}>{name ? `Hi ${name}, ` : "Hi there, "}{surveyDue ? "shall we check in?" : "your plan is on track."}</Text>
+          <Text style={styles.body}>{message}</Text>
+          <Pressable
+            testID="daily-checkin-chat"
+            onPress={() => {
+              Haptics.selectionAsync();
+              if (surveyDue) setShowPreface(true);
+              else openChat();
+            }}
+            style={styles.cta}
+          >
+            <Ionicons name="chatbubble-ellipses-outline" size={16} color={colors.brandPrimary} />
+            <Text style={styles.ctaText}>{surveyDue ? "Start short check-in" : "Talk to Alira"}</Text>
+          </Pressable>
         </View>
-        <Text style={styles.greeting}>{name ? `Hi ${name}, ` : "Hi there, "}{surveyDue ? "shall we check in?" : "your plan is on track."}</Text>
-        <Text style={styles.body}>{message}</Text>
-        <Pressable
-          testID="daily-checkin-chat"
-          onPress={() => {
-            Haptics.selectionAsync();
-            router.push({
-              pathname: "/(tabs)/chat" as never,
-              params: { prompt: surveyDue ? "Please begin my scheduled short recovery check-in." : "I would like to talk about how recovery is going today." },
-            });
-          }}
-          style={styles.cta}
-        >
-          <Ionicons name="chatbubble-ellipses-outline" size={16} color={colors.brandPrimary} />
-          <Text style={styles.ctaText}>{surveyDue ? "Start short check-in" : "Talk to Alira"}</Text>
-        </Pressable>
       </View>
-    </View>
+      <SurveyPrefaceModal visible={showPreface} onBegin={openChat} onClose={() => setShowPreface(false)} />
+    </>
   );
 }
 

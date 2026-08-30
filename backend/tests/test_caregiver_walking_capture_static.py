@@ -74,8 +74,19 @@ def test_walking_uses_device_specific_capture_controls_instead_of_target_circles
     assert 'data-testid="walking-mobile-actions"' in source
     assert 'data-testid="walking-choose-video"' in source
     assert 'data-testid="walking-start-recording"' in source
+    assert 'data-testid="walking-skip"' in source
     assert "const IS_MOBILE_CAPTURE_DEVICE" in source
     assert 'if(isWalkingTask()){\n    lapStatus.classList.add("hidden");\n    return;' in source
+
+
+def test_walking_can_be_skipped_without_recording_a_failed_gait_task():
+    source = server.POSE_RUNNER_HTML
+    assert 'walkingSkipBtn.addEventListener("click"' in source
+    assert 'metrics:{walking_skipped:true, skip_reason:"patient_unable_or_restricted"}' in source
+    assert 'total_steps:0' in source
+    assert 'steps:[]' in source
+    assert 'type:"walking_skipped"' in source
+    assert "mark it as not observed, not as a failed test" in source
 
 
 def test_desktop_walking_upload_keeps_mismatch_blocking_but_framing_advisory():

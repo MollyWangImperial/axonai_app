@@ -149,6 +149,23 @@ export default function HomeScreen() {
             </View>
           </View>
 
+          <Pressable
+            testID="home-emergency-fast"
+            accessibilityRole="button"
+            accessibilityLabel="Emergency FAST stroke check"
+            onPress={() => router.push("/(tabs)/emergency" as any)}
+            style={({ pressed }) => [styles.emergencyFast, pressed && styles.emergencyFastPressed]}
+          >
+            <View style={styles.emergencyFastIcon}>
+              <Ionicons name="warning" size={22} color="#B42318" />
+            </View>
+            <View style={styles.emergencyFastCopy}>
+              <Text style={styles.emergencyFastTitle}>Emergency FAST check</Text>
+              <Text style={styles.emergencyFastBody}>Sudden face, arm or speech change? Call 999 now.</Text>
+            </View>
+            <Ionicons name="chevron-forward" size={22} color="#FFFFFF" />
+          </Pressable>
+
           {!loading && <DailyCheckInCard />}
 
           {loading ? (
@@ -293,6 +310,29 @@ const styles = StyleSheet.create({
   },
   avatarText: { color: colors.onSurface, fontSize: 16, fontWeight: "800" },
   pressed: { opacity: 0.68 },
+  emergencyFast: {
+    minHeight: 72,
+    marginBottom: spacing.md,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+    borderRadius: radius.sm,
+    backgroundColor: "#B42318",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.sm,
+  },
+  emergencyFastPressed: { backgroundColor: "#8F1D14" },
+  emergencyFastIcon: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#FFFFFF",
+  },
+  emergencyFastCopy: { flex: 1, minWidth: 0 },
+  emergencyFastTitle: { color: "#FFFFFF", fontSize: 17, lineHeight: 22, fontWeight: "900" },
+  emergencyFastBody: { color: "#FFFFFF", fontSize: 13, lineHeight: 18, fontWeight: "600" },
   loadingState: { minHeight: 420, alignItems: "center", justifyContent: "center" },
   hero: {
     backgroundColor: "#F5F8F6",

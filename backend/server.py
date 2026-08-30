@@ -2,6 +2,7 @@ from fastapi import FastAPI, APIRouter, File, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse, Response, StreamingResponse
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
+from starlette.staticfiles import StaticFiles
 from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorGridFSBucket
 from bson import ObjectId
 from bson.errors import InvalidId
@@ -18,6 +19,8 @@ import asyncio
 import httpx
 import json
 import hashlib
+import sys
+import tempfile
 from datetime import datetime, timezone
 
 try:
@@ -47,12 +50,15 @@ try:
     )
     from backend.object_storage import task_video_object_storage
     from backend.patient_insights import build_patient_insights
+    from backend.fast_screening import FAST_RUNNER_HTML, evaluate_fast_screen
     from backend.alira_care_orchestrator import (
         QUESTION_BANK as ALIRA_CARE_QUESTION_BANK,
         FUNCTIONAL_ISSUE_CATALOG,
+        SURVEY_PREFACE,
         approved_functional_issue_categories,
         approved_question_ids,
         build_adaptive_care_plan,
+        evaluate_survey_safety,
         initial_assessment_recommendation,
         validate_check_in_answers,
     )
@@ -84,12 +90,15 @@ except ImportError:
     )
     from object_storage import task_video_object_storage
     from patient_insights import build_patient_insights
+    from fast_screening import FAST_RUNNER_HTML, evaluate_fast_screen
     from alira_care_orchestrator import (
         QUESTION_BANK as ALIRA_CARE_QUESTION_BANK,
         FUNCTIONAL_ISSUE_CATALOG,
+        SURVEY_PREFACE,
         approved_functional_issue_categories,
         approved_question_ids,
         build_adaptive_care_plan,
+        evaluate_survey_safety,
         initial_assessment_recommendation,
         validate_check_in_answers,
     )
@@ -120,7 +129,12 @@ LOCAL_STATE_DIR = ROOT_DIR / ".local_state"
 LOCAL_USERS_FILE = LOCAL_STATE_DIR / "users.json"
 LOCAL_TASK_PROGRESS_FILE = LOCAL_STATE_DIR / "task_progress.json"
 LOCAL_CARE_STATE_FILE = LOCAL_STATE_DIR / "alira_care_state.json"
-ALIRA_ACTION_LOGGER = AliraActionLogger()
+_configured_action_log_dir = os.environ.get("ALIRA_ACTION_LOG_DIR")
+_action_log_dir = (
+    _configured_action_log_dir
+    or (Path(tempfile.gettempdir()) / "rehyn-pytest-action-logs" / str(os.getpid()) if "pytest" in sys.modules else None)
+)
+ALIRA_ACTION_LOGGER = AliraActionLogger(_action_log_dir)
 
 
 def _record_alira_action(
@@ -205,6 +219,7 @@ ALIRA_NAVIGATION_DESTINATIONS = (
     "movement_map",
     "rehab_plan",
     "guided_exercise",
+    "emergency_fast_check",
     "back",
 )
 ALIRA_NAVIGATION_TOOL = {
@@ -216,7 +231,8 @@ ALIRA_NAVIGATION_TOOL = {
         "describe menu steps. Use progress for progress tracking, assessment_history for prior assessments, "
         "function_summary for the latest function-at-a-glance page, movement_snapshot for the latest result, "
         "movement_map for the interactive anatomy map, rehab_plan or guided_exercise for the current plan, "
-        "journal_entry to write a recovery note, and back to return to the previous page. This tool only opens "
+        "emergency_fast_check for the guided Face-Arms-Speech emergency screen, journal_entry to write a "
+        "recovery note, and back to return to the previous page. This tool only opens "
         "pages. It never changes settings, deletes data, submits forms, or performs clinical actions."
     ),
     "parameters": {
@@ -237,7 +253,8 @@ ALIRA_RECORD_CHECKIN_TOOL = {
     "name": "record_rehab_check_in",
     "description": (
         "Save the patient's answers from a short Alira recovery check-in. Ask only the questions listed in "
-        "the current adaptive care plan, one at a time. Call this after the patient has answered; never infer "
+        "the current adaptive care plan, one at a time. Every question is optional. Save any answers the patient "
+        "chooses to give, and stop without penalty if they do not want to continue. Never infer "
         "an answer from silence, video, or an unrelated statement. The backend validates every value and "
         "returns the next safe survey, assessment, and exercise-plan action."
     ),
@@ -256,6 +273,9 @@ ALIRA_RECORD_CHECKIN_TOOL = {
                     "goal_activity": {"type": "string", "enum": ["not_tried", "easier", "about_the_same", "harder", "needed_more_help"]},
                     "walking_confidence": {"type": "string", "enum": ["not_applicable", "confident", "a_little_unsure", "very_unsure", "needed_more_help"]},
                     "hand_use": {"type": "string", "enum": ["not_at_all", "a_little", "often", "most_activities"]},
+                    "arm_use": {"type": "string", "enum": ["not_tried", "comfortable", "needed_more_effort", "needed_help", "unable"]},
+                    "balance_confidence": {"type": "string", "enum": ["not_applicable", "steady", "a_little_unsteady", "very_unsteady", "needed_help"]},
+                    "emotional_safety": {"type": "string", "enum": ["no", "thoughts_but_safe", "cannot_keep_safe", "prefer_not_to_say"]},
                 },
                 "additionalProperties": False,
             },
@@ -318,6 +338,10 @@ tts_client = OpenAITextToSpeech(api_key=EMERGENT_LLM_KEY) if (OpenAITextToSpeech
 app = FastAPI()
 api_router = APIRouter(prefix="/api")
 
+MEDIAPIPE_ASSET_DIR = Path(__file__).resolve().parents[1] / "frontend" / "public" / "vendor" / "mediapipe"
+if MEDIAPIPE_ASSET_DIR.is_dir():
+    app.mount("/vendor/mediapipe", StaticFiles(directory=str(MEDIAPIPE_ASSET_DIR)), name="mediapipe-assets")
+
 
 # ============ Models ============
 class StatusCheck(BaseModel):
@@ -338,6 +362,13 @@ class TTSRequest(BaseModel):
 class TTSResponse(BaseModel):
     audio_b64: str
     text: str
+
+
+class FastCheckSubmit(BaseModel):
+    answers: Dict[str, str]
+    automated: Dict[str, Any] = Field(default_factory=dict)
+    onset_time: Optional[str] = Field(default=None, max_length=40)
+    source: str = Field(default="guided_fast", pattern="^guided_fast$")
 
 
 class TaskStepResult(BaseModel):
@@ -452,6 +483,8 @@ class Assessment(BaseModel):
     clinical_review_gate: Dict[str, Any] = Field(default_factory=dict)
     body_function_summary: Dict[str, Any] = Field(default_factory=dict)
     patient_insights: Dict[str, Any] = Field(default_factory=dict)
+    movement_snapshot_decision: Dict[str, Any] = Field(default_factory=dict)
+    metrics: Dict[str, Any] = Field(default_factory=dict)
 
 
 # ============ 7 Tasks: Step-by-step with voice prompts & on-screen target zones ============
@@ -535,11 +568,11 @@ TASKS_DATA: List[Dict[str, Any]] = [
             },
             {
                 "id": "T2-S4",
-                "voice": "Beautiful. Now, gently lower your affected arm back to your side.",
-                "target": {"x": 0.5, "y": 0.85, "r": 0.10, "landmark": "WRIST"},
+                "voice": "Beautiful. Now, gently lower your affected hand back to the same place on your lap.",
+                "target": {"x": 0.5, "y": 0.78, "r": 0.10, "landmark": "LAP_DYNAMIC"},
                 "hold_ms": 1500,
-                "caption": "Lower arm",
-                "failure_phenotype": {"code": "SHOULDER_LOWERING_IMPAIRED", "domain": "shoulder_lowering_control", "label": "Difficulty controlling arm lowering", "description": "The affected arm did not complete the controlled lowering movement back toward the side.", "severity": "mild", "source": "Task-specific movement observation", "rehab_code": "SHOULDER_FLEX_LIMITED"},
+                "caption": "Return hand to the calibrated lap position",
+                "failure_phenotype": {"code": "SHOULDER_LOWERING_IMPAIRED", "domain": "shoulder_lowering_control", "label": "Difficulty controlling arm lowering", "description": "The affected arm did not complete the controlled lowering movement back to the lap.", "severity": "mild", "source": "Task-specific movement observation", "rehab_code": "SHOULDER_FLEX_LIMITED"},
             },
         ],
     },
@@ -810,7 +843,7 @@ HAND_TASKS_DATA: List[Dict[str, Any]] = [
         "steps": [
             {"id": "H1-S1", "voice": "We will begin the hand function package. Bring your affected hand up in front of your chest, with your palm facing the camera. Keep your fingers relaxed for now. Please do not open your hand yet.", "target": {"x": 0.5, "y": 0.45, "r": 0.12, "landmark": "WRIST"}, "hold_ms": 1200, "caption": "Hand up, palm facing camera, fingers relaxed"},
             {"id": "H1-S2", "voice": "Now slowly open your fingers as wide as you comfortably can. Take your time, then hold your palm open and steady.", "target": {"x": 0.5, "y": 0.45, "r": 0.12, "landmark": "HAND_OPEN"}, "hold_ms": 1300, "caption": "Slowly open hand wide", "measure": ["finger_extension", "palm_openness", "thumb_index_spread"]},
-            {"id": "H1-S3", "voice": "Good. Relax your hand and lower it to your lap.", "target": {"x": 0.5, "y": 0.82, "r": 0.20, "landmark": "LAP_DYNAMIC"}, "hold_ms": 1200, "caption": "Lower hand to lap"},
+            {"id": "H1-S3", "voice": "Good. Relax your hand and lower it to the same place on your lap.", "target": {"x": 0.5, "y": 0.78, "r": 0.10, "landmark": "LAP_DYNAMIC"}, "hold_ms": 1200, "caption": "Return hand to the calibrated lap position"},
         ],
     },
     {
@@ -1168,6 +1201,305 @@ def derive_functional_issues(task_results: List[TaskResult]) -> List[FunctionalI
     return issues
 
 
+def _snapshot_value(item: Any, key: str, default: Any = None) -> Any:
+    if isinstance(item, dict):
+        return item.get(key, default)
+    return getattr(item, key, default)
+
+
+def _progress_task_domain(task_id: str) -> str:
+    if task_id.startswith("H"):
+        return "hand"
+    if task_id.startswith(("L", "B")):
+        return "lower_limb"
+    return "upper_limb"
+
+
+def build_functional_metrics(task_results: Sequence[Any]) -> Dict[str, Any]:
+    """Derive stable patient-facing progress metrics from saved task evidence."""
+    tasks = list(task_results)
+
+    def domain_tasks(domain: str) -> List[Any]:
+        return [task for task in tasks if _progress_task_domain(str(_snapshot_value(task, "task_id", ""))) == domain]
+
+    def records(domain: str) -> List[Dict[str, Any]]:
+        rows: List[Dict[str, Any]] = []
+        for task in domain_tasks(domain):
+            task_metrics = _snapshot_value(task, "metrics", {}) or {}
+            if isinstance(task_metrics, dict):
+                rows.append(task_metrics)
+            for step in _snapshot_value(task, "steps", []) or []:
+                step_metrics = _snapshot_value(step, "metrics", {}) or {}
+                if isinstance(step_metrics, dict):
+                    rows.append(step_metrics)
+        return rows
+
+    def numeric_max(domain: str, *keys: str) -> Optional[float]:
+        values = [
+            float(row[key])
+            for row in records(domain)
+            for key in keys
+            if isinstance(row.get(key), (int, float)) and not isinstance(row.get(key), bool)
+        ]
+        return max(values) if values else None
+
+    def completion(domain: str) -> Optional[float]:
+        selected = [
+            task for task in domain_tasks(domain)
+            if not bool((_snapshot_value(task, "metrics", {}) or {}).get("walking_skipped"))
+        ]
+        total = sum(max(0, int(_snapshot_value(task, "total_steps", 0) or 0)) for task in selected)
+        if not total:
+            return None
+        completed = sum(max(0, int(_snapshot_value(task, "completed_steps", 0) or 0)) for task in selected)
+        return round(min(1.0, completed / total), 3)
+
+    upper_tasks = domain_tasks("upper_limb")
+    hand_tasks = domain_tasks("hand")
+    lower_tasks = domain_tasks("lower_limb")
+    walking_skipped = any(bool((_snapshot_value(task, "metrics", {}) or {}).get("walking_skipped")) for task in lower_tasks)
+    shoulder_elevation = numeric_max("upper_limb", "shoulder_elevation_deg")
+    trunk_lean = numeric_max("upper_limb", "trunk_lean_deg")
+    hand_opening = numeric_max("hand", "hand_open_score")
+    pinch_grip = numeric_max("hand", "pinch_score")
+    gait_symmetry = numeric_max("lower_limb", "gait_bilateral_motion_symmetry", "bilateral_wrist_displacement_symmetry")
+    gait_visibility = numeric_max("lower_limb", "gait_full_body_visibility_ratio")
+    walking_duration_ms = numeric_max("lower_limb", "uploaded_video_duration_ms")
+    reach_completion = completion("upper_limb")
+    hand_completion = completion("hand")
+    walking_completion = completion("lower_limb")
+    shoulder_hike = any(bool(row.get("shoulder_hike")) for row in records("upper_limb"))
+
+    return {
+        "shoulder_flexion_deg": round(shoulder_elevation, 1) if shoulder_elevation is not None else None,
+        "trunk_lean_deg": round(trunk_lean, 1) if trunk_lean is not None else None,
+        "reach_completion": reach_completion,
+        "bilateral_symmetry": round(gait_symmetry, 3) if gait_symmetry is not None else None,
+        "pinch_grip": round(pinch_grip, 3) if pinch_grip is not None else None,
+        "hand_opening": round(hand_opening, 3) if hand_opening is not None else None,
+        "walking_skipped": walking_skipped,
+        "domains": {
+            "upper_limb": {
+                "observed": bool(upper_tasks),
+                "step_completion_percent": round(100 * reach_completion) if reach_completion is not None else None,
+                "shoulder_elevation_deg": round(shoulder_elevation, 1) if shoulder_elevation is not None else None,
+                "trunk_lean_deg": round(trunk_lean, 1) if trunk_lean is not None else None,
+                "shoulder_hike_detected": shoulder_hike,
+            },
+            "hand": {
+                "observed": bool(hand_tasks),
+                "step_completion_percent": round(100 * hand_completion) if hand_completion is not None else None,
+                "hand_opening_percent": round(100 * hand_opening) if hand_opening is not None else None,
+                "pinch_control_percent": round(100 * pinch_grip) if pinch_grip is not None else None,
+            },
+            "lower_limb": {
+                "observed": bool(lower_tasks) and not walking_skipped,
+                "skipped": walking_skipped,
+                "step_completion_percent": round(100 * walking_completion) if walking_completion is not None else None,
+                "bilateral_motion_symmetry_percent": round(100 * gait_symmetry) if gait_symmetry is not None else None,
+                "full_body_visibility_percent": round(100 * gait_visibility) if gait_visibility is not None else None,
+                "video_duration_seconds": round(walking_duration_ms / 1000, 1) if walking_duration_ms is not None else None,
+            },
+        },
+    }
+
+
+def _snapshot_issue_category(issue: Any) -> str:
+    text = " ".join(
+        str(_snapshot_value(issue, key, "") or "")
+        for key in ("code", "label", "description", "phenotype_domain")
+    ).lower()
+    domain = str(_snapshot_value(issue, "phenotype_domain", "") or "").lower()
+    if domain == "lower_limb" or re.search(r"walk|gait|step|balance|lower limb|knee|ankle", text):
+        return "lower_limb"
+    if domain == "hand" or re.search(r"hand|finger|grip|grasp|pinch", text):
+        return "hand"
+    if domain == "upper_limb" or re.search(r"shoulder|reach|arm|deltoid|elbow|trunk", text):
+        return "upper_limb"
+    return "other"
+
+
+def _snapshot_threshold_events(task_results: Sequence[Any]) -> List[Dict[str, Any]]:
+    events: List[Dict[str, Any]] = []
+    for task in task_results:
+        task_id = str(_snapshot_value(task, "task_id", ""))
+        records = [("task", _snapshot_value(task, "metrics", {}) or {})]
+        records.extend(
+            (str(_snapshot_value(step, "step_id", "")), _snapshot_value(step, "metrics", {}) or {})
+            for step in (_snapshot_value(task, "steps", []) or [])
+        )
+        trunk_values = [
+            (source, float(metrics["trunk_lean_deg"]))
+            for source, metrics in records
+            if isinstance(metrics, dict) and isinstance(metrics.get("trunk_lean_deg"), (int, float))
+        ]
+        if trunk_values:
+            source, observed = max(trunk_values, key=lambda item: item[1])
+            if observed > 18:
+                events.append({
+                    "task_id": task_id,
+                    "source": source,
+                    "metric": "trunk_lean_deg",
+                    "observed": round(observed, 2),
+                    "operator": ">",
+                    "threshold": 18,
+                    "finding_code": "TRUNK_COMP",
+                    "severity_rule": "moderate above 30 degrees; otherwise mild",
+                })
+        shoulder_sources = [
+            source
+            for source, metrics in records
+            if isinstance(metrics, dict) and metrics.get("shoulder_hike") is True
+        ]
+        if shoulder_sources:
+            events.append({
+                "task_id": task_id,
+                "source": shoulder_sources[0],
+                "metric": "shoulder_hike",
+                "observed": True,
+                "operator": "is",
+                "threshold": True,
+                "finding_code": "SHOULDER_HIKE",
+            })
+    return events
+
+
+def build_movement_snapshot_decision(
+    task_results: Sequence[Any],
+    functional_issues: Sequence[Any],
+    body_function_summary: Dict[str, Any],
+    affected_side: str,
+    model_analysis: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Create one auditable source of truth for the patient snapshot presentation."""
+    side = "left" if str(affected_side).lower() == "left" else "right"
+    issues = [item for item in functional_issues if str(_snapshot_value(item, "code", "")) != "NO_ISSUES"]
+    issue_rows = [
+        {
+            "code": str(_snapshot_value(item, "code", "")),
+            "label": str(_snapshot_value(item, "label", "")),
+            "severity": str(_snapshot_value(item, "severity", "")),
+            "related_task": str(_snapshot_value(item, "related_task", "")),
+            "related_step": _snapshot_value(item, "related_step"),
+            "phenotype_domain": _snapshot_value(item, "phenotype_domain"),
+            "category": _snapshot_issue_category(item),
+        }
+        for item in issues
+    ]
+    primary = next((item for item in issue_rows if item["category"] == "upper_limb"), None)
+    primary = primary or (issue_rows[0] if issue_rows else None)
+    overall_status = str(body_function_summary.get("overall_status") or "analysis_pending")
+
+    if primary:
+        category = primary["category"]
+        if category == "upper_limb":
+            presentation = {
+                "eyebrow": f"{side.upper()} SHOULDER",
+                "title": f"Your {side} shoulder may need support when reaching",
+                "summary": "Reaching, lifting, or placing everyday objects may require more effort.",
+                "tone": "attention",
+            }
+        elif category == "hand":
+            presentation = {
+                "eyebrow": "HAND CONTROL",
+                "title": f"Using your {side} hand may need support",
+                "summary": "This may affect opening your hand, holding everyday objects, or letting them go.",
+                "tone": "attention",
+            }
+        elif category == "lower_limb":
+            presentation = {
+                "eyebrow": "WALKING",
+                "title": "Walking may need support",
+                "summary": "This may affect walking confidence, balance, or how easily you move around.",
+                "tone": "attention",
+            }
+        else:
+            presentation = {
+                "eyebrow": "MOVEMENT CHECK",
+                "title": primary["label"],
+                "summary": "This movement area may need extra support during everyday activities.",
+                "tone": "attention",
+            }
+    elif overall_status == "no_observable_difficulty":
+        presentation = {
+            "eyebrow": "MOVEMENT CHECK",
+            "title": "Your movement looked steady",
+            "summary": "No clear functional problem stood out in the movements completed during this assessment.",
+            "tone": "well",
+        }
+    else:
+        presentation = {
+            "eyebrow": "ANALYSIS IN PROGRESS",
+            "title": "We are checking your movement",
+            "summary": "Your recordings are still being reviewed before a functional finding is shown.",
+            "tone": "pending",
+        }
+
+    marker_visible = bool(primary and primary["category"] == "upper_limb")
+    marker = {
+        "visible": marker_visible,
+        "region": f"{side}_shoulder" if marker_visible else None,
+        "side": side if marker_visible else None,
+        "source_issue_code": primary["code"] if marker_visible else None,
+        "coordinate_source": "age-specific anatomy shoulder anchor" if marker_visible else None,
+        "reason": (
+            "The primary finding was classified as upper-limb reaching or shoulder function, so the affected-side shoulder anchor is highlighted."
+            if marker_visible else
+            "No upper-limb primary finding was selected, so the shoulder marker is hidden."
+        ),
+    }
+    step_issue_codes = {
+        (item["related_task"], item["related_step"]): item["code"]
+        for item in issue_rows
+        if item.get("related_step")
+    }
+    step_outcomes = [
+        {
+            "task_id": str(_snapshot_value(task, "task_id", "")),
+            "step_id": str(_snapshot_value(step, "step_id", "")),
+            "completed": bool(_snapshot_value(step, "completed", False)),
+            "failure_code": (
+                _snapshot_value(step, "failure_code")
+                or step_issue_codes.get((str(_snapshot_value(task, "task_id", "")), str(_snapshot_value(step, "step_id", ""))))
+            ),
+        }
+        for task in task_results
+        for step in (_snapshot_value(task, "steps", []) or [])
+    ]
+    analysis = dict(model_analysis or {})
+    return {
+        "version": "1.0",
+        "status": "finding_selected" if primary else overall_status,
+        "affected_side": side,
+        "step_outcomes": step_outcomes,
+        "triggered_thresholds": _snapshot_threshold_events(task_results),
+        "functional_findings": issue_rows,
+        "body_function_domains": [
+            {
+                "domain": item.get("domain"),
+                "status": item.get("status"),
+                "findings_count": item.get("findings_count", 0),
+                "step_completion_percent": item.get("step_completion_percent", 0),
+            }
+            for item in body_function_summary.get("domains") or []
+        ],
+        "model_status": {
+            "overall": analysis.get("status", "waiting_for_inputs"),
+            "gpu_stage": dict(analysis.get("gpu_stage") or {}),
+            "musculoskeletal_stage": dict(analysis.get("musculoskeletal_stage") or {}),
+        },
+        "primary_finding": primary,
+        "selection_rule": {
+            "strategy": "prioritize the first derived upper-limb finding; otherwise use the first derived finding",
+            "candidate_issue_codes": [item["code"] for item in issue_rows],
+            "selected_issue_code": primary["code"] if primary else None,
+            "no_issue_sentinel_excluded": True,
+        },
+        "presentation": presentation,
+        "anatomy_marker": marker,
+    }
+
+
 # ============ Rehab Exercise Library (rule-based) ============
 EXERCISE_LIBRARY: Dict[str, RehabExercise] = {
     "REACH_INCOMPLETE": RehabExercise(
@@ -1420,14 +1752,25 @@ async def get_status_checks():
 
 
 @api_router.get("/assessment/tasks")
-async def get_tasks(request: Request, package: str = "upper_limb", task_ids: Optional[str] = None):
+async def get_tasks(
+    request: Request,
+    package: str = "upper_limb",
+    task_ids: Optional[str] = None,
+    library_test: bool = False,
+):
     selected = ASSESSMENT_PACKAGES.get(package, ASSESSMENT_PACKAGES["upper_limb"])
     user = await _user_from_header(dict(request.headers))
     if not user:
         raise HTTPException(status_code=401, detail="Sign in required")
     requested = [item.strip() for item in task_ids.split(",") if item.strip()] if task_ids is not None else None
-    access = await _assessment_access_plan(user, selected["id"], requested)
-    selected_ids = _validated_assigned_task_ids(selected["id"], list(access.get("task_ids") or []))
+    if library_test:
+        if requested is None or len(requested) != 1:
+            raise HTTPException(status_code=422, detail="Library testing requires exactly one assessment task")
+        selected_ids = _validated_assigned_task_ids(selected["id"], requested)
+        access = {"trigger": "settings_library_test", "issue_report_id": None}
+    else:
+        access = await _assessment_access_plan(user, selected["id"], requested)
+        selected_ids = _validated_assigned_task_ids(selected["id"], list(access.get("task_ids") or []))
     selected_tasks = [task for task in selected["tasks"] if task["id"] in set(selected_ids)]
     _record_alira_action(
         "assessment_tasks_served",
@@ -1438,7 +1781,8 @@ async def get_tasks(request: Request, package: str = "upper_limb", task_ids: Opt
             "task_ids": [task["id"] for task in selected_tasks],
             "selection_trigger": access.get("trigger"),
             "issue_report_id": access.get("issue_report_id"),
-            "task_order": "alira_selected_approved_order",
+            "task_order": "single_settings_library_test" if library_test else "alira_selected_approved_order",
+            "library_test": library_test,
         },
     )
     packages = [
@@ -2153,14 +2497,23 @@ async def submit_assessment(payload: AssessmentSubmit, request: Request):
         task_ids,
     )
     model_analysis = build_model_analysis_manifest(assessment_id, task_ids, video_records)
+    skipped_task_ids = {
+        task.task_id for task in payload.task_results
+        if bool((task.metrics or {}).get("walking_skipped"))
+    }
+    for task_state in model_analysis.get("tasks", []):
+        if str(task_state.get("task_id")) in skipped_task_ids:
+            task_state["status"] = "not_observed_patient_skipped"
     model_analysis["gpu_stage"] = {
         "status": "queued" if LOCAL_GPU_WORKER_URL else "not_configured",
         "device": "cuda:0" if LOCAL_GPU_WORKER_URL else None,
     }
     walking_video_ready = bool((video_records.get("L6") or {}).get("id"))
+    walking_was_skipped = "L6" in skipped_task_ids
     model_analysis["musculoskeletal_stage"] = {
         "status": (
             "queued" if LOCAL_GPU_WORKER_URL and walking_video_ready
+            else "not_observed_patient_skipped" if walking_was_skipped
             else "waiting_for_walking_video" if LOCAL_GPU_WORKER_URL
             else "not_configured"
         ),
@@ -2172,6 +2525,7 @@ async def submit_assessment(payload: AssessmentSubmit, request: Request):
         logger.warning("Ignoring client-supplied musculoskeletal outputs; trusted worker ingestion is required")
     trusted_model_outputs: Dict[str, Any] = {}
     issues = derive_functional_issues(payload.task_results)
+    functional_metrics = build_functional_metrics(payload.task_results)
     domain_assessments = build_domain_assessments(payload.task_results)
     expected_summary_domains = _expected_domains_for_tasks(payload.assessment_package, assigned_task_ids)
     body_function_summary = patient_body_function_summary(
@@ -2179,6 +2533,13 @@ async def submit_assessment(payload: AssessmentSubmit, request: Request):
         issues,
         trusted_model_outputs,
         expected_summary_domains,
+    )
+    movement_snapshot_decision = build_movement_snapshot_decision(
+        payload.task_results,
+        issues,
+        body_function_summary,
+        payload.affected_side,
+        model_analysis,
     )
     clinician_measures = build_clinician_measure_summary(patient_parameters)
     biomechanical_estimates = build_biomechanical_estimates(
@@ -2243,6 +2604,8 @@ async def submit_assessment(payload: AssessmentSubmit, request: Request):
         analysis_pipeline=analysis_pipeline,
         clinical_review_gate=clinical_review_gate,
         body_function_summary=body_function_summary,
+        movement_snapshot_decision=movement_snapshot_decision,
+        metrics=functional_metrics,
     )
     doc = assessment.model_dump()
     if payload.motion_data:
@@ -2263,6 +2626,15 @@ async def submit_assessment(payload: AssessmentSubmit, request: Request):
         logger.warning(f"Mongo unavailable for assessment insert; using local fallback: {str(e)[:120]}")
         LOCAL_ASSESSMENTS.append(doc.copy())
     await _mark_functional_issue_assessed(user["id"], access.get("issue_report_id"), assessment_id)
+    _record_alira_action(
+        "movement_snapshot_generated",
+        source="assessment_pipeline",
+        user_id=user["id"],
+        details={
+            "assessment_id": assessment_id,
+            **movement_snapshot_decision,
+        },
+    )
     _record_alira_action(
         "assessment_completed",
         source="assessment_runner",
@@ -2329,28 +2701,34 @@ async def get_assessment_history(request: Request):
     return [Assessment(**d) for d in docs]
 
 
-@api_router.get("/assessment/{assessment_id}", response_model=Assessment)
-async def get_assessment(assessment_id: str):
+async def _owned_assessment_doc(assessment_id: str, request: Request, purpose: str) -> Dict[str, Any]:
+    user = await _user_from_header(dict(request.headers))
+    if not user:
+        raise HTTPException(status_code=401, detail="Sign in required")
+    _require_health_data_consent(user)
     try:
-        doc = await db.assessments.find_one({"id": assessment_id}, {"_id": 0})
+        doc = await db.assessments.find_one({"id": assessment_id, "user_id": user["id"]}, {"_id": 0})
     except Exception as e:
-        logger.warning(f"Mongo unavailable for assessment get; using local fallback: {str(e)[:120]}")
-        doc = next((item for item in LOCAL_ASSESSMENTS if item.get("id") == assessment_id), None)
+        logger.warning("Mongo unavailable for %s; using local fallback: %s", purpose, str(e)[:120])
+        doc = next(
+            (item for item in LOCAL_ASSESSMENTS if item.get("id") == assessment_id and item.get("user_id") == user["id"]),
+            None,
+        )
     if not doc:
         raise HTTPException(status_code=404, detail="Assessment not found")
+    return doc
+
+
+@api_router.get("/assessment/{assessment_id}", response_model=Assessment)
+async def get_assessment(assessment_id: str, request: Request):
+    doc = await _owned_assessment_doc(assessment_id, request, "assessment get")
     return Assessment(**doc)
 
 
 @api_router.get("/assessment/{assessment_id}/patient-summary")
-async def get_patient_assessment_summary(assessment_id: str):
+async def get_patient_assessment_summary(assessment_id: str, request: Request):
     """Return only the concise collection receipt intended for patients."""
-    try:
-        doc = await db.assessments.find_one({"id": assessment_id}, {"_id": 0})
-    except Exception as e:
-        logger.warning(f"Mongo unavailable for patient summary; local fallback: {str(e)[:120]}")
-        doc = next((item for item in LOCAL_ASSESSMENTS if item.get("id") == assessment_id), None)
-    if not doc:
-        raise HTTPException(status_code=404, detail="Assessment not found")
+    doc = await _owned_assessment_doc(assessment_id, request, "patient summary")
     package_id = str(doc.get("assessment_package") or "upper_limb")
     assigned_task_ids = doc.get("assigned_task_ids") or [str(item.get("task_id")) for item in doc.get("task_results", [])]
     expected = len(assigned_task_ids) or len(ASSESSMENT_PACKAGES.get(package_id, {}).get("tasks", []))
@@ -2368,6 +2746,14 @@ async def get_patient_assessment_summary(assessment_id: str):
         "assessment_package": package_id,
         "collection": collection,
         "body_function_summary": body_function_summary,
+        "movement_snapshot_decision": doc.get("movement_snapshot_decision") or build_movement_snapshot_decision(
+            doc.get("task_results", []),
+            doc.get("functional_issues", []),
+            body_function_summary,
+            doc.get("affected_side", "right"),
+            doc.get("model_analysis") or {},
+        ),
+        "functional_metrics": doc.get("metrics") or build_functional_metrics(doc.get("task_results", [])),
         "insights": doc.get("patient_insights") or build_patient_insights(
             body_function_summary,
             doc.get("musculoskeletal_outputs") or {},
@@ -2380,15 +2766,9 @@ async def get_patient_assessment_summary(assessment_id: str):
 
 
 @api_router.get("/assessment/{assessment_id}/analysis-status")
-async def get_assessment_analysis_status(assessment_id: str):
+async def get_assessment_analysis_status(assessment_id: str, request: Request):
     """Return processing state without exposing internal model predictions."""
-    try:
-        doc = await db.assessments.find_one({"id": assessment_id}, {"_id": 0})
-    except Exception as exc:
-        logger.warning(f"Mongo unavailable for analysis status; local fallback: {str(exc)[:120]}")
-        doc = next((item for item in LOCAL_ASSESSMENTS if item.get("id") == assessment_id), None)
-    if not doc:
-        raise HTTPException(status_code=404, detail="Assessment not found")
+    doc = await _owned_assessment_doc(assessment_id, request, "analysis status")
     model_analysis = doc.get("model_analysis") or {}
     gpu_stage = model_analysis.get("gpu_stage") or {}
     musculoskeletal_stage = model_analysis.get("musculoskeletal_stage") or {}
@@ -2638,6 +3018,13 @@ async def save_musculoskeletal_stage_results(
     body_summary = doc.get("body_function_summary") or {}
     model_analysis = dict(doc.get("model_analysis") or {})
     model_analysis["musculoskeletal_stage"] = stage_status
+    movement_snapshot_decision = build_movement_snapshot_decision(
+        doc.get("task_results", []),
+        doc.get("functional_issues", []),
+        body_summary,
+        doc.get("affected_side", "right"),
+        model_analysis,
+    )
     insights = build_patient_insights(
         body_summary,
         doc.get("musculoskeletal_outputs") or {},
@@ -2648,6 +3035,7 @@ async def save_musculoskeletal_stage_results(
         "musculoskeletal_research_stage": stage,
         "model_analysis.musculoskeletal_stage": stage_status,
         "patient_insights": insights,
+        "movement_snapshot_decision": movement_snapshot_decision,
     }
     try:
         await db.assessments.update_one({"id": assessment_id}, {"$set": updates})
@@ -2658,7 +3046,15 @@ async def save_musculoskeletal_stage_results(
                 item["musculoskeletal_research_stage"] = stage
                 item.setdefault("model_analysis", {})["musculoskeletal_stage"] = stage_status
                 item["patient_insights"] = insights
+                item["movement_snapshot_decision"] = movement_snapshot_decision
                 break
+    _record_alira_action(
+        "movement_snapshot_updated",
+        source="musculoskeletal_worker",
+        user_id=doc.get("user_id"),
+        status=stage_status["status"],
+        details={"assessment_id": assessment_id, **movement_snapshot_decision},
+    )
     return {
         "assessment_id": assessment_id,
         "status": stage_status["status"],
@@ -2716,6 +3112,22 @@ async def save_model_results(assessment_id: str, payload: ModelResultSubmit, req
         outputs,
         expected_summary_domains,
     )
+    completed_model_analysis = dict(doc.get("model_analysis") or {})
+    completed_model_analysis.update({
+        "status": "completed",
+        "musculoskeletal_stage": {
+            "status": "validated",
+            "modeled_tasks": [str(item.get("task_id")) for item in outputs.get("per_task") or []],
+            "validated_for_plan": True,
+        },
+    })
+    movement_snapshot_decision = build_movement_snapshot_decision(
+        task_results,
+        issues,
+        body_function_summary,
+        doc.get("affected_side", "right"),
+        completed_model_analysis,
+    )
     updated_fields = {
         "functional_issues": [issue.model_dump() for issue in issues],
         "rehab_plan": [exercise.model_dump() for exercise in plan],
@@ -2733,6 +3145,7 @@ async def save_model_results(assessment_id: str, payload: ModelResultSubmit, req
             doc.get("musculoskeletal_research_stage") or {},
             {**(doc.get("model_analysis") or {}), "status": "completed"},
         ),
+        "movement_snapshot_decision": movement_snapshot_decision,
         "model_analysis.status": "completed",
         "model_analysis.musculoskeletal_stage": {
             "status": "validated",
@@ -2753,6 +3166,13 @@ async def save_model_results(assessment_id: str, payload: ModelResultSubmit, req
                     else:
                         item[key] = value
                 break
+    _record_alira_action(
+        "movement_snapshot_updated",
+        source="validated_model_worker",
+        user_id=doc.get("user_id"),
+        status="validated",
+        details={"assessment_id": assessment_id, **movement_snapshot_decision},
+    )
     return {
         "assessment_id": assessment_id,
         "status": "completed",
@@ -2763,15 +3183,9 @@ async def save_model_results(assessment_id: str, payload: ModelResultSubmit, req
 
 
 @api_router.get("/assessment/{assessment_id}/muscle-diagnosis")
-async def get_muscle_diagnosis(assessment_id: str):
+async def get_muscle_diagnosis(assessment_id: str, request: Request):
     """Return only validated model-estimated findings, never camera proxies."""
-    try:
-        doc = await db.assessments.find_one({"id": assessment_id}, {"_id": 0})
-    except Exception as e:
-        logger.warning(f"Mongo unavailable for muscle diagnosis; local fallback: {str(e)[:120]}")
-        doc = next((item for item in LOCAL_ASSESSMENTS if item.get("id") == assessment_id), None)
-    if not doc:
-        raise HTTPException(status_code=404, detail="Assessment not found")
+    doc = await _owned_assessment_doc(assessment_id, request, "muscle diagnosis")
     return doc.get("muscle_activation_diagnosis") or pending_model_activation_report()
 
 
@@ -2857,6 +3271,8 @@ POSE_RUNNER_HTML = r"""<!DOCTYPE html>
   #walkingDesktopActions.busy #walkingVideoInput{pointer-events:none;cursor:not-allowed}
   #walkingProceedUnconfirmedBtn{margin-top:10px;background:#FDFDFD;color:#315D3D;border:2px solid #4A7856}
   #walkingProceedUnconfirmedBtn:disabled{background:#EEF0ED;color:#667068;border-color:#C9D2CB}
+  #walkingSkipBtn{margin-top:10px;background:#FDFDFD;color:#315D3D;border:2px solid #AAB6AC}
+  #walkingSkipBtn:disabled{background:#EEF0ED;color:#667068;border-color:#C9D2CB}
   #walkingCaptureStatus{margin-top:12px;padding:11px 12px;border-radius:8px;background:#EEF0ED;color:#49504B;font-size:14px;line-height:1.4}
   #walkingCaptureStatus.good{background:#D9E5DC;color:#285C3A;font-weight:700}
   #walkingCaptureStatus.warn{background:#FFF0E6;color:#7A351E;font-weight:700}
@@ -2966,6 +3382,7 @@ POSE_RUNNER_HTML = r"""<!DOCTYPE html>
         <button id="walkingRecordBtn" type="button" data-testid="walking-start-recording">Start recording walking</button>
       </div>
       <button id="walkingProceedUnconfirmedBtn" class="hidden" type="button" data-testid="walking-proceed-identity-unconfirmed">Use video and mark for review</button>
+      <button id="walkingSkipBtn" type="button" data-testid="walking-skip">Skip walking for now</button>
       <div id="walkingCaptureStatus" role="status">Preparing the walking capture...</div>
       <video id="walkingReviewVideo" class="hidden" playsinline muted preload="metadata"></video>
     </div>
@@ -3062,6 +3479,7 @@ const walkingChooseVideoBtn = document.getElementById("walkingChooseVideoBtn");
 const walkingVideoInput = document.getElementById("walkingVideoInput");
 const walkingRecordBtn = document.getElementById("walkingRecordBtn");
 const walkingProceedUnconfirmedBtn = document.getElementById("walkingProceedUnconfirmedBtn");
+const walkingSkipBtn = document.getElementById("walkingSkipBtn");
 const walkingCaptureStatus = document.getElementById("walkingCaptureStatus");
 const walkingReviewVideo = document.getElementById("walkingReviewVideo");
 const skipBtn = document.getElementById("skipBtn");
@@ -3281,6 +3699,7 @@ function newLapTargetCalibration(){
 }
 let lapTargetCalibration = newLapTargetCalibration();
 let assessmentLapTarget = null;
+let assessmentLapTargetRadius = null;
 let lapCalibrationDiagnostic = {
   reason:"waiting_for_pose",
   guidance:"Keep your affected hand relaxed on the top of your same-side thigh."
@@ -3332,6 +3751,14 @@ const MOTION_SAMPLE_INTERVAL_MS = 100;
 const MAX_MOTION_FRAMES = 2400;
 const CURRENT_USER_ID = URL_PARAMS.get("uid") || "";
 const ASSESSMENT_PACKAGE = URL_PARAMS.get("package") || "upper_limb";
+const LIBRARY_TEST_MODE = URL_PARAMS.get("library_test") === "1";
+if(LIBRARY_TEST_MODE){
+  stepTitle.textContent = "Single task test";
+  const overlayHeading = overlay.querySelector("h1");
+  const overlayCopy = overlay.querySelector("p");
+  if(overlayHeading) overlayHeading.textContent = "Ready to test this task?";
+  if(overlayCopy) overlayCopy.textContent = "This guided test stays separate from Assessment history, Progress, and the care plan.";
+}
 const ASSIGNED_TASK_IDS = (URL_PARAMS.get("task_ids") || "")
   .split(",").map(value => value.trim()).filter(Boolean);
 const START_TASK_ID = URL_PARAMS.get("start_task") || "";
@@ -3383,6 +3810,7 @@ function postRN(data){
 }
 
 function persistTaskProgress(taskId){
+  if(LIBRARY_TEST_MODE) return Promise.resolve(null);
   if(!CURRENT_USER_ID || !taskId) return Promise.resolve(null);
   const query = new URLSearchParams({package_id: ASSESSMENT_PACKAGE, task_id: taskId});
   const request = fetch(`${API_BASE}/assessment/task-progress?${query.toString()}`, {
@@ -3442,6 +3870,7 @@ function supportedTaskVideoMimeType(){
 }
 
 function beginTaskRecording(taskId){
+  if(LIBRARY_TEST_MODE) return;
   if(activeTaskRecorder && activeTaskRecording && activeTaskRecording.taskId === taskId) return;
   if(!window.MediaRecorder || !video.srcObject){
     if(!recorderUnavailableReported){
@@ -3697,6 +4126,7 @@ function captureMotionFrame(now){
 async function loadTasks(){
   const taskQuery = new URLSearchParams({package:ASSESSMENT_PACKAGE});
   if(ASSIGNED_TASK_IDS.length) taskQuery.set("task_ids", ASSIGNED_TASK_IDS.join(","));
+  if(LIBRARY_TEST_MODE) taskQuery.set("library_test", "1");
   const res = await fetch(`${API_BASE}/assessment/tasks?${taskQuery.toString()}`, {
     headers: CURRENT_USER_ID ? {"X-User-Id": CURRENT_USER_ID} : {},
   });
@@ -4212,6 +4642,29 @@ async function validateWalkingVideo(file, onProgress=()=>{}){
   }
 }
 
+function walkingFunctionalMetrics(sampledFrames){
+  const poses = (sampledFrames || [])
+    .map(frame => frame && frame.pose)
+    .filter(pose => pose && pose.length >= 33);
+  if(poses.length < 2) return {gait_bilateral_motion_symmetry:null};
+  const travel = index => {
+    const points = poses.map(pose => pose[index]).filter(point => point && Number.isFinite(point.x) && Number.isFinite(point.y));
+    if(points.length < 2) return 0;
+    const xs = points.map(point => point.x);
+    const ys = points.map(point => point.y);
+    return Math.hypot(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys));
+  };
+  const leftTravel = travel(27);
+  const rightTravel = travel(28);
+  const largerTravel = Math.max(leftTravel, rightTravel);
+  const symmetry = largerTravel > 0.015 ? Math.min(leftTravel, rightTravel) / largerTravel : null;
+  return {
+    gait_left_ankle_travel:+leftTravel.toFixed(3),
+    gait_right_ankle_travel:+rightTravel.toFixed(3),
+    gait_bilateral_motion_symmetry:symmetry == null ? null : +symmetry.toFixed(3),
+  };
+}
+
 async function completeUploadedWalkingTask(file, validation){
   const task = tasks[currentTaskIdx];
   if(!task || !isWalkingTask(task)) return;
@@ -4242,6 +4695,7 @@ async function completeUploadedWalkingTask(file, validation){
     walking_identity_status:validation.identityStatus || (validation.samePatientConfirmed ? "confirmed" : "unconfirmed_patient_proceeded"),
     walking_identity_review_required:validation.samePatientConfirmed !== true,
     walking_patient_match_score:Number.isFinite(validation.patientMatchScore) ? +validation.patientMatchScore.toFixed(3) : null,
+    ...walkingFunctionalMetrics(validation.sampledFrames),
   };
   const perStepDuration = Math.round(validation.durationMs / Math.max(1, task.steps.length));
   taskResults[currentTaskIdx] = {
@@ -4252,20 +4706,22 @@ async function completeUploadedWalkingTask(file, validation){
     steps:task.steps.map(step => ({step_id:step.id, completed:true, failure_code:null, duration_ms:perStepDuration, metrics})),
     metrics,
   };
-  await persistTaskVideo({
-    taskId:task.id,
-    startedAt:performance.now(),
-    durationMs:validation.durationMs,
-    mimeType:file.type || "video/mp4",
-  }, file, {
-    onUploadProgress:progress => {
-      const percent = Math.round(progress * 100);
-      const prefix = validation.samePatientConfirmed
-        ? "Video checks passed. Saving securely"
-        : "Saving video for therapist review";
-      setWalkingCaptureStatus(`${prefix} (${percent}%)...`, "good");
-    },
-  });
+  if(!LIBRARY_TEST_MODE){
+    await persistTaskVideo({
+      taskId:task.id,
+      startedAt:performance.now(),
+      durationMs:validation.durationMs,
+      mimeType:file.type || "video/mp4",
+    }, file, {
+      onUploadProgress:progress => {
+        const percent = Math.round(progress * 100);
+        const prefix = validation.samePatientConfirmed
+          ? "Video checks passed. Saving securely"
+          : "Saving video for therapist review";
+        setWalkingCaptureStatus(`${prefix} (${percent}%)...`, "good");
+      },
+    });
+  }
   walkingCaptureActive = true;
   walkingCapture.classList.add("hidden");
   ui.classList.remove("hidden");
@@ -4976,6 +5432,10 @@ async function completePreAssessmentCalibration(){
   assessmentLapTarget = lapTargetCalibration.target
     ? {...lapTargetCalibration.target}
     : null;
+  const lapStep = upcomingLapStep();
+  assessmentLapTargetRadius = lapStep
+    ? Math.min(Math.max(0.10, shoulderWidth(latestPoseLandmarks) * 0.55), 0.18)
+    : null;
   preservePreAssessmentLapCalibration = true;
   calibratingAssessment = false;
   calibrationOverlay.classList.add("hidden");
@@ -4984,6 +5444,7 @@ async function completePreAssessmentCalibration(){
     type:"assessment_calibrated",
     affected_side:AFFECTED_SIDE,
     lap_target:lapTargetCalibration.target,
+    lap_target_radius:assessmentLapTargetRadius,
     sample_count:lapTargetCalibration.samples.length,
     automatic:true,
   });
@@ -5064,6 +5525,7 @@ if(URL_PARAMS.get("test_mode") === "lap_calibration"){
     },
     lockAssessmentTarget:(target) => {
       assessmentLapTarget = {...target};
+      assessmentLapTargetRadius = 0.10;
       lapTargetCalibration.target = {...target};
       lapTargetCalibration.ready = true;
       return getEffectiveTargetXY({target:{x:0.5, y:0.8, landmark:"LAP_DYNAMIC"}});
@@ -5698,6 +6160,12 @@ function shoulderWidth(lm){
 // resting wrist doesn't accidentally trigger the next target.
 function effectiveRadius(step, lm){
   const baseR = step.target.r || 0.10;
+  if(isLapTarget(step)){
+    if(Number.isFinite(assessmentLapTargetRadius)) return assessmentLapTargetRadius;
+    const radius = Math.min(Math.max(0.10, shoulderWidth(lm) * 0.55), 0.18);
+    if(lapTargetCalibration.ready) assessmentLapTargetRadius = radius;
+    return radius;
+  }
   if(isHandTask()){
     return Math.min(Math.max(baseR, 0.12), 0.28);
   }
@@ -6561,6 +7029,12 @@ async function celebrateAndAdvance(){
 async function finishAssessment(){
   running = false;
   audioEl.pause();
+  if(LIBRARY_TEST_MODE){
+    captionEl.textContent = "Task test complete";
+    voiceText.textContent = "This test was not added to Assessment history or Progress.";
+    postRN({type:"library_test_complete", package_id:ASSESSMENT_PACKAGE, task_id:tasks[0] ? tasks[0].id : null});
+    return;
+  }
   captionEl.textContent = "Saving your task videos and results…";
   voiceText.textContent = "Generating personalized plan…";
   try{
@@ -6745,6 +7219,7 @@ async function beginAssessmentSetup(){
   preAssessmentCalibrationReady = false;
   calibrationAutoStartInProgress = false;
   assessmentLapTarget = null;
+  assessmentLapTargetRadius = null;
   patientFaceReferenceSamples = [];
   patientFaceReference = null;
   lastPatientFaceReferenceAt = 0;
@@ -6848,7 +7323,9 @@ async function processWalkingVideoFile(file, source="picker"){
     }
     setWalkingCaptureStatus(validation.message, "good");
     await playVoice("The walking video passed the recording check. Thank you. Your assessment is now complete.");
-    setWalkingCaptureStatus("Video checks passed. Preparing secure save...", "good");
+    setWalkingCaptureStatus(LIBRARY_TEST_MODE
+      ? "Video checks passed. Preparing the test result..."
+      : "Video checks passed. Preparing secure save...", "good");
     await completeUploadedWalkingTask(file, validation);
   }catch(error){
     setWalkingCaptureStatus(`The selected video could not be processed. ${String(error && error.message ? error.message : error)}`, "warn");
@@ -6911,9 +7388,13 @@ walkingProceedUnconfirmedBtn.addEventListener("click", async () => {
   walkingProceedUnconfirmedBtn.disabled = true;
   walkingChooseVideoBtn.disabled = true;
   walkingDesktopActions.classList.add("busy");
-  setWalkingCaptureStatus("Using this video without identity confirmation. It will be marked for therapist review.", "good");
+  setWalkingCaptureStatus(LIBRARY_TEST_MODE
+    ? "Using this video without identity confirmation for this test only."
+    : "Using this video without identity confirmation. It will be marked for therapist review.", "good");
   try{
-    await playVoice("We could not confirm the face in this video. The video will be included and marked for therapist review.");
+    await playVoice(LIBRARY_TEST_MODE
+      ? "We could not confirm the face in this video. You can still use it for this test."
+      : "We could not confirm the face in this video. The video will be included and marked for therapist review.");
     await completeUploadedWalkingTask(file, {
       ...validation,
       ok:true,
@@ -6930,6 +7411,34 @@ walkingProceedUnconfirmedBtn.addEventListener("click", async () => {
     walkingProceedUnconfirmedBtn.disabled = false;
     walkingChooseVideoBtn.disabled = false;
     walkingDesktopActions.classList.remove("busy");
+  }
+});
+
+walkingSkipBtn.addEventListener("click", async () => {
+  const task = tasks[currentTaskIdx];
+  if(!task || !isWalkingTask(task)) return;
+  walkingSkipBtn.disabled = true;
+  walkingChooseVideoBtn.disabled = true;
+  walkingRecordBtn.disabled = true;
+  setWalkingCaptureStatus("Walking will be marked as not observed for this assessment.", "good");
+  await playVoice("That is okay. We will skip walking today and mark it as not observed, not as a failed test.");
+  taskResults[currentTaskIdx] = {
+    task_id:task.id,
+    completed_steps:0,
+    total_steps:0,
+    duration_ms:0,
+    steps:[],
+    metrics:{walking_skipped:true, skip_reason:"patient_unable_or_restricted"},
+  };
+  postRN({type:"walking_skipped", package_id:ASSESSMENT_PACKAGE, task_id:task.id});
+  walkingCapture.classList.add("hidden");
+  ui.classList.remove("hidden");
+  currentStepIdx = 0;
+  currentTaskIdx += 1;
+  if(currentTaskIdx >= tasks.length){
+    finishAssessment();
+  }else{
+    startStep();
   }
 });
 
@@ -7265,6 +7774,110 @@ REHAB_RUNNER_CONFIG: Dict[str, Dict[str, Any]] = {
         ],
     },
 }
+
+
+@api_router.get("/emergency/fast-runner", response_class=HTMLResponse)
+async def emergency_fast_runner():
+    return HTMLResponse(
+        content=FAST_RUNNER_HTML,
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@api_router.post("/emergency/fast-check")
+async def record_emergency_fast_check(payload: FastCheckSubmit, request: Request):
+    user = await _user_from_header(dict(request.headers))
+    if not user:
+        raise HTTPException(status_code=401, detail="Sign in required")
+
+    safe_automated: Dict[str, Dict[str, Any]] = {}
+    for sign in ("face", "arms", "speech"):
+        source = payload.automated.get(sign) or {}
+        safe_automated[sign] = {
+            "available": bool(source.get("available")),
+            "positive": bool(source.get("positive")),
+            "metric": source.get("metric"),
+            "similarity": source.get("similarity"),
+            "confidence": source.get("confidence"),
+        }
+
+    try:
+        result = evaluate_fast_screen(payload.answers, safe_automated)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    _record_alira_action(
+        "emergency_fast_check_completed",
+        source="guided_fast",
+        user_id=user["id"],
+        status="urgent" if result["call_999"] else "completed",
+        details={
+            "answers": payload.answers,
+            "automated": safe_automated,
+            "onset_time": payload.onset_time,
+            "result": result,
+            "raw_video_saved": False,
+            "raw_audio_saved": False,
+        },
+    )
+    return result
+
+
+@api_router.get("/testing/library")
+async def get_testing_library(request: Request):
+    user = await _user_from_header(dict(request.headers))
+    if not user:
+        raise HTTPException(status_code=401, detail="Sign in required")
+
+    assessment_packages = []
+    for package_id in ("upper_limb", "hand", "lower_limb", "balance"):
+        package = ASSESSMENT_PACKAGES[package_id]
+        assessment_packages.append({
+            "id": package_id,
+            "title": package["title"],
+            "subtitle": package["subtitle"],
+            "tasks": [
+                {
+                    "id": task["id"],
+                    "title": task["title"],
+                    "view": task.get("view", ""),
+                    "focus": task.get("focus", ""),
+                    "step_count": len(task.get("steps") or []),
+                    "safety_tier": task.get("safety_tier", "seated"),
+                    "safety_note": task.get("safety_note"),
+                }
+                for task in package["tasks"]
+            ],
+        })
+
+    exercises = []
+    seen_exercise_ids = set()
+    for exercise in EXERCISE_LIBRARY.values():
+        if exercise.id in seen_exercise_ids:
+            continue
+        seen_exercise_ids.add(exercise.id)
+        runner = REHAB_RUNNER_CONFIG.get(exercise.id)
+        if not runner:
+            continue
+        support_text = " ".join([
+            exercise.frequency,
+            exercise.description,
+            str(runner.get("setup_voice") or ""),
+        ]).lower()
+        exercises.append({
+            **exercise.model_dump(),
+            "guided_reps": int(runner.get("reps") or exercise.reps),
+            "pose_mode": str(runner.get("pose_mode") or "guided"),
+            "support_required": any(term in support_text for term in ("therapist", "carer", "caregiver", "guarding", "supervised")),
+        })
+
+    return {
+        "assessment_task_count": sum(len(item["tasks"]) for item in assessment_packages),
+        "exercise_count": len(exercises),
+        "assessment_packages": assessment_packages,
+        "exercises": exercises,
+        "test_runs_are_recorded": False,
+    }
 
 
 def _rehab_runner_html(exercise_id: str, prescribed_reps: Optional[int] = None) -> str:
@@ -8108,6 +8721,7 @@ class ChatResponse(BaseModel):
     text: str
     turns: int
     navigation_destination: Optional[str] = None
+    emergency_call_available: bool = False
 
 
 class RealtimeSessionRequest(BaseModel):
@@ -9067,12 +9681,11 @@ async def _persist_alira_check_in(user: Dict[str, Any], payload: AliraCheckInSub
         answers = validate_check_in_answers(payload.answers)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    required_answers = {"sudden_change", "function_change"}
-    missing_answers = sorted(required_answers - set(answers))
-    if missing_answers:
+    patient_note = (payload.patient_note or "").strip()
+    if not answers and not patient_note:
         raise HTTPException(
             status_code=422,
-            detail=f"Complete the required check-in questions before saving: {', '.join(missing_answers)}",
+            detail="No check-in answers were provided. The patient can stop without saving and without changing their plan or access.",
         )
 
     now = datetime.now(timezone.utc).isoformat()
@@ -9082,7 +9695,7 @@ async def _persist_alira_check_in(user: Dict[str, Any], payload: AliraCheckInSub
         "created_at": now,
         "source": payload.source,
         "answers": answers,
-        "patient_note": (payload.patient_note or "").strip(),
+        "patient_note": patient_note,
         "question_ids": list(answers),
     }
     stored_locally = False
@@ -9134,6 +9747,7 @@ async def _persist_alira_check_in(user: Dict[str, Any], payload: AliraCheckInSub
             "check_in_id": check_in["id"],
             "question_ids": check_in["question_ids"],
             "safety_status": care_plan["safety"]["status"],
+            "safety_code": care_plan["safety"].get("code"),
         },
     )
     _record_alira_action(
@@ -9281,6 +9895,9 @@ async def get_alira_check_in_questions(request: Request):
         "due": plan["survey"]["due"],
         "due_at": plan["survey"]["due_at"],
         "stage": plan["stage"],
+        "preface": plan["survey"]["preface"],
+        "all_questions_optional": plan["survey"]["all_questions_optional"],
+        "may_stop_at_any_point": plan["survey"]["may_stop_at_any_point"],
         "questions": plan["survey"]["questions"],
         "approved_question_ids": approved_question_ids(),
     }
@@ -9412,6 +10029,7 @@ async def _build_patient_context(user: Optional[Dict[str, Any]]) -> str:
         f"Recovery stage: {care_plan['stage']}\n"
         f"Safety status: {care_plan['safety']['status']}\n"
         f"Short check-in due: {care_plan['survey']['due']}\n"
+        f"Required pre-survey message: {care_plan['survey']['preface']}\n"
         f"Approved questions to ask now: {', '.join(due_questions) or '(none due)'}\n"
         f"Camera assessment due: {care_plan['assessment']['due']}\n"
         f"Approved assessment packages: {', '.join(care_plan['assessment']['packages']) or '(none due)'}\n"
@@ -9457,8 +10075,9 @@ What you DO NOT do:
 
 Adaptive rehabilitation workflow:
 - Follow the ALIRA ADAPTIVE CARE WORKFLOW in the patient context. It is generated from saved survey answers, check-ins, validated assessment evidence, and the approved exercise library.
-- Ask a short check-in only when it is due. Ask only the listed approved questions, one at a time, and call record_rehab_check_in after the patient answers.
-- Never infer a check-in answer. If the patient does not know or does not want to answer, respect that and leave it unsaved.
+- Ask a short check-in only when it is due. Before its first question, give the Required pre-survey message from the patient context verbatim once. This preface is allowed to exceed the usual reply-length limit.
+- Ask only the listed approved questions, one at a time. Every question is optional. If the patient stops, reassure them that their plan and access do not change. Save any answers they chose to give; do not create a blank check-in.
+- Never infer a check-in answer. If the patient does not know or does not want to answer, respect that and leave that answer unsaved.
 - Autonomously follow the backend choice of approved questions, tasks, exercises, sets, repetitions, and weekly frequency. No per-decision approval is required during testing.
 - Never bypass the assessment due date. A genuinely new movement problem may open one targeted exception assessment only through report_new_functional_issue.
 - Every exercise change must remain incremental and within the backend dose limit. Do not override a safety hold.
@@ -9477,7 +10096,11 @@ App navigation:
 - For any other request to open, show, find, or visit a Rehyn feature, call navigate_app rather than describing menu steps.
 
 Safety:
-- If the patient describes new facial droop, new arm weakness, new speech difficulty, sudden severe headache, collapse, chest pain, or trouble breathing, tell them to seek emergency help immediately.
+- If the patient describes new facial droop, new arm weakness, new speech difficulty, sudden severe headache, collapse, chest pain, or trouble breathing, tell them to call 999 immediately. Do not ask follow-up questions first and do not wait for an app check.
+- After telling them to call 999, use navigate_app with emergency_fast_check only as a visible FAST guide for a carer who can use it without delaying the emergency call. Never use a negative FAST screen to reassure them that a stroke is ruled out.
+- If a fall is reported, use the exact safety response returned by record_rehab_check_in. Call 999 for a possible head, back, neck or hip injury or if the person cannot get up; otherwise direct possible pain, injury or illness to NHS 111 and pause exercise.
+- If the patient says they cannot keep themselves safe, may act on suicidal thoughts, has seriously harmed themselves or taken an overdose, tell them to call 999 or go to A&E now. If suicidal or self-harm thoughts are present without immediate danger, direct them to NHS 111's mental health option or an urgent GP appointment, mention Samaritans 116 123, and explain that 999 or A&E is needed if safety worsens.
+- A marked functional decline that was sudden is a possible emergency and needs 999. A marked but non-sudden decline pauses exercise and needs same-day contact with the stroke team, physiotherapist or GP, with NHS 111 if they cannot be reached.
 - If pain, dizziness, or fatigue appears during exercise, tell them to stop and contact their therapist or clinician before continuing.
 - Ask one short question at a time during pain check-ins or guided reflections.
 
@@ -9486,6 +10109,15 @@ When you don't know something, say so warmly and suggest asking their therapist.
 If the patient seems distressed, gently acknowledge it, sit with them, and only suggest a tiny actionable step if they seem ready.
 
 Keep replies under 4 short sentences unless the patient asks for more detail."""
+
+
+def _chat_requests_survey_start(text: str) -> bool:
+    normalized = " ".join(str(text or "").lower().split())
+    if not normalized or any(phrase in normalized for phrase in ("skip the check", "stop the check", "not now")):
+        return False
+    mentions_survey = any(term in normalized for term in ("check-in", "check in", "survey"))
+    asks_to_start = any(term in normalized for term in ("start", "begin", "scheduled", "ready", "do my"))
+    return mentions_survey and asks_to_start
 
 
 def _chat_requests_assessment_start(text: str, turns: Sequence[Dict[str, Any]]) -> bool:
@@ -9599,13 +10231,16 @@ LIVE VOICE CONVERSATION RULES:
 - If the patient interrupts, stop speaking immediately and listen.
 - If audio is unclear, gently ask them to repeat it rather than guessing.
 - Never diagnose, prescribe, or present yourself as a therapist or emergency service.
-- For possible stroke or other emergency symptoms, clearly tell the patient to call emergency services now. In the UK, say to call 999.
+- For possible stroke or other emergency symptoms, clearly tell the patient to call 999 now before asking anything else. Then use navigate_app with emergency_fast_check only if a carer can use the guide without delaying the call. Never say that a negative FAST screen rules out stroke or TIA.
 - When the patient asks where a feature is or asks you to open, show, find, or take them to a page, call navigate_app. Do not give a sequence of menu directions instead.
 - Wait for the navigation tool result before saying that a page is opening. If the requested result or plan is unavailable, explain the tool result briefly and offer the assessment or Journey page.
 - Navigation is read-only. Never claim to change a setting, submit a form, delete data, or complete an assessment for the patient.
 - Respect the assessment schedule returned by the backend. Never send a patient to a routine assessment that is not due.
 - When the patient reports a genuinely new movement problem, identify the closest approved category and call report_new_functional_issue. Do not create duplicate exception assessments for a known problem.
 - Alira may autonomously choose approved survey questions, assessment tasks, exercises, sets, repetitions, and frequency. Follow backend safety stops exactly and never activate unapproved clinical content.
+- Before the first question of every due recovery survey, speak the Required pre-survey message from the patient context exactly once. Every question is optional; if the patient stops, confirm that their plan and access are unchanged.
+- When record_rehab_check_in returns a safety status other than clear, speak its safety message exactly before anything else. Do not soften, shorten, or reinterpret it.
+- When emergency help may be needed, tell the patient or carer that the visible Call 999 button opens the device dialler and that they must confirm the call. Never claim that Alira placed the call.
 """
     instructions = (
         CHAT_SYSTEM_PROMPT_BASE
@@ -9707,6 +10342,66 @@ async def chat_message(req: ChatRequest, request: Request):
         sess = LOCAL_CHAT_SESSIONS.get(local_session_key)
     turns: List[Dict[str, Any]] = sess["turns"] if sess else []
 
+    direct_safety = evaluate_survey_safety({"answers": {}, "patient_note": req.text})
+    if direct_safety["status"] != "clear":
+        now = datetime.now(timezone.utc).isoformat()
+        reply_text = str(direct_safety["message"])
+        emergency_call_available = bool(direct_safety.get("offer_call_999"))
+        turns.append({"role": "user", "text": req.text, "ts": now})
+        turns.append({
+            "role": "assistant",
+            "text": reply_text,
+            "ts": now,
+            "emergency_call_available": emergency_call_available,
+        })
+        await _save_chat_session(session_filter, local_session_key, req.session_id, user["id"], turns, now)
+        _record_alira_action(
+            "safety_response_presented",
+            source="text_chat",
+            user_id=user["id"],
+            session_id=req.session_id,
+            status=direct_safety["status"],
+            details={
+                "safety_code": direct_safety.get("code"),
+                "call_999": direct_safety.get("call_999", False),
+                "emergency_call_available": emergency_call_available,
+            },
+        )
+        return ChatResponse(
+            session_id=req.session_id,
+            text=reply_text,
+            turns=len(turns),
+            emergency_call_available=emergency_call_available,
+        )
+
+    if _chat_requests_survey_start(req.text):
+        care_plan = await _adaptive_care_plan_for_user(user)
+        now = datetime.now(timezone.utc).isoformat()
+        questions = care_plan["survey"].get("questions") or []
+        if care_plan["survey"].get("due") and questions:
+            first_question = str(questions[0].get("question") or "How have you been getting on?")
+            reply_text = f"{SURVEY_PREFACE}\n\n{first_question}"
+            action_status = "started"
+        else:
+            due_date = str(care_plan["survey"].get("due_at") or "")[:10]
+            reply_text = (
+                f"No recovery check-in is due today. Your next one is scheduled for {due_date}. "
+                "You can still tell me if something has changed or if you need help finding a Rehyn feature."
+            )
+            action_status = "not_due"
+        turns.append({"role": "user", "text": req.text, "ts": now})
+        turns.append({"role": "assistant", "text": reply_text, "ts": now})
+        await _save_chat_session(session_filter, local_session_key, req.session_id, user["id"], turns, now)
+        _record_alira_action(
+            "survey_preface_presented",
+            source="text_chat",
+            user_id=user["id"],
+            session_id=req.session_id,
+            status=action_status,
+            details={"question_ids": [question.get("id") for question in questions]},
+        )
+        return ChatResponse(session_id=req.session_id, text=reply_text, turns=len(turns))
+
     if _chat_requests_assessment_start(req.text, turns):
         assessments = await _care_assessments_for_user(user["id"])
         check_ins = await _care_check_ins_for_user(user["id"])
@@ -9730,7 +10425,13 @@ async def chat_message(req: ChatRequest, request: Request):
                 "If you have a genuinely new movement problem, tell me what has changed and I’ll check whether a targeted assessment is appropriate."
             )
         turns.append({"role": "user", "text": req.text, "ts": now})
-        turns.append({"role": "assistant", "text": reply_text, "ts": now})
+        emergency_call_available = bool(care_plan["safety"].get("offer_call_999"))
+        turns.append({
+            "role": "assistant",
+            "text": reply_text,
+            "ts": now,
+            "emergency_call_available": emergency_call_available,
+        })
         await _save_chat_session(session_filter, local_session_key, req.session_id, user["id"], turns, now)
         _record_alira_action(
             "assessment_navigation_selected",
@@ -9741,6 +10442,7 @@ async def chat_message(req: ChatRequest, request: Request):
             details={
                 "destination": navigation_destination,
                 "blocked_by_safety": care_plan["assessment"]["blocked_by_safety"],
+                "emergency_call_available": emergency_call_available,
                 "task_ids": care_plan["assessment"].get("task_ids") or [],
                 "selection_policy": "adaptive_care_plan",
             },
@@ -9750,6 +10452,7 @@ async def chat_message(req: ChatRequest, request: Request):
             text=reply_text,
             turns=len(turns),
             navigation_destination=navigation_destination,
+            emergency_call_available=emergency_call_available,
         )
 
     if not EMERGENT_LLM_KEY and not openai_tts_client:
@@ -9767,6 +10470,8 @@ async def chat_message(req: ChatRequest, request: Request):
     navigation_destination: Optional[str] = None
     model_used = ALIRA_CHAT_MODEL if openai_tts_client else "claude-sonnet-4-5-20250929"
     tool_actions: List[Dict[str, Any]] = []
+    forced_safety_reply: Optional[str] = None
+    emergency_call_available = False
 
     try:
         if openai_tts_client:
@@ -9883,6 +10588,10 @@ async def chat_message(req: ChatRequest, request: Request):
                                 "next_exercise_action": saved["care_plan"]["exercise_plan"]["action"],
                                 "next_assessment": saved["care_plan"]["assessment"],
                             }
+                            saved_safety = saved["care_plan"]["safety"]
+                            if saved_safety.get("status") != "clear":
+                                forced_safety_reply = str(saved_safety.get("message") or "").strip() or None
+                                emergency_call_available = bool(saved_safety.get("offer_call_999"))
                             tool_actions.append({"tool": "record_rehab_check_in", "success": True})
                         except (ValueError, TypeError, HTTPException) as exc:
                             detail = exc.detail if isinstance(exc, HTTPException) else str(exc)
@@ -9909,6 +10618,8 @@ async def chat_message(req: ChatRequest, request: Request):
                 response = await asyncio.to_thread(run_follow_up_completion)
                 assistant_message = response.choices[0].message
             reply_text = str(assistant_message.content or "").strip()
+            if forced_safety_reply:
+                reply_text = forced_safety_reply
         else:
             recent_turns = turns[-10:]
             if consent_confirmed:
@@ -9943,7 +10654,12 @@ async def chat_message(req: ChatRequest, request: Request):
 
     now = datetime.now(timezone.utc).isoformat()
     turns.append({"role": "user", "text": req.text, "ts": now})
-    turns.append({"role": "assistant", "text": reply_text, "ts": now})
+    turns.append({
+        "role": "assistant",
+        "text": reply_text,
+        "ts": now,
+        "emergency_call_available": emergency_call_available,
+    })
     await _save_chat_session(session_filter, local_session_key, req.session_id, user["id"], turns, now)
     _record_alira_action(
         "chat_response_generated",
@@ -9954,6 +10670,7 @@ async def chat_message(req: ChatRequest, request: Request):
             "model": model_used,
             "tools": tool_actions,
             "navigation_destination": navigation_destination,
+            "emergency_call_available": emergency_call_available,
             "turn_count": len(turns),
         },
     )
@@ -9962,6 +10679,7 @@ async def chat_message(req: ChatRequest, request: Request):
         text=reply_text,
         turns=len(turns),
         navigation_destination=navigation_destination,
+        emergency_call_available=emergency_call_available,
     )
 
 
@@ -10404,15 +11122,16 @@ async def progress_summary(request: Request):
     user = await _user_from_header(dict(request.headers))
     if not user:
         return {"assessments": [], "exercises": [], "issues_history": [], "first_seen": None}
-    cursor = db.assessments.find(
-        {"user_id": user["id"]},
-        {"_id": 0, "id": 1, "created_at": 1, "metrics": 1, "issues_detected": 1, "rehab_plan": 1, "task_results": 1},
-    ).sort("created_at", 1)
-    assessments_raw = await cursor.to_list(200)
+    assessments_raw = await _care_assessments_for_user(user["id"])
+    assessments_raw.sort(key=lambda item: item.get("created_at", ""))
     series = []
     issues_count: Dict[str, int] = {}
     for a in assessments_raw:
-        m = a.get("metrics") or {}
+        m = a.get("metrics") or build_functional_metrics(a.get("task_results", []))
+        issues = [
+            item for item in (a.get("functional_issues") or [])
+            if str(_snapshot_value(item, "code", "")) != "NO_ISSUES"
+        ]
         series.append({
             "id": a.get("id"),
             "date": a.get("created_at"),
@@ -10423,11 +11142,13 @@ async def progress_summary(request: Request):
             "bilateral_symmetry": m.get("bilateral_symmetry"),
             "pinch_grip": m.get("pinch_grip"),
             "hand_opening": m.get("hand_opening"),
-            "issues_count": len(a.get("issues_detected") or []),
+            "walking_skipped": bool(m.get("walking_skipped")),
+            "issues_count": len(issues),
             "exercises_count": len(a.get("rehab_plan") or []),
         })
-        for iss in (a.get("issues_detected") or []):
-            issues_count[iss] = issues_count.get(iss, 0) + 1
+        for issue in issues:
+            code = str(_snapshot_value(issue, "code", "") or "UNSPECIFIED")
+            issues_count[code] = issues_count.get(code, 0) + 1
     return {
         "assessments": series,
         "issues_history": [{"issue": k, "count": v} for k, v in sorted(issues_count.items(), key=lambda x: -x[1])],

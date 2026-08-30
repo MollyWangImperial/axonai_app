@@ -14,6 +14,7 @@ def _step(tasks, task_id, step_id):
 def test_true_lap_return_steps_use_patient_specific_dynamic_targets():
     expected = (
         (server.TASKS_DATA, "T1", "T1-S4"),
+        (server.TASKS_DATA, "T2", "T2-S4"),
         (server.TASKS_DATA, "T3", "T3-S4"),
         (server.HAND_TASKS_DATA, "H1", "H1-S3"),
         (server.HAND_TASKS_DATA, "H3", "H3-S3"),
@@ -23,6 +24,7 @@ def test_true_lap_return_steps_use_patient_specific_dynamic_targets():
         step = _step(tasks, task_id, step_id)
         assert step["target"]["landmark"] == "LAP_DYNAMIC"
         assert "lap" in (step["voice"] + " " + step["caption"]).lower()
+        assert step["target"]["r"] == 0.10
 
 
 def test_lap_calibration_uses_a_stable_affected_hand_resting_on_the_visible_lap():
@@ -64,6 +66,9 @@ def test_one_preassessment_lap_target_is_locked_across_all_tasks():
     assert "lapTargetCalibration.target = {...assessmentLapTarget};" in source
     assert "dynamicTargetPos = {...assessmentLapTarget};" in source
     assert "return assessmentLapTarget || lapTargetCalibration.target" in source
+    assert "let assessmentLapTargetRadius = null;" in source
+    assert "if(Number.isFinite(assessmentLapTargetRadius)) return assessmentLapTargetRadius;" in source
+    assert "lap_target_radius:assessmentLapTargetRadius" in source
 
 
 def test_hand_assessment_loads_pose_for_its_dynamic_lap_target():

@@ -22,7 +22,7 @@ const PROGRESS_KEY = (planId: string, exId: string) => `ex_progress_v1:${planId}
 
 export default function ExerciseScreen() {
   const router = useRouter();
-  const { exercise_id, name, plan_id, sets, reps } = useLocalSearchParams<{ exercise_id: string; name?: string; plan_id?: string; sets?: string; reps?: string }>();
+  const { exercise_id, name, plan_id, sets, reps, library_test } = useLocalSearchParams<{ exercise_id: string; name?: string; plan_id?: string; sets?: string; reps?: string; library_test?: string }>();
   const webRef = useRef<WebView>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -37,6 +37,7 @@ export default function ExerciseScreen() {
   const totalReps = parseInt(reps || "10", 10);
   const totalAll = totalSets * totalReps;
   const planId = plan_id || "default";
+  const isLibraryTest = library_test === "1";
 
   const guidedReps = Math.max(1, Math.min(20, totalReps));
   const url = `${BASE}/api/rehab/runner?exercise_id=${encodeURIComponent(exercise_id || "ex_maintenance")}&reps=${guidedReps}&voice_guidance=${voiceGuidance ? "1" : "0"}`;
@@ -55,6 +56,7 @@ export default function ExerciseScreen() {
   };
 
   const saveProgress = async (newReps: number, score: number | null) => {
+    if (isLibraryTest) return;
     if (!exercise_id) return;
     try {
       const raw = await storage.getItem(PROGRESS_KEY(planId, exercise_id));
@@ -91,28 +93,30 @@ export default function ExerciseScreen() {
         const arr = scoresThisSession.current;
         const avg = arr.length ? Math.round(arr.reduce((a, b) => a + b, 0) / arr.length) : null;
         setDoneInfo({ reps: msg.reps || 0, avgScore: avg });
-        // Mark this session complete — bump sessions counter
-        try {
-          const raw = await storage.getItem(PROGRESS_KEY(planId, exercise_id || ""));
-          if (raw) {
-            const p: ExerciseProgress = JSON.parse(raw);
-            p.sessions += 1;
-            await storage.setItem(PROGRESS_KEY(planId, exercise_id || ""), JSON.stringify(p));
+        if (!isLibraryTest) {
+          // Mark this session complete — bump sessions counter
+          try {
+            const raw = await storage.getItem(PROGRESS_KEY(planId, exercise_id || ""));
+            if (raw) {
+              const p: ExerciseProgress = JSON.parse(raw);
+              p.sessions += 1;
+              await storage.setItem(PROGRESS_KEY(planId, exercise_id || ""), JSON.stringify(p));
+            }
+          } catch {/* */}
+          try {
+            await authedFetch("/api/alira/activities", {
+              method: "POST",
+              body: JSON.stringify({
+                exercise_id: exercise_id || "",
+                plan_id: planId,
+                completed_reps: Number(msg.reps || arr.length || 0),
+                average_score: avg,
+                completed_at: new Date().toISOString(),
+              }),
+            });
+          } catch {
+            // Local exercise progress remains available and can sync on a later session.
           }
-        } catch {/* */}
-        try {
-          await authedFetch("/api/alira/activities", {
-            method: "POST",
-            body: JSON.stringify({
-              exercise_id: exercise_id || "",
-              plan_id: planId,
-              completed_reps: Number(msg.reps || arr.length || 0),
-              average_score: avg,
-              completed_at: new Date().toISOString(),
-            }),
-          });
-        } catch {
-          // Local exercise progress remains available and can sync on a later session.
         }
         setTimeout(() => router.back(), 2400);
       } else if (msg.type === "camera_error") {
@@ -159,11 +163,11 @@ export default function ExerciseScreen() {
       {doneInfo && (
         <View style={styles.overlay} testID="exercise-done-overlay">
           <Ionicons name="checkmark-circle" size={56} color={colors.success} />
-          <Text style={styles.doneTitle}>Exercise complete!</Text>
+          <Text style={styles.doneTitle}>{isLibraryTest ? "Exercise test complete!" : "Exercise complete!"}</Text>
           {doneInfo.avgScore != null && (
             <Text style={styles.doneScore}>Session average: {doneInfo.avgScore}/100</Text>
           )}
-          <Text style={styles.doneSub}>Returning to your plan…</Text>
+          <Text style={styles.doneSub}>{isLibraryTest ? "Not saved to Progress. Returning to the library…" : "Returning to your plan…"}</Text>
         </View>
       )}
       {error && (

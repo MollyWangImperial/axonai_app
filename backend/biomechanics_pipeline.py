@@ -50,24 +50,30 @@ def _value(item: Any, name: str, default: Any = None) -> Any:
     return item.get(name, default) if isinstance(item, Mapping) else getattr(item, name, default)
 
 
+def _task_was_skipped(item: Any) -> bool:
+    metrics = _value(item, "metrics", {}) or {}
+    return isinstance(metrics, Mapping) and metrics.get("walking_skipped") is True
+
+
 def patient_collection_summary(
     task_results: Iterable[Any],
     expected_task_count: int,
 ) -> Dict[str, Any]:
     tasks = list(task_results)
-    completed_steps = sum(int(_value(task, "completed_steps", 0) or 0) for task in tasks)
-    total_steps = sum(int(_value(task, "total_steps", 0) or 0) for task in tasks)
-    duration_ms = sum(max(0, int(_value(task, "duration_ms", 0) or 0)) for task in tasks)
+    observed_tasks = [task for task in tasks if not _task_was_skipped(task)]
+    completed_steps = sum(int(_value(task, "completed_steps", 0) or 0) for task in observed_tasks)
+    total_steps = sum(int(_value(task, "total_steps", 0) or 0) for task in observed_tasks)
+    duration_ms = sum(max(0, int(_value(task, "duration_ms", 0) or 0)) for task in observed_tasks)
     domains: List[Dict[str, str]] = []
     seen = set()
-    for task in tasks:
+    for task in observed_tasks:
         task_id = str(_value(task, "task_id", ""))
         domain = task_model_route(task_id)["domain"]
         if domain not in seen:
             domains.append({"domain": domain, "label": DOMAIN_LABELS.get(domain, "Movement")})
             seen.add(domain)
     return {
-        "tasks_collected": len(tasks),
+        "tasks_collected": len(observed_tasks),
         "tasks_expected": max(expected_task_count, len(tasks)),
         "completed_steps": completed_steps,
         "total_steps": total_steps,
@@ -145,10 +151,11 @@ def patient_body_function_summary(
 
     domains: List[Dict[str, Any]] = []
     for domain in domain_order:
-        domain_tasks = [
+        assigned_domain_tasks = [
             task for task in tasks
             if task_model_route(str(_value(task, "task_id", "")))["domain"] == domain
         ]
+        domain_tasks = [task for task in assigned_domain_tasks if not _task_was_skipped(task)]
         total_steps = sum(int(_value(task, "total_steps", 0) or 0) for task in domain_tasks)
         completed_steps = sum(int(_value(task, "completed_steps", 0) or 0) for task in domain_tasks)
         completed_tasks = sum(
@@ -160,7 +167,10 @@ def patient_body_function_summary(
         camera_findings = sum(_finding_domain(item) == domain for item in issues)
         modeled_findings = sum(_finding_domain(item) == domain for item in model_findings)
         finding_count = camera_findings + modeled_findings
-        if not domain_tasks:
+        if assigned_domain_tasks and not domain_tasks:
+            status = "not_observed"
+            summary = "This area was skipped because the patient could not safely complete it today. It is not counted as a failed task."
+        elif not domain_tasks:
             status = "not_observed"
             summary = "This area was not observed in the submitted task collection."
         elif finding_count:

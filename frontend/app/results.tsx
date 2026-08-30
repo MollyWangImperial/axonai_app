@@ -128,7 +128,8 @@ export default function ResultsScreen() {
   const rehabBlocked = reviewGate?.rehab_access === "blocked";
   const noRehabNeeded = reviewGate?.rehab_access === "not_needed" || reviewGate?.status === "no_rehab_needed";
   const awaitingAnalysis = reviewGate?.status === "awaiting_model_analysis";
-  const findingsUnavailable = !assessment && !isDemo;
+  const snapshotDecision = data?.movement_snapshot_decision || assessment?.movement_snapshot_decision;
+  const findingsUnavailable = !assessment && !isDemo && !snapshotDecision;
   const canViewPlan = data?.rehab_plan_ready === true && reviewGate?.rehab_access === "allowed";
   const affectedSide = assessment?.affected_side?.toLowerCase() === "left" ? "left" : "right";
   const topObservation = data?.insights.observations[0];
@@ -137,17 +138,28 @@ export default function ResultsScreen() {
   const ageBand = assessment?.patient_parameters?.age_band || profileAgeBand || (isDemo ? "70-79" : null);
   const ageAnatomy = getAgeAnatomyPresentation(ageBand);
   const patientProblems = useMemo(
-    () => (assessment?.functional_issues || []).map((issue) => toPatientProblem(issue, affectedSide)),
+    () => (assessment?.functional_issues || [])
+      .filter((issue) => issue.code !== "NO_ISSUES")
+      .map((issue) => toPatientProblem(issue, affectedSide)),
     [assessment?.functional_issues, affectedSide],
   );
   const primaryProblem = patientProblems.find((problem) => problem.icon === "body-outline") || patientProblems[0];
   const lowerLimbDomain = data?.body_function_summary.domains.find((domain) => domain.domain === "lower_limb");
-  const hasShoulderFinding = primaryProblem?.icon === "body-outline";
+  const hasShoulderFinding = snapshotDecision
+    ? Boolean(snapshotDecision.anatomy_marker.visible && snapshotDecision.anatomy_marker.region?.endsWith("_shoulder"))
+    : primaryProblem?.icon === "body-outline";
 
-  const mainInsight = awaitingAnalysis
-    ? { eyebrow: "ANALYSIS IN PROGRESS", title: "We are checking your movement", text: "Your recordings are still being reviewed before a functional finding is shown.", tone: "pending" as const }
-    : findingsUnavailable
+  const mainInsight = findingsUnavailable
       ? { eyebrow: "RESULT UNAVAILABLE", title: "We could not load this finding", text: "Please refresh the page. Missing analysis is not treated as normal movement.", tone: "pending" as const }
+      : snapshotDecision?.presentation
+        ? {
+            eyebrow: snapshotDecision.presentation.eyebrow,
+            title: snapshotDecision.presentation.title,
+            text: snapshotDecision.presentation.summary,
+            tone: snapshotDecision.presentation.tone,
+          }
+        : awaitingAnalysis
+          ? { eyebrow: "ANALYSIS IN PROGRESS", title: "We are checking your movement", text: "Your recordings are still being reviewed before a functional finding is shown.", tone: "pending" as const }
       : primaryProblem
         ? {
             eyebrow: hasShoulderFinding ? `${affectedSide.toUpperCase()} SHOULDER` : primaryProblem.icon === "hand-left-outline" ? "HAND CONTROL" : "WALKING",
@@ -159,17 +171,18 @@ export default function ResultsScreen() {
 
   const walkingInsight = lowerLimbDomain?.status === "review_recommended"
     ? { eyebrow: "WALKING", title: "Walking may need support", text: "Your walking pattern showed an area that may benefit from review.", tone: "attention" as const }
-    : lowerLimbDomain?.status === "analysis_pending"
-      ? { eyebrow: "WALKING", title: "Walking is being reviewed", text: "We are still checking the walking observation.", tone: "pending" as const }
+  : lowerLimbDomain?.status === "analysis_pending"
+      ? { eyebrow: "WALKING", title: "Walking results captured", text: "The walking observation is saved. Detailed movement analysis can add more information later.", tone: "pending" as const }
       : lowerLimbDomain?.status === "not_observed" || !lowerLimbDomain
         ? { eyebrow: "WALKING", title: "Walking was not observed", text: "No walking result is available from this assessment.", tone: "quiet" as const }
         : { eyebrow: "WALKING", title: "Walking appeared steady", text: "Your walking pattern looked consistent during this assessment.", tone: "well" as const };
 
   const mainTitle = useMemo(() => {
+    if (snapshotDecision?.presentation.title) return snapshotDecision.presentation.title;
     if (primaryProblem?.title) return primaryProblem.title;
     if (topObservation?.title) return topObservation.title;
     return "Your movement collection is ready";
-  }, [primaryProblem?.title, topObservation?.title]);
+  }, [snapshotDecision?.presentation.title, primaryProblem?.title, topObservation?.title]);
 
   const shareSnapshot = () => {
     void Share.share({

@@ -16,6 +16,7 @@ import { API_BASE as BASE } from "@/src/config";
 import { colors, radius, spacing } from "@/src/theme";
 import { storage } from "@/src/utils/storage";
 import { resolveAliraNavigation } from "@/src/aliraNavigation";
+import { EmergencyCallButton } from "@/src/components/EmergencyCallButton";
 import type { AliraNavigationResolution } from "@/src/aliraNavigation";
 
 type CallPhase = "ready" | "listening" | "processing" | "speaking" | "error";
@@ -172,6 +173,7 @@ function TurnBasedAliraCallScreen() {
         <View style={styles.avatar}><Ionicons name="heart" size={46} color="#FFFFFF" /></View>
         <Text style={styles.aliraName}>Alira</Text>
         <Text style={styles.safety}>Alira can support reflection and recovery questions. She cannot diagnose or replace your therapist. This is not an emergency service.</Text>
+        <EmergencyCallButton compact />
 
         <View style={styles.conversationCard}>
           {heard ? <><Text style={styles.label}>You said</Text><Text style={styles.heard}>{heard}</Text></> : null}
@@ -371,6 +373,8 @@ function RealtimeWebCall() {
 
     const channel = dataChannelRef.current;
     if (!channel || channel.readyState !== "open") return;
+    const safety = toolResult.ok ? toolResult.safety as { status?: string; message?: string; offer_call_999?: boolean } | undefined : undefined;
+    const safetyMessage = safety?.status && safety.status !== "clear" ? String(safety.message || "").trim() : "";
     channel.send(JSON.stringify({
       type: "conversation.item.create",
       item: {
@@ -383,8 +387,10 @@ function RealtimeWebCall() {
       type: "response.create",
       response: {
         tool_choice: "none",
-        instructions: toolResult.ok
-          ? "Confirm briefly that the check-in was saved. Follow the returned safety and next-plan action exactly. If safety is not clear, give that instruction first."
+        instructions: safetyMessage
+          ? `Say this safety message exactly before anything else: ${safetyMessage}${safety?.offer_call_999 ? " Then tell the patient or carer they can tap the visible Call 999 button to open the device dialler and must confirm the call." : ""}`
+          : toolResult.ok
+            ? "Confirm briefly that the check-in was saved, then explain the returned next-plan action in one short sentence."
           : "Say briefly that the check-in was not saved and ask the patient to try again later. Do not claim that their plan changed.",
       },
     }));
@@ -695,6 +701,7 @@ function RealtimeWebCall() {
         <Text style={realtimeStyles.aliraName}>Alira</Text>
         <Text style={realtimeStyles.status}>{status}</Text>
         <Text style={realtimeStyles.safety}>Alira is an AI recovery companion, not a therapist or emergency service. She cannot diagnose or replace your clinical team.</Text>
+        <EmergencyCallButton compact />
 
         <View style={realtimeStyles.liveHint}>
           <Ionicons name="sparkles-outline" size={20} color={colors.brandPrimary} />

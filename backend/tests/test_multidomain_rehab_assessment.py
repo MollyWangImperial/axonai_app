@@ -397,6 +397,7 @@ def test_profile_goal_is_merged_into_assessment_parameters():
 
 def test_routes_expose_packages_modeling_contract_and_multidomain_results(monkeypatch):
     selected = {"package": "hand", "task_ids": []}
+    recorded_actions = []
 
     async def user_from_header(_headers):
         return {
@@ -424,10 +425,14 @@ def test_routes_expose_packages_modeling_contract_and_multidomain_results(monkey
     async def no_credit_charge(*_args, **_kwargs):
         return None
 
+    def record_action(action, **kwargs):
+        recorded_actions.append({"action": action, **kwargs})
+
     monkeypatch.setattr(server, "_user_from_header", user_from_header)
     monkeypatch.setattr(server, "_care_assessments_for_user", prior_assessments)
     monkeypatch.setattr(server, "_adaptive_care_plan_for_user", care_plan)
     monkeypatch.setattr(server, "consume_credits", no_credit_charge)
+    monkeypatch.setattr(server, "_record_alira_action", record_action)
     with TestClient(server.app) as client:
         for package_id in ("hand", "lower_limb", "balance"):
             selected["package"] = package_id
@@ -475,13 +480,17 @@ def test_routes_expose_packages_modeling_contract_and_multidomain_results(monkey
         assert assessment["rehab_plan"] == []
         assert assessment["clinical_review_gate"]["status"] == "awaiting_model_analysis"
         assert assessment["rehabilitation_goals"]["method"] == "retrieval_augmented_rule_engine"
+        snapshot_event = next(item for item in recorded_actions if item["action"] == "movement_snapshot_generated")
+        assert snapshot_event["details"]["selection_rule"]["selected_issue_code"] == "SIT_TO_STAND_IMPAIRED"
+        assert snapshot_event["details"]["step_outcomes"]
+        assert snapshot_event["details"]["model_status"]["musculoskeletal_stage"]["status"] == "not_configured"
 
         patient_summary = client.get(f"/api/assessment/{assessment['id']}/patient-summary")
         assert patient_summary.status_code == 200
         summary_payload = patient_summary.json()
         assert set(summary_payload) == {
             "id", "created_at", "assessment_package", "collection", "body_function_summary",
-            "rehab_plan_ready", "clinical_review_gate", "insights",
+            "movement_snapshot_decision", "functional_metrics", "rehab_plan_ready", "clinical_review_gate", "insights",
         }
         assert summary_payload["insights"]["status"] == "processing"
         assert summary_payload["collection"]["tasks_collected"] == 1
@@ -629,12 +638,15 @@ def test_completed_initial_collection_returns_domain_metrics_without_a_normal_re
         assert assessment["rehab_plan"] == []
         assert assessment["clinical_review_gate"]["status"] == "awaiting_model_analysis"
         assert assessment["body_function_summary"]["overall_status"] == "analysis_pending"
+        assert assessment["metrics"]["reach_completion"] == 1.0
+        assert assessment["metrics"]["domains"]["hand"]["step_completion_percent"] == 100
 
         summary = client.get(f"/api/assessment/{assessment['id']}/patient-summary").json()
         assert [item["domain"] for item in summary["body_function_summary"]["domains"]] == [
             "upper_limb", "hand", "lower_limb"
         ]
         assert all(item["step_completion_percent"] == 100 for item in summary["body_function_summary"]["domains"])
+        assert summary["functional_metrics"]["domains"]["lower_limb"]["step_completion_percent"] == 100
         assert summary["rehab_plan_ready"] is False
 
 
@@ -768,8 +780,10 @@ def test_trusted_model_result_endpoint_rejects_proxies_and_stores_validated_outp
 
 def test_research_moco_result_builds_insights_without_unlocking_plan(monkeypatch):
     assessment_id = "research-moco-insights-test"
+    user_id = "u_research_moco"
     server.LOCAL_ASSESSMENTS.append({
         "id": assessment_id,
+        "user_id": user_id,
         "created_at": "2026-08-27T00:00:00+00:00",
         "affected_side": "right",
         "assessment_package": "initial",
@@ -789,6 +803,10 @@ def test_research_moco_result_builds_insights_without_unlocking_plan(monkeypatch
         "model_analysis": {"status": "queued", "tasks": [{"task_id": "L6", "video_id": "video-l6"}]},
     })
     monkeypatch.setattr(server, "ANALYSIS_WORKER_TOKEN", "test-worker-token")
+    async def user_from_header(_headers):
+        return {"id": user_id, "consent": {"health_data_consent": True}}
+
+    monkeypatch.setattr(server, "_user_from_header", user_from_header)
     payload = {
         "status": "completed",
         "per_task": [{
@@ -821,7 +839,10 @@ def test_research_moco_result_builds_insights_without_unlocking_plan(monkeypatch
             assert response.status_code == 200
             assert response.json()["insights_ready"] is True
             assert response.json()["rehab_plan_unlocked"] is False
-            summary = client.get(f"/api/assessment/{assessment_id}/patient-summary").json()
+            summary = client.get(
+                f"/api/assessment/{assessment_id}/patient-summary",
+                headers={"X-User-Id": user_id},
+            ).json()
             assert summary["insights"]["status"] == "research_ready"
             assert summary["insights"]["activation_profile"][0]["label"] == "Hamstrings"
             assert summary["rehab_plan_ready"] is False
@@ -937,8 +958,10 @@ def test_validated_normal_result_without_reported_symptoms_needs_no_rehab_plan()
 
 def test_trusted_normal_model_result_removes_automatic_plan_when_survey_reports_symptoms(monkeypatch):
     assessment_id = "survey-objective-hold-test"
+    user_id = "u_survey_objective_hold"
     server.LOCAL_ASSESSMENTS.append({
         "id": assessment_id,
+        "user_id": user_id,
         "created_at": "2026-08-27T00:00:00+00:00",
         "affected_side": "right",
         "assessment_package": "test_package",
@@ -957,6 +980,10 @@ def test_trusted_normal_model_result_removes_automatic_plan_when_survey_reports_
         "motion_data": {"frames": []},
     })
     monkeypatch.setattr(server, "ANALYSIS_WORKER_TOKEN", "test-worker-token")
+    async def user_from_header(_headers):
+        return {"id": user_id, "consent": {"health_data_consent": True}}
+
+    monkeypatch.setattr(server, "_user_from_header", user_from_header)
     payload = {
         "status": "completed",
         "per_task": [{
@@ -983,7 +1010,10 @@ def test_trusted_normal_model_result_removes_automatic_plan_when_survey_reports_
             )
             assert accepted.status_code == 200
             assert accepted.json()["clinical_review_status"] == "therapist_confirmation_required"
-            summary = client.get(f"/api/assessment/{assessment_id}/patient-summary").json()
+            summary = client.get(
+                f"/api/assessment/{assessment_id}/patient-summary",
+                headers={"X-User-Id": user_id},
+            ).json()
             assert summary["rehab_plan_ready"] is False
             assert summary["clinical_review_gate"]["rehab_access"] == "blocked"
         stored = next(item for item in server.LOCAL_ASSESSMENTS if item.get("id") == assessment_id)
@@ -996,8 +1026,10 @@ def test_trusted_normal_model_result_removes_automatic_plan_when_survey_reports_
 
 def test_trusted_normal_model_result_marks_rehab_not_needed_without_reported_symptoms(monkeypatch):
     assessment_id = "normal-no-rehab-test"
+    user_id = "u_normal_no_rehab"
     server.LOCAL_ASSESSMENTS.append({
         "id": assessment_id,
+        "user_id": user_id,
         "created_at": "2026-08-27T00:00:00+00:00",
         "affected_side": "right",
         "assessment_package": "test_package",
@@ -1016,6 +1048,10 @@ def test_trusted_normal_model_result_marks_rehab_not_needed_without_reported_sym
         "motion_data": {"frames": []},
     })
     monkeypatch.setattr(server, "ANALYSIS_WORKER_TOKEN", "test-worker-token")
+    async def user_from_header(_headers):
+        return {"id": user_id, "consent": {"health_data_consent": True}}
+
+    monkeypatch.setattr(server, "_user_from_header", user_from_header)
     payload = {
         "status": "completed",
         "per_task": [{
@@ -1042,7 +1078,10 @@ def test_trusted_normal_model_result_marks_rehab_not_needed_without_reported_sym
             )
             assert accepted.status_code == 200
             assert accepted.json()["clinical_review_status"] == "no_rehab_needed"
-            summary = client.get(f"/api/assessment/{assessment_id}/patient-summary").json()
+            summary = client.get(
+                f"/api/assessment/{assessment_id}/patient-summary",
+                headers={"X-User-Id": user_id},
+            ).json()
             assert summary["rehab_plan_ready"] is False
             assert summary["clinical_review_gate"]["rehab_access"] == "not_needed"
             assert summary["body_function_summary"]["overall_status"] == "no_observable_difficulty"
