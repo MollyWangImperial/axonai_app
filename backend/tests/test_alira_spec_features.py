@@ -422,13 +422,19 @@ def test_snapshot_and_report_screens_show_qualitative_scores_and_survey_highligh
     assert "DailyActivitiesBoard" in report
     assert "DailyActivitiesBoard activities={report.daily_activities.activities}" in report
 
-    # The movement-snapshot anatomy shades potentially weak areas from the
-    # survey answers while no observed finding covers that region.
+    # The movement map now lives inline directly below the daily-life board:
+    # legend first, tappable markers (observed results lead, survey answers
+    # fill unobserved domains), a detail card, and a straight-to-plan CTA.
     assert 'authedFetch("/api/assessment/survey-report")' in results
-    assert "anatomy-survey-highlight-" in results
-    assert 'testID="anatomy-survey-highlights-note"' in results
-    assert 'pin.domain === "upper_limb" && hasShoulderFinding' in results
-    assert 'pin.severity === "needs_attention" || pin.severity === "building_strength"' in results
+    assert 'testID="results-movement-map"' in results
+    assert 'testID="anatomy-severity-legend"' in results
+    assert "Select a highlighted area to view its details." in results
+    assert "results-map-marker-" in results
+    assert 'testID="results-map-detail"' in results
+    assert results.index("<DailyActivitiesPanel />") < results.index('testID="results-movement-map"')
+    assert "goPlan" in results and "goMap" not in results
+    assert "Explore your movement map" not in results
+    assert 'testID="results-summary"' not in results  # the old anatomy panel is gone
 
 
 def test_safety_strip_and_rewards_and_preview_are_wired():
@@ -445,7 +451,7 @@ def test_safety_strip_and_rewards_and_preview_are_wired():
     assert 'testID="home-points-badge"' in home
     assert 'testID="post-preview"' in community
     assert "confirmed_preview: true" in community
-    assert "This one is for:" in rehab
+    assert "This one is for:" not in rehab  # per-exercise goal chip removed
     # Raw joint angles are no longer rendered to patients (spec 6.1).
     assert "shoulder_elevation_deg)}°" not in summary
     assert "trunk_lean_deg)}°" not in summary

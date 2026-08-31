@@ -8,13 +8,20 @@ import { colors, spacing, radius } from "@/src/theme";
 import { authedFetch, cachePatientOnboarding, getCachedUser, signIn } from "@/src/auth";
 import { ASSESSMENT_READINESS_KEYS, PATIENT_SURVEY_STEPS } from "@/src/patientSurvey";
 
+const READINESS_SURVEY_STEPS = PATIENT_SURVEY_STEPS.filter((item) =>
+  ASSESSMENT_READINESS_KEYS.includes(item.key as typeof ASSESSMENT_READINESS_KEYS[number]),
+);
+
 export default function OnboardingScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const params = useLocalSearchParams<{ mode?: string }>();
   const isReadinessUpdate = params.mode === "assessment-readiness";
+  // Never re-ask what the survey already answered: readiness mode only shows
+  // the still-missing questions, and skips itself entirely when none remain.
+  const [readinessSteps, setReadinessSteps] = useState<typeof READINESS_SURVEY_STEPS | null>(null);
   const steps = isReadinessUpdate
-    ? PATIENT_SURVEY_STEPS.filter((item) => ASSESSMENT_READINESS_KEYS.includes(item.key as typeof ASSESSMENT_READINESS_KEYS[number]))
+    ? (readinessSteps ?? READINESS_SURVEY_STEPS)
     : PATIENT_SURVEY_STEPS;
   const [idx, setIdx] = useState(0);
   const [values, setValues] = useState<Record<string, any>>({});
@@ -42,7 +49,22 @@ export default function OnboardingScreen() {
         const response = await authedFetch("/api/users/onboarding");
         if (!response.ok) throw new Error("PROFILE_LOAD_FAILED");
         const body = await response.json();
-        if (active) setValues(body?.profile || {});
+        if (!active) return;
+        const savedProfile = body?.profile || {};
+        setValues(savedProfile);
+        const answered = (value: any) => {
+          if (value == null) return false;
+          if (Array.isArray(value)) return value.length > 0;
+          return String(value).trim() !== "";
+        };
+        const missingSteps = READINESS_SURVEY_STEPS.filter((item) => !answered(savedProfile[item.key]));
+        if (missingSteps.length === 0) {
+          // The survey already covers every readiness question - go straight
+          // to task selection instead of repeating them.
+          router.replace("/task-intro?mode=initial" as never);
+          return;
+        }
+        setReadinessSteps(missingSteps);
       } catch {
         if (active) setSaveError("We couldn't load your saved survey. Check your connection and try again.");
       } finally {
@@ -50,7 +72,7 @@ export default function OnboardingScreen() {
       }
     })();
     return () => { active = false; };
-  }, [isReadinessUpdate]);
+  }, [isReadinessUpdate, router]);
 
   const setVal = (k: string, v: any) => setValues((prev) => ({ ...prev, [k]: v }));
 

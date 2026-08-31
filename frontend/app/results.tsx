@@ -14,8 +14,6 @@ import { colors, radius, spacing } from "@/src/theme";
 import { DEMO_ASSESSMENT_ID, demoAssessment, demoPatientAssessmentSummary } from "@/src/demoAssessment";
 import { DisclaimerBanner } from "@/src/components/MedicalDisclaimer";
 
-const webNoOutline = { outlineStyle: "none" } as const;
-
 function formatDuration(durationMs: number) {
   return `${Math.max(1, Math.round(durationMs / 60000))} min`;
 }
@@ -82,10 +80,7 @@ type SurveyPin = {
   problem: string;
 };
 
-const SURVEY_HIGHLIGHT_PRESENTATION = {
-  needs_attention: { border: "#F05F4C", fill: "rgba(240,95,76,0.28)" },
-  building_strength: { border: "#DEA128", fill: "rgba(222,161,40,0.24)" },
-} as const;
+const ANATOMY_ASPECT_RATIO = 866 / 1816;
 
 export default function ResultsScreen() {
   const insets = useSafeAreaInsets();
@@ -97,8 +92,8 @@ export default function ResultsScreen() {
   const cachedResult = getScreenCache<{ data: PatientAssessmentSummary; assessment: Assessment | null }>(`results:${id}`);
   const [loading, setLoading] = useState(!cachedResult);
   const [showDetails, setShowDetails] = useState(false);
-  const [anatomyZoom, setAnatomyZoom] = useState(1);
   const [surveyPins, setSurveyPins] = useState<SurveyPin[]>(getScreenCache<SurveyPin[]>("survey-problems") ?? []);
+  const [selectedMapDomain, setSelectedMapDomain] = useState<"upper_limb" | "hand" | "lower_limb" | null>(null);
   const isDemo = id === DEMO_ASSESSMENT_ID;
   const [profileAgeBand, setProfileAgeBand] = useState<string | null>(null);
 
@@ -166,7 +161,6 @@ export default function ResultsScreen() {
   const noRehabNeeded = reviewGate?.rehab_access === "not_needed" || reviewGate?.status === "no_rehab_needed";
   const awaitingAnalysis = reviewGate?.status === "awaiting_model_analysis";
   const snapshotDecision = data?.movement_snapshot_decision || assessment?.movement_snapshot_decision;
-  const findingsUnavailable = !assessment && !isDemo && !snapshotDecision;
   const planAccessAllowed = reviewGate?.rehab_access === "allowed" || reviewGate?.rehab_access === "interim";
   const canViewPlan = data?.rehab_plan_ready === true && planAccessAllowed;
   const affectedSide = assessment?.affected_side?.toLowerCase() === "left" ? "left" : "right";
@@ -175,6 +169,12 @@ export default function ResultsScreen() {
   const reportWidth = Math.min(Math.max(width - (isWide ? 64 : 24), 288), 1120);
   const ageBand = assessment?.patient_parameters?.age_band || profileAgeBand || (isDemo ? "70-79" : null);
   const ageAnatomy = getAgeAnatomyPresentation(ageBand);
+  const desiredMapAnatomyHeight = Math.min(520, Math.max(380, reportWidth * 0.62));
+  const mapAnatomyWidth = Math.min(
+    desiredMapAnatomyHeight * ANATOMY_ASPECT_RATIO,
+    Math.max(120, reportWidth - spacing.md * 2),
+  );
+  const mapAnatomyHeight = mapAnatomyWidth / ANATOMY_ASPECT_RATIO;
   const patientProblems = useMemo(
     () => (assessment?.functional_issues || [])
       .filter((issue) => issue.code !== "NO_ISSUES")
@@ -182,45 +182,6 @@ export default function ResultsScreen() {
     [assessment?.functional_issues, affectedSide],
   );
   const primaryProblem = patientProblems.find((problem) => problem.icon === "body-outline") || patientProblems[0];
-  const lowerLimbDomain = data?.body_function_summary.domains.find((domain) => domain.domain === "lower_limb");
-  const hasShoulderFinding = snapshotDecision
-    ? Boolean(snapshotDecision.anatomy_marker.visible && snapshotDecision.anatomy_marker.region?.endsWith("_shoulder"))
-    : primaryProblem?.icon === "body-outline";
-
-  // Only potentially weak areas are shaded, and an observed shoulder finding
-  // replaces the survey shading for that region.
-  const surveyHighlights = surveyPins.filter((pin) =>
-    (pin.severity === "needs_attention" || pin.severity === "building_strength")
-    && !(pin.domain === "upper_limb" && hasShoulderFinding),
-  );
-
-  const mainInsight = findingsUnavailable
-      ? { eyebrow: "RESULT UNAVAILABLE", title: "We could not load this finding", text: "Please refresh the page. Missing analysis is not treated as normal movement.", tone: "pending" as const }
-      : snapshotDecision?.presentation
-        ? {
-            eyebrow: snapshotDecision.presentation.eyebrow,
-            title: snapshotDecision.presentation.title,
-            text: snapshotDecision.presentation.summary,
-            tone: snapshotDecision.presentation.tone,
-          }
-        : awaitingAnalysis
-          ? { eyebrow: "ANALYSIS IN PROGRESS", title: "We are checking your movement", text: "Your recordings are still being reviewed before a functional finding is shown.", tone: "pending" as const }
-      : primaryProblem
-        ? {
-            eyebrow: hasShoulderFinding ? `${affectedSide.toUpperCase()} SHOULDER` : primaryProblem.icon === "hand-left-outline" ? "HAND CONTROL" : "WALKING",
-            title: hasShoulderFinding ? `Your ${affectedSide} shoulder may need support when reaching` : primaryProblem.title,
-            text: hasShoulderFinding ? "Reaching, lifting, or placing everyday objects may require more effort." : primaryProblem.dailyImpact,
-            tone: "attention" as const,
-          }
-        : { eyebrow: "MOVEMENT CHECK", title: "Your movement looked steady", text: "No clear functional problem stood out in the movements completed during this assessment.", tone: "well" as const };
-
-  const walkingInsight = lowerLimbDomain?.status === "review_recommended"
-    ? { eyebrow: "WALKING", title: "Walking may need support", text: "Your walking pattern showed an area that may benefit from review.", tone: "attention" as const }
-  : lowerLimbDomain?.status === "analysis_pending"
-      ? { eyebrow: "WALKING", title: "Walking results captured", text: "The walking observation is saved. Detailed movement analysis can add more information later.", tone: "pending" as const }
-      : lowerLimbDomain?.status === "not_observed" || !lowerLimbDomain
-        ? { eyebrow: "WALKING", title: "Walking was not observed", text: "No walking result is available from this assessment.", tone: "quiet" as const }
-        : { eyebrow: "WALKING", title: "Walking appeared steady", text: "Your walking pattern looked consistent during this assessment.", tone: "well" as const };
 
   const mainTitle = useMemo(() => {
     if (snapshotDecision?.presentation.title) return snapshotDecision.presentation.title;
@@ -229,6 +190,46 @@ export default function ResultsScreen() {
     return "Your movement collection is ready";
   }, [snapshotDecision?.presentation.title, primaryProblem?.title, topObservation?.title]);
 
+  // Inline movement map: observed domain results lead; survey answers fill in
+  // any domain that has not been observed yet.
+  const MAP_SEVERITIES = {
+    needs_attention: { color: "#F05F4C", soft: "#FCE7E3", label: "Needs attention", icon: "alert" as const },
+    building_strength: { color: "#DEA128", soft: "#FFF3D8", label: "Building strength", icon: "barbell-outline" as const },
+    moving_well: { color: "#3E8256", soft: "#E5F1E8", label: "Moving well", icon: "checkmark" as const },
+  };
+  const MAP_TITLES: Record<string, string> = { upper_limb: "shoulder and arm", hand: "hand", lower_limb: "leg and walking" };
+  const mapMarkers = (["upper_limb", "hand", "lower_limb"] as const).map((domain) => {
+    const observed = data?.body_function_summary.domains.find((item) => item.domain === domain);
+    const pin = surveyPins.find((item) => item.domain === domain);
+    if (observed && observed.status !== "not_observed") {
+      const severity = observed.findings_count > 0 || observed.status === "review_recommended"
+        ? "needs_attention" as const
+        : observed.status === "analysis_pending" || (observed.step_completion_percent ?? 0) < 100
+          ? "building_strength" as const
+          : "moving_well" as const;
+      return {
+        domain,
+        severity,
+        source: "observed" as const,
+        coverage: observed.step_completion_percent ?? 0,
+        findings: observed.findings_count ?? 0,
+        detail: observed.findings_count > 0
+          ? "This area showed a finding to review from the completed tasks."
+          : observed.status === "analysis_pending"
+            ? "The guided-task metrics are ready while the validated movement analysis is still in progress."
+            : "This area moved steadily in the completed tasks.",
+      };
+    }
+    if (pin) {
+      return { domain, severity: pin.severity, source: "survey" as const, coverage: null, findings: null, detail: pin.problem };
+    }
+    return null;
+  }).filter((marker): marker is NonNullable<typeof marker> => marker != null);
+  const activeMapMarker = mapMarkers.find((marker) => marker.domain === selectedMapDomain)
+    ?? mapMarkers.find((marker) => marker.severity === "needs_attention")
+    ?? mapMarkers[0]
+    ?? null;
+
   const shareSnapshot = () => {
     void Share.share({
       title: isDemo ? "Rehyn demo movement snapshot" : "My Rehyn movement snapshot",
@@ -236,17 +237,10 @@ export default function ResultsScreen() {
     });
   };
 
-  const goMap = () => {
+  const goPlan = () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    router.push({ pathname: "/movement-map", params: { id } });
-  };
-
-  const changeAnatomyZoom = (amount: number) => {
-    setAnatomyZoom((current) => Math.min(2.25, Math.max(1, Number((current + amount).toFixed(2)))));
-  };
-
-  const focusAnatomyFinding = () => {
-    setAnatomyZoom((current) => current < 1.75 ? 1.75 : current < 2.25 ? 2.25 : 1);
+    if (canViewPlan && id) router.push({ pathname: "/rehab-plan", params: { id } });
+    else router.replace("/");
   };
 
   if (loading) {
@@ -279,105 +273,75 @@ export default function ResultsScreen() {
           <DisclaimerBanner />
           {isDemo && <View style={styles.demoBanner}><Ionicons name="sparkles" size={20} color="#675080" /><Text style={styles.demoBannerText}>Sample data for preview only. This is not your assessment result.</Text></View>}
           {!isDemo && <DailyActivitiesPanel />}
-          <View style={[styles.snapshotPanel, isWide && styles.snapshotPanelWide]} testID="results-summary">
-            <View style={[styles.anatomyPane, isWide && styles.anatomyPaneWide]}>
-              <View style={[styles.anatomyStage, isWide && styles.anatomyStageWide]} testID="interactive-anatomy">
-                <View
-                  style={[
-                    styles.anatomyCanvas,
-                    {
-                      transform: [{ scale: anatomyZoom }],
-                      transformOrigin: `${affectedSide === "right" ? ageAnatomy.shoulderX : 100 - ageAnatomy.shoulderX}% ${ageAnatomy.shoulderY}%`,
-                    },
-                  ]}
-                >
-                  <Image source={ageAnatomy.source} resizeMode="stretch" style={styles.anatomyImage} />
-                  {hasShoulderFinding && (
+          {mapMarkers.length > 0 && (
+            <View style={styles.mapPanel} testID="results-movement-map">
+              <Text style={styles.mapHeading}>Movement map</Text>
+              <Text style={styles.mapInstruction}>Select a highlighted area to view its details.</Text>
+              <View style={styles.mapLegendRow} testID="anatomy-severity-legend">
+                {(["needs_attention", "building_strength", "moving_well"] as const).map((severity) => (
+                  <View key={severity} style={styles.mapLegendItem}>
+                    <View style={[styles.mapLegendIcon, { borderColor: MAP_SEVERITIES[severity].color, backgroundColor: MAP_SEVERITIES[severity].soft }]}>
+                      <Ionicons name={MAP_SEVERITIES[severity].icon} size={17} color={MAP_SEVERITIES[severity].color} />
+                    </View>
+                    <Text style={styles.mapLegendText}>{MAP_SEVERITIES[severity].label}</Text>
+                  </View>
+                ))}
+              </View>
+              <View
+                style={[styles.mapCanvas, { width: mapAnatomyWidth, height: mapAnatomyHeight }]}
+                testID="results-map-coordinate-frame"
+              >
+                <Image source={ageAnatomy.source} resizeMode="contain" style={styles.anatomyImage} accessibilityLabel={ageAnatomy.viewLabel} />
+                {mapMarkers.map((marker) => {
+                  const x = marker.domain === "upper_limb" ? ageAnatomy.shoulderX : marker.domain === "hand" ? ageAnatomy.handX : ageAnatomy.lowerLimbX;
+                  const y = marker.domain === "upper_limb" ? ageAnatomy.shoulderY : marker.domain === "hand" ? ageAnatomy.handY : ageAnatomy.lowerLimbY;
+                  const presentation = MAP_SEVERITIES[marker.severity];
+                  const active = activeMapMarker?.domain === marker.domain;
+                  return (
                     <Pressable
-                      testID="anatomy-main-finding"
-                      onPress={focusAnatomyFinding}
-                      accessibilityLabel={`Focus on the ${affectedSide} shoulder finding`}
-                      accessibilityHint="Activate to zoom into the highlighted shoulder"
+                      key={marker.domain}
+                      testID={`results-map-marker-${marker.domain}`}
+                      accessibilityLabel={`${MAP_TITLES[marker.domain]}: ${presentation.label}. Activate for details.`}
+                      onPress={() => setSelectedMapDomain(marker.domain)}
                       style={[
-                        styles.bodyMarker,
+                        styles.mapMarker,
                         {
-                          top: `${ageAnatomy.shoulderY}%` as `${number}%`,
-                          left: `${affectedSide === "right" ? ageAnatomy.shoulderX : 100 - ageAnatomy.shoulderX}%` as `${number}%`,
+                          top: `${y}%` as `${number}%`,
+                          left: `${affectedSide === "right" ? x : 100 - x}%` as `${number}%`,
+                          borderColor: presentation.color,
+                          backgroundColor: presentation.soft,
                         },
-                        webNoOutline as never,
+                        active && styles.mapMarkerActive,
                       ]}
                     >
-                      <View style={styles.markerCore} />
+                      <Ionicons name={presentation.icon} size={18} color={presentation.color} />
                     </Pressable>
-                  )}
-                  {surveyHighlights.map((pin) => {
-                    const x = pin.domain === "upper_limb" ? ageAnatomy.shoulderX : pin.domain === "hand" ? ageAnatomy.handX : ageAnatomy.lowerLimbX;
-                    const y = pin.domain === "upper_limb" ? ageAnatomy.shoulderY : pin.domain === "hand" ? ageAnatomy.handY : ageAnatomy.lowerLimbY;
-                    const presentation = SURVEY_HIGHLIGHT_PRESENTATION[pin.severity as keyof typeof SURVEY_HIGHLIGHT_PRESENTATION];
-                    if (!presentation) return null;
-                    return (
-                      <View
-                        key={pin.domain}
-                        testID={`anatomy-survey-highlight-${pin.domain}`}
-                        pointerEvents="none"
-                        style={[
-                          styles.surveyHighlight,
-                          {
-                            top: `${y}%` as `${number}%`,
-                            left: `${affectedSide === "right" ? x : 100 - x}%` as `${number}%`,
-                            borderColor: presentation.border,
-                            backgroundColor: presentation.fill,
-                          },
-                        ]}
-                      />
-                    );
-                  })}
-                </View>
-
-                {hasShoulderFinding && (
-                  <View style={[styles.anatomyFindingLabel, isWide && styles.anatomyFindingLabelWide]} pointerEvents="none">
-                    <Text style={styles.anatomyFindingText}>{affectedSide === "right" ? "Right" : "Left"} shoulder</Text>
-                  </View>
-                )}
-
-                <View style={styles.zoomControls}>
-                  <Pressable testID="anatomy-zoom-out" accessibilityLabel="Zoom anatomy out" disabled={anatomyZoom <= 1} onPress={() => changeAnatomyZoom(-0.25)} style={[styles.zoomButton, anatomyZoom <= 1 && styles.zoomButtonDisabled]}>
-                    <Ionicons name="remove" size={21} color="#174834" />
-                  </Pressable>
-                  <Text style={styles.zoomValue}>{Math.round(anatomyZoom * 100)}%</Text>
-                  <Pressable testID="anatomy-zoom-in" accessibilityLabel="Zoom anatomy in" disabled={anatomyZoom >= 2.25} onPress={() => changeAnatomyZoom(0.25)} style={[styles.zoomButton, anatomyZoom >= 2.25 && styles.zoomButtonDisabled]}>
-                    <Ionicons name="add" size={21} color="#174834" />
-                  </Pressable>
-                  <Pressable testID="anatomy-zoom-reset" accessibilityLabel="Reset anatomy zoom" onPress={() => setAnatomyZoom(1)} style={styles.zoomButton}>
-                    <Ionicons name="scan-outline" size={19} color="#174834" />
-                  </Pressable>
-                </View>
+                  );
+                })}
               </View>
-              {surveyHighlights.length > 0 && (
-                <Text style={styles.surveyHighlightNote} testID="anatomy-survey-highlights-note">
-                  Shaded areas are potentially weak or tight based on your survey answers. Completed camera tasks refine them into observed findings.
-                </Text>
+              {activeMapMarker && (
+                <View style={[styles.mapDetailCard, { borderColor: MAP_SEVERITIES[activeMapMarker.severity].color }]} testID="results-map-detail">
+                  <View style={[styles.mapDetailBadge, { backgroundColor: MAP_SEVERITIES[activeMapMarker.severity].soft }]}>
+                    <Ionicons name={MAP_SEVERITIES[activeMapMarker.severity].icon} size={14} color={MAP_SEVERITIES[activeMapMarker.severity].color} />
+                    <Text style={[styles.mapDetailBadgeText, { color: MAP_SEVERITIES[activeMapMarker.severity].color }]}>
+                      {MAP_SEVERITIES[activeMapMarker.severity].label}
+                    </Text>
+                  </View>
+                  <Text style={styles.mapDetailTitle}>
+                    {(affectedSide === "left" ? "Left " : "Right ") + MAP_TITLES[activeMapMarker.domain]}
+                  </Text>
+                  <Text style={styles.mapDetailText}>{activeMapMarker.detail}</Text>
+                  {activeMapMarker.source === "observed" ? (
+                    <Text style={styles.mapDetailMeta}>
+                      {activeMapMarker.coverage}% task coverage · {activeMapMarker.findings} finding{activeMapMarker.findings === 1 ? "" : "s"} to review
+                    </Text>
+                  ) : (
+                    <Text style={styles.mapDetailMeta}>Pin-pointed from your survey answers; completed camera tasks refine it.</Text>
+                  )}
+                </View>
               )}
             </View>
-
-            <View style={[styles.insightPane, isWide && styles.insightPaneWide]}>
-              <Text style={[styles.insightEyebrow, mainInsight.tone === "attention" && styles.insightEyebrowAttention]}>{mainInsight.eyebrow}</Text>
-              <Text style={[styles.insightTitle, isWide && styles.insightTitleWide]}>{mainInsight.title}</Text>
-              <Text style={[styles.insightText, isWide && styles.insightTextWide]}>{mainInsight.text}</Text>
-
-              <View style={[styles.walkingCallout, walkingInsight.tone === "attention" && styles.walkingCalloutAttention, walkingInsight.tone === "pending" && styles.walkingCalloutPending]}>
-                <View style={[styles.walkingIcon, walkingInsight.tone === "attention" && styles.walkingIconAttention, walkingInsight.tone === "pending" && styles.walkingIconPending, walkingInsight.tone === "quiet" && styles.walkingIconQuiet]}>
-                  <Ionicons name={walkingInsight.tone === "well" ? "checkmark" : walkingInsight.tone === "pending" ? "hourglass-outline" : walkingInsight.tone === "attention" ? "alert" : "remove"} size={27} color="#FFFFFF" />
-                </View>
-                <View style={styles.walkingCopy}>
-                  <Text style={styles.walkingEyebrow}>{walkingInsight.eyebrow}</Text>
-                  <Text style={styles.walkingTitle}>{walkingInsight.title}</Text>
-                  <Text style={styles.walkingText}>{walkingInsight.text}</Text>
-                </View>
-              </View>
-            </View>
-          </View>
-
+          )}
           <View style={styles.summaryNote}>
             <View style={styles.storyIcon}><Ionicons name="leaf-outline" size={27} color="#2A744A" /></View>
             <View style={styles.storyCopy}>
@@ -397,8 +361,8 @@ export default function ResultsScreen() {
             </View>
           )}
 
-          <Pressable onPress={goMap} style={styles.cta} testID={canViewPlan ? "results-view-plan" : "results-return-home"}>
-            <Text style={styles.ctaText}>Explore your movement map</Text>
+          <Pressable onPress={goPlan} style={styles.cta} testID={canViewPlan ? "results-view-plan" : "results-return-home"}>
+            <Text style={styles.ctaText}>{canViewPlan ? "View your rehab plan" : "Return home"}</Text>
             <Ionicons name="arrow-forward" size={23} color="#FFFFFF" />
           </Pressable>
 
@@ -462,6 +426,22 @@ const styles = StyleSheet.create({
   report: { alignSelf: "center" },
   lead: { fontSize: 17, lineHeight: 24, color: colors.onSurface, textAlign: "center", paddingHorizontal: spacing.sm },
   snapshotPanel: { overflow: "hidden", borderWidth: 1, borderColor: "#CDD6CE", borderRadius: radius.sm, backgroundColor: "#FFFFFF" },
+  mapPanel: { borderWidth: 1, borderColor: "#CDD6CE", borderRadius: radius.sm, backgroundColor: "#FFFFFF", padding: spacing.md, gap: spacing.sm, marginBottom: spacing.md },
+  mapHeading: { fontSize: 20, lineHeight: 26, fontWeight: "800", color: "#17211B" },
+  mapInstruction: { fontSize: 14, fontWeight: "800", color: "#17211B" },
+  mapLegendRow: { flexDirection: "row", alignItems: "center", gap: spacing.lg, flexWrap: "wrap", borderBottomWidth: 1, borderBottomColor: "#ECEFEC", paddingBottom: spacing.sm },
+  mapLegendItem: { flexDirection: "row", alignItems: "center", gap: 8 },
+  mapLegendIcon: { width: 34, height: 34, borderRadius: 17, borderWidth: 2, alignItems: "center", justifyContent: "center" },
+  mapLegendText: { fontSize: 13, fontWeight: "700", color: "#35443C" },
+  mapCanvas: { position: "relative", alignSelf: "center" },
+  mapMarker: { position: "absolute", width: 52, height: 52, marginLeft: -26, marginTop: -26, borderRadius: 26, borderWidth: 2, alignItems: "center", justifyContent: "center", zIndex: 3 },
+  mapMarkerActive: { borderWidth: 4, transform: [{ scale: 1.1 }], zIndex: 5 },
+  mapDetailCard: { borderWidth: 1, borderRadius: radius.sm, padding: spacing.md, gap: 6, backgroundColor: "#FFFEFB" },
+  mapDetailBadge: { alignSelf: "flex-start", flexDirection: "row", alignItems: "center", gap: 4, paddingHorizontal: 8, paddingVertical: 4, borderRadius: radius.pill },
+  mapDetailBadgeText: { fontSize: 12, fontWeight: "800" },
+  mapDetailTitle: { fontSize: 17, fontWeight: "800", color: "#17211B" },
+  mapDetailText: { fontSize: 14, lineHeight: 20, color: "#35443C" },
+  mapDetailMeta: { fontSize: 12, lineHeight: 17, color: "#5D6962", fontWeight: "700" },
   snapshotPanelWide: { flexDirection: "row", alignItems: "stretch" },
   anatomyPane: { backgroundColor: "#FFFCF8" },
   anatomyPaneWide: { width: "48%", borderRightWidth: 1, borderRightColor: "#D8DED8" },

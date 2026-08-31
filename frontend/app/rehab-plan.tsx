@@ -313,7 +313,6 @@ export default function RehabPlanScreen() {
           <View style={[styles.summaryPanel, isWide && styles.summaryPanelWide]}>
             <View style={styles.summaryCopy}>
               <Text style={styles.summaryTitle}>Today&apos;s plan</Text>
-              <Text style={styles.summarySubtitle}>{totalExercises} exercises tailored to your focus areas</Text>
             </View>
             <View style={[styles.summaryMetrics, isWide ? styles.summaryMetricsWide : styles.summaryMetricsNarrow]}>
               <View style={[styles.metricBox, !isWide && styles.metricBoxNarrow]}>
@@ -354,7 +353,6 @@ export default function RehabPlanScreen() {
                           <View style={styles.focusTag}><Text style={styles.focusTagText}>{exerciseFocus(exercise)}</Text></View>
                         </View>
                         <Text style={styles.exerciseMeta}>{exercise.sets} sets × {exercise.reps} reps · {exercise.frequency}</Text>
-                        {exercise.linked_goal ? <Text style={styles.goalChip} testID={`exercise-goal-${exercise.id}`}>This one is for: {exercise.linked_goal}</Text> : null}
                       </View>
                       <View style={[styles.statusTag, isDone && styles.statusTagDone, percent > 0 && !isDone && styles.statusTagActive]} testID={`exercise-progress-${exercise.id}`}>
                         <Text style={[styles.statusTagText, isDone && styles.statusTagTextDone]}>{status}</Text>

@@ -343,7 +343,10 @@ export default function HomeScreen() {
   const missingDomains = carePlanAssessment?.missing_domains || nextStep?.missing_domains || [];
   const missingTaskIds = carePlanAssessment?.missing_task_ids || [];
   const walkingOutstanding = missingDomains.includes("lower_limb") || missingTaskIds.includes("L6");
-  const displayGoal = ownGoal || dailyGoal || "building everyday independence";
+  // The goal is led by the functional problems from the survey (English daily
+  // activities like eating, dressing, grooming); the patient's own words stay
+  // visible after it.
+  const displayGoal = dailyGoal || ownGoal || "building everyday independence";
   const trends = useMemo(() => buildTrends(progress), [progress]);
   const assessmentDueLabel = formatShortDate(carePlanAssessment?.due_at);
   const surveyDueLabel = formatShortDate(carePlan?.survey?.due_at);
@@ -403,6 +406,12 @@ export default function HomeScreen() {
     if (response?.ok) {
       const payload = await response.json().catch(() => null);
       if (payload) setCheckIn({ status: payload.status || "in_progress", days: payload.days || [] });
+      // Checking in earns points (2 per day) - refresh the badge right away.
+      const rewardsResponse = await authedFetch("/api/users/rewards").catch(() => null);
+      if (rewardsResponse?.ok) {
+        const rewardsPayload = await rewardsResponse.json().catch(() => null);
+        if (rewardsPayload) setRewards(rewardsPayload);
+      }
     }
     setCheckingIn(false);
   }, [checkIn.status, checkingIn]);
@@ -412,6 +421,12 @@ export default function HomeScreen() {
     else if (latest) router.push({ pathname: "/rehab-plan" as never, params: { id: latest.id } });
     else openDestination(nextStep?.destination);
   };
+
+  // Once today's assessment is finished, the middle step celebrates it and
+  // the third step becomes today's exercises.
+  const assessmentCompletedToday = Boolean(
+    latest && String(latest.created_at || "").slice(0, 10) === localDateString(),
+  );
 
   const primaryTitle = isInitialAssessment
     ? "Initial assessment"
@@ -466,7 +481,7 @@ export default function HomeScreen() {
               <View style={[styles.welcomeRow, !isWide && styles.welcomeRowCompact]}>
                 <View style={styles.welcomeCopy}>
                   <Text style={[styles.welcomeTitle, { color: palette.text }]}>{greeting}, {greetName}</Text>
-                  <Text style={[styles.goalLine, { color: palette.muted }]} testID="home-goal-line">Working towards your goal: <Text style={styles.goalStrong}>{displayGoal}</Text></Text>
+                  <Text style={[styles.goalLine, { color: palette.muted }]} testID="home-goal-line">Working towards your goal: <Text style={styles.goalStrong}>{displayGoal}</Text>{ownGoal && displayGoal !== ownGoal ? ` — and your own goal: ${ownGoal}` : ""}</Text>
                   <Text style={[styles.dateLine, { color: palette.muted }]}>{todayLabel}</Text>
                 </View>
                 <View style={[styles.pointsBadge, { backgroundColor: palette.soft }]} testID="home-points-badge">
@@ -482,24 +497,57 @@ export default function HomeScreen() {
               </View>
 
               <View style={[styles.dayBoard, { backgroundColor: palette.surface, borderColor: palette.border }, !isWide && styles.dayBoardCompact]} testID="home-your-day">
-                {isWide ? <View style={styles.dayConnector} /> : null}
+                {isWide ? (
+                  <>
+                    <View style={[styles.dayConnectorSegment, styles.dayConnectorLeft, checkIn.status === "not_checked_in" && styles.dayConnectorInactive]} />
+                    <View
+                      testID="home-day-connector-right"
+                      style={[
+                        styles.dayConnectorSegment,
+                        styles.dayConnectorRight,
+                        !(assessmentCompletedToday || initialWalkingAssigned || walkingOutstanding || carePlan?.survey?.due || followUpDue) && styles.dayConnectorInactive,
+                      ]}
+                    />
+                  </>
+                ) : null}
                 <DayStep
                   icon={checkIn.status === "not_checked_in" ? "sunny-outline" : "checkmark"}
                   title="Check in"
                   active={checkIn.status !== "not_checked_in"}
                   badge={checkIn.status === "not_checked_in" ? <StatusPill icon="ellipse-outline" label="Ready" tone="grey" /> : <StatusPill icon="checkmark-circle-outline" label={checkIn.status === "complete" ? "Complete" : "Checked in"} />}
-                  description={checkIn.status === "not_checked_in" ? "Start today's recovery plan." : checkIn.status === "complete" ? "Today's plan is complete." : "Daily check-in complete."}
+                  description={checkIn.status === "not_checked_in" ? "Start today's recovery plan. Checking in earns 2 points." : checkIn.status === "complete" ? "Today's plan is complete." : "Daily check-in complete. +2 points earned."}
                   button={checkIn.status === "not_checked_in" ? { label: checkingIn ? "Checking in..." : "Check in", icon: "hand-right-outline", onPress: checkInForToday, testID: "daily-checkin-button" } : undefined}
                 />
-                <DayStep
-                  icon={isInitialAssessment ? "clipboard-outline" : primaryComplete ? "checkmark" : "fitness-outline"}
-                  title={primaryTitle}
-                  active
-                  badge={<StatusPill icon={primaryComplete ? "checkmark-circle-outline" : "ellipse-outline"} label={primaryComplete ? "Complete" : "In progress"} />}
-                  description={primaryDescription}
-                  progress={activeExerciseIds.length ? { completed: completedExerciseIds.length, total: activeExerciseIds.length } : undefined}
-                  button={{ label: primaryButton.label, icon: "arrow-forward-circle-outline", onPress: () => primaryButton.destination === "rehab_plan" ? openExercisePlan() : openDestination(primaryButton.destination), primary: true, testID: "home-primary-action" }}
-                />
+                {assessmentCompletedToday ? (
+                  <DayStep
+                    icon="checkmark"
+                    title="Today's assessment"
+                    active
+                    badge={<StatusPill icon="checkmark-circle-outline" label="Completed" />}
+                    description={hasInitialAssessment && history.length === 1 ? "Initial assessment completed today." : "Today's assessment is completed."}
+                  />
+                ) : (
+                  <DayStep
+                    icon={isInitialAssessment ? "clipboard-outline" : primaryComplete ? "checkmark" : "fitness-outline"}
+                    title={primaryTitle}
+                    active
+                    badge={<StatusPill icon={primaryComplete ? "checkmark-circle-outline" : "ellipse-outline"} label={primaryComplete ? "Complete" : "In progress"} />}
+                    description={primaryDescription}
+                    progress={activeExerciseIds.length ? { completed: completedExerciseIds.length, total: activeExerciseIds.length } : undefined}
+                    button={{ label: primaryButton.label, icon: "arrow-forward-circle-outline", onPress: () => primaryButton.destination === "rehab_plan" ? openExercisePlan() : openDestination(primaryButton.destination), primary: true, testID: "home-primary-action" }}
+                  />
+                )}
+                {assessmentCompletedToday ? (
+                  <DayStep
+                    icon={primaryComplete ? "checkmark" : "fitness-outline"}
+                    title="Today's exercises"
+                    active
+                    badge={<StatusPill icon={primaryComplete ? "checkmark-circle-outline" : "ellipse-outline"} label={primaryComplete ? "Complete" : "In progress"} />}
+                    description={remainingExerciseIds.length ? "Continue the plan Alira selected for this recovery stage." : activeExerciseIds.length ? "Today's planned activities are complete." : "Your plan is being prepared."}
+                    progress={activeExerciseIds.length ? { completed: completedExerciseIds.length, total: activeExerciseIds.length } : undefined}
+                    button={{ label: primaryComplete ? "Review exercises" : "Continue exercises", icon: "arrow-forward-circle-outline", onPress: openExercisePlan, primary: true, testID: "home-primary-action" }}
+                  />
+                ) : (
                 <DayStep
                   icon={isInitialAssessment || walkingOutstanding ? "videocam-outline" : carePlan?.survey?.due ? "chatbubble-ellipses-outline" : "calendar-outline"}
                   title={isInitialAssessment ? "Walking observation" : walkingOutstanding ? "Walking video" : carePlan?.survey?.due ? "Short check-in" : "Next assessment"}
@@ -532,6 +580,7 @@ export default function HomeScreen() {
                           ? { label: "Start assessment", icon: "clipboard-outline", onPress: () => startNextSession(), testID: "home-assessment-action" }
                           : undefined}
                 />
+                )}
               </View>
 
               <View style={styles.recoveryHeader}>
@@ -631,7 +680,10 @@ const styles = StyleSheet.create({
   sectionSubtitle: { marginTop: 2, fontSize: 15, lineHeight: 21 },
   dayBoard: { minHeight: 318, borderWidth: 1, borderRadius: radius.md, paddingHorizontal: spacing.md, paddingVertical: spacing.md, flexDirection: "row", position: "relative", overflow: "hidden" },
   dayBoardCompact: { flexDirection: "column", gap: spacing.lg },
-  dayConnector: { position: "absolute", left: "16%", right: "16%", top: 61, height: 3, backgroundColor: "#15803D" },
+  dayConnectorSegment: { position: "absolute", top: 61, height: 3, backgroundColor: "#15803D" },
+  dayConnectorLeft: { left: "16%", right: "50%" },
+  dayConnectorRight: { left: "50%", right: "16%" },
+  dayConnectorInactive: { backgroundColor: "#D4DDD7" },
   dayStep: { flex: 1, minWidth: 0, alignItems: "center", paddingHorizontal: spacing.md, zIndex: 1 },
   dayStepIcon: { width: 62, height: 62, borderRadius: 31, borderWidth: 1.5, borderColor: "#667169", backgroundColor: "#FFFFFF", alignItems: "center", justifyContent: "center" },
   dayStepIconActive: { borderWidth: 3, borderColor: "#0B7A3A" },
