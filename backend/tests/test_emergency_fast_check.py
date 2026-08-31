@@ -209,8 +209,25 @@ def test_emergency_entry_is_prominent_and_alira_can_open_it():
     # Journey, Alira); the prominent Home banner remains the entry point.
     assert 'tabBarButtonTestID: "tab-emergency-fast"' not in tabs
     assert 'name="emergency"' in tabs
+    assert 'options={{ href: null, tabBarStyle: { display: "none" } }}' in tabs
     assert 'testID="home-emergency-fast"' in home
     assert 'emergency_fast_check: { label: "Emergency FAST check"' in navigation
     assert 'testID="emergency-fast-webview"' in emergency
+    assert 'testID="emergency-fast-intro"' in emergency
+    assert 'testID="fast-start-guided"' in emergency
+    assert "Are signs visible, or did symptoms start suddenly?" in emergency
+    assert "Call 999 by phone now. Do not wait for this check." in emergency
+    assert "Video is processed on this device and is not saved." in emergency
+    assert "A short speech recording is sent securely for transcription." in emergency
+    assert "?autostart=1" in emergency
     assert 'message.type === "demo_911_started"' in emergency
     assert "openEmergencyDialer" not in emergency
+
+
+def test_fast_runner_can_start_directly_after_the_native_intro():
+    runner = (Path(__file__).resolve().parents[1] / "fast_screening.py").read_text(encoding="utf-8")
+
+    assert 'get("autostart")==="1"' in runner
+    assert "void ensureCamera().then(renderFace);" in runner
+    assert "Prototype only - use a phone for real emergency calls." in runner
+    assert ">Leave</button>" in runner

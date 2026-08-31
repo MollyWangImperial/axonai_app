@@ -58,7 +58,7 @@ export default function TabsLayout() {
           three tabs: Home, Journey, Alira. */}
       <Tabs.Screen
         name="emergency"
-        options={{ href: null }}
+        options={{ href: null, tabBarStyle: { display: "none" } }}
       />
       <Tabs.Screen
         name="community"

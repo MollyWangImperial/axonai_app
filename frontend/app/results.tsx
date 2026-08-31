@@ -7,7 +7,8 @@ import * as Haptics from "expo-haptics";
 
 import { Assessment, fetchAssessment, fetchPatientAssessmentSummary, FunctionalIssue, PatientAssessmentSummary } from "@/src/api";
 import { authedFetch } from "@/src/auth";
-import { DailyActivitiesPanel } from "@/src/components/DailyActivitiesPanel";
+import { ActivityMetric, DailyActivitiesBoard, DailyActivitiesPanel } from "@/src/components/DailyActivitiesPanel";
+import { MovementScoresPanel } from "@/src/components/MovementScoresPanel";
 import { getScreenCache, setScreenCache } from "@/src/screenCache";
 import { getAgeAnatomyPresentation, loadPatientAgeBand } from "@/src/ageAnatomy";
 import { colors, radius, spacing } from "@/src/theme";
@@ -81,6 +82,13 @@ type SurveyPin = {
 };
 
 const ANATOMY_ASPECT_RATIO = 866 / 1816;
+
+const DEMO_DAILY_ACTIVITIES: ActivityMetric[] = [
+  { activity: "Eating and drinking", status: "complete", observed: "A little help", qualitative_score: "medium", score: 72, score_source: "observed" },
+  { activity: "Dressing", status: "complete", observed: "A little help", qualitative_score: "medium", score: 70, score_source: "observed" },
+  { activity: "Grooming and self-care", status: "complete", observed: "A little help", qualitative_score: "medium", score: 68, score_source: "observed" },
+  { activity: "Moving around", status: "complete", observed: "Independent", qualitative_score: "normal", score: 88, score_source: "observed" },
+];
 
 export default function ResultsScreen() {
   const insets = useSafeAreaInsets();
@@ -272,10 +280,13 @@ export default function ResultsScreen() {
         <View style={[styles.report, { width: reportWidth }]}>
           <DisclaimerBanner />
           {isDemo && <View style={styles.demoBanner}><Ionicons name="sparkles" size={20} color="#675080" /><Text style={styles.demoBannerText}>Sample data for preview only. This is not your assessment result.</Text></View>}
-          {!isDemo && <DailyActivitiesPanel />}
+          <MovementScoresPanel domains={data.body_function_summary.domains} metrics={data.functional_metrics} />
+          {isDemo
+            ? <DailyActivitiesBoard activities={DEMO_DAILY_ACTIVITIES} title="What this means for daily life" sectionHeading />
+            : <DailyActivitiesPanel title="What this means for daily life" sectionHeading />}
           {mapMarkers.length > 0 && (
             <View style={styles.mapPanel} testID="results-movement-map">
-              <Text style={styles.mapHeading}>Movement map</Text>
+              <Text style={styles.mapHeading}>Your movement map</Text>
               <Text style={styles.mapInstruction}>Select a highlighted area to view its details.</Text>
               <View style={styles.mapLegendRow} testID="anatomy-severity-legend">
                 {(["needs_attention", "building_strength", "moving_well"] as const).map((severity) => (
@@ -427,7 +438,7 @@ const styles = StyleSheet.create({
   lead: { fontSize: 17, lineHeight: 24, color: colors.onSurface, textAlign: "center", paddingHorizontal: spacing.sm },
   snapshotPanel: { overflow: "hidden", borderWidth: 1, borderColor: "#CDD6CE", borderRadius: radius.sm, backgroundColor: "#FFFFFF" },
   mapPanel: { borderWidth: 1, borderColor: "#CDD6CE", borderRadius: radius.sm, backgroundColor: "#FFFFFF", padding: spacing.md, gap: spacing.sm, marginBottom: spacing.md },
-  mapHeading: { fontSize: 20, lineHeight: 26, fontWeight: "800", color: "#17211B" },
+  mapHeading: { fontSize: 27, lineHeight: 34, fontWeight: "900", color: "#17211B" },
   mapInstruction: { fontSize: 14, fontWeight: "800", color: "#17211B" },
   mapLegendRow: { flexDirection: "row", alignItems: "center", gap: spacing.lg, flexWrap: "wrap", borderBottomWidth: 1, borderBottomColor: "#ECEFEC", paddingBottom: spacing.sm },
   mapLegendItem: { flexDirection: "row", alignItems: "center", gap: 8 },

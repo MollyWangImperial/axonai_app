@@ -120,7 +120,15 @@ function descriptionFor(item: ActivityMetric, band: HelpBandId) {
     : BAND_DESCRIPTIONS[band].estimated;
 }
 
-export function DailyActivitiesBoard({ activities }: { activities: ActivityMetric[] }) {
+export function DailyActivitiesBoard({
+  activities,
+  title = "Daily life at a glance",
+  sectionHeading = false,
+}: {
+  activities: ActivityMetric[];
+  title?: string;
+  sectionHeading?: boolean;
+}) {
   const { width } = useWindowDimensions();
   const { palette } = useDisplayPreferences();
   const compact = width < 700;
@@ -139,7 +147,7 @@ export function DailyActivitiesBoard({ activities }: { activities: ActivityMetri
     <View style={[styles.panel, compact && styles.panelCompact, { backgroundColor: palette.surface, borderColor: palette.border }]} testID="daily-activities-panel">
       <View style={[styles.headerRow, compact && styles.headerRowCompact]}>
         <View style={styles.headerCopy}>
-          <Text style={[styles.title, compact && styles.titleCompact, { color: palette.text }]}>Daily life at a glance</Text>
+          <Text style={[styles.title, sectionHeading && styles.titleSection, compact && styles.titleCompact, { color: palette.text }]}>{title}</Text>
           <Text style={[styles.subtitle, compact && styles.subtitleCompact, { color: palette.muted }]}>How much help you may need with everyday activities.</Text>
         </View>
         {scored.length > 0 ? (
@@ -237,7 +245,7 @@ export function DailyActivitiesBoard({ activities }: { activities: ActivityMetri
 
 const CACHE_KEY = "daily-activities";
 
-export function DailyActivitiesPanel() {
+export function DailyActivitiesPanel({ title, sectionHeading }: { title?: string; sectionHeading?: boolean } = {}) {
   const cached = getScreenCache<ActivityMetric[]>(CACHE_KEY);
   const [activities, setActivities] = useState<ActivityMetric[] | null>(cached ?? null);
 
@@ -254,7 +262,7 @@ export function DailyActivitiesPanel() {
 
   useFocusEffect(useCallback(() => { void load(); }, [load]));
   if (!activities || activities.length === 0) return null;
-  return <DailyActivitiesBoard activities={activities} />;
+  return <DailyActivitiesBoard activities={activities} title={title} sectionHeading={sectionHeading} />;
 }
 
 const styles = StyleSheet.create({
@@ -264,6 +272,7 @@ const styles = StyleSheet.create({
   headerRowCompact: { flexDirection: "column" },
   headerCopy: { flex: 1, minWidth: 0 },
   title: { fontSize: 44, lineHeight: 52, fontWeight: "900" },
+  titleSection: { fontSize: 27, lineHeight: 34 },
   titleCompact: { fontSize: 30, lineHeight: 37 },
   subtitle: { marginTop: 8, fontSize: 21, lineHeight: 29 },
   subtitleCompact: { fontSize: 16, lineHeight: 23 },

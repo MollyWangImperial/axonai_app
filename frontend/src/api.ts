@@ -268,7 +268,7 @@ export type BodyFunctionDomainSummary = {
 export type ClinicalReviewGate = {
   version?: string;
   status: "clear" | "awaiting_model_analysis" | "therapist_confirmation_required" | "no_rehab_needed";
-  rehab_access: "allowed" | "blocked" | "not_needed";
+  rehab_access: "allowed" | "interim" | "blocked" | "not_needed";
   reason_code?: string;
   therapist_confirmation_required?: boolean;
   patient_title?: string;

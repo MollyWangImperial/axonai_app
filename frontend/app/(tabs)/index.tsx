@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
+  Animated,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -11,7 +12,7 @@ import {
 import { useFocusEffect, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
-import Svg, { Circle, Line, Polyline } from "react-native-svg";
+import Svg, { Circle, G, Line, Polyline, Text as SvgText } from "react-native-svg";
 import * as Haptics from "expo-haptics";
 
 import { Assessment, fetchHistory } from "@/src/api";
@@ -175,11 +176,31 @@ function buildTrends(summary: ProgressSummary): TrendDefinition[] {
   ];
 }
 
-function MiniTrendChart({ values }: { values: number[] }) {
+const AnimatedCircle = Animated.createAnimatedComponent(Circle);
+
+function MiniTrendChart({ values, shiny }: { values: number[]; shiny?: boolean }) {
   const width = 300;
-  const height = 84;
-  const padX = 10;
-  const padY = 12;
+  const height = 92;
+  const axisX = 30; // left gutter reserved for the y-axis value labels
+  const padX = 12;
+  const padY = 16;
+  const pulse = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    if (!shiny || values.length === 0) return;
+    // Once today's assessment is complete the points shimmer gently so the
+    // latest progress feels alive rather than static.
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(pulse, { toValue: 1, duration: 850, useNativeDriver: false }),
+        Animated.timing(pulse, { toValue: 0, duration: 850, useNativeDriver: false }),
+      ]),
+    );
+    loop.start();
+    return () => loop.stop();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [shiny, values.length]);
+
   if (values.length === 0) {
     return (
       <View style={styles.emptyChart}>
@@ -191,22 +212,60 @@ function MiniTrendChart({ values }: { values: number[] }) {
   const minimum = Math.min(...values);
   const maximum = Math.max(...values);
   const spread = Math.max(12, maximum - minimum);
+  const low = minimum - (spread - (maximum - minimum)) / 2;
+  const high = low + spread;
+  const plotLeft = axisX + padX;
+  const plotY = (value: number) => height - padY - ((value - low) / spread) * (height - padY * 2);
   const points = values.map((value, index) => {
-    const x = values.length === 1 ? width / 2 : padX + (index * (width - padX * 2)) / (values.length - 1);
-    const y = height - padY - ((value - minimum + (spread - (maximum - minimum)) / 2) / spread) * (height - padY * 2);
-    return { x, y };
+    const x = values.length === 1
+      ? plotLeft + (width - plotLeft - padX) / 2
+      : plotLeft + (index * (width - plotLeft - padX)) / (values.length - 1);
+    return { x, y: plotY(value), value };
   });
   const last = points[points.length - 1];
+  const axisTicks = [high, (low + high) / 2, low];
+  const haloRadius = pulse.interpolate({ inputRange: [0, 1], outputRange: [5.5, 12] });
+  const lastHaloRadius = pulse.interpolate({ inputRange: [0, 1], outputRange: [8, 17] });
+  const haloOpacity = pulse.interpolate({ inputRange: [0, 1], outputRange: [0.38, 0.04] });
+  const sparkleOpacity = pulse.interpolate({ inputRange: [0, 1], outputRange: [0.2, 0.95] });
   return (
     <Svg width="100%" height={height} viewBox={`0 0 ${width} ${height}`} testID="home-trend-chart">
-      <Line x1={padX} y1={height - 4} x2={width - padX} y2={height - 4} stroke="#D4DDD7" strokeWidth={1} strokeDasharray="5 5" />
+      <Line x1={axisX} y1={padY - 6} x2={axisX} y2={height - padY + 6} stroke="#C7D2CA" strokeWidth={1} />
+      {axisTicks.map((tick) => (
+        <G key={`tick-${tick}`}>
+          <Line x1={axisX} y1={plotY(tick)} x2={width - padX} y2={plotY(tick)} stroke="#E3EAE5" strokeWidth={1} strokeDasharray="4 5" />
+          <SvgText x={axisX - 5} y={plotY(tick) + 3.5} fontSize={9} fontWeight="600" fill="#6B776F" textAnchor="end" testID="home-trend-axis-label">
+            {Math.round(tick)}
+          </SvgText>
+        </G>
+      ))}
       {points.length > 1 ? (
         <Polyline points={points.map((point) => `${point.x},${point.y}`).join(" ")} fill="none" stroke="#0A7A3B" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round" />
       ) : null}
-      {points.map((point, index) => <Circle key={`${point.x}-${point.y}`} cx={point.x} cy={point.y} r={index === points.length - 1 ? 4.5 : 3.4} fill="#0A7A3B" />)}
-      <Circle cx={last.x} cy={last.y} r={14} fill="#5AC77D" opacity={0.12} />
-      <Circle cx={last.x} cy={last.y} r={9} fill="#48BE70" opacity={0.18} />
-      <Circle cx={last.x} cy={last.y} r={4.5} fill="#087435" />
+      {!shiny ? (
+        <G>
+          <Circle cx={last.x} cy={last.y} r={14} fill="#5AC77D" opacity={0.12} />
+          <Circle cx={last.x} cy={last.y} r={9} fill="#48BE70" opacity={0.18} />
+        </G>
+      ) : null}
+      {points.map((point, index) => {
+        const isLast = index === points.length - 1;
+        const labelY = point.y - 9 < 9 ? point.y + 17 : point.y - 9;
+        return (
+          <G key={`point-${index}`}>
+            {shiny ? (
+              <AnimatedCircle cx={point.x} cy={point.y} r={isLast ? lastHaloRadius : haloRadius} fill={isLast ? "#48BE70" : "#5AC77D"} opacity={haloOpacity} />
+            ) : null}
+            <Circle cx={point.x} cy={point.y} r={isLast ? 4.5 : 3.4} fill={isLast ? "#087435" : "#0A7A3B"} />
+            {shiny ? (
+              <AnimatedCircle cx={point.x + 5} cy={point.y - 6} r={1.6} fill="#7FE0A4" opacity={sparkleOpacity} />
+            ) : null}
+            <SvgText x={point.x} y={labelY} fontSize={10} fontWeight="700" fill="#155D3C" textAnchor="middle" testID="home-trend-point-value">
+              {Math.round(point.value)}
+            </SvgText>
+          </G>
+        );
+      })}
     </Svg>
   );
 }
@@ -306,6 +365,25 @@ export default function HomeScreen() {
       ? { status: checkInPayload.status || "not_checked_in", days: checkInPayload.days || [] }
       : EMPTY_CHECK_IN;
     const nextProgress = progressPayload?.assessments ? progressPayload : EMPTY_PROGRESS;
+    // Returning to Home after earning points (finishing the assessment or an
+    // exercise elsewhere) pops a congratulation for the newly earned points;
+    // the day board itself refreshes automatically on every focus.
+    const previousHome = getScreenCache<HomeScreenCache>("home");
+    const nextPoints = Number(rewardsPayload?.points ?? 0);
+    const lastCelebratedPoints = getScreenCache<number>("celebrated-points");
+    if (lastCelebratedPoints == null) {
+      setScreenCache<number>("celebrated-points", nextPoints);
+    } else if (nextPoints > lastCelebratedPoints) {
+      const previousIds = new Set((previousHome?.history || []).map((item) => item.id));
+      const finishedAssessmentToday = assessments.some(
+        (item) => !previousIds.has(item.id) && String(item.created_at || "").slice(0, 10) === localDateString(),
+      );
+      setCelebration(celebrationEvent(
+        nextPoints - lastCelebratedPoints,
+        finishedAssessmentToday ? "Assessment complete - amazing work!" : "Points earned - keep it up!",
+      ));
+      setScreenCache<number>("celebrated-points", nextPoints);
+    }
     setHistory(assessments);
     setGreetName(nextName);
     setCarePlan(carePlanPayload);
@@ -414,7 +492,10 @@ export default function HomeScreen() {
       const rewardsResponse = await authedFetch("/api/users/rewards").catch(() => null);
       if (rewardsResponse?.ok) {
         const rewardsPayload = await rewardsResponse.json().catch(() => null);
-        if (rewardsPayload) setRewards(rewardsPayload);
+        if (rewardsPayload) {
+          setRewards(rewardsPayload);
+          setScreenCache<number>("celebrated-points", Number(rewardsPayload.points ?? 0));
+        }
       }
     }
     setCheckingIn(false);
@@ -622,7 +703,7 @@ export default function HomeScreen() {
                         <Text style={[styles.trendMessage, { color: palette.muted }]}>{trend.message}</Text>
                       </View>
                     </View>
-                    <MiniTrendChart values={trend.values} />
+                    <MiniTrendChart values={trend.values} shiny={assessmentCompletedToday} />
                     {trend.values.length ? (
                       <View style={styles.trendDates}>
                         <Text style={[styles.trendDate, { color: palette.muted }]}>{formatShortDate(trend.dates[0])}</Text>

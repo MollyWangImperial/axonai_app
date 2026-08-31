@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import {
-  ActivityIndicator,
+  Animated,
+  Easing,
   Image,
   ImageSourcePropType,
   Modal,
@@ -15,14 +16,12 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
 import * as Haptics from "expo-haptics";
-import Svg, { Circle } from "react-native-svg";
 import { colors, spacing, radius } from "@/src/theme";
 import { fetchAssessment, Assessment, RehabExercise } from "@/src/api";
 import { storage } from "@/src/utils/storage";
 import { authedFetch } from "@/src/auth";
 import PaywallModal from "@/src/components/PaywallModal";
 import { DEMO_ASSESSMENT_ID, demoAssessment } from "@/src/demoAssessment";
-import { DisclaimerBanner } from "@/src/components/MedicalDisclaimer";
 
 type ExerciseProgress = {
   completed_reps: number;
@@ -47,6 +46,16 @@ type AdaptiveCarePlan = {
     }[];
   };
 };
+
+type PlanPreparationStage = 0 | 1 | 2;
+
+const PREPARATION_STEPS = [
+  "Reviewing your assessment",
+  "Choosing suitable exercises",
+  "Creating your plan",
+] as const;
+
+const MINIMUM_STAGE_DURATION_MS = 420;
 
 const SUPPORTED_REACH_IMAGE = require("../assets/images/rehab-supported-forward-reach.png") as ImageSourcePropType;
 const HAND_OPENING_IMAGE = require("../assets/images/rehab-relaxed-hand-opening.png") as ImageSourcePropType;
@@ -106,31 +115,93 @@ function applyAdaptiveDose(plan: Assessment, carePlan: AdaptiveCarePlan | null):
   };
 }
 
-function ProgressRing({ percent, size = 72 }: { percent: number; size?: number }) {
-  const strokeWidth = size >= 70 ? 9 : 7;
-  const radiusValue = (size - strokeWidth) / 2;
-  const circumference = 2 * Math.PI * radiusValue;
-  const value = Math.max(0, Math.min(100, percent));
+function waitForMinimumStageTime(startedAt: number): Promise<void> {
+  const remaining = Math.max(0, MINIMUM_STAGE_DURATION_MS - (Date.now() - startedAt));
+  return new Promise((resolve) => setTimeout(resolve, remaining));
+}
+
+function RehabPlanPreparation({
+  stage,
+  onBack,
+  topInset,
+  compact,
+}: {
+  stage: PlanPreparationStage;
+  onBack: () => void;
+  topInset: number;
+  compact: boolean;
+}) {
+  const pulse = React.useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    pulse.setValue(0);
+    const animation = Animated.loop(
+      Animated.sequence([
+        Animated.timing(pulse, { toValue: 1, duration: 760, easing: Easing.out(Easing.ease), useNativeDriver: true }),
+        Animated.timing(pulse, { toValue: 0, duration: 760, easing: Easing.in(Easing.ease), useNativeDriver: true }),
+      ]),
+    );
+    animation.start();
+    return () => animation.stop();
+  }, [pulse, stage]);
 
   return (
-    <View style={{ width: size, height: size, alignItems: "center", justifyContent: "center" }}>
-      <Svg width={size} height={size} style={StyleSheet.absoluteFill}>
-        <Circle cx={size / 2} cy={size / 2} r={radiusValue} fill="none" stroke="#DDE3DE" strokeWidth={strokeWidth} />
-        <Circle
-          cx={size / 2}
-          cy={size / 2}
-          r={radiusValue}
-          fill="none"
-          stroke={colors.brandPrimary}
-          strokeWidth={strokeWidth}
-          strokeLinecap="round"
-          strokeDasharray={`${circumference} ${circumference}`}
-          strokeDashoffset={circumference - (value / 100) * circumference}
-          rotation="-90"
-          origin={`${size / 2}, ${size / 2}`}
-        />
-      </Svg>
-      <Text style={[styles.ringText, size < 70 && styles.ringTextSmall]}>{value}%</Text>
+    <View style={styles.preparationPage} testID="rehab-plan-preparation">
+      <View style={[styles.preparationHeader, { paddingTop: topInset + spacing.sm }]}>
+        <Pressable onPress={onBack} style={styles.preparationBack} accessibilityLabel="Go back" testID="rehab-plan-preparation-back">
+          <Ionicons name="chevron-back" size={32} color="#175A43" />
+        </Pressable>
+        <Text style={styles.preparationHeaderTitle}>Rehab plan</Text>
+        <View style={styles.preparationHeaderSpacer} />
+      </View>
+
+      <View style={[styles.preparationBody, compact && styles.preparationBodyCompact]}>
+        <View style={[styles.preparationIcon, compact && styles.preparationIconCompact]}>
+          <Ionicons name="clipboard-outline" size={compact ? 46 : 58} color="#175A43" />
+          <View style={styles.preparationHeart}>
+            <Ionicons name="heart-outline" size={compact ? 23 : 28} color="#175A43" />
+          </View>
+        </View>
+
+        <Text style={[styles.preparationTitle, compact && styles.preparationTitleCompact]}>Preparing your rehab plan</Text>
+
+        <View style={[styles.preparationCard, compact && styles.preparationCardCompact]}>
+          {PREPARATION_STEPS.map((label, index) => {
+            const completed = index < stage;
+            const active = index === stage;
+            return (
+              <View key={label} style={styles.preparationStep} testID={`rehab-plan-preparation-step-${index}`}>
+                <View style={styles.preparationTimelineColumn}>
+                  {index > 0 && <View style={[styles.preparationLineTop, index <= stage && styles.preparationLineComplete]} />}
+                  {active && (
+                    <Animated.View
+                      style={[
+                        styles.preparationPulse,
+                        {
+                          opacity: pulse.interpolate({ inputRange: [0, 1], outputRange: [0.25, 0] }),
+                          transform: [{ scale: pulse.interpolate({ inputRange: [0, 1], outputRange: [1, 1.35] }) }],
+                        },
+                      ]}
+                    />
+                  )}
+                  <View style={[styles.preparationStatus, completed && styles.preparationStatusComplete, active && styles.preparationStatusActive]}>
+                    {completed && <Ionicons name="checkmark" size={24} color="#FFFFFF" />}
+                  </View>
+                  {index < PREPARATION_STEPS.length - 1 && <View style={[styles.preparationLineBottom, index < stage && styles.preparationLineComplete]} />}
+                </View>
+                <Text style={[
+                  styles.preparationStepText,
+                  active && styles.preparationStepTextActive,
+                  completed && styles.preparationStepTextComplete,
+                  compact && styles.preparationStepTextCompact,
+                ]}>{label}</Text>
+              </View>
+            );
+          })}
+        </View>
+
+        <Text style={[styles.preparationHint, compact && styles.preparationHintCompact]}>This usually takes less than a minute.</Text>
+      </View>
     </View>
   );
 }
@@ -143,10 +214,12 @@ export default function RehabPlanScreen() {
   const [data, setData] = useState<Assessment | null>(null);
   const [adaptiveCarePlan, setAdaptiveCarePlan] = useState<AdaptiveCarePlan | null>(null);
   const [loading, setLoading] = useState(true);
+  const [preparationStage, setPreparationStage] = useState<PlanPreparationStage>(0);
   const [progress, setProgress] = useState<Record<string, ExerciseProgress>>({});
   const [paywallOpen, setPaywallOpen] = useState(false);
   const [paywallReason, setPaywallReason] = useState<string | undefined>();
   const [demonstrationId, setDemonstrationId] = useState<string | null>(null);
+  const [expandedPurposeIds, setExpandedPurposeIds] = useState<Set<string>>(new Set());
 
   const planId = id || "default";
   const isDemo = id === DEMO_ASSESSMENT_ID;
@@ -172,10 +245,18 @@ export default function RehabPlanScreen() {
   }, [planId]);
 
   useEffect(() => {
+    let cancelled = false;
     (async () => {
       try {
         if (id) {
+          setPreparationStage(0);
+          let stageStartedAt = Date.now();
           const assessment = id === DEMO_ASSESSMENT_ID ? demoAssessment : await fetchAssessment(id);
+          await waitForMinimumStageTime(stageStartedAt);
+          if (cancelled) return;
+
+          setPreparationStage(1);
+          stageStartedAt = Date.now();
           let carePlan: AdaptiveCarePlan | null = null;
           if (id !== DEMO_ASSESSMENT_ID) {
             try {
@@ -185,15 +266,24 @@ export default function RehabPlanScreen() {
               // Keep the last assessment plan when the adaptive service is temporarily unavailable.
             }
           }
+          await waitForMinimumStageTime(stageStartedAt);
+          if (cancelled) return;
+
+          setPreparationStage(2);
+          stageStartedAt = Date.now();
           const adjustedAssessment = applyAdaptiveDose(assessment, carePlan);
           setAdaptiveCarePlan(carePlan);
           setData(adjustedAssessment);
           await loadProgress(adjustedAssessment);
+          await waitForMinimumStageTime(stageStartedAt);
         }
       } finally {
-        setLoading(false);
+        if (!cancelled) setLoading(false);
       }
     })();
+    return () => {
+      cancelled = true;
+    };
   }, [id, loadProgress]);
 
   useFocusEffect(
@@ -211,6 +301,15 @@ export default function RehabPlanScreen() {
     () => data?.rehab_plan.find((exercise) => exercise.id === demonstrationId) || null,
     [data, demonstrationId]
   );
+
+  const togglePurpose = (exerciseId: string) => {
+    setExpandedPurposeIds((current) => {
+      const next = new Set(current);
+      if (next.has(exerciseId)) next.delete(exerciseId);
+      else next.add(exerciseId);
+      return next;
+    });
+  };
 
   const openGuidedExercise = async (exercise: RehabExercise) => {
     setDemonstrationId(null);
@@ -236,7 +335,14 @@ export default function RehabPlanScreen() {
   };
 
   if (loading) {
-    return <View style={[styles.container, styles.center]}><ActivityIndicator color={colors.brandPrimary} /></View>;
+    return (
+      <RehabPlanPreparation
+        stage={preparationStage}
+        onBack={() => router.back()}
+        topInset={insets.top}
+        compact={width < 700}
+      />
+    );
   }
 
   if (!data) {
@@ -292,41 +398,39 @@ export default function RehabPlanScreen() {
         <View style={styles.headerSpacer} />
       </View>
 
-      <ScrollView contentContainerStyle={styles.scrollContent}>
+      <ScrollView contentContainerStyle={[styles.scrollContent, { paddingBottom: Math.max(insets.bottom, spacing.xl) }]}>
         <View style={styles.page}>
-          <DisclaimerBanner />
-        {interimPlan && (
-          <View style={styles.interimBanner} testID="plan-interim-banner">
-            <Ionicons name="time-outline" size={18} color="#6B4A0B" />
-            <Text style={styles.interimBannerText}>
-              Starting plan from your survey answers. It will be updated automatically once your movement analysis is complete.
-            </Text>
-          </View>
-        )}
+          {interimPlan && (
+            <View style={styles.interimBanner} testID="plan-interim-banner">
+              <Ionicons name="time-outline" size={18} color="#6B4A0B" />
+              <Text style={styles.interimBannerText}>
+                Starting plan from your survey answers. It will be updated automatically once your movement analysis is complete.
+              </Text>
+            </View>
+          )}
           {isDemo && (
             <View style={styles.demoBanner} testID="rehab-demo-banner">
-              <Ionicons name="sparkles" size={22} color="#675080" />
+              <Ionicons name="sparkles" size={20} color="#675080" />
               <Text style={styles.demoBannerText}>Sample plan for preview only. Confirm any real exercises with your therapist.</Text>
             </View>
           )}
 
-          <View style={[styles.summaryPanel, isWide && styles.summaryPanelWide]}>
-            <View style={styles.summaryCopy}>
-              <Text style={styles.summaryTitle}>Today&apos;s plan</Text>
-            </View>
-            <View style={[styles.summaryMetrics, isWide ? styles.summaryMetricsWide : styles.summaryMetricsNarrow]}>
-              <View style={[styles.metricBox, !isWide && styles.metricBoxNarrow]}>
-                <View style={styles.metricIcon}><Ionicons name="clipboard-outline" size={26} color={colors.brandPrimary} /></View>
-                <Text style={styles.metricText}>{totalExercises} exercises</Text>
+          <View style={styles.planIntro} testID="plan-progress-summary">
+            <Text style={[styles.summaryTitle, !isWide && styles.summaryTitleNarrow]}>Today&apos;s plan</Text>
+            <Text style={styles.summarySubtitle}>{totalExercises} exercise{totalExercises === 1 ? "" : "s"} · about {estimatedMinutes} minutes</Text>
+            <View style={styles.progressRow}>
+              <View style={styles.progressTrack}>
+                <View style={[styles.progressFill, { width: `${Math.max(1, planPercent)}%` as `${number}%` }]} />
               </View>
-              <View style={[styles.metricBox, !isWide && styles.metricBoxNarrow]}>
-                <View style={styles.metricIcon}><Ionicons name="time-outline" size={28} color={colors.brandPrimary} /></View>
-                <Text style={styles.metricText}>About {estimatedMinutes} minutes</Text>
-              </View>
-            </View>
-            <View style={[styles.summaryProgress, isWide && styles.summaryProgressWide]} testID="plan-progress-summary">
-              <ProgressRing percent={planPercent} />
               <Text style={styles.summaryProgressText}>{completedCount} of {totalExercises} complete</Text>
+            </View>
+          </View>
+
+          <View style={[styles.safetyBanner, !isWide && styles.safetyBannerNarrow]} testID="plan-safety-banner">
+            <View style={styles.safetyShield}><Ionicons name="shield-checkmark-outline" size={36} color="#B65C09" /></View>
+            <View style={styles.safetyCopy}>
+              <Text style={styles.safetyHeading}>Move safely</Text>
+              <Text style={styles.safetyMessage}>Stop if you feel new pain, dizziness, marked fatigue, or loss of balance.</Text>
             </View>
           </View>
 
@@ -335,78 +439,73 @@ export default function RehabPlanScreen() {
               const itemProgress = progress[exercise.id] || { completed_reps: 0, total_reps: exercise.sets * exercise.reps, last_score: null, best_score: null, sessions: 0 };
               const percent = Math.min(100, Math.round((itemProgress.completed_reps / Math.max(1, itemProgress.total_reps)) * 100));
               const isDone = percent >= 100;
-              const status = isDone ? "Complete" : percent > 0 ? "In progress" : "Not started";
+              const purposeExpanded = expandedPurposeIds.has(exercise.id);
 
               return (
                 <View key={exercise.id} style={[styles.exerciseCard, isWide && styles.exerciseCardWide, isDone && styles.exerciseCardDone]} testID={`exercise-${exercise.id}`}>
+                  <View style={[styles.exerciseIndexColumn, !isWide && styles.exerciseIndexColumnNarrow]}>
+                    <View style={[styles.exerciseNumber, isDone && styles.exerciseNumberDone]}>
+                      {isDone ? <Ionicons name="checkmark" size={21} color="#FFFFFF" /> : <Text style={styles.exerciseNumberText}>{index + 1}</Text>}
+                    </View>
+                  </View>
                   <View style={[styles.illustrationPanel, isWide && styles.illustrationPanelWide]}>
                     <Image source={exerciseImage(exercise)} style={styles.exerciseImage} resizeMode="contain" accessibilityLabel={`Demonstration of ${exercise.name}`} />
                   </View>
                   <View style={styles.exerciseBody}>
                     <View style={styles.exerciseHeader}>
-                      <View style={[styles.exerciseNumber, isDone && styles.exerciseNumberDone]}>
-                        {isDone ? <Ionicons name="checkmark" size={20} color="#FFFFFF" /> : <Text style={styles.exerciseNumberText}>{index + 1}</Text>}
-                      </View>
                       <View style={styles.exerciseHeadingCopy}>
                         <View style={styles.titleAndTag}>
                           <Text style={styles.exerciseTitle}>{exercise.name}</Text>
                           <View style={styles.focusTag}><Text style={styles.focusTagText}>{exerciseFocus(exercise)}</Text></View>
+                          {isDone && <View style={styles.completeTag} testID={`exercise-progress-${exercise.id}`}><Text style={styles.completeTagText}>Complete</Text></View>}
                         </View>
-                        <Text style={styles.exerciseMeta}>{exercise.sets} sets × {exercise.reps} reps · {exercise.frequency}</Text>
-                      </View>
-                      <View style={[styles.statusTag, isDone && styles.statusTagDone, percent > 0 && !isDone && styles.statusTagActive]} testID={`exercise-progress-${exercise.id}`}>
-                        <Text style={[styles.statusTagText, isDone && styles.statusTagTextDone]}>{status}</Text>
+                        <Text style={styles.exerciseMeta}>{exercise.sets} sets × {exercise.reps} reps</Text>
                       </View>
                     </View>
-                    <View style={styles.exerciseRule} />
                     <Text style={styles.exerciseDescription}>{exercise.description}</Text>
-                    <View style={[styles.calloutRow, isWide && styles.calloutRowWide]}>
-                      <View style={[styles.callout, styles.purposeCallout]}>
-                        <Ionicons name="help-circle-outline" size={26} color={colors.brandPrimary} />
-                        <View style={styles.calloutCopy}>
-                          <Text style={styles.purposeTitle}>Why this helps</Text>
-                          <Text style={styles.calloutText}>{exercisePurpose(exercise)}</Text>
-                        </View>
-                      </View>
-                      <View style={[styles.callout, styles.safetyCallout]}>
-                        <Ionicons name="warning-outline" size={27} color="#B96612" />
-                        <View style={styles.calloutCopy}>
-                          <Text style={styles.safetyTitle}>Safety</Text>
-                          <Text style={styles.calloutText}>{exerciseSafety(exercise)}</Text>
-                        </View>
-                      </View>
-                    </View>
                     {itemProgress.last_score != null && <Text style={styles.sessionScore}>Last guided session: {itemProgress.last_score}/100</Text>}
-                    <View style={styles.exerciseActions}>
-                      <Pressable onPress={() => setDemonstrationId(exercise.id)} style={styles.demoLink} testID={`exercise-demo-${exercise.id}`}>
-                        <Ionicons name="eye-outline" size={18} color={colors.brandPrimary} />
-                        <Text style={styles.demoLinkText}>View demonstration</Text>
+
+                    {purposeExpanded && (
+                      <View style={styles.rationalePanel} testID={`exercise-rationale-${exercise.id}`}>
+                        <View style={styles.rationaleRow}>
+                          <Ionicons name="heart-outline" size={20} color={colors.brandPrimary} />
+                          <Text style={styles.rationaleText}>{exercisePurpose(exercise)}</Text>
+                        </View>
+                        <View style={styles.rationaleRow}>
+                          <Ionicons name="warning-outline" size={20} color="#B65C09" />
+                          <Text style={styles.rationaleText}>{exerciseSafety(exercise)}</Text>
+                        </View>
+                      </View>
+                    )}
+
+                    <View style={[styles.exerciseFooter, !isWide && styles.exerciseFooterNarrow]}>
+                      <Pressable onPress={() => togglePurpose(exercise.id)} style={styles.purposeLink} accessibilityRole="button" testID={`exercise-purpose-${exercise.id}`}>
+                        <Ionicons name={purposeExpanded ? "chevron-up" : "chevron-down"} size={18} color={colors.brandPrimary} />
+                        <Text style={styles.purposeLinkText}>Why this exercise?</Text>
                       </Pressable>
-                      <Pressable onPress={() => openGuidedExercise(exercise)} style={styles.guidedBtn} testID={`exercise-guided-${exercise.id}`}>
-                        <Ionicons name="play" size={18} color="#FFFFFF" />
-                        <Text style={styles.guidedBtnText}>{isDone ? "Practice again" : percent > 0 ? "Continue exercise" : "Start exercise"}</Text>
-                      </Pressable>
+                      <View style={[styles.exerciseActions, !isWide && styles.exerciseActionsNarrow]}>
+                        <Pressable onPress={() => setDemonstrationId(exercise.id)} style={styles.demoButton} accessibilityRole="button" testID={`exercise-demo-${exercise.id}`}>
+                          <Ionicons name="play" size={18} color={colors.brandPrimary} />
+                          <Text style={styles.demoButtonText}>Demo</Text>
+                        </Pressable>
+                        <Pressable onPress={() => openGuidedExercise(exercise)} style={styles.guidedBtn} accessibilityRole="button" testID={`exercise-guided-${exercise.id}`}>
+                          <Text style={styles.guidedBtnText}>{isDone ? "Practice again" : percent > 0 ? "Continue exercise" : "Begin exercise"}</Text>
+                          <Ionicons name="arrow-forward" size={20} color="#FFFFFF" />
+                        </Pressable>
+                      </View>
                     </View>
                   </View>
                 </View>
               );
             })}
           </View>
-        </View>
-      </ScrollView>
 
-      <View style={[styles.completionBar, { paddingBottom: Math.max(insets.bottom, spacing.sm) }]}>
-        <View style={[styles.completionBarInner, !isWide && styles.completionBarInnerNarrow]}>
-          <View style={styles.completionCount}>
-            <ProgressRing percent={planPercent} size={52} />
-            <Text style={styles.completionCountText}>{completedCount} of {totalExercises} exercises complete</Text>
-          </View>
-          <Pressable disabled={!allComplete} onPress={() => router.replace("/")} style={[styles.finishButton, !allComplete && styles.finishButtonDisabled]} testID="plan-done">
-            <Ionicons name="checkmark-circle" size={21} color={allComplete ? "#FFFFFF" : "#9AA09C"} />
-            <Text style={[styles.finishButtonText, !allComplete && styles.finishButtonTextDisabled]}>Finish session</Text>
+          <Pressable disabled={!allComplete} onPress={() => router.replace("/")} style={[styles.finishButton, !allComplete && styles.finishButtonDisabled]} accessibilityRole="button" testID="plan-done">
+            <Ionicons name="checkmark-circle-outline" size={21} color={allComplete ? "#FFFFFF" : "#A3A8A4"} />
+            <Text style={[styles.finishButtonText, !allComplete && styles.finishButtonTextDisabled]}>Complete session</Text>
           </Pressable>
         </View>
-      </View>
+      </ScrollView>
 
       <Modal visible={!!demonstrationExercise} transparent animationType="fade" onRequestClose={() => setDemonstrationId(null)}>
         <View style={styles.modalBackdrop}>
@@ -440,85 +539,102 @@ export default function RehabPlanScreen() {
 }
 
 const styles = StyleSheet.create({
-  interimBanner: { flexDirection: "row", alignItems: "flex-start", gap: 8, backgroundColor: "#FFF4DA", borderRadius: 12, padding: 12, marginBottom: 12 },
-  interimBannerText: { flex: 1, fontSize: 13, lineHeight: 18, color: "#6B4A0B", fontWeight: "700" },
-  container: { flex: 1, backgroundColor: "#FBFCFA" },
+  container: { flex: 1, backgroundColor: "#FAFBF9" },
   center: { alignItems: "center", justifyContent: "center" },
-  header: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: spacing.md, paddingBottom: spacing.sm, backgroundColor: "#FFFFFF", borderBottomWidth: 1, borderBottomColor: colors.divider },
+  preparationPage: { flex: 1, backgroundColor: "#FCFCFA" },
+  preparationHeader: { minHeight: 74, flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: spacing.lg, paddingBottom: spacing.sm, borderBottomWidth: 1, borderBottomColor: "#DDE2DC", backgroundColor: "#FCFCFA" },
+  preparationBack: { width: 48, height: 48, alignItems: "center", justifyContent: "center" },
+  preparationHeaderTitle: { fontSize: 26, lineHeight: 32, fontWeight: "800", color: "#174D3A", letterSpacing: 0 },
+  preparationHeaderSpacer: { width: 48 },
+  preparationBody: { flex: 1, alignItems: "center", justifyContent: "center", paddingHorizontal: spacing.lg, paddingBottom: 72 },
+  preparationBodyCompact: { justifyContent: "flex-start", paddingTop: 54, paddingBottom: spacing.xl },
+  preparationIcon: { width: 144, height: 144, borderRadius: 72, alignItems: "center", justifyContent: "center", backgroundColor: "#F1F5EF", marginBottom: 28 },
+  preparationIconCompact: { width: 112, height: 112, borderRadius: 56, marginBottom: spacing.lg },
+  preparationHeart: { position: "absolute", right: 31, bottom: 31, backgroundColor: "#F1F5EF", borderRadius: 18, padding: 1 },
+  preparationTitle: { fontSize: 45, lineHeight: 55, fontWeight: "800", color: "#174D3A", letterSpacing: 0, textAlign: "center", marginBottom: 28 },
+  preparationTitleCompact: { fontSize: 31, lineHeight: 39, marginBottom: spacing.lg },
+  preparationCard: { width: "100%", maxWidth: 630, borderWidth: 1, borderColor: "#D7D9D1", borderRadius: radius.sm, backgroundColor: "#FFFFFF", paddingHorizontal: 66, paddingVertical: 24 },
+  preparationCardCompact: { paddingHorizontal: spacing.lg, paddingVertical: spacing.md },
+  preparationStep: { minHeight: 84, flexDirection: "row", alignItems: "center" },
+  preparationTimelineColumn: { width: 54, height: 84, alignItems: "center", justifyContent: "center", marginRight: spacing.md },
+  preparationStatus: { width: 48, height: 48, borderRadius: 24, borderWidth: 4, borderColor: "#C4C9C2", backgroundColor: "#FFFFFF", alignItems: "center", justifyContent: "center", zIndex: 2 },
+  preparationStatusComplete: { borderColor: "#246149", backgroundColor: "#246149" },
+  preparationStatusActive: { borderColor: "#49A36C", backgroundColor: "#FFFFFF" },
+  preparationPulse: { position: "absolute", width: 54, height: 54, borderRadius: 27, borderWidth: 3, borderColor: "#78C191", zIndex: 1 },
+  preparationLineTop: { position: "absolute", top: 0, width: 3, height: 21, backgroundColor: "#C7CCC6" },
+  preparationLineBottom: { position: "absolute", bottom: 0, width: 3, height: 21, backgroundColor: "#C7CCC6" },
+  preparationLineComplete: { backgroundColor: "#4B9B6A" },
+  preparationStepText: { flex: 1, minWidth: 0, fontSize: 23, lineHeight: 30, fontWeight: "500", color: "#245B49", letterSpacing: 0 },
+  preparationStepTextActive: { fontWeight: "800" },
+  preparationStepTextComplete: { fontWeight: "700" },
+  preparationStepTextCompact: { fontSize: 18, lineHeight: 24 },
+  preparationHint: { marginTop: 25, fontSize: 21, lineHeight: 28, color: "#245B49", textAlign: "center", letterSpacing: 0 },
+  preparationHintCompact: { marginTop: spacing.lg, fontSize: 16, lineHeight: 22 },
+  header: { minHeight: 58, flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: spacing.md, paddingBottom: spacing.xs, backgroundColor: "#FAFBF9", borderBottomWidth: 1, borderBottomColor: colors.divider },
   backBtn: { width: 44, height: 44, alignItems: "center", justifyContent: "center" },
-  headerTitle: { fontSize: 19, fontWeight: "800", color: "#123E2D" },
+  headerTitle: { fontSize: 19, lineHeight: 24, fontWeight: "800", color: "#123E2D" },
   headerSpacer: { width: 44 },
-  scrollContent: { paddingHorizontal: spacing.md, paddingTop: spacing.md, paddingBottom: 126 },
-  page: { width: "100%", maxWidth: 1360, alignSelf: "center" },
-  demoBanner: { flexDirection: "row", alignItems: "center", gap: spacing.sm, borderRadius: radius.sm, paddingHorizontal: spacing.md, paddingVertical: 14, marginBottom: spacing.md, backgroundColor: "#F3EDFA", borderWidth: 1, borderColor: "#D9C8ED" },
+  scrollContent: { paddingHorizontal: spacing.md, paddingTop: spacing.lg },
+  page: { width: "100%", maxWidth: 1100, alignSelf: "center" },
+  interimBanner: { flexDirection: "row", alignItems: "flex-start", gap: spacing.xs, backgroundColor: "#FFF4DA", borderRadius: radius.sm, padding: spacing.sm, marginBottom: spacing.sm },
+  interimBannerText: { flex: 1, fontSize: 13, lineHeight: 18, color: "#6B4A0B", fontWeight: "700" },
+  demoBanner: { flexDirection: "row", alignItems: "center", gap: spacing.sm, borderRadius: radius.sm, paddingHorizontal: spacing.md, paddingVertical: spacing.sm, marginBottom: spacing.md, backgroundColor: "#F3EDFA", borderWidth: 1, borderColor: "#D9C8ED" },
   demoBannerText: { flex: 1, fontSize: 13, lineHeight: 18, fontWeight: "700", color: "#5C486F" },
-  summaryPanel: { backgroundColor: "#FFFFFF", borderRadius: radius.sm, borderWidth: 1, borderColor: "#D8DED9", padding: spacing.lg, marginBottom: spacing.lg, gap: spacing.md },
-  summaryPanelWide: { flexDirection: "row", alignItems: "center", paddingHorizontal: 32 },
-  summaryCopy: { minWidth: 260, flex: 1 },
-  summaryTitle: { fontSize: 25, fontWeight: "800", color: "#123E2D", marginBottom: 6 },
-  summarySubtitle: { fontSize: 14, lineHeight: 20, color: colors.onSurfaceSecondary },
-  summaryMetrics: { flexDirection: "row", flexWrap: "wrap", gap: spacing.sm },
-  summaryMetricsWide: { flex: 1.35, justifyContent: "center" },
-  summaryMetricsNarrow: { flexWrap: "nowrap" },
-  metricBox: { minHeight: 72, minWidth: 190, paddingHorizontal: spacing.md, flexDirection: "row", alignItems: "center", gap: spacing.md, borderWidth: 1, borderColor: "#D7DCD8", borderRadius: radius.sm, backgroundColor: "#FFFFFF" },
-  metricBoxNarrow: { minWidth: 0, minHeight: 92, flex: 1, flexDirection: "column", justifyContent: "center", paddingHorizontal: spacing.sm, gap: 4 },
-  metricIcon: { width: 44, height: 44, borderRadius: 22, alignItems: "center", justifyContent: "center", backgroundColor: "#EDF4EF" },
-  metricText: { fontSize: 15, color: colors.onSurface, fontWeight: "700" },
-  summaryProgress: { flexDirection: "row", alignItems: "center", gap: spacing.md },
-  summaryProgressWide: { borderLeftWidth: 1, borderLeftColor: colors.divider, paddingLeft: 32, minWidth: 240, justifyContent: "center" },
-  summaryProgressText: { fontSize: 16, fontWeight: "700", color: colors.onSurface },
-  ringText: { fontSize: 14, fontWeight: "800", color: colors.onSurface },
-  ringTextSmall: { fontSize: 11 },
+  planIntro: { marginBottom: spacing.xl },
+  summaryTitle: { fontSize: 38, lineHeight: 46, fontWeight: "800", color: "#123E2D" },
+  summaryTitleNarrow: { fontSize: 28, lineHeight: 34 },
+  summarySubtitle: { marginTop: 4, fontSize: 17, lineHeight: 24, color: colors.onSurfaceSecondary },
+  progressRow: { marginTop: spacing.lg, flexDirection: "row", alignItems: "center", gap: spacing.md },
+  progressTrack: { flex: 1, height: 8, borderRadius: 4, backgroundColor: "#DDE5DE", overflow: "hidden" },
+  progressFill: { height: 8, minWidth: 8, borderRadius: 4, backgroundColor: "#58A477" },
+  summaryProgressText: { minWidth: 132, fontSize: 15, lineHeight: 21, fontWeight: "700", color: "#164B35", textAlign: "right" },
+  safetyBanner: { minHeight: 148, marginBottom: spacing.lg, borderWidth: 1, borderColor: "#EDB85D", borderRadius: radius.sm, backgroundColor: "#FFF8EC", paddingHorizontal: spacing.xl, paddingVertical: spacing.lg, flexDirection: "row", alignItems: "center", gap: spacing.lg },
+  safetyBannerNarrow: { minHeight: 0, paddingHorizontal: spacing.md, paddingVertical: spacing.lg, gap: spacing.md },
+  safetyShield: { width: 58, height: 58, alignItems: "center", justifyContent: "center" },
+  safetyCopy: { flex: 1, minWidth: 0 },
+  safetyHeading: { fontSize: 21, lineHeight: 27, fontWeight: "800", color: "#A85006" },
+  safetyMessage: { maxWidth: 560, marginTop: 4, fontSize: 16, lineHeight: 23, color: colors.onSurfaceSecondary },
   exerciseList: { gap: spacing.md },
-  exerciseCard: { backgroundColor: "#FFFFFF", borderRadius: radius.sm, borderWidth: 1, borderColor: "#D9DEDA", overflow: "hidden" },
-  exerciseCardWide: { flexDirection: "row", minHeight: 300 },
+  exerciseCard: { position: "relative", backgroundColor: "#FFFFFF", borderRadius: radius.sm, borderWidth: 1, borderColor: "#D6DDD7", overflow: "hidden" },
+  exerciseCardWide: { minHeight: 250, flexDirection: "row", alignItems: "stretch" },
   exerciseCardDone: { borderColor: "#8EB59D" },
-  illustrationPanel: { height: 245, backgroundColor: "#F3F6F3", borderBottomWidth: 1, borderBottomColor: "#E0E4E1", padding: spacing.sm },
-  illustrationPanelWide: { width: 320, height: "auto", minHeight: 300, borderBottomWidth: 0, borderRightWidth: 1, borderRightColor: "#E0E4E1" },
-  exerciseImage: { width: "100%", height: "100%" },
-  exerciseBody: { flex: 1, padding: spacing.lg },
-  exerciseHeader: { flexDirection: "row", alignItems: "flex-start", gap: spacing.sm },
-  exerciseNumber: { width: 38, height: 38, borderRadius: radius.sm, backgroundColor: colors.brandPrimary, alignItems: "center", justifyContent: "center" },
+  exerciseIndexColumn: { width: 64, alignItems: "center", paddingTop: spacing.xl },
+  exerciseIndexColumnNarrow: { position: "absolute", top: spacing.md, left: spacing.md, width: 44, paddingTop: 0, zIndex: 3 },
+  exerciseNumber: { width: 42, height: 42, borderRadius: 21, backgroundColor: colors.brandPrimary, alignItems: "center", justifyContent: "center" },
   exerciseNumberDone: { backgroundColor: colors.success },
-  exerciseNumberText: { color: "#FFFFFF", fontSize: 18, fontWeight: "800" },
+  exerciseNumberText: { color: "#FFFFFF", fontSize: 18, lineHeight: 22, fontWeight: "800" },
+  illustrationPanel: { height: 220, margin: spacing.md, borderWidth: 1, borderColor: "#DCE2DD", borderRadius: radius.sm, backgroundColor: "#F5F7F4", overflow: "hidden", padding: spacing.xs },
+  illustrationPanelWide: { width: 190, height: 204, marginLeft: 0, marginRight: 0, marginVertical: spacing.lg },
+  exerciseImage: { width: "100%", height: "100%" },
+  exerciseBody: { flex: 1, minWidth: 0, padding: spacing.lg },
+  exerciseHeader: { flexDirection: "row", alignItems: "flex-start" },
   exerciseHeadingCopy: { flex: 1, minWidth: 0 },
   titleAndTag: { flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: spacing.sm },
-  exerciseTitle: { fontSize: 20, lineHeight: 25, fontWeight: "800", color: "#123E2D" },
-  focusTag: { paddingHorizontal: 12, paddingVertical: 5, borderRadius: 999, backgroundColor: "#E6EFE8" },
-  focusTagText: { color: "#427454", fontSize: 12, fontWeight: "700" },
-  exerciseMeta: { marginTop: 4, fontSize: 13, color: colors.brandPrimary, fontWeight: "700" },
-  goalChip: { marginTop: 4, fontSize: 12, lineHeight: 17, fontWeight: '700', color: '#1F7047' },
-  statusTag: { paddingHorizontal: 12, paddingVertical: 6, borderRadius: 999, backgroundColor: "#F0F1F0" },
-  statusTagActive: { backgroundColor: "#FFF1D9" },
-  statusTagDone: { backgroundColor: "#E1F1E6" },
-  statusTagText: { color: "#6D736F", fontSize: 12, fontWeight: "700" },
-  statusTagTextDone: { color: "#2C7543" },
-  exerciseRule: { height: 1, backgroundColor: colors.divider, marginVertical: spacing.md },
-  exerciseDescription: { fontSize: 15, lineHeight: 22, color: colors.onSurface, marginBottom: spacing.md },
-  calloutRow: { gap: spacing.sm },
-  calloutRowWide: { flexDirection: "row" },
-  callout: { flex: 1, minHeight: 88, flexDirection: "row", alignItems: "flex-start", gap: spacing.sm, padding: spacing.md, borderWidth: 1, borderRadius: radius.sm },
-  purposeCallout: { backgroundColor: "#F1F6F2", borderColor: "#D7E3DA" },
-  safetyCallout: { backgroundColor: "#FFF8EE", borderColor: "#F0D4A8" },
-  calloutCopy: { flex: 1 },
-  purposeTitle: { fontSize: 13, fontWeight: "800", color: "#2F6A43", marginBottom: 3 },
-  safetyTitle: { fontSize: 13, fontWeight: "800", color: "#A7580E", marginBottom: 3 },
-  calloutText: { fontSize: 12, lineHeight: 17, color: colors.onSurfaceSecondary },
-  sessionScore: { marginTop: spacing.sm, fontSize: 12, fontWeight: "700", color: colors.brandPrimary },
-  exerciseActions: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", justifyContent: "flex-end", gap: spacing.md, marginTop: spacing.md },
-  demoLink: { minHeight: 44, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, paddingHorizontal: spacing.sm },
-  demoLinkText: { color: colors.brandPrimary, fontSize: 14, fontWeight: "700", textDecorationLine: "underline" },
-  guidedBtn: { minHeight: 46, minWidth: 174, paddingHorizontal: spacing.lg, flexDirection: "row", gap: 7, backgroundColor: colors.brandPrimary, borderRadius: radius.sm, alignItems: "center", justifyContent: "center" },
-  guidedBtnText: { color: "#FFFFFF", fontWeight: "800", fontSize: 14 },
-  completionBar: { position: "absolute", left: 0, right: 0, bottom: 0, paddingTop: spacing.sm, paddingHorizontal: spacing.md, backgroundColor: "#FFFFFF", borderTopWidth: 1, borderTopColor: colors.divider },
-  completionBarInner: { width: "100%", maxWidth: 1360, alignSelf: "center", minHeight: 74, borderWidth: 1, borderColor: colors.brandPrimary, borderRadius: radius.sm, padding: spacing.sm, flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: spacing.md },
-  completionBarInnerNarrow: { minHeight: 64, flexDirection: "column", alignItems: "stretch" },
-  completionCount: { flexDirection: "row", alignItems: "center", gap: spacing.md, flex: 1 },
-  completionCountText: { fontSize: 14, fontWeight: "800", color: colors.onSurface },
-  finishButton: { minHeight: 50, minWidth: 290, borderRadius: radius.sm, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: spacing.sm, backgroundColor: colors.brandPrimary, paddingHorizontal: spacing.lg },
-  finishButtonDisabled: { backgroundColor: "#E3E5E3" },
-  finishButtonText: { color: "#FFFFFF", fontSize: 15, fontWeight: "800" },
-  finishButtonTextDisabled: { color: "#9AA09C" },
+  exerciseTitle: { fontSize: 22, lineHeight: 28, fontWeight: "800", color: "#123E2D" },
+  focusTag: { paddingHorizontal: spacing.sm, paddingVertical: 5, borderRadius: radius.pill, backgroundColor: "#E6EFE8" },
+  focusTagText: { color: "#427454", fontSize: 12, lineHeight: 16, fontWeight: "700" },
+  completeTag: { paddingHorizontal: spacing.sm, paddingVertical: 5, borderRadius: radius.pill, backgroundColor: "#E1F1E6" },
+  completeTagText: { color: "#2C7543", fontSize: 12, lineHeight: 16, fontWeight: "800" },
+  exerciseMeta: { marginTop: spacing.sm, fontSize: 16, lineHeight: 22, color: colors.brandPrimary, fontWeight: "700" },
+  exerciseDescription: { marginTop: spacing.sm, fontSize: 15, lineHeight: 22, color: colors.onSurface },
+  sessionScore: { marginTop: spacing.sm, fontSize: 12, lineHeight: 17, fontWeight: "700", color: colors.brandPrimary },
+  rationalePanel: { marginTop: spacing.md, paddingTop: spacing.sm, borderTopWidth: 1, borderTopColor: colors.divider, gap: spacing.xs },
+  rationaleRow: { flexDirection: "row", alignItems: "flex-start", gap: spacing.xs },
+  rationaleText: { flex: 1, fontSize: 13, lineHeight: 19, color: colors.onSurfaceSecondary },
+  exerciseFooter: { marginTop: "auto", paddingTop: spacing.md, flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: spacing.md },
+  exerciseFooterNarrow: { flexDirection: "column", alignItems: "stretch" },
+  purposeLink: { minHeight: 44, flexDirection: "row", alignItems: "center", gap: 4 },
+  purposeLinkText: { fontSize: 14, lineHeight: 20, fontWeight: "700", color: colors.brandPrimary, textDecorationLine: "underline" },
+  exerciseActions: { flexDirection: "row", alignItems: "center", justifyContent: "flex-end", gap: spacing.md },
+  exerciseActionsNarrow: { flexDirection: "column", alignItems: "stretch" },
+  demoButton: { minWidth: 130, minHeight: 50, paddingHorizontal: spacing.md, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: spacing.xs, borderWidth: 1, borderColor: "#7C9C87", borderRadius: radius.sm, backgroundColor: "#FFFFFF" },
+  demoButtonText: { color: colors.brandPrimary, fontSize: 15, lineHeight: 21, fontWeight: "800" },
+  guidedBtn: { minWidth: 192, minHeight: 50, paddingHorizontal: spacing.lg, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: spacing.sm, borderRadius: radius.sm, backgroundColor: colors.brandPrimary },
+  guidedBtnText: { color: "#FFFFFF", fontSize: 15, lineHeight: 21, fontWeight: "800" },
+  finishButton: { width: "100%", maxWidth: 390, minHeight: 68, alignSelf: "center", marginTop: spacing.xl, borderRadius: radius.sm, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: spacing.sm, backgroundColor: colors.brandPrimary, paddingHorizontal: spacing.lg },
+  finishButtonDisabled: { backgroundColor: "#E4E6E4" },
+  finishButtonText: { color: "#FFFFFF", fontSize: 16, lineHeight: 22, fontWeight: "800" },
+  finishButtonTextDisabled: { color: "#A3A8A4" },
   blockedContent: { flex: 1, padding: spacing.xl },
   blockedIcon: { width: 64, height: 64, borderRadius: 32, alignItems: "center", justifyContent: "center", backgroundColor: colors.brandTertiary, marginBottom: spacing.md },
   blockedTitle: { fontSize: 22, fontWeight: "800", color: colors.onSurface, textAlign: "center", marginBottom: spacing.sm },

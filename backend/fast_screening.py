@@ -145,8 +145,8 @@ FAST_RUNNER_HTML = r"""<!DOCTYPE html>
 </head>
 <body>
 <div class="shell">
-  <div class="emergencyBar"><span>Prototype only: any 999 call shown here is simulated. If this is a real emergency, use a phone to call 999 now.</span></div>
-  <div class="top"><button class="exit" type="button" onclick="postRN({type:'exit'})">Exit</button><strong>Emergency FAST check</strong><span style="width:44px"></span></div>
+  <div class="top"><button class="exit" type="button" onclick="postRN({type:'exit'})">Leave</button><strong>Emergency FAST check</strong><span style="width:44px"></span></div>
+  <div class="emergencyBar"><span>Prototype only - use a phone for real emergency calls.</span></div>
   <main class="workspace" id="workspace">
     <section class="camera" id="cameraPane">
       <video id="video" playsinline autoplay muted></video>
@@ -494,6 +494,10 @@ function showResult(){
 }
 
 window.startDemo911Call=startDemo911Call;window.postRN=postRN;renderIntro();
+if(new URLSearchParams(window.location.search).get("autostart")==="1"){
+  panel.innerHTML=`<div class="letter">F</div><div class="eyebrow">Starting guided check</div><h1>Preparing the Face check</h1><p>Alira is starting private on-device camera assistance.</p><div class="assist"><span class="assistDot"></span><span>Connecting to the camera and movement models.</span></div>`;
+  void ensureCamera().then(renderFace);
+}
 </script>
 </body>
 </html>"""

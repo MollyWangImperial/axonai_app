@@ -392,10 +392,43 @@ def test_interim_plan_surfaces_instead_of_the_waiting_for_review_dead_end():
     assert "moving around more safely" in home
 
 
+def test_movement_map_is_anatomy_first_with_shiny_navigable_findings():
+    movement_map = (ROOT / "frontend" / "app" / "movement-map.tsx").read_text(encoding="utf-8")
+
+    assert 'testID="movement-map-panel"' in movement_map
+    assert "areas highlighted. Select one to see its details." in movement_map
+    assert "ShinyMapMarker" in movement_map
+    assert 'testID={`${testID}-shine`}' in movement_map
+    assert "markerGlint" in movement_map
+    assert 'testID="movement-map-view-details"' in movement_map
+    assert 'testID="movement-map-expanded-details"' in movement_map
+    assert 'testID="movement-map-previous-area"' in movement_map
+    assert 'testID="movement-map-next-area"' in movement_map
+    assert "Select another area" not in movement_map
+    assert "styles.legend" not in movement_map
+
+
+def test_rehab_plan_uses_compact_daily_session_structure():
+    rehab = (ROOT / "frontend" / "app" / "rehab-plan.tsx").read_text(encoding="utf-8")
+
+    assert 'testID="plan-progress-summary"' in rehab
+    assert 'testID="plan-safety-banner"' in rehab
+    assert "Move safely" in rehab
+    assert "Why this exercise?" in rehab
+    assert "exercise-rationale-" in rehab
+    assert ">Demo</Text>" in rehab
+    assert '"Begin exercise"' in rehab
+    assert "Complete session" in rehab
+    assert "ProgressRing" not in rehab
+    assert "styles.completionBar" not in rehab
+    assert "styles.calloutRow" not in rehab
+
+
 def test_snapshot_and_report_screens_show_qualitative_scores_and_survey_highlights():
     from pathlib import Path
     root = Path(__file__).resolve().parents[2]
     panel = (root / "frontend" / "src" / "components" / "DailyActivitiesPanel.tsx").read_text(encoding="utf-8")
+    scores = (root / "frontend" / "src" / "components" / "MovementScoresPanel.tsx").read_text(encoding="utf-8")
     report = (root / "frontend" / "app" / "survey-report.tsx").read_text(encoding="utf-8")
     results = (root / "frontend" / "app" / "results.tsx").read_text(encoding="utf-8")
 
@@ -422,19 +455,38 @@ def test_snapshot_and_report_screens_show_qualitative_scores_and_survey_highligh
     assert "DailyActivitiesBoard" in report
     assert "DailyActivitiesBoard activities={report.daily_activities.activities}" in report
 
-    # The movement map now lives inline directly below the daily-life board:
-    # legend first, tappable markers (observed results lead, survey answers
-    # fill unobserved domains), a detail card, and a straight-to-plan CTA.
+    # The snapshot uses the requested three-part hierarchy. Guided-task scores
+    # lead, daily-life meaning follows, and the interactive anatomy map is last.
     assert 'authedFetch("/api/assessment/survey-report")' in results
+    assert "Your movement scores" in scores
+    assert "Guided-task scores - not a clinical measure." in scores
+    assert 'testID="movement-scores-panel"' in scores
+    assert "movement-score-" in scores
+    assert 'title="What this means for daily life"' in results
     assert 'testID="results-movement-map"' in results
+    assert "Your movement map" in results
     assert 'testID="anatomy-severity-legend"' in results
     assert "Select a highlighted area to view its details." in results
     assert "results-map-marker-" in results
     assert 'testID="results-map-detail"' in results
-    assert results.index("<DailyActivitiesPanel />") < results.index('testID="results-movement-map"')
+    assert results.index("<MovementScoresPanel") < results.index('title="What this means for daily life"')
+    assert results.index('title="What this means for daily life"') < results.index('testID="results-movement-map"')
     assert "goPlan" in results and "goMap" not in results
     assert "Explore your movement map" not in results
     assert 'testID="results-summary"' not in results  # the old anatomy panel is gone
+
+
+def test_returning_home_after_earning_points_celebrates_the_delta():
+    home = (ROOT / "frontend" / "app" / "(tabs)" / "index.tsx").read_text(encoding="utf-8")
+
+    # Every Home focus refreshes the day board and, when points rose while the
+    # patient was away (e.g. the assessment was completed), pops the toast for
+    # exactly the newly earned points - without double-celebrating check-in.
+    assert 'getScreenCache<number>("celebrated-points")' in home
+    assert "nextPoints > lastCelebratedPoints" in home
+    assert "nextPoints - lastCelebratedPoints" in home
+    assert '"Assessment complete - amazing work!"' in home
+    assert home.count('setScreenCache<number>("celebrated-points"') >= 3
 
 
 def test_your_day_reveals_steps_progressively_with_grey_locked_connectors():
@@ -463,6 +515,27 @@ def test_secondary_goals_options_show_pictures_instead_of_symbols():
     assert "styles.goalPicture" in onboarding
     # The goals picker renders picture cards, never the emoji symbol.
     assert "goalCard" in onboarding
+
+
+def test_trend_charts_get_shiny_points_and_a_value_axis_after_assessment():
+    home = (ROOT / "frontend" / "app" / "(tabs)" / "index.tsx").read_text(encoding="utf-8")
+
+    # Once today's assessment is complete, the Reaching / Hand control /
+    # Walking points shimmer (a looping animated halo) so progress feels
+    # alive, and every chart carries a y-axis plus per-point value labels so
+    # patients can read the exact score of each point.
+    assert "const AnimatedCircle = Animated.createAnimatedComponent(Circle);" in home
+    assert "shiny?: boolean" in home
+    assert "<MiniTrendChart values={trend.values} shiny={assessmentCompletedToday} />" in home
+    assert "Animated.loop(" in home
+    assert "pulse.interpolate" in home
+    # Y-axis line, tick labels, and exact value labels on each point.
+    assert 'testID="home-trend-axis-label"' in home
+    assert 'testID="home-trend-point-value"' in home
+    assert "axisTicks" in home
+    assert "Math.round(point.value)" in home
+    # The shimmer only runs when there is something to celebrate.
+    assert "if (!shiny || values.length === 0) return;" in home
 
 
 def test_earning_points_pops_a_fading_congratulations_toast():
@@ -503,3 +576,18 @@ def test_safety_strip_and_rewards_and_preview_are_wired():
     # Raw joint angles are no longer rendered to patients (spec 6.1).
     assert "shoulder_elevation_deg)}°" not in summary
     assert "trunk_lean_deg)}°" not in summary
+
+
+def test_rehab_plan_loading_tracks_real_plan_preparation_stages():
+    rehab = (ROOT / "frontend" / "app" / "rehab-plan.tsx").read_text(encoding="utf-8")
+
+    assert 'testID="rehab-plan-preparation"' in rehab
+    assert '"Reviewing your assessment"' in rehab
+    assert '"Choosing suitable exercises"' in rehab
+    assert '"Creating your plan"' in rehab
+    assert "This usually takes less than a minute." in rehab
+    assert "const assessment = id === DEMO_ASSESSMENT_ID ? demoAssessment : await fetchAssessment(id);" in rehab
+    assert "setPreparationStage(1);" in rehab
+    assert 'authedFetch("/api/alira/care-plan")' in rehab
+    assert "setPreparationStage(2);" in rehab
+    assert "await loadProgress(adjustedAssessment);" in rehab

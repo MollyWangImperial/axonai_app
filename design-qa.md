@@ -91,6 +91,71 @@ final result: passed
 
 ---
 
+# Rehab Plan Preparation Design QA
+
+- Source visual truth: `C:\Users\LENOVO\AppData\Local\Temp\codex-clipboard-f9a8e0d3-17a7-4f43-b9a4-eade5acdef72.png`
+- Desktop browser capture: `C:\Users\LENOVO\Documents\New project\design-qa-rehab-loader-desktop.png`
+- Mobile browser capture: `C:\Users\LENOVO\Documents\New project\design-qa-rehab-loader-mobile.png`
+- Desktop viewport: 1280 x 720 CSS pixels
+- Mobile viewport: 390 x 844 CSS pixels
+- State: assessment review complete, exercise selection active, plan creation pending
+
+## Full-View Evidence
+
+The live `/rehab-plan` loading branch now matches the reference hierarchy: centered page header, pale clipboard-and-heart icon, prominent preparation title, bordered vertical progress card, and a short timing expectation. The off-white background, dark green typography, restrained borders, and compact geometry remain consistent with the surrounding Rehyn report and plan screens.
+
+## Progress Semantics
+
+- `Reviewing your assessment` tracks retrieval of the selected assessment.
+- `Choosing suitable exercises` tracks the adaptive Alira care-plan request.
+- `Creating your plan` tracks dose application and stored exercise-progress assembly.
+- Each stage has a short minimum display period to avoid unreadable flicker when local data returns immediately.
+- The completed, active, and pending status visuals update from the real asynchronous workflow.
+
+## Responsive And Interaction Checks
+
+- The 390 x 844 layout wraps long stage labels without clipping and has no horizontal overflow.
+- The back control remains available during preparation.
+- The demo route advances from the preparation screen into `Today's plan` successfully.
+- The browser reports no console errors during the transition.
+- Focused ESLint, 38 feature tests, and the production Expo web export pass.
+
+final result: passed
+
+---
+
+# Movement Map Design QA
+
+- Source visual truth: `C:\Users\LENOVO\AppData\Local\Temp\codex-clipboard-4fe0d291-7d36-4d4c-beb5-661abb4e4c00.png`
+- Browser-rendered implementation: `C:\Users\LENOVO\Documents\New project\design-qa-movement-map.png`
+- Expanded-details implementation: `C:\Users\LENOVO\Documents\New project\design-qa-movement-map-details.png`
+- Browser viewport: 1280 x 720 CSS pixels
+- State: sample assessment, older-adult anatomy, right side affected, light theme
+
+## Full-View Evidence
+
+The browser capture confirms the reference structure: one framed movement-map surface, concise title and area count, front-view indicator, centered age-matched anatomy, three always-visible labeled findings, and a full-width selected-area tray. The app remains front-only because Rehyn does not capture a back view.
+
+## Fidelity Surfaces
+
+- Typography and spacing preserve the reference hierarchy without oversized panel text.
+- Marker centers reuse Rehyn's verified anatomy coordinates. The anatomical right shoulder, hand, and knee remain on the viewer's left.
+- Each marker has concentric semantic rings, a moving halo, a bright glint, and a stronger selected state.
+- Marker colors and summaries come from the real domain findings and completion status rather than hard-coded sample colors.
+- The narrow layout stacks the selected-area block, detail command, navigator, metrics, and plan action to prevent text collisions.
+
+## Interaction Checks
+
+- Selecting a marker updates the area title, status, and plain-language summary.
+- Previous and next controls wrap through all highlighted areas and update the `1 of 3` position.
+- `View details` expands the real task coverage, finding count, matched demand, and plan action; `Hide details` collapses it.
+- Browser measurement reports no horizontal document overflow at the tested viewport.
+- Focused ESLint, 48 backend/static tests, and the production Expo web export pass.
+
+final result: passed
+
+---
+
 # Assessment Anatomy Marker Design QA
 
 - Source issue: `C:\Users\LENOVO\AppData\Local\Temp\codex-clipboard-c9d85881-6450-4e74-8252-e3e82c876e98.png`
@@ -111,5 +176,102 @@ The anatomy image and its markers now share one centered portrait coordinate fra
 - Selecting the hand marker updates the detail panel to the right-hand finding.
 - The 390 x 844 mobile layout retains marker alignment and has no horizontal page overflow.
 - Focused ESLint and the production Expo web export pass.
+
+final result: passed
+
+---
+
+# Rehab Plan Design QA
+
+- Source visual truth: `C:\Users\LENOVO\AppData\Local\Temp\codex-clipboard-b63e603b-be0c-4603-a11a-8e6a196efd32.png`
+- Browser-rendered implementation: `C:\Users\LENOVO\Documents\New project\design-qa-rehab-plan.png`
+- Browser viewport: 1280 x 720 CSS pixels
+- State: sample two-exercise plan, no exercises completed, light theme
+
+## Full-View Evidence
+
+The browser capture confirms the requested hierarchy: a plain-language daily plan summary, one linear progress indicator, one prominent safety notice, compact numbered exercise rows, and a centered disabled completion command. Exercise names, dose, focus, instructions, and progress remain driven by the active Alira plan.
+
+## Fidelity Surfaces
+
+- The page uses a 1100 px reading width, 148 px safety notice, 254 px exercise rows, and restrained 8 px corners.
+- Exercise artwork is the existing Rehyn task-specific raster imagery rather than a generic placeholder.
+- The old progress rings, boxed summary metrics, repeated rationale cards, and sticky completion footer are removed.
+- Narrow layouts stack the rationale and exercise actions to prevent text or controls from colliding.
+
+## Interaction Checks
+
+- `Why this exercise?` expands both the data-derived selection reason and exercise-specific safety note.
+- `Demo` opens the existing exercise demonstration modal.
+- `Begin exercise` retains the guided-exercise credit check and route.
+- `Complete session` remains disabled until every exercise reaches its stored repetition target.
+- Browser measurement reports no horizontal overflow at the tested viewport.
+- Focused ESLint, 90 focused tests, and the production Expo web export pass.
+
+final result: passed
+
+---
+
+# Three-Section Assessment Report Design QA
+
+- Source visual truth: `C:\Users\LENOVO\AppData\Local\Temp\codex-clipboard-aaa28e10-bfca-4bb6-886f-6d9df19dde52.png`
+- Browser-rendered implementation: `C:\Users\LENOVO\Documents\New project\design-qa-three-section-report.png`
+- Movement-map interaction capture: `C:\Users\LENOVO\Documents\New project\design-qa-three-section-map.png`
+- Browser viewport: 1280 x 720 CSS pixels
+- State: sample assessment with observed upper-limb, hand, and lower-limb tasks
+
+## Full-View Evidence
+
+The assessment report now presents the requested hierarchy in order: `Your movement scores`, `What this means for daily life`, and `Your movement map`. The first viewport shows the full score panel and the start of the daily-life interpretation, while normal scrolling exposes the complete activity rows and interactive anatomy map.
+
+## Score Semantics
+
+- Scores are derived from guided-task evidence, not hard-coded for patient assessments.
+- Upper-limb scoring uses guided-step completion with explicit penalties for detected findings and shoulder compensation.
+- Hand scoring uses available opening and pinch-control percentages, falling back to completed guided steps.
+- Lower-limb scoring uses bilateral symmetry when available, falling back to completed guided steps.
+- Missing or skipped domains display `Not observed` and no numeric score.
+- The panel explicitly states that these are guided-task scores and not a clinical measure.
+
+## Interaction Checks
+
+- The daily-life source badge distinguishes observed, estimated, and mixed evidence.
+- `How these results are estimated` retains its existing methodology modal.
+- Selecting the hand marker updates the movement-map detail to `Right hand`, `Moving well`, 100% task coverage, and zero findings.
+- Browser measurement reports no horizontal overflow; all three main sections measure 1120 px at the tested viewport.
+- Focused ESLint, 44 report tests, and the production Expo web export pass.
+
+final result: passed
+
+---
+
+# Emergency FAST Entry Design QA
+
+- Source visual truth: `C:\Users\LENOVO\AppData\Local\Temp\codex-clipboard-c09f7b8b-68bc-4ef2-8d59-9887e44d2ceb.png`
+- Desktop browser capture: `C:\Users\LENOVO\Documents\New project\design-qa-fast-desktop.png`
+- Mobile browser capture: `C:\Users\LENOVO\Documents\New project\design-qa-fast-mobile.png`
+- Desktop viewport: 1280 x 720 CSS pixels
+- Mobile viewport: 390 x 844 CSS pixels
+- State: pre-camera guided FAST introduction
+
+## Full-View Evidence
+
+The FAST entry now follows the requested safety-first hierarchy: full-screen header and leave command, unmistakable red prototype notice, immediate 999 callout, Face/Arms/Speech overview, one primary guided-check command, and concise camera/transcription disclosures. The hidden Emergency tab no longer leaves the normal app tab bar visible on this route.
+
+## Safety And Privacy Semantics
+
+- The page tells patients to use a phone and not wait for the check when signs are visible or symptoms began suddenly.
+- Camera processing remains on-device and video is not saved.
+- The speech disclosure states that a short recording is securely transmitted for transcription.
+- Privacy and technical-limitations controls open readable modal details.
+- Starting the guided flow adds `autostart=1`, so the existing automatic Face, Arms, and Speech runner begins without showing a duplicate intro.
+
+## Responsive And Interaction Checks
+
+- The 390 x 844 layout stacks the three steps and preserves readable emergency copy without overlap or horizontal overflow.
+- The mobile header remains on one line without colliding with `Leave`.
+- The Privacy details modal opens and closes successfully.
+- Browser inspection reports no console errors.
+- Focused ESLint, six emergency-flow tests, and the production Expo web export pass.
 
 final result: passed
