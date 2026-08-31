@@ -8,6 +8,7 @@ from backend.alira_care_orchestrator import (
     MAX_CHECK_IN_QUESTIONS,
     build_adaptive_care_plan,
     initial_assessment_recommendation,
+    survey_functional_problems,
     validate_check_in_answers,
 )
 
@@ -149,6 +150,112 @@ def test_uncertain_arm_and_hand_answers_still_assign_tasks_when_a_carer_is_avail
     assert recommendation["task_ids"] == ["T1", "T2", "T3", "H1", "H3", "H4", "L6"]
     assert recommendation["requires_helper"] is True
     assert recommendation["helper_assisted_task_ids"] == ["T1", "T2", "T3", "H1", "H3", "H4"]
+
+
+def cannot_do_camera_profile(**overrides):
+    return ready_profile(
+        sitting_ability="unable",
+        affected_arm_movement="no_movement",
+        affected_hand_movement="no_movement",
+        mobility_level="not_cleared",
+        has_caregiver="yes",
+        **overrides,
+    )
+
+
+def caregiver_activity(days_ago: int, exercise_id: str, observed: str = None):
+    activity = {"id": f"a_{exercise_id}_{days_ago}", "exercise_id": exercise_id, "completed_at": iso_days_ago(days_ago)}
+    if observed:
+        activity["observed_response"] = observed
+    return activity
+
+
+def test_no_possible_camera_tasks_directs_first_to_the_survey_only_report():
+    plan = build_adaptive_care_plan(cannot_do_camera_profile(), [], [], now=NOW)
+
+    # Report first: daily-activity scores, the anatomy pin-point map, then the
+    # rehab plan - all built from the survey alone.
+    assert plan["next_step"]["action"] == "view_survey_report"
+    assert plan["next_step"]["destination"] == "survey_report"
+    assert plan["survey_report"]["available"] is True
+    assert plan["survey_report"]["viewed"] is False
+
+
+def viewed_profile(**overrides):
+    return cannot_do_camera_profile(_survey_report_viewed_at="2026-08-28T10:00:00+00:00", **overrides)
+
+
+def test_no_possible_camera_tasks_routes_straight_to_caregiver_delivered_exercises():
+    plan = build_adaptive_care_plan(viewed_profile(), [], [], now=NOW)
+
+    # The patient is never left with nothing to do: instead of a dead end at
+    # clinical review, the next step is the caregiver-delivered programme.
+    assert plan["next_step"]["action"] == "caregiver_exercises"
+    assert plan["next_step"]["destination"] == "caregiver_plan"
+    delivery = plan["caregiver_plan"]["daily_delivery"]
+    assert delivery["required_today"] is True
+    assert delivery["programme_ids"] == ["CG_UPPER_LIMB", "CG_HAND", "CG_LOWER_LIMB"]
+    assert delivery["remaining_today_ids"] == ["CG_UPPER_LIMB", "CG_HAND", "CG_LOWER_LIMB"]
+    assert plan["caregiver_plan"]["progress"]["mode"] == "caregiver_qualitative"
+
+
+def test_completing_every_caregiver_routine_completes_the_day():
+    activities = [
+        caregiver_activity(0, programme_id, observed="none")
+        for programme_id in ("CG_UPPER_LIMB", "CG_HAND", "CG_LOWER_LIMB")
+    ]
+    plan = build_adaptive_care_plan(viewed_profile(), [], [], activities, now=NOW)
+
+    assert plan["caregiver_plan"]["daily_delivery"]["completed_today"] is True
+    assert plan["caregiver_plan"]["daily_delivery"]["remaining_today_ids"] == []
+    assert plan["next_step"]["action"] == "caregiver_session_complete"
+
+
+def test_caregiver_progress_counts_sessions_and_observations_qualitatively():
+    activities = [
+        caregiver_activity(1, "CG_UPPER_LIMB", observed="none"),
+        caregiver_activity(2, "CG_UPPER_LIMB", observed="flicker"),
+        caregiver_activity(9, "CG_HAND", observed="none"),
+    ]
+    plan = build_adaptive_care_plan(viewed_profile(), [], [], activities, now=NOW)
+    progress = plan["caregiver_plan"]["progress"]
+
+    assert progress["session_days_this_week"] == 2
+    assert progress["session_days_prior_week"] == 1
+    assert progress["total_sessions"] == 3
+    assert progress["observation_counts"]["flicker"] == 1
+    assert progress["re_screen_suggested"] is False
+    assert progress["how_progress_is_shown"]
+
+
+def test_repeated_small_movement_observations_suggest_re_screening_for_camera_tasks():
+    activities = [
+        caregiver_activity(1, "CG_UPPER_LIMB", observed="small_movement"),
+        caregiver_activity(2, "CG_UPPER_LIMB", observed="more_than_before"),
+    ]
+    plan = build_adaptive_care_plan(viewed_profile(), [], [], activities, now=NOW)
+
+    assert plan["caregiver_plan"]["progress"]["re_screen_suggested"] is True
+    secondary = plan["next_step"]["secondary_action"]
+    assert secondary["action"] == "update_readiness_answers"
+    assert secondary["destination"] == "initial_assessment"
+
+
+def test_survey_functional_problems_pin_every_domain_with_survey_reasons():
+    problems = survey_functional_problems({
+        "side_affected": "left",
+        "affected_arm_movement": "no_movement",
+        "affected_hand_movement": "some_finger_movement",
+        "mobility_level": "independent",
+    })
+
+    assert problems["affected_side"] == "left"
+    by_domain = {pin["domain"]: pin for pin in problems["pins"]}
+    assert set(by_domain) == {"upper_limb", "hand", "lower_limb"}
+    assert by_domain["upper_limb"]["severity"] == "needs_attention"
+    assert by_domain["hand"]["severity"] == "building_strength"
+    assert by_domain["lower_limb"]["severity"] == "moving_well"
+    assert all(pin["problem"] for pin in problems["pins"])
 
 
 def test_no_arm_movement_is_excluded_even_with_a_carer_available():
@@ -487,3 +594,56 @@ def test_task_intro_pauses_start_until_the_helper_is_confirmed_present():
     assert "if (helperConfirmationNeeded && !helperConfirmed) return;" in task_intro
     assert "A helper is with me now and will stay for the whole assessment." in task_intro
     assert "Confirm your helper is here first" in task_intro
+
+
+def test_caregiver_plan_screen_records_delivery_and_qualitative_progress():
+    root = Path(__file__).resolve().parents[2]
+    screen = (root / "frontend" / "app" / "caregiver-plan.tsx").read_text(encoding="utf-8")
+    calendar = (root / "frontend" / "src" / "components" / "DailyCheckInCalendar.tsx").read_text(encoding="utf-8")
+    navigation = (root / "frontend" / "src" / "aliraNavigation.ts").read_text(encoding="utf-8")
+
+    assert 'authedFetch("/api/alira/care-plan")' in screen
+    assert 'authedFetch("/api/alira/activities"' in screen
+    assert "observed_response: observedResponse" in screen
+    assert "/api/users/daily-checkin/complete" in screen
+    assert 'testID="caregiver-plan-progress"' in screen
+    assert 'testID="caregiver-plan-stop-rules"' in screen
+    assert "During this routine, how much did the patient join in?" in screen
+    assert 'testID="caregiver-plan-rescreen"' in screen
+    assert 'caregiver_plan: "caregiver_plan",' in calendar
+    assert 'caregiver_plan: { label: "caregiver exercise programme", path: "/caregiver-plan" },' in navigation
+
+
+def test_survey_report_screen_shows_three_pages_and_hands_over_to_the_rehab_plan():
+    root = Path(__file__).resolve().parents[2]
+    screen = (root / "frontend" / "app" / "survey-report.tsx").read_text(encoding="utf-8")
+    calendar = (root / "frontend" / "src" / "components" / "DailyCheckInCalendar.tsx").read_text(encoding="utf-8")
+    navigation = (root / "frontend" / "src" / "aliraNavigation.ts").read_text(encoding="utf-8")
+
+    assert 'authedFetch("/api/assessment/survey-report")' in screen
+    assert 'testID="survey-report-page-activities"' in screen
+    assert 'testID="survey-report-page-anatomy"' in screen
+    assert 'testID="survey-report-page-plan"' in screen
+    # Page order: daily activities, then the anatomy pin-point map, then plan.
+    assert screen.index('survey-report-page-activities') < screen.index('survey-report-page-anatomy') < screen.index('survey-report-page-plan')
+    assert '"/api/alira/survey-report-viewed"' in screen
+    assert 'router.replace("/caregiver-plan" as never)' in screen
+    assert 'router.replace("/rehab-plan" as never)' in screen
+    assert 'survey_report: "survey_report",' in calendar
+    assert 'survey_report: { label: "assessment report", path: "/survey-report" },' in navigation
+
+
+def test_home_goal_banner_and_journey_completion_summary_are_wired():
+    root = Path(__file__).resolve().parents[2]
+    home = (root / "frontend" / "app" / "(tabs)" / "index.tsx").read_text(encoding="utf-8")
+    journey = (root / "frontend" / "app" / "(tabs)" / "journey.tsx").read_text(encoding="utf-8")
+
+    # The patient's own initial-survey goal leads the Home page, and the
+    # Journey page always opens with completed assessments and exercises
+    # before the progress metrics.
+    assert 'testID="home-goal-banner"' in home
+    assert "primary_goal" in home
+    assert 'testID="journey-completion-summary"' in journey
+    assert "exercises_completed" in journey
+    assert "assessments completed" in journey
+    assert journey.index('testID="journey-completion-summary"') < journey.index("<JourneyProgressPanel")

@@ -169,6 +169,132 @@ def test_check_in_endpoint_preserves_patient_answer_source(monkeypatch):
     assert captured["answers"]["function_change"] == "a_little_easier"
 
 
+def _camera_impossible_user():
+    user = signed_in_user()
+    user["profile"] = {
+        "months_since_stroke": 6,
+        "affected_areas": ["right_upper"],
+        "side_affected": "right",
+        "sitting_ability": "unable",
+        "affected_arm_movement": "no_movement",
+        "affected_hand_movement": "no_movement",
+        "mobility_level": "not_cleared",
+        "movement_pain": "mild",
+        "instruction_support": "independent",
+        "has_caregiver": "yes",
+    }
+    return user
+
+
+def test_survey_report_is_built_from_the_survey_alone_when_no_tasks_exist(monkeypatch):
+    async def user_from_header(_headers):
+        return _camera_impossible_user()
+
+    async def empty(_user_id):
+        return []
+
+    monkeypatch.setattr(server, "_user_from_header", user_from_header)
+    monkeypatch.setattr(server, "_care_assessments_for_user", empty)
+    monkeypatch.setattr(server, "_care_check_ins_for_user", empty)
+    monkeypatch.setattr(server, "_care_activities_for_user", empty)
+    monkeypatch.setattr(server, "_care_issue_reports_for_user", empty)
+    response = TestClient(server.app).get(
+        "/api/assessment/survey-report",
+        headers={"X-User-Id": "u_alira_care"},
+    )
+
+    assert response.status_code == 200
+    report = response.json()
+    assert report["source"] == "survey_only"
+    assert report["pages"] == ["daily_activities", "functional_problems", "rehab_plan"]
+    # Page 1: survey-only scores are estimates or honestly not assessed.
+    statuses = {item["status"] for item in report["daily_activities"]["activities"]}
+    assert statuses <= {"estimated", "not_assessed"}
+    # Page 2: every domain is pinned on the anatomy map.
+    assert {pin["domain"] for pin in report["functional_problems"]["pins"]} == {"upper_limb", "hand", "lower_limb"}
+    # Page 3: the rehab plan is the caregiver-delivered programme.
+    assert report["rehab_plan"]["type"] == "caregiver_delivered"
+    assert report["rehab_plan"]["caregiver_plan"]["programmes"]
+    assert report["next_step_after_viewing"] == "rehab_plan"
+
+
+def test_viewing_the_survey_report_moves_the_next_step_on_to_the_rehab_plan(monkeypatch):
+    stored = {}
+    user = _camera_impossible_user()
+
+    async def user_from_header(_headers):
+        merged = dict(user)
+        merged.update(stored)
+        return merged
+
+    async def empty(_user_id):
+        return []
+
+    class FailingUsers:
+        async def update_one(self, *_args, **_kwargs):
+            raise RuntimeError("mongo down")
+
+    monkeypatch.setattr(server, "_user_from_header", user_from_header)
+    monkeypatch.setattr(server, "_care_assessments_for_user", empty)
+    monkeypatch.setattr(server, "_care_check_ins_for_user", empty)
+    monkeypatch.setattr(server, "_care_activities_for_user", empty)
+    monkeypatch.setattr(server, "_care_issue_reports_for_user", empty)
+    monkeypatch.setattr(server.db, "users", FailingUsers())
+    client = TestClient(server.app)
+
+    before = client.get("/api/alira/care-plan", headers={"X-User-Id": "u_alira_care"}).json()
+    assert before["next_step"]["action"] == "view_survey_report"
+
+    viewed = client.post("/api/alira/survey-report-viewed", headers={"X-User-Id": "u_alira_care"})
+    assert viewed.status_code == 200
+    stored["survey_report_viewed_at"] = viewed.json()["viewed_at"]
+
+    after = client.get("/api/alira/care-plan", headers={"X-User-Id": "u_alira_care"}).json()
+    assert after["next_step"]["action"] == "caregiver_exercises"
+    assert after["next_step"]["destination"] == "caregiver_plan"
+
+
+def test_caregiver_routine_activity_is_accepted_without_an_assessment(monkeypatch):
+    async def user_from_header(_headers):
+        user = signed_in_user()
+        user["profile"] = {
+            "months_since_stroke": 6,
+            "affected_areas": ["right_upper"],
+            "sitting_ability": "unable",
+            "affected_arm_movement": "no_movement",
+            "affected_hand_movement": "no_movement",
+            "mobility_level": "not_cleared",
+            "movement_pain": "mild",
+            "instruction_support": "independent",
+            "has_caregiver": "yes",
+        }
+        return user
+
+    async def empty(_user_id):
+        return []
+
+    monkeypatch.setattr(server, "_user_from_header", user_from_header)
+    monkeypatch.setattr(server, "_care_assessments_for_user", empty)
+    monkeypatch.setattr(server, "_care_check_ins_for_user", empty)
+    monkeypatch.setattr(server, "_care_activities_for_user", empty)
+    monkeypatch.setattr(server, "_care_issue_reports_for_user", empty)
+    client = TestClient(server.app)
+    accepted = client.post(
+        "/api/alira/activities",
+        headers={"X-User-Id": "u_alira_care"},
+        json={"exercise_id": "CG_UPPER_LIMB", "plan_id": "caregiver", "completed_reps": 1, "observed_response": "flicker"},
+    )
+    rejected = client.post(
+        "/api/alira/activities",
+        headers={"X-User-Id": "u_alira_care"},
+        json={"exercise_id": "EX_NOT_APPROVED", "plan_id": "caregiver", "completed_reps": 1},
+    )
+
+    assert accepted.status_code == 200
+    assert accepted.json()["activity"]["observed_response"] == "flicker"
+    assert rejected.status_code == 409
+
+
 def test_completed_exercise_activity_is_an_authenticated_care_event(monkeypatch):
     captured = {}
 

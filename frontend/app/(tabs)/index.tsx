@@ -58,6 +58,7 @@ type HomeScreenCache = {
   history: Assessment[];
   greetName: string;
   carePlan: AliraCarePlan | null;
+  dailyGoal: string;
 };
 
 export default function HomeScreen() {
@@ -70,6 +71,7 @@ export default function HomeScreen() {
   const [history, setHistory] = useState<Assessment[]>(cached?.history ?? []);
   const [greetName, setGreetName] = useState(cached?.greetName ?? "");
   const [carePlan, setCarePlan] = useState<AliraCarePlan | null>(cached?.carePlan ?? null);
+  const [dailyGoal, setDailyGoal] = useState(cached?.dailyGoal ?? "");
   const [loading, setLoading] = useState(!cached);
 
   const load = useCallback(async () => {
@@ -77,19 +79,26 @@ export default function HomeScreen() {
     // the background instead of blanking the tab to a spinner on every focus.
     if (!getScreenCache<HomeScreenCache>("home")) setLoading(true);
     const user = await getCachedUser();
-    const [assessments, preferredName, carePlan] = await Promise.all([
+    const [assessments, preferredName, carePlan, onboarding] = await Promise.all([
       fetchHistory().catch(() => []),
       user?.id ? storage.getItem(preferredNameKey(user.id), "") : Promise.resolve(""),
       authedFetch("/api/alira/care-plan")
         .then(async (response) => response.ok ? response.json() : null)
         .catch(() => null),
+      authedFetch("/api/users/onboarding")
+        .then(async (response) => response.ok ? response.json() : null)
+        .catch(() => null),
     ]);
     const nextGreetName = preferredName || user?.name?.split(" ")[0] || "there";
     const nextCarePlan = carePlan || null;
+    // The patient's own words from the initial survey ("hold my grandchild",
+    // "eat with a fork") become the daily-activity goal shown at the top.
+    const nextDailyGoal = String(onboarding?.profile?.primary_goal || "").trim();
     setHistory(assessments);
     setGreetName(nextGreetName);
     setCarePlan(nextCarePlan);
-    setScreenCache<HomeScreenCache>("home", { history: assessments, greetName: nextGreetName, carePlan: nextCarePlan });
+    setDailyGoal(nextDailyGoal);
+    setScreenCache<HomeScreenCache>("home", { history: assessments, greetName: nextGreetName, carePlan: nextCarePlan, dailyGoal: nextDailyGoal });
     setLoading(false);
   }, []);
 
@@ -164,6 +173,21 @@ export default function HomeScreen() {
               </Pressable>
             </View>
           </View>
+
+          {!!dailyGoal && (
+            <View style={styles.goalBanner} testID="home-goal-banner">
+              <View style={styles.goalIcon}>
+                <MaterialCommunityIcons name="target" size={22} color="#15543C" />
+              </View>
+              <View style={styles.goalCopy}>
+                <Text style={styles.goalEyebrow}>YOUR GOAL</Text>
+                <Text style={[styles.goalText, { color: palette.text }]}>{dailyGoal}</Text>
+                <Text style={[styles.goalHint, { color: palette.muted }]}>
+                  Every session and daily activity works toward this.
+                </Text>
+              </View>
+            </View>
+          )}
 
           <Pressable
             testID="home-emergency-fast"
@@ -328,6 +352,29 @@ const styles = StyleSheet.create({
   },
   avatarText: { color: colors.onSurface, fontSize: 16, fontWeight: "800" },
   pressed: { opacity: 0.68 },
+  goalBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.sm,
+    marginBottom: spacing.sm,
+    padding: spacing.md,
+    borderRadius: radius.sm,
+    borderWidth: 1,
+    borderColor: "#CBDFD2",
+    backgroundColor: "#EAF4ED",
+  },
+  goalIcon: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#FFFFFF",
+  },
+  goalCopy: { flex: 1, minWidth: 0 },
+  goalEyebrow: { fontSize: 11, lineHeight: 15, fontWeight: "900", letterSpacing: 0.8, color: "#15543C" },
+  goalText: { fontSize: 17, lineHeight: 23, fontWeight: "800", color: "#183A32", textTransform: "none" },
+  goalHint: { fontSize: 12, lineHeight: 17, color: colors.onSurfaceSecondary, fontWeight: "600", marginTop: 2 },
   emergencyFast: {
     minHeight: 72,
     marginBottom: spacing.md,

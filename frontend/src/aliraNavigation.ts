@@ -43,6 +43,8 @@ export const ALIRA_NAVIGATION_DESTINATIONS = {
   movement_snapshot: { label: "movement snapshot", dynamic: "latest-assessment" },
   movement_map: { label: "movement map", dynamic: "latest-assessment" },
   rehab_plan: { label: "rehab plan", dynamic: "latest-plan" },
+  caregiver_plan: { label: "caregiver exercise programme", path: "/caregiver-plan" },
+  survey_report: { label: "assessment report", path: "/survey-report" },
   guided_exercise: { label: "guided exercise", dynamic: "latest-plan" },
   emergency_fast_check: { label: "Emergency FAST check", path: "/(tabs)/emergency" },
   back: { label: "the previous page", action: "back" },

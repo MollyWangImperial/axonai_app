@@ -12,7 +12,7 @@ import base64
 import logging
 from pathlib import Path
 from pydantic import BaseModel, Field
-from typing import List, Dict, Any, Optional, Sequence
+from typing import List, Dict, Any, Optional, Sequence, Tuple
 import uuid
 import re
 import asyncio
@@ -62,6 +62,7 @@ try:
         build_adaptive_care_plan,
         evaluate_survey_safety,
         initial_assessment_recommendation,
+        survey_functional_problems,
         validate_check_in_answers,
     )
     from backend.alira_action_log import AliraActionLogger
@@ -104,6 +105,7 @@ except ImportError:
         build_adaptive_care_plan,
         evaluate_survey_safety,
         initial_assessment_recommendation,
+        survey_functional_problems,
         validate_check_in_answers,
     )
     from alira_action_log import AliraActionLogger
@@ -223,6 +225,8 @@ ALIRA_NAVIGATION_DESTINATIONS = (
     "movement_snapshot",
     "movement_map",
     "rehab_plan",
+    "caregiver_plan",
+    "survey_report",
     "guided_exercise",
     "emergency_fast_check",
     "back",
@@ -2678,6 +2682,57 @@ async def submit_assessment(payload: AssessmentSubmit, request: Request):
             patient_parameters,
         ))
     return assessment
+
+
+@api_router.get("/assessment/survey-report")
+async def get_survey_assessment_report(request: Request):
+    """The three-page assessment report (spec: report-first flow).
+
+    Page 1: daily-activity driven metrics - from survey AND tasks when camera
+    assessments exist, from the survey alone otherwise (honest labels, never
+    fabricated scores). Page 2: the anatomy map with pin-pointed functional
+    problems. Page 3: the rehab plan (caregiver-delivered when no camera task
+    can be assigned).
+    """
+    user = await _user_from_header(dict(request.headers))
+    if not user:
+        raise HTTPException(status_code=401, detail="Sign in required")
+    _require_health_data_consent(user)
+    profile = dict(user.get("profile") or {})
+    assessments_raw = await _care_assessments_for_user(user["id"])
+    assessments_raw.sort(key=lambda item: item.get("created_at", ""))
+    series, _issues = _assessment_progress_series(assessments_raw)
+    plan = await _adaptive_care_plan_for_user(user, assessments=assessments_raw)
+    survey_report_meta = plan.get("survey_report") or {}
+    caregiver_plan = plan.get("caregiver_plan") or {}
+    latest_rehab_plan = (assessments_raw[-1].get("rehab_plan") or []) if assessments_raw else []
+    if survey_report_meta.get("available"):
+        rehab_page: Dict[str, Any] = {"type": "caregiver_delivered", "caregiver_plan": caregiver_plan}
+    elif latest_rehab_plan:
+        rehab_page = {"type": "camera_guided", "exercises": latest_rehab_plan}
+    else:
+        rehab_page = {
+            "type": "pending_assessment",
+            "message": "Complete the initial assessment to unlock a personalised exercise plan.",
+        }
+    report = {
+        "source": "survey_and_tasks" if series else "survey_only",
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "report_viewed_at": user.get("survey_report_viewed_at"),
+        "pages": ["daily_activities", "functional_problems", "rehab_plan"],
+        "daily_activities": build_daily_activity_metrics(series, profile),
+        "functional_problems": survey_functional_problems(profile),
+        "rehab_plan": rehab_page,
+        "next_step_after_viewing": "rehab_plan",
+    }
+    _record_alira_action(
+        "survey_report_served",
+        source="survey_report",
+        user_id=user["id"],
+        status="completed",
+        details={"source": report["source"], "page_count": 3},
+    )
+    return report
 
 
 @api_router.get("/assessment/history", response_model=List[Assessment])
@@ -8777,6 +8832,9 @@ class AliraActivitySubmit(BaseModel):
     completed_reps: int = Field(default=0, ge=0, le=500)
     average_score: Optional[float] = Field(default=None, ge=0, le=100)
     completed_at: Optional[str] = None
+    # Caregiver-delivered routines: the carer's qualitative observation of how
+    # much the patient joined in - the Tier 1 progress signal.
+    observed_response: Optional[str] = Field(default=None, pattern="^(none|flicker|small_movement|more_than_before)$")
 
 
 class AliraFunctionalIssueSubmit(BaseModel):
@@ -9736,6 +9794,7 @@ async def _adaptive_care_plan_for_user(
         issue_reports = await _care_issue_reports_for_user(user["id"])
     profile = dict(user.get("profile") or {})
     profile["_assessment_deferrals"] = dict(user.get("assessment_deferrals") or {})
+    profile["_survey_report_viewed_at"] = user.get("survey_report_viewed_at")
     return build_adaptive_care_plan(profile, assessments, check_ins, activities, issue_reports)
 
 
@@ -9934,7 +9993,21 @@ async def _persist_alira_activity(user: Dict[str, Any], payload: AliraActivitySu
         for exercise in (latest_assessment or {}).get("rehab_plan") or []
         if exercise.get("id")
     }
-    if payload.exercise_id not in approved_ids:
+    # Caregiver-delivered routines (CG_*) are approved from the current care
+    # plan rather than an assessment's rehab plan - they exist precisely for
+    # patients who cannot complete a camera assessment yet.
+    check_ins = await _care_check_ins_for_user(user["id"])
+    existing_activities = await _care_activities_for_user(user["id"])
+    issue_reports = await _care_issue_reports_for_user(user["id"])
+    profile_for_plan = dict(user.get("profile") or {})
+    profile_for_plan["_assessment_deferrals"] = dict(user.get("assessment_deferrals") or {})
+    profile_for_plan["_survey_report_viewed_at"] = user.get("survey_report_viewed_at")
+    pre_plan = build_adaptive_care_plan(profile_for_plan, assessments, check_ins, existing_activities, issue_reports)
+    caregiver_ids = {
+        str(programme_id)
+        for programme_id in ((pre_plan.get("caregiver_plan") or {}).get("daily_delivery") or {}).get("programme_ids") or []
+    }
+    if payload.exercise_id not in approved_ids and payload.exercise_id not in caregiver_ids:
         raise HTTPException(status_code=409, detail="This exercise is not in the patient's current approved plan.")
     completed_at = payload.completed_at or datetime.now(timezone.utc).isoformat()
     try:
@@ -9948,6 +10021,7 @@ async def _persist_alira_activity(user: Dict[str, Any], payload: AliraActivitySu
         "plan_id": payload.plan_id,
         "completed_reps": payload.completed_reps,
         "average_score": payload.average_score,
+        "observed_response": payload.observed_response,
         "completed_at": completed_at,
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
@@ -9959,12 +10033,10 @@ async def _persist_alira_activity(user: Dict[str, Any], payload: AliraActivitySu
         state["activities"] = [*(state.get("activities") or []), activity.copy()][-200:]
         LOCAL_CARE_STATE[user["id"]] = state
         _persist_local_dict(LOCAL_CARE_STATE_FILE, LOCAL_CARE_STATE)
-    check_ins = await _care_check_ins_for_user(user["id"])
     activities = await _care_activities_for_user(user["id"])
-    issue_reports = await _care_issue_reports_for_user(user["id"])
     if not any(item.get("id") == activity["id"] for item in activities):
         activities.append(activity.copy())
-    care_plan = build_adaptive_care_plan(user.get("profile") or {}, assessments, check_ins, activities, issue_reports)
+    care_plan = build_adaptive_care_plan(profile_for_plan, assessments, check_ins, activities, issue_reports)
     review = {
         "id": "acr_" + uuid.uuid4().hex[:16],
         "user_id": user["id"],
@@ -11378,16 +11450,10 @@ async def therapist_signoff(patient_user_id: str, payload: PlanSignoff, request:
     return {"ok": True, "signed_at": signed_at}
 
 
-@api_router.get("/progress/summary")
-async def progress_summary(request: Request):
-    """Returns time-series functional metrics + exercise progress totals.
-    Empty arrays when the user has never assessed."""
-    user = await _user_from_header(dict(request.headers))
-    if not user:
-        return {"assessments": [], "exercises": [], "issues_history": [], "first_seen": None}
-    assessments_raw = await _care_assessments_for_user(user["id"])
-    assessments_raw.sort(key=lambda item: item.get("created_at", ""))
-    series = []
+def _assessment_progress_series(assessments_raw: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], Dict[str, int]]:
+    """Per-assessment metric rows (oldest first) shared by the progress summary
+    and the assessment report."""
+    series: List[Dict[str, Any]] = []
     issues_count: Dict[str, int] = {}
     for a in assessments_raw:
         m = a.get("metrics") or build_functional_metrics(a.get("task_results", []))
@@ -11412,6 +11478,45 @@ async def progress_summary(request: Request):
         for issue in issues:
             code = str(_snapshot_value(issue, "code", "") or "UNSPECIFIED")
             issues_count[code] = issues_count.get(code, 0) + 1
+    return series, issues_count
+
+
+@api_router.post("/alira/survey-report-viewed")
+async def mark_survey_report_viewed(request: Request):
+    """Record that the patient viewed their assessment report; from then on
+    the Home next step directs to the rehab plan."""
+    user = await _user_from_header(dict(request.headers))
+    if not user:
+        raise HTTPException(status_code=401, detail="Sign in required")
+    viewed_at = datetime.now(timezone.utc).isoformat()
+    try:
+        result = await db.users.update_one({"id": user["id"]}, {"$set": {"survey_report_viewed_at": viewed_at}})
+        if getattr(result, "matched_count", 0) == 0 and user["id"] in LOCAL_USERS:
+            raise RuntimeError("local user")
+    except Exception as e:
+        logger.warning(f"Mongo unavailable for survey report view; using local fallback: {str(e)[:120]}")
+        LOCAL_USERS[user["id"]] = {**user, "survey_report_viewed_at": viewed_at}
+        _persist_local_dict(LOCAL_USERS_FILE, LOCAL_USERS)
+    _record_alira_action(
+        "survey_report_viewed",
+        source="survey_report",
+        user_id=user["id"],
+        status="completed",
+        details={"viewed_at": viewed_at},
+    )
+    return {"ok": True, "viewed_at": viewed_at, "next_step": "rehab_plan"}
+
+
+@api_router.get("/progress/summary")
+async def progress_summary(request: Request):
+    """Returns time-series functional metrics + exercise progress totals.
+    Empty arrays when the user has never assessed."""
+    user = await _user_from_header(dict(request.headers))
+    if not user:
+        return {"assessments": [], "exercises": [], "issues_history": [], "first_seen": None}
+    assessments_raw = await _care_assessments_for_user(user["id"])
+    assessments_raw.sort(key=lambda item: item.get("created_at", ""))
+    series, issues_count = _assessment_progress_series(assessments_raw)
     return {
         "assessments": series,
         "issues_history": [{"issue": k, "count": v} for k, v in sorted(issues_count.items(), key=lambda x: -x[1])],

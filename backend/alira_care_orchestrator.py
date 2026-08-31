@@ -111,6 +111,7 @@ def functional_tiers(profile: Optional[Dict[str, Any]]) -> Dict[str, Any]:
 # guided activation for the named muscle groups, with dose and safety limits.
 CAREGIVER_PROGRAMME_LIBRARY: Dict[str, Dict[str, Any]] = {
     "upper_limb": {
+        "id": "CG_UPPER_LIMB",
         "domain": "upper_limb",
         "goal": "Elicit any voluntary movement in the arm",
         "muscle_groups": ["shoulder flexors", "elbow flexors and extensors", "forearm rotators"],
@@ -124,6 +125,7 @@ CAREGIVER_PROGRAMME_LIBRARY: Dict[str, Dict[str, Any]] = {
         "safety_limits": "Stop immediately and contact the clinical team if there is new pain, swelling, or resistance that was not there before. Never force a stiff joint.",
     },
     "hand": {
+        "id": "CG_HAND",
         "domain": "hand",
         "goal": "Elicit any voluntary finger movement and keep the hand supple",
         "muscle_groups": ["finger flexors and extensors", "thumb muscles", "wrist flexors and extensors"],
@@ -137,6 +139,7 @@ CAREGIVER_PROGRAMME_LIBRARY: Dict[str, Dict[str, Any]] = {
         "safety_limits": "Stop if the hand becomes painful, cold, or discoloured, and tell the clinical team. Do not force fingers that are tightly stiff - report spasticity instead.",
     },
     "lower_limb": {
+        "id": "CG_LOWER_LIMB",
         "domain": "lower_limb",
         "goal": "Maintain leg movement and circulation, and elicit any voluntary activity",
         "muscle_groups": ["hip flexors", "knee flexors and extensors", "ankle movers"],
@@ -152,11 +155,21 @@ CAREGIVER_PROGRAMME_LIBRARY: Dict[str, Dict[str, Any]] = {
 }
 
 
-def caregiver_delivered_plan(profile: Optional[Dict[str, Any]], tiers: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    """Tier 1 output (spec 7.1): instructions addressed to the caregiver."""
+def caregiver_delivered_plan(
+    profile: Optional[Dict[str, Any]],
+    tiers: Optional[Dict[str, Any]] = None,
+    force_domains: Optional[Sequence[str]] = None,
+) -> Dict[str, Any]:
+    """Tier 1 output (spec 7.1): instructions addressed to the caregiver.
+
+    force_domains adds programmes for domains beyond Tier 1 - used when no
+    camera assessment is possible at all, so every ruled-out domain still gets
+    a qualitative caregiver-delivered routine.
+    """
     tiers = tiers or functional_tiers(profile)
     tier_one_domains = [domain for domain, item in tiers["by_domain"].items() if item["tier"] == 1]
-    programmes = [dict(CAREGIVER_PROGRAMME_LIBRARY[domain]) for domain in tier_one_domains if domain in CAREGIVER_PROGRAMME_LIBRARY]
+    selected_domains = list(dict.fromkeys([*tier_one_domains, *(force_domains or [])]))
+    programmes = [dict(CAREGIVER_PROGRAMME_LIBRARY[domain]) for domain in selected_domains if domain in CAREGIVER_PROGRAMME_LIBRARY]
     return {
         "applicable": bool(programmes),
         "audience": "caregiver",
@@ -168,6 +181,110 @@ def caregiver_delivered_plan(profile: Optional[Dict[str, Any]], tiers: Optional[
             "and contact the clinical team at info@rehyn.com."
         ),
         "reason": "No unassisted movement was reported in these domains, so Alira issues a caregiver-delivered programme instead of camera tasks.",
+    }
+
+
+FUNCTIONAL_PROBLEM_SEVERITIES = {1: "needs_attention", 2: "building_strength", 3: "moving_well"}
+FUNCTIONAL_PROBLEM_TITLES = {"upper_limb": "Shoulder and arm", "hand": "Hand", "lower_limb": "Leg and walking"}
+
+
+def survey_functional_problems(profile: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Anatomy pin-points derived from the survey alone (report page 2).
+
+    Every domain gets an honest pin: needs_attention (Tier 1),
+    building_strength (Tier 2), or moving_well (Tier 3), with the survey-based
+    reason. A completed camera assessment later refines this map.
+    """
+    profile = dict(profile or {})
+    tiers = functional_tiers(profile)
+    side = str(profile.get("side_affected") or "").lower()
+    affected_side = side if side in {"left", "right"} else "right"
+    pins = [
+        {
+            "domain": domain,
+            "title": FUNCTIONAL_PROBLEM_TITLES.get(domain, domain),
+            "affected_side": affected_side,
+            "tier": item["tier"],
+            "severity": FUNCTIONAL_PROBLEM_SEVERITIES.get(item["tier"], "building_strength"),
+            "problem": item["reason"],
+        }
+        for domain, item in tiers["by_domain"].items()
+    ]
+    return {
+        "affected_side": affected_side,
+        "pins": pins,
+        "reason": "Pin-pointed from the movement-readiness survey answers; a completed camera assessment refines this map.",
+    }
+
+
+CAREGIVER_OBSERVATION_LEVELS = ("none", "flicker", "small_movement", "more_than_before")
+CAREGIVER_OBSERVATION_LABELS = {
+    "none": "No movement yet",
+    "flicker": "A flicker of effort",
+    "small_movement": "Small movements",
+    "more_than_before": "Joining in more than before",
+}
+
+
+def caregiver_progress_summary(
+    activities: Sequence[Dict[str, Any]],
+    programme_ids: Sequence[str],
+    now: datetime,
+) -> Dict[str, Any]:
+    """Qualitative progress for caregiver-delivered (non-camera) patients.
+
+    Progress is demonstrated two ways: consistency (delivered session days,
+    which also feed the check-in calendar, points, and streaks) and the
+    carer's observation of how much the patient joined in - the clinically
+    meaningful Tier 1 signal that voluntary movement is returning. Repeated
+    higher observations suggest re-screening for camera tasks (tier change).
+    """
+    ids = {str(programme_id) for programme_id in programme_ids}
+    relevant = [
+        (completed_at, item)
+        for item in activities
+        if str(item.get("exercise_id")) in ids and (completed_at := _as_utc(item.get("completed_at")))
+    ]
+    days_this_week = {at.date() for at, _ in relevant if (now - at).days < 7}
+    days_prior_week = {at.date() for at, _ in relevant if 7 <= (now - at).days < 14}
+    observation_counts = {level: 0 for level in CAREGIVER_OBSERVATION_LEVELS}
+    recent_higher = 0
+    for at, item in relevant:
+        level = str(item.get("observed_response") or "")
+        if level in observation_counts:
+            observation_counts[level] += 1
+            if level in {"small_movement", "more_than_before"} and (now - at).days < 7:
+                recent_higher += 1
+    movement_emerging = recent_higher >= 1
+    re_screen_suggested = recent_higher >= 2
+    if re_screen_suggested:
+        message = (
+            "Your carer has recorded the patient joining in with small movements more than once this week. "
+            "That is real progress - update the movement-readiness answers so Alira can check whether camera tasks are now suitable."
+        )
+    elif movement_emerging:
+        message = "Your carer noticed the patient joining in - keep the daily routines going and record what you see."
+    elif len(days_this_week) > len(days_prior_week):
+        message = f"{len(days_this_week)} session day{'s' if len(days_this_week) != 1 else ''} this week - more than last week. Consistency is progress at this stage."
+    elif days_this_week:
+        message = f"{len(days_this_week)} session day{'s' if len(days_this_week) != 1 else ''} delivered this week. Every delivered session protects comfort, joints, and the chance of movement returning."
+    else:
+        message = "No sessions are recorded yet this week. The first delivered routine today starts the record."
+    return {
+        "mode": "caregiver_qualitative",
+        "how_progress_is_shown": [
+            "Delivered session days on the check-in calendar, with points and streaks",
+            "The carer's recorded observation of how much the patient joined in",
+            "A prompt to re-check readiness when small movements keep appearing",
+        ],
+        "session_days_this_week": len(days_this_week),
+        "session_days_prior_week": len(days_prior_week),
+        "total_sessions": len(relevant),
+        "observation_counts": observation_counts,
+        "observation_labels": dict(CAREGIVER_OBSERVATION_LABELS),
+        "movement_emerging": movement_emerging,
+        "re_screen_suggested": re_screen_suggested,
+        "message": message,
     }
 
 
@@ -1065,6 +1182,10 @@ def _next_step_decision(
     missed_days: int = 0,
     week_round_complete: bool = False,
     missing_domains: Sequence[str] = (),
+    caregiver_mode: bool = False,
+    caregiver_remaining_ids: Sequence[str] = (),
+    caregiver_re_screen: bool = False,
+    survey_report_viewed: bool = False,
 ) -> Dict[str, Any]:
     """Choose the single primary action Alira should show to the patient."""
     if safety["status"] != "clear":
@@ -1075,6 +1196,61 @@ def _next_step_decision(
             "cta": "Get the next safe step",
             "destination": "emergency" if safety["status"] == "emergency" else "alira",
             "secondary_action": None,
+        }
+
+    # No camera assessment is possible: the next step goes straight to the
+    # caregiver-delivered programme - qualitative strengthening and relaxation
+    # of the affected muscle groups from approved guidance, ticked off daily
+    # by the carer. The clinical team reviews the case in parallel.
+    if caregiver_mode and not has_initial_assessment:
+        # Report first: the survey-only assessment report (daily-activity
+        # scores, the anatomy pin-point map, and the rehab plan) is viewed
+        # before the daily caregiver-delivered rehab plan takes over.
+        if not survey_report_viewed:
+            return {
+                "action": "view_survey_report",
+                "title": "Your assessment report is ready",
+                "message": (
+                    "Alira prepared your report from your survey answers: your daily-activity scores, "
+                    "the areas that need attention on the body map, and your rehab plan."
+                ),
+                "cta": "View my report",
+                "destination": "survey_report",
+                "secondary_action": None,
+            }
+        remaining = list(caregiver_remaining_ids)
+        re_screen_secondary = {
+            "action": "update_readiness_answers",
+            "title": "Movement is returning",
+            "message": (
+                "Your carer has recorded the patient joining in with small movements more than once this week. "
+                "Update the movement-readiness answers so Alira can check whether camera tasks are now suitable."
+            ),
+            "cta": "Update readiness answers",
+            "destination": "initial_assessment",
+        } if caregiver_re_screen else None
+        if remaining:
+            return {
+                "action": "caregiver_exercises",
+                "title": "Today's caregiver-delivered exercises",
+                "message": (
+                    "The camera tasks are not suitable right now, so recovery continues with a "
+                    "caregiver-delivered programme: gentle strengthening and relaxation of the affected "
+                    "muscle groups, following approved guidance. Your carer ticks each routine off once "
+                    "it is done today, and the clinical team reviews the next step."
+                ),
+                "cta": "Open the caregiver programme",
+                "destination": "caregiver_plan",
+                "remaining_programme_ids": remaining,
+                "secondary_action": re_screen_secondary,
+            }
+        return {
+            "action": "caregiver_session_complete",
+            "title": "Today's caregiver session is complete",
+            "message": "Every routine is ticked off for today. Rest now - the next caregiver session is tomorrow.",
+            "cta": "See your progress",
+            "destination": "progress",
+            "secondary_action": re_screen_secondary,
         }
 
     if not has_initial_assessment:
@@ -1376,7 +1552,55 @@ def build_adaptive_care_plan(
         next_day_action = "none"
 
     tiers = functional_tiers(profile)
-    caregiver_plan = caregiver_delivered_plan(profile, tiers) if tiers["any_tier_one"] else {"applicable": False, "programmes": []}
+
+    # When the readiness answers rule out every camera task, the patient is not
+    # left waiting on clinical review with nothing to do: recovery starts with
+    # a caregiver-delivered programme covering each ruled-out domain, delivered
+    # qualitatively and ticked off daily by the carer.
+    camera_assessment_impossible = bool(
+        not has_initial_assessment
+        and initial_readiness
+        and initial_readiness.get("status") == "clinical_review"
+        and not initial_readiness.get("task_ids")
+    )
+    if camera_assessment_impossible:
+        excluded_domains: List[str] = []
+        for exclusion in initial_readiness.get("excluded") or []:
+            for task_id in exclusion.get("task_ids") or []:
+                if str(task_id).startswith("T"):
+                    excluded_domains.append("upper_limb")
+                elif str(task_id).startswith("H"):
+                    excluded_domains.append("hand")
+                elif str(task_id).startswith("L"):
+                    excluded_domains.append("lower_limb")
+        caregiver_plan = caregiver_delivered_plan(profile, tiers, force_domains=list(dict.fromkeys(excluded_domains)))
+    elif tiers["any_tier_one"]:
+        caregiver_plan = caregiver_delivered_plan(profile, tiers)
+    else:
+        caregiver_plan = {"applicable": False, "programmes": []}
+
+    caregiver_programme_ids = [str(programme.get("id")) for programme in caregiver_plan.get("programmes") or [] if programme.get("id")]
+    caregiver_completed_today_ids = [
+        programme_id for programme_id in caregiver_programme_ids if programme_id in completed_exercise_ids_today
+    ]
+    caregiver_remaining_today_ids = [
+        programme_id for programme_id in caregiver_programme_ids if programme_id not in completed_exercise_ids_today
+    ]
+    caregiver_plan["daily_delivery"] = {
+        "required_today": camera_assessment_impossible and bool(caregiver_programme_ids),
+        "checkoff_instruction": "Tick each routine once you have delivered it today. The day earns its check mark when every routine is done.",
+        "programme_ids": caregiver_programme_ids,
+        "completed_today_ids": caregiver_completed_today_ids,
+        "remaining_today_ids": caregiver_remaining_today_ids,
+        "completed_today": bool(caregiver_programme_ids) and not caregiver_remaining_today_ids,
+    }
+    caregiver_progress = (
+        caregiver_progress_summary(activities, caregiver_programme_ids, now)
+        if caregiver_programme_ids
+        else None
+    )
+    if caregiver_progress is not None:
+        caregiver_plan["progress"] = caregiver_progress
 
     # Partial initial assessment: prompt for the missing task unless the
     # patient deferred it today (a decline is context, never a failure).
@@ -1401,6 +1625,10 @@ def build_adaptive_care_plan(
         missed_days=missed_days,
         week_round_complete=week_round_complete,
         missing_domains=missing_domains if missing_prompt else [],
+        caregiver_mode=camera_assessment_impossible and bool(caregiver_programme_ids),
+        caregiver_remaining_ids=caregiver_remaining_today_ids,
+        caregiver_re_screen=bool(caregiver_progress and caregiver_progress.get("re_screen_suggested")),
+        survey_report_viewed=bool(profile.get("_survey_report_viewed_at")),
     )
 
     return {
@@ -1477,6 +1705,12 @@ def build_adaptive_care_plan(
         },
         "functional_tiers": tiers,
         "caregiver_plan": caregiver_plan,
+        "survey_report": {
+            "available": camera_assessment_impossible,
+            "viewed": bool(profile.get("_survey_report_viewed_at")),
+            "viewed_at": profile.get("_survey_report_viewed_at"),
+            "reason": "With no camera tasks assignable, the assessment report is built from the survey alone and leads to the caregiver-delivered rehab plan.",
+        },
         "content_proposals": _content_gaps(profile, domains),
         "autonomy": {
             "may_select_approved_questions": True,

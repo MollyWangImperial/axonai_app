@@ -5,6 +5,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 
 import { Assessment, fetchHistory } from "@/src/api";
+import { authedFetch } from "@/src/auth";
 import { addJournalEntry, JournalEntry, loadJournalEntries } from "@/src/journal";
 import { colors, radius, spacing } from "@/src/theme";
 import { DEMO_ASSESSMENT_ID } from "@/src/demoAssessment";
@@ -20,6 +21,8 @@ type JourneyScreenCache = {
   history: Assessment[];
   entries: JournalEntry[];
   demoMode: boolean;
+  exercisesCompleted: number;
+  sessionDays: number;
 };
 
 function assessmentPlanLabel(item: Assessment) {
@@ -44,16 +47,29 @@ export default function JourneyScreen() {
   const [showComposer, setShowComposer] = useState(false);
   const [draft, setDraft] = useState("");
   const [demoMode, setDemoMode] = useState(cached?.demoMode ?? false);
+  const [exercisesCompleted, setExercisesCompleted] = useState(cached?.exercisesCompleted ?? 0);
+  const [sessionDays, setSessionDays] = useState(cached?.sessionDays ?? 0);
   const initialAssessmentId = [...history].reverse().find((item) => item.assessment_package === "initial")?.id ?? history[history.length - 1]?.id;
 
   const load = useCallback(async () => {
     // Stale-while-revalidate: refresh silently when cached data is on screen.
     if (!getScreenCache<JourneyScreenCache>("journey")) setLoading(true);
-    const [assessments, journal, preferences] = await Promise.all([fetchHistory().catch(() => []), loadJournalEntries(), loadUserPreferences()]);
+    const [assessments, journal, preferences, rewards] = await Promise.all([
+      fetchHistory().catch(() => []),
+      loadJournalEntries(),
+      loadUserPreferences(),
+      authedFetch("/api/users/rewards")
+        .then(async (response) => response.ok ? response.json() : null)
+        .catch(() => null),
+    ]);
+    const nextExercisesCompleted = Number(rewards?.breakdown?.exercises_completed ?? 0);
+    const nextSessionDays = Number(rewards?.breakdown?.session_days ?? 0);
     setHistory(assessments);
     setEntries(journal);
     setDemoMode(preferences.demoMode);
-    setScreenCache<JourneyScreenCache>("journey", { history: assessments, entries: journal, demoMode: preferences.demoMode });
+    setExercisesCompleted(nextExercisesCompleted);
+    setSessionDays(nextSessionDays);
+    setScreenCache<JourneyScreenCache>("journey", { history: assessments, entries: journal, demoMode: preferences.demoMode, exercisesCompleted: nextExercisesCompleted, sessionDays: nextSessionDays });
     setLoading(false);
   }, []);
 
@@ -66,7 +82,7 @@ export default function JourneyScreen() {
     if (!draft.trim()) return;
     const nextEntries = await addJournalEntry(draft);
     setEntries(nextEntries);
-    setScreenCache<JourneyScreenCache>("journey", { history, entries: nextEntries, demoMode });
+    setScreenCache<JourneyScreenCache>("journey", { history, entries: nextEntries, demoMode, exercisesCompleted, sessionDays });
     setDraft("");
     setShowComposer(false);
   };
@@ -83,6 +99,25 @@ export default function JourneyScreen() {
               <Ionicons name="add" size={20} color={colors.onBrandPrimary} />
               <Text style={styles.addButtonText}>Add entry</Text>
             </Pressable>
+          </View>
+
+          {/* Completed work always leads the page: what the patient has DONE,
+              followed by the progress metrics below. */}
+          <View style={[styles.completionStrip, { backgroundColor: palette.surface, borderColor: palette.border }]} testID="journey-completion-summary">
+            <View style={styles.completionStat}>
+              <Text style={[styles.completionNumber, { color: palette.text }]}>{history.length}</Text>
+              <Text style={[styles.completionLabel, { color: palette.muted }]}>{history.length === 1 ? "assessment completed" : "assessments completed"}</Text>
+            </View>
+            <View style={[styles.completionDivider, { backgroundColor: palette.border }]} />
+            <View style={styles.completionStat}>
+              <Text style={[styles.completionNumber, { color: palette.text }]}>{exercisesCompleted}</Text>
+              <Text style={[styles.completionLabel, { color: palette.muted }]}>{exercisesCompleted === 1 ? "exercise completed" : "exercises completed"}</Text>
+            </View>
+            <View style={[styles.completionDivider, { backgroundColor: palette.border }]} />
+            <View style={styles.completionStat}>
+              <Text style={[styles.completionNumber, { color: palette.text }]}>{sessionDays}</Text>
+              <Text style={[styles.completionLabel, { color: palette.muted }]}>{sessionDays === 1 ? "session day" : "session days"}</Text>
+            </View>
           </View>
 
           <JourneyProgressPanel demoMode={demoMode} />
@@ -179,6 +214,11 @@ const styles = StyleSheet.create({
   content: { paddingHorizontal: spacing.md, paddingBottom: 120 },
   page: { width: "100%", maxWidth: 1080, alignSelf: "center", gap: spacing.md },
   headerRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: spacing.xs },
+  completionStrip: { flexDirection: "row", alignItems: "center", borderWidth: 1, borderRadius: radius.md, paddingVertical: spacing.md, paddingHorizontal: spacing.sm, marginBottom: spacing.sm },
+  completionStat: { flex: 1, alignItems: "center", gap: 2 },
+  completionNumber: { fontSize: 26, lineHeight: 32, fontWeight: "900" },
+  completionLabel: { fontSize: 11, lineHeight: 15, fontWeight: "700", textAlign: "center" },
+  completionDivider: { width: 1, alignSelf: "stretch", marginVertical: 4 },
   title: { fontSize: 34, lineHeight: 40, fontWeight: "900", color: "#113126" },
   addButton: { flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: spacing.md, minHeight: 44, borderRadius: radius.pill, backgroundColor: "#26783A" },
   addButtonText: { color: colors.onBrandPrimary, fontWeight: "800" },

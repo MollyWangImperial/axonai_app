@@ -40,6 +40,8 @@ type NextStep = {
 // The care plan's next_step destinations mapped onto the app's navigation map.
 const NEXT_STEP_NAVIGATION: Record<string, string> = {
   rehab_plan: "rehab_plan",
+  caregiver_plan: "caregiver_plan",
+  survey_report: "survey_report",
   progress: "progress",
   survey: "alira_chat",
   alira: "alira_chat",
