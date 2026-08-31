@@ -171,6 +171,41 @@ def caregiver_delivered_plan(profile: Optional[Dict[str, Any]], tiers: Optional[
     }
 
 
+def missing_assessment_domains(assessment: Optional[Dict[str, Any]], profile: Optional[Dict[str, Any]]) -> List[str]:
+    """Domains that were eligible but not captured in the given assessment.
+
+    Spec 2.2 / user flow: after a partial initial assessment (e.g. the walking
+    video was skipped because no helper was present), Alira asks to complete
+    just the missing task - and if the patient cannot do it today, the rehab
+    plan proceeds for the domains that WERE assessed.
+    """
+    if not assessment:
+        return []
+    profile = dict(profile or {})
+    task_results = assessment.get("task_results") or []
+    recorded_tasks = set()
+    for task in task_results:
+        task_id = task.get("task_id") if isinstance(task, dict) else getattr(task, "task_id", None)
+        if task_id:
+            recorded_tasks.add(str(task_id))
+    if not recorded_tasks:
+        return []
+    missing: List[str] = []
+    walking_eligible = str(profile.get("mobility_level") or "").lower() in {"independent", "cane", "walker"}
+    walking_skipped = False
+    for task in task_results:
+        metrics = (task.get("metrics") if isinstance(task, dict) else None) or {}
+        if metrics.get("walking_skipped"):
+            walking_skipped = True
+    if walking_eligible and (walking_skipped or "L6" not in recorded_tasks):
+        missing.append("lower_limb")
+    return missing
+
+
+MISSING_DOMAIN_TASKS = {"lower_limb": ["L6"]}
+MISSING_DOMAIN_LABELS = {"lower_limb": "the walking video"}
+
+
 QUESTION_BANK: Dict[str, Dict[str, Any]] = {
     "sudden_change": {
         "id": "sudden_change",
@@ -974,6 +1009,7 @@ def _next_step_decision(
     completed_today: bool,
     missed_days: int = 0,
     week_round_complete: bool = False,
+    missing_domains: Sequence[str] = (),
 ) -> Dict[str, Any]:
     """Choose the single primary action Alira should show to the patient."""
     if safety["status"] != "clear":
@@ -1012,6 +1048,31 @@ def _next_step_decision(
             "cta": "Start the check-in",
             "destination": "survey",
             "secondary_action": None,
+        }
+
+    # Partial initial assessment: ask for the one missing task, with an easy
+    # no-penalty way to defer and continue with the plan already issued.
+    if missing_domains:
+        label = MISSING_DOMAIN_LABELS.get(missing_domains[0], "the remaining task")
+        return {
+            "action": "complete_missing_assessment",
+            "title": f"One check is still missing: {label}",
+            "message": (
+                "Your plan for the assessed areas is already active. When a helper is with you, "
+                f"record {label} so the plan can cover that area too. If you cannot do it today, "
+                "that is completely fine - your current plan continues."
+            ),
+            "cta": "Record it now",
+            "destination": "assessment",
+            "missing_domains": list(missing_domains),
+            "secondary_action": {
+                "action": "defer_missing_assessment",
+                "title": "I can't do this today",
+                "message": "Alira will continue with your current plan and ask again another day.",
+                "cta": "Continue with my current plan",
+                "destination": "rehab_plan",
+                "defer_domains": list(missing_domains),
+            },
         }
 
     # Spec 2.2: warm re-entry after missed days - no guilt language.
@@ -1262,6 +1323,16 @@ def build_adaptive_care_plan(
     tiers = functional_tiers(profile)
     caregiver_plan = caregiver_delivered_plan(profile, tiers) if tiers["any_tier_one"] else {"applicable": False, "programmes": []}
 
+    # Partial initial assessment: prompt for the missing task unless the
+    # patient deferred it today (a decline is context, never a failure).
+    deferrals = dict(profile.get("_assessment_deferrals") or {})
+    today_iso = now.date().isoformat()
+    missing_domains = [
+        domain for domain in missing_assessment_domains(latest_assessment, profile)
+        if str((deferrals.get(domain) or {}).get("deferred_at") or "")[:10] != today_iso
+    ]
+    missing_prompt = bool(missing_domains and has_initial_assessment and safety["status"] == "clear" and not assessment_due)
+
     next_step = _next_step_decision(
         has_initial_assessment=has_initial_assessment,
         initial_can_start=bool((initial_readiness or {}).get("can_start", True)),
@@ -1274,6 +1345,7 @@ def build_adaptive_care_plan(
         completed_today=completed_today,
         missed_days=missed_days,
         week_round_complete=week_round_complete,
+        missing_domains=missing_domains if missing_prompt else [],
     )
 
     return {
@@ -1310,6 +1382,8 @@ def build_adaptive_care_plan(
             "can_start": bool((initial_readiness or {}).get("can_start", True)) and not safety["blocks_assessment"],
             "missing_answers": (initial_readiness or {}).get("missing_answers", []),
             "selection_message": (initial_readiness or {}).get("message"),
+            "missing_domains": missing_domains,
+            "missing_task_ids": [task for domain in missing_domains for task in MISSING_DOMAIN_TASKS.get(domain, [])],
             "blocked_by_safety": safety["blocks_assessment"],
             "reason": (
                 "A new functional problem opened one targeted assessment outside the routine schedule."

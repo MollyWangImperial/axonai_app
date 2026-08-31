@@ -5,6 +5,7 @@ import { useLocalSearchParams, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { Assessment, fetchAssessment, fetchPatientAssessmentSummary, PatientAssessmentSummary } from "@/src/api";
+import { getScreenCache, setScreenCache } from "@/src/screenCache";
 import { getAgeAnatomyPresentation, loadPatientAgeBand } from "@/src/ageAnatomy";
 import { colors, radius, spacing } from "@/src/theme";
 import { DEMO_ASSESSMENT_ID, demoAssessment, demoPatientAssessmentSummary } from "@/src/demoAssessment";
@@ -35,10 +36,10 @@ export default function MovementMapScreen() {
   const router = useRouter();
   const { width } = useWindowDimensions();
   const { id } = useLocalSearchParams<{ id: string }>();
-  const [data, setData] = useState<PatientAssessmentSummary | null>(null);
-  const [assessment, setAssessment] = useState<Assessment | null>(null);
+  const [data, setData] = useState<PatientAssessmentSummary | null>(getScreenCache<{ summary: PatientAssessmentSummary; raw: Assessment | null }>(`movement-map:${id}`)?.summary ?? null);
+  const [assessment, setAssessment] = useState<Assessment | null>(getScreenCache<{ summary: PatientAssessmentSummary; raw: Assessment | null }>(`movement-map:${id}`)?.raw ?? null);
   const [selected, setSelected] = useState<DomainId>("upper_limb");
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(!getScreenCache(`movement-map:${id}`));
   const [profileAgeBand, setProfileAgeBand] = useState<string | null>(null);
 
   const isDemo = id === DEMO_ASSESSMENT_ID;
@@ -67,6 +68,7 @@ export default function MovementMapScreen() {
       .then(([summary, raw]) => {
         setData(summary);
         setAssessment(raw);
+        setScreenCache(`movement-map:${id}`, { summary, raw });
         const firstFinding = summary.insights.domain_metrics.find((domain) => domain.findings_count > 0)?.domain;
         if (firstFinding) setSelected(firstFinding);
       })

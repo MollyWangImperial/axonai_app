@@ -1,5 +1,6 @@
 import React, { useCallback, useMemo, useState } from "react";
 import { ProgressStoryCard } from "@/src/components/ProgressStoryCard";
+import { getScreenCache, setScreenCache } from "@/src/screenCache";
 import {
   ActivityIndicator,
   Pressable,
@@ -228,14 +229,17 @@ export default function ProgressScreen() {
   const { width } = useWindowDimensions();
   const { demo } = useLocalSearchParams<{ demo?: string }>();
   const wide = width >= 820;
-  const [summary, setSummary] = useState<Summary>(EMPTY_SUMMARY);
-  const [demoMode, setDemoMode] = useState(demo === "1");
-  const [loading, setLoading] = useState(true);
-  const [sessionsCompleted, setSessionsCompleted] = useState(0);
-  const [latestPlanId, setLatestPlanId] = useState<string | null>(null);
+  type ProgressCache = { summary: Summary; demoMode: boolean; sessionsCompleted: number; latestPlanId: string | null };
+  const progressCacheKey = `progress-screen:${demo ?? ""}`;
+  const cachedProgress = getScreenCache<ProgressCache>(progressCacheKey);
+  const [summary, setSummary] = useState<Summary>(cachedProgress?.summary ?? EMPTY_SUMMARY);
+  const [demoMode, setDemoMode] = useState(cachedProgress?.demoMode ?? (demo === "1"));
+  const [loading, setLoading] = useState(!cachedProgress);
+  const [sessionsCompleted, setSessionsCompleted] = useState(cachedProgress?.sessionsCompleted ?? 0);
+  const [latestPlanId, setLatestPlanId] = useState<string | null>(cachedProgress?.latestPlanId ?? null);
 
   const load = useCallback(async () => {
-    setLoading(true);
+    if (!getScreenCache<ProgressCache>(progressCacheKey)) setLoading(true);
     try {
       const [preferences, response] = await Promise.all([
         loadUserPreferences(),
@@ -268,7 +272,11 @@ export default function ProgressScreen() {
     } finally {
       setLoading(false);
     }
-  }, [demo]);
+  }, [demo, progressCacheKey]);
+
+  React.useEffect(() => {
+    if (!loading) setScreenCache(progressCacheKey, { summary, demoMode, sessionsCompleted, latestPlanId });
+  }, [loading, summary, demoMode, sessionsCompleted, latestPlanId, progressCacheKey]);
 
   useFocusEffect(useCallback(() => { void load(); }, [load]));
 

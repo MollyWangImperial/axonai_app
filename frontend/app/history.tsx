@@ -4,18 +4,25 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import { colors, spacing, radius } from "@/src/theme";
+import { getScreenCache, setScreenCache } from "@/src/screenCache";
 import { fetchHistory, Assessment } from "@/src/api";
 
 export default function HistoryScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
-  const [items, setItems] = useState<Assessment[]>([]);
-  const [loading, setLoading] = useState(true);
+  const cachedHistory = getScreenCache<Assessment[]>("history-screen");
+  const [items, setItems] = useState<Assessment[]>(cachedHistory ?? []);
+  const [loading, setLoading] = useState(!cachedHistory);
 
   useEffect(() => {
     (async () => {
-      try { setItems(await fetchHistory()); } catch { setItems([]); }
-      finally { setLoading(false); }
+      try {
+        const fetched = await fetchHistory();
+        setItems(fetched);
+        setScreenCache("history-screen", fetched);
+      } catch {
+        if (!getScreenCache("history-screen")) setItems([]);
+      } finally { setLoading(false); }
     })();
   }, []);
 

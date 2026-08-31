@@ -9726,7 +9726,9 @@ async def _adaptive_care_plan_for_user(
         activities = await _care_activities_for_user(user["id"])
     if issue_reports is None:
         issue_reports = await _care_issue_reports_for_user(user["id"])
-    return build_adaptive_care_plan(user.get("profile") or {}, assessments, check_ins, activities, issue_reports)
+    profile = dict(user.get("profile") or {})
+    profile["_assessment_deferrals"] = dict(user.get("assessment_deferrals") or {})
+    return build_adaptive_care_plan(profile, assessments, check_ins, activities, issue_reports)
 
 
 def _require_health_data_consent(user: Dict[str, Any]) -> None:
@@ -10101,6 +10103,38 @@ async def submit_alira_activity(payload: AliraActivitySubmit, request: Request):
     if not user:
         raise HTTPException(status_code=401, detail="Sign in required")
     return await _persist_alira_activity(user, payload)
+
+
+class AssessmentDeferral(BaseModel):
+    domain: str = Field(pattern="^(upper_limb|hand|lower_limb)$")
+    reason: Optional[str] = Field(default=None, max_length=200)
+
+
+@api_router.post("/alira/assessment-deferral")
+async def defer_missing_assessment(payload: AssessmentDeferral, request: Request):
+    """Record that the patient cannot complete a missing assessment task today.
+
+    Spec 2.2: the decline is accepted without penalty and recorded as context;
+    the rehab plan continues for the domains that were assessed, and Alira
+    asks again another day.
+    """
+    user = await _user_from_header(dict(request.headers))
+    if not user:
+        raise HTTPException(status_code=401, detail="Sign in required")
+    deferrals = dict(user.get("assessment_deferrals") or {})
+    deferrals[payload.domain] = {
+        "deferred_at": datetime.now(timezone.utc).isoformat(),
+        "reason": payload.reason or "not_possible_today",
+    }
+    try:
+        result = await db.users.update_one({"id": user["id"]}, {"$set": {"assessment_deferrals": deferrals}})
+        if getattr(result, "matched_count", 0) == 0 and user["id"] in LOCAL_USERS:
+            raise RuntimeError("local user")
+    except Exception as e:
+        logger.warning(f"Mongo unavailable for assessment deferral; using local fallback: {str(e)[:120]}")
+        LOCAL_USERS[user["id"]] = {**user, "assessment_deferrals": deferrals}
+        _persist_local_dict(LOCAL_USERS_FILE, LOCAL_USERS)
+    return {"ok": True, "domain": payload.domain, "recorded_as": "context_not_failure"}
 
 
 # ============ Daily check-in calendar ============

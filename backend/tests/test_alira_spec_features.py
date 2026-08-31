@@ -187,6 +187,51 @@ def test_survey_rescreens_spasticity_and_functional_domains():
     assert ids & {"arm_use", "hand_use", "walking_confidence"}
 
 
+# ---------- Partial initial assessment (spec 2.2 + user flow) ----------
+
+def partial_initial_assessment(created_days_ago=1):
+    base = assessment(created_days_ago=created_days_ago)
+    base["task_results"] = [
+        {"task_id": "T1", "completed_steps": 3, "total_steps": 3, "metrics": {}},
+        {"task_id": "H1", "completed_steps": 2, "total_steps": 2, "metrics": {}},
+        {"task_id": "L6", "completed_steps": 0, "total_steps": 1, "metrics": {"walking_skipped": True}},
+    ]
+    return base
+
+
+def test_partial_initial_assessment_prompts_for_the_missing_walking_video():
+    plan = build_adaptive_care_plan(profile(), [partial_initial_assessment()], [], [], now=NOW)
+    step = plan["next_step"]
+    assert step["action"] == "complete_missing_assessment"
+    assert "walking video" in step["title"]
+    assert step["secondary_action"]["action"] == "defer_missing_assessment"
+    assert step["secondary_action"]["defer_domains"] == ["lower_limb"]
+    assert plan["assessment"]["missing_domains"] == ["lower_limb"]
+    assert plan["assessment"]["missing_task_ids"] == ["L6"]
+    # The plan for the assessed domains stays active meanwhile.
+    assert plan["exercise_plan"]["approved_exercise_ids"]
+
+
+def test_deferring_the_walking_video_continues_with_the_current_plan():
+    deferred_profile = profile()
+    deferred_profile["_assessment_deferrals"] = {"lower_limb": {"deferred_at": NOW.isoformat()}}
+    plan = build_adaptive_care_plan(deferred_profile, [partial_initial_assessment()], [], [], now=NOW)
+    assert plan["next_step"]["action"] != "complete_missing_assessment"
+
+
+def test_wheelchair_users_are_not_asked_for_the_walking_video():
+    plan = build_adaptive_care_plan(
+        profile(mobility_level="wheelchair"), [partial_initial_assessment()], [], [], now=NOW,
+    )
+    assert plan["next_step"]["action"] != "complete_missing_assessment"
+
+
+def test_assessment_deferral_endpoint_requires_sign_in():
+    with TestClient(server.app) as client:
+        response = client.post("/api/alira/assessment-deferral", json={"domain": "lower_limb"})
+        assert response.status_code == 401
+
+
 # ---------- Encouragement (spec 10) ----------
 
 def test_points_reward_effort_and_rounds():

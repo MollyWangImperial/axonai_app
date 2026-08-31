@@ -6,6 +6,8 @@ import { useLocalSearchParams, useRouter } from "expo-router";
 import * as Haptics from "expo-haptics";
 
 import { Assessment, fetchAssessment, fetchPatientAssessmentSummary, FunctionalIssue, PatientAssessmentSummary } from "@/src/api";
+import { DailyActivitiesPanel } from "@/src/components/DailyActivitiesPanel";
+import { getScreenCache, setScreenCache } from "@/src/screenCache";
 import { getAgeAnatomyPresentation, loadPatientAgeBand } from "@/src/ageAnatomy";
 import { colors, radius, spacing } from "@/src/theme";
 import { DEMO_ASSESSMENT_ID, demoAssessment, demoPatientAssessmentSummary } from "@/src/demoAssessment";
@@ -76,9 +78,10 @@ export default function ResultsScreen() {
   const { width } = useWindowDimensions();
   const router = useRouter();
   const { id } = useLocalSearchParams<{ id: string }>();
-  const [data, setData] = useState<PatientAssessmentSummary | null>(null);
-  const [assessment, setAssessment] = useState<Assessment | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [data, setData] = useState<PatientAssessmentSummary | null>(getScreenCache<{ data: PatientAssessmentSummary; assessment: Assessment | null }>(`results:${id}`)?.data ?? null);
+  const [assessment, setAssessment] = useState<Assessment | null>(getScreenCache<{ data: PatientAssessmentSummary; assessment: Assessment | null }>(`results:${id}`)?.assessment ?? null);
+  const cachedResult = getScreenCache<{ data: PatientAssessmentSummary; assessment: Assessment | null }>(`results:${id}`);
+  const [loading, setLoading] = useState(!cachedResult);
   const [showDetails, setShowDetails] = useState(false);
   const [anatomyZoom, setAnatomyZoom] = useState(1);
   const isDemo = id === DEMO_ASSESSMENT_ID;
@@ -110,6 +113,7 @@ export default function ResultsScreen() {
         if (cancelled) return;
         setData(summary);
         setAssessment(raw);
+        setScreenCache(`results:${id}`, { data: summary, assessment: raw });
         if (summary.clinical_review_gate?.status === "awaiting_model_analysis") {
           refreshTimer = setTimeout(load, summary.insights?.status === "processing" ? 5000 : 15000);
         }
@@ -233,6 +237,7 @@ export default function ResultsScreen() {
         <View style={[styles.report, { width: reportWidth }]}>
           <DisclaimerBanner />
           {isDemo && <View style={styles.demoBanner}><Ionicons name="sparkles" size={20} color="#675080" /><Text style={styles.demoBannerText}>Sample data for preview only. This is not your assessment result.</Text></View>}
+          {!isDemo && <DailyActivitiesPanel />}
           <View style={[styles.snapshotPanel, isWide && styles.snapshotPanelWide]} testID="results-summary">
             <View style={[styles.anatomyPane, isWide && styles.anatomyPaneWide]}>
               <View style={[styles.anatomyStage, isWide && styles.anatomyStageWide]} testID="interactive-anatomy">

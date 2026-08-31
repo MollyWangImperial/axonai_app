@@ -5,6 +5,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 
 import { BodyFunctionDomainSummary, fetchPatientAssessmentSummary, PatientAssessmentSummary } from "@/src/api";
+import { getScreenCache, setScreenCache } from "@/src/screenCache";
 import { DEMO_ASSESSMENT_ID, demoPatientAssessmentSummary } from "@/src/demoAssessment";
 import { colors, radius, spacing } from "@/src/theme";
 import { DisclaimerBanner } from "@/src/components/MedicalDisclaimer";
@@ -161,8 +162,8 @@ export default function FunctionSummaryScreen() {
   const router = useRouter();
   const { width } = useWindowDimensions();
   const { id } = useLocalSearchParams<{ id: string }>();
-  const [data, setData] = useState<PatientAssessmentSummary | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [data, setData] = useState<PatientAssessmentSummary | null>(getScreenCache<PatientAssessmentSummary>(`function-summary:${id}`) ?? null);
+  const [loading, setLoading] = useState(!getScreenCache(`function-summary:${id}`));
   const [selectedDomain, setSelectedDomain] = useState<DomainId | null>(null);
   const isDemo = id === DEMO_ASSESSMENT_ID;
   const isWide = width >= 760;
@@ -173,7 +174,10 @@ export default function FunctionSummaryScreen() {
       try {
         if (!id) return;
         const summary = isDemo ? demoPatientAssessmentSummary : await fetchPatientAssessmentSummary(id);
-        if (active) setData(summary);
+        if (active) {
+          setData(summary);
+          if (!isDemo) setScreenCache(`function-summary:${id}`, summary);
+        }
       } catch {
         if (active) setData(null);
       } finally {

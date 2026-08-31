@@ -28,7 +28,14 @@ export function localDateString(date = new Date()): string {
 
 const WEEKDAY_LABELS = ["M", "T", "W", "T", "F", "S", "S"];
 
-type NextStep = { action?: string; title?: string; message?: string; cta?: string; destination?: string };
+type NextStep = {
+  action?: string;
+  title?: string;
+  message?: string;
+  cta?: string;
+  destination?: string;
+  secondary_action?: (NextStep & { defer_domains?: string[] }) | null;
+};
 
 // The care plan's next_step destinations mapped onto the app's navigation map.
 const NEXT_STEP_NAVIGATION: Record<string, string> = {
@@ -65,26 +72,19 @@ export function DailyCheckInCalendar() {
     setScreenCache<CheckInState>("daily-checkin", { todayStatus: status, days: dayMap });
   }, []);
 
-  const load = useCallback(async () => {
-    if (!getScreenCache<CheckInState>("daily-checkin")) setLoading(true);
-    const response = await authedFetch("/api/users/daily-checkin").catch(() => null);
-    if (response?.ok) applyResponse(await response.json().catch(() => null));
-    setLoading(false);
-  }, [applyResponse]);
+  const cachedNextStep = (): NextStep | null => {
+    // The Home screen already fetches the care plan into the shared cache, so
+    // the next step can be shown instantly with no extra network wait.
+    const home = getScreenCache<{ carePlan?: { next_step?: NextStep } | null }>("home");
+    return home?.carePlan?.next_step ?? null;
+  };
 
-  useFocusEffect(useCallback(() => { void load(); }, [load]));
-
-  const checkIn = async () => {
-    if (saving || todayStatus !== "not_checked_in") return;
-    setSaving(true);
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    const response = await authedFetch("/api/users/daily-checkin", {
-      method: "POST",
-      body: JSON.stringify({ date: localDateString() }),
-    }).catch(() => null);
-    if (response?.ok) {
-      applyResponse(await response.json().catch(() => null));
-      // Spec: after checking in, Alira tells the patient the single next step.
+  const openNextStep = useCallback(async () => {
+    const instant = cachedNextStep();
+    setNextStep(instant);
+    setShowNextStep(true);
+    setScreenCache("daily-checkin-prompted", localDateString());
+    if (!instant) {
       const plan = await authedFetch("/api/alira/care-plan")
         .then((planResponse) => (planResponse.ok ? planResponse.json() : null))
         .catch(() => null);
@@ -93,9 +93,61 @@ export function DailyCheckInCalendar() {
         message: "Complete today's exercises to earn your check mark on the calendar.",
         cta: "OK",
       });
-      setShowNextStep(true);
     }
+  }, []);
+
+  const checkIn = useCallback(async (automatic = false) => {
+    if (!automatic) Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    setSaving(true);
+    // Show Alira's next step immediately - the check-in itself saves in the
+    // background rather than making the patient wait on the network.
+    void openNextStep();
+    const response = await authedFetch("/api/users/daily-checkin", {
+      method: "POST",
+      body: JSON.stringify({ date: localDateString() }),
+    }).catch(() => null);
+    if (response?.ok) applyResponse(await response.json().catch(() => null));
     setSaving(false);
+  }, [applyResponse, openNextStep]);
+
+  const load = useCallback(async () => {
+    if (!getScreenCache<CheckInState>("daily-checkin")) setLoading(true);
+    const response = await authedFetch("/api/users/daily-checkin").catch(() => null);
+    const payload = response?.ok ? await response.json().catch(() => null) : null;
+    if (payload) applyResponse(payload);
+    setLoading(false);
+    // Spec 2/3: the session starts with Alira routing the patient - the next
+    // step appears automatically once per day, without waiting for a tap.
+    const today = localDateString();
+    const alreadyPrompted = getScreenCache<string>("daily-checkin-prompted") === today;
+    if (payload && !alreadyPrompted) {
+      if (payload.status === "not_checked_in") void checkIn(true);
+      else void openNextStep();
+    }
+  }, [applyResponse, checkIn, openNextStep]);
+
+  useFocusEffect(useCallback(() => { void load(); }, [load]));
+
+  const onSecondaryAction = async () => {
+    const secondary = nextStep?.secondary_action;
+    setShowNextStep(false);
+    if (!secondary) return;
+    // "I can't do this today" - record the deferral without penalty, then
+    // continue with the plan that is already active.
+    for (const domain of secondary.defer_domains || []) {
+      await authedFetch("/api/alira/assessment-deferral", {
+        method: "POST",
+        body: JSON.stringify({ domain, reason: "not_possible_today" }),
+      }).catch(() => null);
+    }
+    const destination = NEXT_STEP_NAVIGATION[secondary.destination || ""];
+    if (!destination) return;
+    try {
+      const resolution = await resolveAliraNavigation(destination);
+      if (resolution.success && resolution.path) router.push(resolution.path as never);
+    } catch {
+      // Staying on Home is a safe fallback.
+    }
   };
 
   const goToNextStep = async () => {
@@ -118,7 +170,7 @@ export function DailyCheckInCalendar() {
   const daysInMonth = new Date(shownMonth.getFullYear(), shownMonth.getMonth() + 1, 0).getDate();
   const firstWeekday = (new Date(shownMonth.getFullYear(), shownMonth.getMonth(), 1).getDay() + 6) % 7; // Monday-first
   const todayKey = localDateString();
-  const cells: Array<{ key: string; day?: number; date?: string }> = [];
+  const cells: { key: string; day?: number; date?: string }[] = [];
   for (let i = 0; i < firstWeekday; i++) cells.push({ key: `blank-${i}` });
   for (let day = 1; day <= daysInMonth; day++) {
     const date = localDateString(new Date(shownMonth.getFullYear(), shownMonth.getMonth(), day));
@@ -149,7 +201,7 @@ export function DailyCheckInCalendar() {
       {loading ? (
         <View style={styles.loadingRow}><ActivityIndicator color={palette.brand} /></View>
       ) : todayStatus === "not_checked_in" ? (
-        <Pressable testID="daily-checkin-button" disabled={saving} onPress={checkIn} style={[styles.checkInButton, saving && styles.checkInButtonDisabled]}>
+        <Pressable testID="daily-checkin-button" disabled={saving} onPress={() => { if (!saving && todayStatus === "not_checked_in") void checkIn(); }} style={[styles.checkInButton, saving && styles.checkInButtonDisabled]}>
           {saving ? <ActivityIndicator color="#FFFFFF" /> : <><Ionicons name="hand-right-outline" size={19} color="#FFFFFF" /><Text style={styles.checkInText}>Check in for today</Text></>}
         </Pressable>
       ) : (
@@ -202,12 +254,17 @@ export function DailyCheckInCalendar() {
             <View style={[styles.modalBadge, { backgroundColor: palette.soft }]}>
               <Ionicons name="checkmark-circle" size={30} color={colors.success} />
             </View>
-            <Text style={[styles.modalKicker, { color: palette.brand }]}>CHECKED IN - HERE'S YOUR NEXT STEP</Text>
+            <Text style={[styles.modalKicker, { color: palette.brand }]}>{"CHECKED IN - HERE'S YOUR NEXT STEP"}</Text>
             <Text style={[styles.modalTitle, { color: palette.text }]}>{nextStep?.title || "You're checked in"}</Text>
-            <Text style={[styles.modalBody, { color: palette.muted }]}>{nextStep?.message || "Complete today's exercises to earn your check mark."}</Text>
+            <Text style={[styles.modalBody, { color: palette.muted }]}>{nextStep ? (nextStep.message || "Complete today's exercises to earn your check mark.") : "One moment - Alira is checking your plan..."}</Text>
             <Pressable testID="daily-checkin-next-step-go" onPress={goToNextStep} style={styles.modalPrimary}>
               <Text style={styles.modalPrimaryText}>{nextStep?.cta || "Let's go"}</Text>
             </Pressable>
+            {nextStep?.secondary_action ? (
+              <Pressable testID="daily-checkin-next-step-secondary" onPress={onSecondaryAction} style={[styles.modalSecondary, { borderColor: palette.border }]}>
+                <Text style={[styles.modalSecondaryText, { color: palette.text }]}>{nextStep.secondary_action.title || "I can't do this today"}</Text>
+              </Pressable>
+            ) : null}
             <Pressable testID="daily-checkin-next-step-later" onPress={() => setShowNextStep(false)} style={styles.modalLater}>
               <Text style={[styles.modalLaterText, { color: palette.muted }]}>Later</Text>
             </Pressable>
@@ -256,6 +313,8 @@ const styles = StyleSheet.create({
   modalBody: { fontSize: 14, lineHeight: 21, textAlign: "center" },
   modalPrimary: { alignSelf: "stretch", minHeight: 50, borderRadius: radius.sm, backgroundColor: colors.brandPrimary, alignItems: "center", justifyContent: "center", marginTop: spacing.sm },
   modalPrimaryText: { color: "#FFFFFF", fontSize: 16, fontWeight: "800" },
+  modalSecondary: { alignSelf: "stretch", minHeight: 48, borderRadius: radius.sm, borderWidth: 1, alignItems: "center", justifyContent: "center", marginTop: 2 },
+  modalSecondaryText: { fontSize: 15, fontWeight: "700" },
   modalLater: { minHeight: 40, alignItems: "center", justifyContent: "center", alignSelf: "stretch" },
   modalLaterText: { fontSize: 14, fontWeight: "700" },
 });
