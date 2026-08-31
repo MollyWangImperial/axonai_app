@@ -5,6 +5,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import * as Haptics from "expo-haptics";
 import { colors, spacing, radius } from "@/src/theme";
+import { authedFetch } from "@/src/auth";
 import { API_BASE as BASE } from "@/src/config";
 
 type Story = { id: string; author: string; title: string; body: string; likes: number; months_since_stroke?: number; photo?: string };
@@ -84,6 +85,7 @@ export default function CommunityScreen() {
   const [pAuthor, setPAuthor] = useState("");
   const [pTitle, setPTitle] = useState("");
   const [pBody, setPBody] = useState("");
+  const [previewing, setPreviewing] = useState(false);
   const [posting, setPosting] = useState(false);
 
   const load = async () => {
@@ -111,16 +113,20 @@ export default function CommunityScreen() {
   };
 
   const submitPost = async () => {
+    // Spec 10.2: the patient sees exactly what will be shared and confirms
+    // before anything is posted. Nothing medical is added automatically.
     if (!pAuthor.trim() || !pTitle.trim() || !pBody.trim()) return;
+    if (!previewing) { setPreviewing(true); return; }
     setPosting(true);
     try {
-      const r = await fetch(`${BASE}/api/community/stories`, {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ author: pAuthor.trim(), title: pTitle.trim(), body: pBody.trim() }),
+      const r = await authedFetch("/api/community/stories", {
+        method: "POST",
+        body: JSON.stringify({ author: pAuthor.trim(), title: pTitle.trim(), body: pBody.trim(), confirmed_preview: true }),
       });
       if (r.ok) {
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
         setPAuthor(""); setPTitle(""); setPBody("");
+        setPreviewing(false);
         setPostOpen(false);
         await load();
       }
@@ -202,7 +208,7 @@ export default function CommunityScreen() {
         </View>
       </ScrollView>
 
-      <Modal visible={postOpen} animationType="slide" transparent onRequestClose={() => setPostOpen(false)}>
+      <Modal visible={postOpen} animationType="slide" transparent onRequestClose={() => { setPreviewing(false); setPostOpen(false); }}>
         <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={styles.modalBg}>
           <Pressable style={StyleSheet.absoluteFill} onPress={() => setPostOpen(false)} />
           <View style={[styles.modalSheet, { paddingBottom: Math.max(insets.bottom, spacing.md) }]}>
@@ -211,9 +217,21 @@ export default function CommunityScreen() {
             <Text style={styles.modalSub}>Your words can help someone today.</Text>
             <TextInput value={pAuthor} onChangeText={setPAuthor} placeholder="Your name" placeholderTextColor={colors.onSurfaceTertiary} style={styles.modalInput} testID="post-author-input" />
             <TextInput value={pTitle} onChangeText={setPTitle} placeholder="Title" placeholderTextColor={colors.onSurfaceTertiary} style={styles.modalInput} testID="post-title-input" />
-            <TextInput value={pBody} onChangeText={setPBody} placeholder="Your story..." placeholderTextColor={colors.onSurfaceTertiary} multiline style={[styles.modalInput, { minHeight: 120, textAlignVertical: "top" }]} testID="post-body-input" />
+            {previewing ? (
+              <View style={styles.previewBox} testID="post-preview">
+                <Text style={styles.previewLabel}>This is exactly what will be shared - nothing else is added:</Text>
+                <Text style={styles.previewTitle}>{pTitle.trim()}</Text>
+                <Text style={styles.previewAuthor}>by {pAuthor.trim()}</Text>
+                <Text style={styles.previewBody}>{pBody.trim()}</Text>
+              </View>
+            ) : (
+              <TextInput value={pBody} onChangeText={setPBody} placeholder="Your story..." placeholderTextColor={colors.onSurfaceTertiary} multiline style={[styles.modalInput, { minHeight: 120, textAlignVertical: "top" }]} testID="post-body-input" />
+            )}
+            {previewing ? (
+              <Pressable onPress={() => setPreviewing(false)} style={styles.previewEdit} testID="post-edit"><Text style={styles.previewEditText}>Keep editing</Text></Pressable>
+            ) : null}
             <Pressable onPress={submitPost} style={[styles.modalSubmit, (!pAuthor.trim() || !pTitle.trim() || !pBody.trim() || posting) && { opacity: 0.5 }]} disabled={!pAuthor.trim() || !pTitle.trim() || !pBody.trim() || posting} testID="post-submit">
-              {posting ? <ActivityIndicator color="#fff" /> : <Text style={styles.modalSubmitText}>Share</Text>}
+              {posting ? <ActivityIndicator color="#fff" /> : <Text style={styles.modalSubmitText}>{previewing ? "Share this" : "Preview before sharing"}</Text>}
             </Pressable>
           </View>
         </KeyboardAvoidingView>
@@ -258,4 +276,11 @@ const styles = StyleSheet.create({
   modalInput: { backgroundColor: colors.surfaceSecondary, borderRadius: radius.md, padding: spacing.md, fontSize: 15, color: colors.onSurface },
   modalSubmit: { backgroundColor: colors.brandPrimary, borderRadius: radius.lg, padding: spacing.md, alignItems: "center", marginTop: spacing.sm },
   modalSubmitText: { color: "#fff", fontWeight: "800", fontSize: 16 },
+  previewBox: { borderWidth: 1, borderColor: colors.divider, borderRadius: radius.md, padding: spacing.md, gap: 6, backgroundColor: colors.surfaceSecondary },
+  previewLabel: { fontSize: 12, fontWeight: "700", color: colors.onSurfaceSecondary },
+  previewTitle: { fontSize: 17, fontWeight: "800", color: colors.onSurface },
+  previewAuthor: { fontSize: 13, color: colors.onSurfaceSecondary },
+  previewBody: { fontSize: 14, lineHeight: 21, color: colors.onSurface },
+  previewEdit: { minHeight: 44, alignItems: "center", justifyContent: "center" },
+  previewEditText: { fontSize: 15, fontWeight: "700", color: colors.brandPrimary },
 });

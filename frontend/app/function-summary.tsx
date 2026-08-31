@@ -119,8 +119,16 @@ function domainDetail(data: PatientAssessmentSummary, domain: DomainPresentation
     const upper = values && "shoulder_elevation_deg" in values ? values : undefined;
     const completion = formatPercent(upper?.step_completion_percent);
     if (completion) metrics.push({ label: "Steps completed", value: completion });
-    if (typeof upper?.shoulder_elevation_deg === "number") metrics.push({ label: "Arm elevation", value: `${Math.round(upper.shoulder_elevation_deg)}°` });
-    if (typeof upper?.trunk_lean_deg === "number") metrics.push({ label: "Peak trunk movement", value: `${Math.round(upper.trunk_lean_deg)}°` });
+    // Raw joint angles stay internal for planning (spec 6.1); patients see
+    // plain-language descriptions of how the movement looked instead.
+    if (typeof upper?.shoulder_elevation_deg === "number") {
+      const elevation = upper.shoulder_elevation_deg;
+      metrics.push({ label: "Arm lift", value: elevation >= 120 ? "Reached high comfortably" : elevation >= 80 ? "Reached to about shoulder height" : "Lifted part of the way" });
+    }
+    if (typeof upper?.trunk_lean_deg === "number") {
+      const lean = upper.trunk_lean_deg;
+      metrics.push({ label: "Body position", value: lean <= 10 ? "Stayed steady while reaching" : lean <= 25 ? "Leaned a little to help the reach" : "Used a strong body lean to reach" });
+    }
   } else if (domain.id === "hand") {
     const hand = values && "hand_opening_percent" in values ? values : undefined;
     const completion = formatPercent(hand?.step_completion_percent);

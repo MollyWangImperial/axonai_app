@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone, timedelta
 
 from backend.alira_care_orchestrator import (
     QUESTION_BANK,
@@ -13,18 +13,20 @@ NOW = datetime(2026, 8, 30, 12, 0, tzinfo=timezone.utc)
 
 
 def test_every_due_survey_has_the_required_preface_and_optional_questions():
-    plan = build_adaptive_care_plan(
-        {},
-        [{
-            "id": "initial-1",
-            "assessment_package": "initial",
-            "created_at": (NOW - timedelta(days=4)).isoformat(),
-            "functional_issues": [],
-            "rehab_plan": [],
-        }],
-        [],
-        now=NOW,
-    )
+    # The survey prompt is gated until the initial assessment exists; a brand-new
+    # patient is routed to the initial assessment first.
+    fresh = build_adaptive_care_plan({}, [], [], now=NOW)
+    assert fresh["survey"]["due"] is False
+    assert fresh["survey"]["schedule_due"] is True
+
+    initial = {
+        "id": "a1",
+        "assessment_package": "initial",
+        "created_at": (NOW - timedelta(days=40)).isoformat(),
+        "rehab_plan": [],
+        "functional_issues": [],
+    }
+    plan = build_adaptive_care_plan({}, [initial], [], now=NOW)
 
     assert plan["survey"]["due"] is True
     assert plan["survey"]["preface"] == SURVEY_PREFACE

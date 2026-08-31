@@ -51,6 +51,8 @@ try:
     from backend.object_storage import task_video_object_storage
     from backend.patient_insights import build_patient_insights
     from backend.fast_screening import FAST_RUNNER_HTML, evaluate_fast_screen
+    from backend.encouragement import compute_rewards
+    from backend.daily_activity_metrics import build_daily_activity_metrics
     from backend.alira_care_orchestrator import (
         QUESTION_BANK as ALIRA_CARE_QUESTION_BANK,
         FUNCTIONAL_ISSUE_CATALOG,
@@ -91,6 +93,8 @@ except ImportError:
     from object_storage import task_video_object_storage
     from patient_insights import build_patient_insights
     from fast_screening import FAST_RUNNER_HTML, evaluate_fast_screen
+    from encouragement import compute_rewards
+    from daily_activity_metrics import build_daily_activity_metrics
     from alira_care_orchestrator import (
         QUESTION_BANK as ALIRA_CARE_QUESTION_BANK,
         FUNCTIONAL_ISSUE_CATALOG,
@@ -460,6 +464,7 @@ class RehabExercise(BaseModel):
     source: str
     selection_reason: Optional[str] = None
     safety_note: Optional[str] = None
+    linked_goal: Optional[str] = None  # the patient-chosen goal this exercise serves (spec section 8)
     requires_clinician_confirmation: bool = True
 
 
@@ -1667,6 +1672,7 @@ def build_rehab_plan(
                 "sets": sets,
                 "reps": reps,
                 "frequency": frequency,
+                "linked_goal": priority or None,
                 "selection_reason": reason + ".",
                 "safety_note": " ".join(safety_notes),
                 "requires_clinician_confirmation": False,
@@ -8722,6 +8728,9 @@ class StoryCreate(BaseModel):
     title: str
     body: str
     months_since_stroke: Optional[int] = None
+    # Spec 10.2: sharing is strictly opt-in - the client must show the exact
+    # content and get explicit confirmation before anything is posted.
+    confirmed_preview: bool = False
 
 
 class ChatTurn(BaseModel):
@@ -9010,7 +9019,12 @@ async def get_stories():
 
 
 @api_router.post("/community/stories")
-async def create_story(payload: StoryCreate):
+async def create_story(payload: StoryCreate, request: Request):
+    user = await _user_from_header(dict(request.headers))
+    if not user:
+        raise HTTPException(status_code=401, detail="Sign in required")
+    if not payload.confirmed_preview:
+        raise HTTPException(status_code=422, detail="Sharing needs an explicit preview confirmation before anything is posted")
     doc = {
         "id": "u_" + str(uuid.uuid4())[:8],
         "author": payload.author,
@@ -10172,6 +10186,18 @@ async def complete_daily_checkin(payload: DailyCheckInSubmit, request: Request):
         checkins[date] = entry
         await _save_daily_checkins(user, checkins)
     return _daily_checkin_response(date, checkins)
+
+
+@api_router.get("/users/rewards")
+async def get_user_rewards(request: Request):
+    """Points, medals, and streak state (spec section 10). Effort-based:
+    reduced-intensity and caregiver-assisted sessions earn the same points."""
+    user = await _user_from_header(dict(request.headers))
+    if not user:
+        raise HTTPException(status_code=401, detail="Sign in required")
+    activities = await _care_activities_for_user(user["id"])
+    check_ins = await _care_check_ins_for_user(user["id"])
+    return compute_rewards(activities, check_ins, dict(user.get("daily_checkins") or {}))
 
 
 @api_router.post("/alira/navigation-events")
@@ -11349,6 +11375,9 @@ async def progress_summary(request: Request):
         "issues_history": [{"issue": k, "count": v} for k, v in sorted(issues_count.items(), key=lambda x: -x[1])],
         "first_seen": series[0]["date"] if series else None,
         "count": len(series),
+        # Spec section 6: patient-facing progress is activity-driven with
+        # honest complete / estimated / not-assessed labels.
+        "daily_activities": build_daily_activity_metrics(series, user.get("profile") or {}),
     }
 
 

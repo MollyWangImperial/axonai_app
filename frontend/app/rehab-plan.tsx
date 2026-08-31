@@ -344,6 +344,7 @@ export default function RehabPlanScreen() {
                           <View style={styles.focusTag}><Text style={styles.focusTagText}>{exerciseFocus(exercise)}</Text></View>
                         </View>
                         <Text style={styles.exerciseMeta}>{exercise.sets} sets × {exercise.reps} reps · {exercise.frequency}</Text>
+                        {exercise.linked_goal ? <Text style={styles.goalChip} testID={`exercise-goal-${exercise.id}`}>This one is for: {exercise.linked_goal}</Text> : null}
                       </View>
                       <View style={[styles.statusTag, isDone && styles.statusTagDone, percent > 0 && !isDone && styles.statusTagActive]} testID={`exercise-progress-${exercise.id}`}>
                         <Text style={[styles.statusTagText, isDone && styles.statusTagTextDone]}>{status}</Text>
@@ -476,6 +477,7 @@ const styles = StyleSheet.create({
   focusTag: { paddingHorizontal: 12, paddingVertical: 5, borderRadius: 999, backgroundColor: "#E6EFE8" },
   focusTagText: { color: "#427454", fontSize: 12, fontWeight: "700" },
   exerciseMeta: { marginTop: 4, fontSize: 13, color: colors.brandPrimary, fontWeight: "700" },
+  goalChip: { marginTop: 4, fontSize: 12, lineHeight: 17, fontWeight: '700', color: '#1F7047' },
   statusTag: { paddingHorizontal: 12, paddingVertical: 6, borderRadius: 999, backgroundColor: "#F0F1F0" },
   statusTagActive: { backgroundColor: "#FFF1D9" },
   statusTagDone: { backgroundColor: "#E1F1E6" },

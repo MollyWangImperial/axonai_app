@@ -12,7 +12,7 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 
 CARE_POLICY_VERSION = "alira-care-v2"
-MAX_CHECK_IN_QUESTIONS = 5
+MAX_CHECK_IN_QUESTIONS = 8
 SURVEY_PREFACE = (
     "A few short questions about how you have been getting on. Your answers help Rehyn adjust your plan to suit you better.\n\n"
     "This takes about two minutes. Every question is optional and you can stop at any point. Skipping the check in does not change anything about your plan or your access to Rehyn.\n\n"
@@ -28,6 +28,147 @@ ASSESSMENT_READINESS_FIELDS = (
     "movement_pain",
     "instruction_support",
 )
+
+
+# Six-level assistance scale (spec section 6.2), used consistently everywhere a
+# level of help is described: intake, assessment records, plans and progress.
+ASSISTANCE_LEVELS = (
+    "unable",
+    "maximum_assistance",
+    "moderate_assistance",
+    "minimum_assistance",
+    "supervision_only",
+    "fully_independent",
+)
+ASSISTANCE_LEVEL_LABELS = {
+    "unable": "Unable / not safely attempted",
+    "maximum_assistance": "Maximum assistance",
+    "moderate_assistance": "Moderate assistance",
+    "minimum_assistance": "Minimum assistance",
+    "supervision_only": "Supervision only",
+    "fully_independent": "Fully independent",
+}
+
+# Functional tiers (spec section 1.3), assigned per domain. Tier 1: no
+# voluntary movement even with help - no camera assessment, caregiver-delivered
+# plan. Tier 2: moves with caregiver assistance - goal is independence.
+# Tier 3: independent but quality may be impaired - full camera assessment.
+FUNCTIONAL_TIER_DOMAINS = ("upper_limb", "hand", "lower_limb")
+
+
+def functional_tiers(profile: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Assign a functional tier per domain from the self-reported screen."""
+    profile = dict(profile or {})
+    arm = str(profile.get("affected_arm_movement") or "").lower()
+    hand = str(profile.get("affected_hand_movement") or "").lower()
+    mobility = str(profile.get("mobility_level") or "").lower()
+    sitting = str(profile.get("sitting_ability") or "").lower()
+
+    def tier(value: int, reason: str) -> Dict[str, Any]:
+        return {"tier": value, "reason": reason, "camera_assessment": value >= 2}
+
+    if arm in {"most_movements", "not_affected"}:
+        upper = tier(3, "Independent arm movement was reported; quality and efficiency are assessed.")
+    elif arm in {"some_movement"}:
+        upper = tier(3 if sitting == "independent" else 2, "Some unassisted arm movement was reported.")
+    elif arm in {"help_only"}:
+        upper = tier(2, "Arm movement was reported as possible only with help.")
+    elif arm in {"no_movement"}:
+        upper = tier(1, "No unassisted arm movement was reported, so camera tasks are not assigned for this domain.")
+    else:
+        upper = tier(2, "Arm movement could not be confirmed, so assisted-level tasks are assumed until assessed.")
+
+    if hand in {"opens_and_moves", "not_affected"}:
+        hand_tier = tier(3, "Independent hand movement was reported; quality and dexterity are assessed.")
+    elif hand in {"some_finger_movement", "very_little_movement"}:
+        hand_tier = tier(2, "Partial finger movement was reported.")
+    elif hand in {"no_movement"}:
+        hand_tier = tier(1, "No unassisted finger movement was reported, so camera tasks are not assigned for this domain.")
+    else:
+        hand_tier = tier(2, "Hand movement could not be confirmed, so assisted-level tasks are assumed until assessed.")
+
+    if mobility in {"independent", "cane", "walker"}:
+        lower = tier(3, "Independent walking with the usual aid was reported.")
+    elif mobility in {"person_assist", "wheelchair"}:
+        lower = tier(2, "Moving with hands-on help or a wheelchair was reported.")
+    elif mobility in {"unable_walk", "not_cleared"}:
+        lower = tier(1, "Walking is not currently possible or not cleared, so camera walking tasks are not assigned.")
+    else:
+        lower = tier(2, "Mobility could not be confirmed, so assisted-level tasks are assumed until assessed.")
+
+    tiers = {"upper_limb": upper, "hand": hand_tier, "lower_limb": lower}
+    return {
+        "by_domain": tiers,
+        "any_tier_one": any(item["tier"] == 1 for item in tiers.values()),
+        "assistance_levels": list(ASSISTANCE_LEVELS),
+        "assistance_level_labels": dict(ASSISTANCE_LEVEL_LABELS),
+        "reason": "Tiers are assigned per domain from the self-reported functional screen and are updated by each survey and assessment.",
+    }
+
+
+# Caregiver-delivered programme content for Tier 1 domains (spec section 7.1).
+# Deterministic, approved content: positioning, passive range of movement and
+# guided activation for the named muscle groups, with dose and safety limits.
+CAREGIVER_PROGRAMME_LIBRARY: Dict[str, Dict[str, Any]] = {
+    "upper_limb": {
+        "domain": "upper_limb",
+        "goal": "Elicit any voluntary movement in the arm",
+        "muscle_groups": ["shoulder flexors", "elbow flexors and extensors", "forearm rotators"],
+        "instructions": [
+            "Position the arm supported on a pillow, shoulder slightly away from the body, palm facing inward.",
+            "Move the shoulder slowly through a comfortable range: forward lift, gentle outward movement, then rest. Never push into pain.",
+            "Bend and straighten the elbow slowly, supporting the wrist. 8-10 slow repetitions.",
+            "Ask the patient to try to join in with even a flicker of effort during each movement, and praise any attempt.",
+        ],
+        "dose": "Once or twice daily, 5-10 minutes, stopping sooner if the patient tires.",
+        "safety_limits": "Stop immediately and contact the clinical team if there is new pain, swelling, or resistance that was not there before. Never force a stiff joint.",
+    },
+    "hand": {
+        "domain": "hand",
+        "goal": "Elicit any voluntary finger movement and keep the hand supple",
+        "muscle_groups": ["finger flexors and extensors", "thumb muscles", "wrist flexors and extensors"],
+        "instructions": [
+            "Support the forearm on a table with the wrist in a neutral position.",
+            "Gently open the fingers one by one, hold a few seconds, then let them relax. 5 repetitions per finger.",
+            "Move the wrist slowly up and down through a comfortable range, 8-10 repetitions.",
+            "Ask the patient to try to squeeze or open with you on each repetition, and note any flicker of movement.",
+        ],
+        "dose": "Twice daily, about 5 minutes per session.",
+        "safety_limits": "Stop if the hand becomes painful, cold, or discoloured, and tell the clinical team. Do not force fingers that are tightly stiff - report spasticity instead.",
+    },
+    "lower_limb": {
+        "domain": "lower_limb",
+        "goal": "Maintain leg movement and circulation, and elicit any voluntary activity",
+        "muscle_groups": ["hip flexors", "knee flexors and extensors", "ankle movers"],
+        "instructions": [
+            "With the patient lying safely, support under the knee and move the hip and knee through a gentle bend and straighten, 8-10 slow repetitions.",
+            "Move the ankle up and down slowly, 10 repetitions per side.",
+            "Ask the patient to try to press down or pull up with you on each repetition.",
+            "Change the patient's resting position regularly to protect skin and comfort.",
+        ],
+        "dose": "Once or twice daily, 5-10 minutes.",
+        "safety_limits": "Stop and seek advice for calf pain or swelling, new redness, or any breathing difficulty during the routine - call 999 for sudden breathlessness or chest pain.",
+    },
+}
+
+
+def caregiver_delivered_plan(profile: Optional[Dict[str, Any]], tiers: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Tier 1 output (spec 7.1): instructions addressed to the caregiver."""
+    tiers = tiers or functional_tiers(profile)
+    tier_one_domains = [domain for domain, item in tiers["by_domain"].items() if item["tier"] == 1]
+    programmes = [dict(CAREGIVER_PROGRAMME_LIBRARY[domain]) for domain in tier_one_domains if domain in CAREGIVER_PROGRAMME_LIBRARY]
+    return {
+        "applicable": bool(programmes),
+        "audience": "caregiver",
+        "tier_one_domains": tier_one_domains,
+        "programmes": programmes,
+        "stop_and_call": (
+            "Stop the routine and call 999 immediately for any new facial droop, arm weakness, speech change, "
+            "chest pain, or severe breathlessness. For new pain, stiffness, or anything that worries you, stop "
+            "and contact the clinical team at info@rehyn.com."
+        ),
+        "reason": "No unassisted movement was reported in these domains, so Alira issues a caregiver-delivered programme instead of camera tasks.",
+    }
 
 
 QUESTION_BANK: Dict[str, Dict[str, Any]] = {
@@ -128,7 +269,57 @@ QUESTION_BANK: Dict[str, Dict[str, Any]] = {
         "options": ["no", "thoughts_but_safe", "cannot_keep_safe", "prefer_not_to_say"],
         "required": False,
     },
+    "feeling_today": {
+        "id": "feeling_today",
+        "domain": "wellbeing",
+        "question": "How do you feel today?",
+        "type": "single",
+        "options": ["good", "okay", "low", "unwell"],
+        "required": False,
+    },
+    "caregiver_today": {
+        "id": "caregiver_today",
+        "domain": "support",
+        "question": "Is a caregiver or helper available to you today?",
+        "type": "single",
+        "options": ["with_me_now", "available_later", "not_today"],
+        "required": False,
+    },
+    "session_preference": {
+        "id": "session_preference",
+        "domain": "exercise",
+        "question": "Would you like a normal, lighter, or rest and recovery session today?",
+        "type": "single",
+        "options": ["normal", "lighter", "rest_recovery"],
+        "required": False,
+    },
+    "spasticity_change": {
+        "id": "spasticity_change",
+        "domain": "tolerance",
+        "question": "Any new or changed muscle stiffness, tightness, or spasms since last time?",
+        "type": "single",
+        "options": ["no", "same_as_usual", "new_or_worse"],
+        "required": False,
+    },
 }
+
+
+# The five daily check-in topics from spec section 3.1, served at every
+# session start. Answers modulate the day's dose and gate caregiver tasks;
+# a rest choice is honoured without penalty.
+DAILY_CHECK_IN_QUESTION_IDS = (
+    "feeling_today",
+    "sudden_change",
+    "falls",
+    "fatigue",
+    "caregiver_today",
+    "session_preference",
+)
+
+
+def daily_check_in_questions() -> List[Dict[str, Any]]:
+    return [dict(QUESTION_BANK[question_id]) for question_id in DAILY_CHECK_IN_QUESTION_IDS]
+
 
 
 FUNCTIONAL_ISSUE_CATALOG: Dict[str, Dict[str, Any]] = {
@@ -644,7 +835,14 @@ def _select_questions(
         ids.append("fatigue")
     else:
         ids.append("goal_activity")
-    unique = list(dict.fromkeys(ids))[:MAX_CHECK_IN_QUESTIONS]
+    # Spec 5.1: every survey re-screens spasticity and the three functional
+    # domains so the reassessment task set and tiers can be updated.
+    ids.append("spasticity_change")
+    unique = list(dict.fromkeys(ids))
+    for rescreen in ("arm_use", "hand_use", "walking_confidence"):
+        if rescreen not in unique and len(unique) < MAX_CHECK_IN_QUESTIONS:
+            unique.append(rescreen)
+    unique = unique[:MAX_CHECK_IN_QUESTIONS]
     return [dict(QUESTION_BANK[question_id]) for question_id in unique]
 
 
@@ -703,12 +901,61 @@ def _exercise_action(
             "frequency": f"{weekly_frequency} days per week",
         })
 
+    # Spec 3.2 / 7.2: today's check-in shapes today's session. A rest choice is
+    # honoured without penalty; high fatigue, high pain, or a "lighter" choice
+    # reduces today's dose without changing the underlying plan.
+    preference = str(_answer(latest_check_in, "session_preference", "")).lower()
+    fatigue = str(_answer(latest_check_in, "fatigue", "")).lower()
+    try:
+        pain_score = float(_answer(latest_check_in, "pain", ""))
+    except (TypeError, ValueError):
+        pain_score = None
+    if safety["blocks_exercise"]:
+        todays_mode, todays_factor = "hold", 0.0
+        todays_reason = "Exercise is paused for safety until the reported change is reviewed."
+    elif preference == "rest_recovery":
+        todays_mode, todays_factor = "rest", 0.0
+        todays_reason = "A rest and recovery day was chosen. This is honoured without any penalty to streaks or points."
+    elif preference == "lighter" or fatigue in {"quite_a_bit", "a_lot"} or (pain_score is not None and pain_score >= 5):
+        todays_mode, todays_factor = "lighter", 0.7
+        todays_reason = "Today's session is lighter because of the check-in answers (preference, fatigue, or pain)."
+    else:
+        todays_mode, todays_factor = "normal", 1.0
+        todays_reason = "Today's session runs at the planned dose."
+
+    # Spec 2.2: performance far above expectation triggers early reassessment
+    # rather than silently continuing.
+    tolerance_answer = str(_answer(latest_check_in, "exercise_tolerance", "")).lower()
+    function_answer = str(_answer(latest_check_in, "function_change", "")).lower()
+    early_reassessment = bool(
+        latest_assessment
+        and tolerance_answer == "too_easy"
+        and function_answer in {"much_easier", "a_little_easier"}
+        and not safety["blocks_assessment"]
+    )
+
+    # Spec 7.2: new or worsening spasticity is always considered.
+    spasticity_flag = str(_answer(latest_check_in, "spasticity_change", "")).lower() == "new_or_worse"
+
     return {
         "action": action,
         "dose_change_percent": dose_change,
         "reason": reason,
         "approved_exercise_ids": active_ids,
         "prescriptions": prescriptions,
+        "todays_session": {
+            "mode": todays_mode,
+            "dose_factor": todays_factor,
+            "reason": todays_reason,
+            "no_penalty": todays_mode == "rest",
+        },
+        "early_reassessment_recommended": early_reassessment,
+        "spasticity_review_needed": spasticity_flag,
+        "spasticity_note": (
+            "New or worsening stiffness or spasm was reported. Prefer relaxation and slow, supported range work today, "
+            "avoid fast forceful repetitions of the stiff muscle group, and tell the clinical team if it persists."
+            if spasticity_flag else None
+        ),
         "decision_mode": "autonomous_approved_library",
         "requires_approval": False,
     }
@@ -725,6 +972,8 @@ def _next_step_decision(
     active_exercise_ids: Sequence[str],
     remaining_exercise_ids: Sequence[str],
     completed_today: bool,
+    missed_days: int = 0,
+    week_round_complete: bool = False,
 ) -> Dict[str, Any]:
     """Choose the single primary action Alira should show to the patient."""
     if safety["status"] != "clear":
@@ -753,6 +1002,30 @@ def _next_step_decision(
 
     active_ids = list(active_exercise_ids)
     remaining_ids = list(remaining_exercise_ids)
+
+    # Spec 5: a completed week-round routes to the survey before more exercises.
+    if week_round_complete and survey_reminder_due:
+        return {
+            "action": "recovery_check_in",
+            "title": "You completed a full exercise round",
+            "message": "One week of sessions is done. A short check-in comes next, then a reassessment to measure your progress and refresh your plan.",
+            "cta": "Start the check-in",
+            "destination": "survey",
+            "secondary_action": None,
+        }
+
+    # Spec 2.2: warm re-entry after missed days - no guilt language.
+    if missed_days >= 3 and active_ids and remaining_ids:
+        return {
+            "action": "gentle_re_entry",
+            "title": "Welcome back",
+            "message": "It is good to see you again. Today's session restarts at a gentler intensity - missed days are simply part of recovery, never a failure.",
+            "cta": "Start a gentle session",
+            "destination": "rehab_plan",
+            "remaining_exercise_ids": remaining_ids,
+            "secondary_action": None,
+        }
+
     if active_ids and remaining_ids:
         remaining_count = len(remaining_ids)
         secondary = None
@@ -930,7 +1203,39 @@ def build_adaptive_care_plan(
         if (completed_at := _as_utc(item.get("completed_at"))) and now - completed_at <= timedelta(days=7)
     )
     completed_today = bool(latest_activity_at and latest_activity_at.date() == now.date())
+
+    # Spec 1.2 / 5: an exercise round is one week of daily sessions. Completing
+    # a round triggers the survey and reassessment sequence.
+    plan_issued_at = _as_utc((latest_assessment or {}).get("created_at"))
+    session_days_this_round = {
+        completed_at.date()
+        for item in activities
+        if (completed_at := _as_utc(item.get("completed_at")))
+        and (not plan_issued_at or completed_at >= plan_issued_at)
+    }
+    round_length_days = 7
+    week_round_complete = bool(latest_assessment and len(session_days_this_round) >= round_length_days)
+
+    # Spec 2.2: a warm, no-guilt re-entry after several missed days.
+    missed_days = (now.date() - latest_activity_at.date()).days if latest_activity_at else 0
+
     exercise_plan = _exercise_action(latest_check_in, latest_assessment, safety, sessions_last_7_days)
+    if week_round_complete or exercise_plan.get("early_reassessment_recommended"):
+        survey_due = True
+        if not safety["blocks_assessment"]:
+            assessment_due = True
+            if not pending_issue:
+                selection = dict(selection)
+                selection["trigger"] = "round_complete" if week_round_complete else "early_reassessment"
+            assessment_due_at = now
+    if missed_days >= 3 and exercise_plan.get("todays_session", {}).get("mode") == "normal":
+        todays = dict(exercise_plan.get("todays_session") or {})
+        todays.update({
+            "mode": "lighter",
+            "dose_factor": 0.7,
+            "reason": "Welcome back. After a few days away, today's session restarts at a reduced intensity - missed days are context, never failure.",
+        })
+        exercise_plan = {**exercise_plan, "todays_session": todays}
     active_exercise_ids = list(exercise_plan["approved_exercise_ids"])
     completed_exercise_ids_today = list(dict.fromkeys(
         str(item.get("exercise_id"))
@@ -954,6 +1259,9 @@ def build_adaptive_care_plan(
     else:
         next_day_action = "none"
 
+    tiers = functional_tiers(profile)
+    caregiver_plan = caregiver_delivered_plan(profile, tiers) if tiers["any_tier_one"] else {"applicable": False, "programmes": []}
+
     next_step = _next_step_decision(
         has_initial_assessment=has_initial_assessment,
         initial_can_start=bool((initial_readiness or {}).get("can_start", True)),
@@ -964,6 +1272,8 @@ def build_adaptive_care_plan(
         active_exercise_ids=active_exercise_ids,
         remaining_exercise_ids=remaining_exercise_ids_today,
         completed_today=completed_today,
+        missed_days=missed_days,
+        week_round_complete=week_round_complete,
     )
 
     return {
@@ -1024,6 +1334,20 @@ def build_adaptive_care_plan(
             "reason": "Daily activity can be checked with deterministic rules; an AI-model call is reserved for a changed or scheduled clinical state.",
         },
         "next_step": next_step,
+        "daily_check_in": {
+            "questions": daily_check_in_questions(),
+            "purpose": "Asked at the start of every session. Answers shape today's dose, gate caregiver tasks, and screen for red flags before any activity.",
+            "rest_is_honoured_without_penalty": True,
+        },
+        "exercise_round": {
+            "round_length_days": round_length_days,
+            "session_days_completed": len(session_days_this_round),
+            "complete": week_round_complete,
+            "started_at": plan_issued_at.isoformat() if plan_issued_at else None,
+            "reason": "One round is one week of daily sessions; completing it triggers the survey and reassessment.",
+        },
+        "functional_tiers": tiers,
+        "caregiver_plan": caregiver_plan,
         "content_proposals": _content_gaps(profile, domains),
         "autonomy": {
             "may_select_approved_questions": True,

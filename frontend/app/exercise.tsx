@@ -6,6 +6,7 @@ import { useLocalSearchParams, useRouter } from "expo-router";
 import * as Haptics from "expo-haptics";
 import { colors, spacing, radius } from "@/src/theme";
 import { storage } from "@/src/utils/storage";
+import { SafetyStopStrip } from "@/src/components/SafetyStopStrip";
 import { localDateString } from "@/src/components/DailyCheckInCalendar";
 import { API_BASE as BASE } from "@/src/config";
 import { loadUserPreferences } from "@/src/userPreferences";
@@ -189,6 +190,7 @@ export default function ExerciseScreen() {
           </Pressable>
         </View>
       )}
+      <SafetyStopStrip />
     </View>
   );
 }

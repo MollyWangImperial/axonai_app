@@ -305,6 +305,7 @@ export type RehabExercise = {
   targets_issue: string;
   source: string;
   selection_reason?: string | null;
+  linked_goal?: string | null;
   safety_note?: string | null;
   requires_clinician_confirmation?: boolean;
 };

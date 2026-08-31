@@ -18,6 +18,7 @@ import { Assessment, fetchHistory } from "@/src/api";
 import { authedFetch, getCachedUser, preferredNameKey } from "@/src/auth";
 import { AliraCarePlan, DailyCheckInCard } from "@/src/components/DailyCheckInCard";
 import { DailyCheckInCalendar } from "@/src/components/DailyCheckInCalendar";
+import { RewardsCard } from "@/src/components/RewardsCard";
 import { colors, radius, spacing } from "@/src/theme";
 import { getScreenCache, setScreenCache } from "@/src/screenCache";
 import { storage } from "@/src/utils/storage";
@@ -182,6 +183,7 @@ export default function HomeScreen() {
           </Pressable>
 
           {!loading && <DailyCheckInCalendar />}
+          {!loading && <RewardsCard />}
           {!loading && <DailyCheckInCard name={greetName} plan={carePlan} latestAssessmentId={latest?.id} />}
 
           {loading ? (

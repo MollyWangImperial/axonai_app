@@ -8,6 +8,7 @@ import { colors, spacing, radius } from "@/src/theme";
 import { AssessmentPackageId, POSE_RUNNER_URL } from "@/src/api";
 import { completedTasksKey, getUserId, savedTaskVideosKey } from "@/src/auth";
 import { storage } from "@/src/utils/storage";
+import { SafetyStopStrip } from "@/src/components/SafetyStopStrip";
 import { loadUserPreferences } from "@/src/userPreferences";
 
 function parseCompletedTasks(raw: string | null): Record<string, boolean> {
@@ -175,6 +176,7 @@ export default function AssessmentScreen() {
           </Pressable>
         </View>
       )}
+      <SafetyStopStrip />
     </View>
   );
 }

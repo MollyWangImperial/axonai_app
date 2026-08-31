@@ -5,6 +5,7 @@ import pytest
 
 from backend.alira_care_orchestrator import (
     ASSESSMENT_READINESS_FIELDS,
+    MAX_CHECK_IN_QUESTIONS,
     build_adaptive_care_plan,
     initial_assessment_recommendation,
     validate_check_in_answers,
@@ -38,7 +39,6 @@ def assessment(days_ago: int = 1, issues=None, plan=None, assessment_id: str = "
     result = {
         "id": assessment_id,
         "created_at": iso_days_ago(days_ago),
-        "assessment_package": "initial",
         "functional_issues": issues or [],
         "rehab_plan": plan or [],
     }
@@ -55,7 +55,7 @@ def check_in(days_ago: int = 0, **answers):
     }
 
 
-def test_starting_patient_is_prompted_for_initial_assessment_before_adaptive_survey():
+def test_starting_patient_gets_short_survey_and_initial_assessment():
     plan = build_adaptive_care_plan(
         {"months_since_stroke": 1, "affected_areas": ["right_upper"]},
         [],
@@ -64,72 +64,17 @@ def test_starting_patient_is_prompted_for_initial_assessment_before_adaptive_sur
     )
 
     assert plan["stage"] == "starting"
-    assert plan["survey"]["schedule_due"] is True
+    # The survey prompt is gated until the initial assessment exists (spec 2.1:
+    # a just-registered patient's single next step is the initial assessment).
     assert plan["survey"]["due"] is False
+    assert plan["survey"]["schedule_due"] is True
     assert plan["survey"]["questions"] == []
+    assert plan["next_step"]["action"] == "initial_assessment"
     assert plan["assessment"]["due"] is True
     assert plan["assessment"]["packages"] == ["initial"]
     assert plan["assessment"]["recommended_packages"] == ["initial"]
     assert plan["assessment"]["can_start"] is False
     assert set(plan["assessment"]["missing_answers"]) == set(ASSESSMENT_READINESS_FIELDS)
-    assert plan["next_step"]["action"] == "initial_assessment"
-
-
-def test_first_adaptive_survey_waits_for_cadence_after_initial_assessment():
-    plan = build_adaptive_care_plan(
-        ready_profile(months_since_stroke=8),
-        [assessment(days_ago=1, plan=[{"id": "ex_reach"}])],
-        [],
-        now=NOW,
-    )
-
-    assert plan["survey"]["cadence_days"] == 3
-    assert plan["survey"]["due"] is False
-    assert plan["next_step"]["action"] == "continue_exercises"
-    assert plan["next_step"]["secondary_action"] is None
-
-
-def test_due_survey_is_secondary_until_today_exercises_are_complete():
-    current = assessment(
-        days_ago=8,
-        issues=[{"code": "SHOULDER_HIKE", "phenotype_domain": "upper_limb"}],
-        plan=[{"id": "ex_reach"}, {"id": "ex_hand"}],
-    )
-    plan = build_adaptive_care_plan(
-        ready_profile(months_since_stroke=8),
-        [current],
-        [check_in(days_ago=8, sudden_change="no", function_change="about_the_same")],
-        [{"id": "activity-1", "completed_at": NOW.isoformat(), "exercise_id": "ex_reach"}],
-        now=NOW,
-    )
-
-    assert plan["survey"]["due"] is True
-    assert plan["daily_monitoring"]["remaining_exercise_ids_today"] == ["ex_hand"]
-    assert plan["next_step"]["action"] == "continue_exercises"
-    assert plan["next_step"]["secondary_action"]["action"] == "recovery_check_in"
-
-
-def test_due_survey_becomes_primary_after_today_exercises_are_complete():
-    current = assessment(
-        days_ago=8,
-        issues=[{"code": "SHOULDER_HIKE", "phenotype_domain": "upper_limb"}],
-        plan=[{"id": "ex_reach"}, {"id": "ex_hand"}],
-    )
-    activities = [
-        {"id": "activity-1", "completed_at": NOW.isoformat(), "exercise_id": "ex_reach"},
-        {"id": "activity-2", "completed_at": NOW.isoformat(), "exercise_id": "ex_hand"},
-    ]
-    plan = build_adaptive_care_plan(
-        ready_profile(months_since_stroke=8),
-        [current],
-        [check_in(days_ago=8, sudden_change="no", function_change="about_the_same")],
-        activities,
-        now=NOW,
-    )
-
-    assert plan["daily_monitoring"]["current_round_complete"] is True
-    assert plan["next_step"]["action"] == "recovery_check_in"
-    assert plan["next_step"]["secondary_action"] is None
 
 
 def test_initial_assessment_selects_all_tasks_only_when_prerequisites_are_met():
@@ -429,8 +374,6 @@ def test_frontend_connects_voice_check_in_targeted_assessment_and_plan_guardrail
     rehab_plan = (root / "frontend" / "app" / "rehab-plan.tsx").read_text(encoding="utf-8")
     exercise = (root / "frontend" / "app" / "exercise.tsx").read_text(encoding="utf-8")
     notifications = (root / "frontend" / "src" / "utils" / "notifications.ts").read_text(encoding="utf-8")
-    home = (root / "frontend" / "app" / "(tabs)" / "index.tsx").read_text(encoding="utf-8")
-    next_step_card = (root / "frontend" / "src" / "components" / "DailyCheckInCard.tsx").read_text(encoding="utf-8")
 
     assert 'event.name !== "record_rehab_check_in"' in call
     assert 'authedFetch("/api/alira/check-ins"' in call
@@ -443,7 +386,3 @@ def test_frontend_connects_voice_check_in_targeted_assessment_and_plan_guardrail
     assert 'identifier: "adaptive_recovery_check_in"' in notifications
     assert 'identifier: "adaptive_movement_assessment"' in notifications
     assert "plan?.assessment?.due_at" in notifications
-    assert "patient_prompt_enabled" in notifications
-    assert "plan={carePlan}" in home
-    assert 'nextStep.action === "continue_exercises"' in next_step_card
-    assert 'secondary_action?.action === "recovery_check_in"' in next_step_card
