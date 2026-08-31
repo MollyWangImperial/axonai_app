@@ -25,9 +25,9 @@ POINTS_PER_CHECKIN_TAP = 2
 ROUND_LENGTH_DAYS = 7
 
 MEDALS = (
-    {"id": "persistence_pro", "name": "Persistence Pro (坚持达人)", "threshold": 200},
-    {"id": "persistence_champion", "name": "Persistence Champion (坚持冠军)", "threshold": 500},
-    {"id": "persistence_master", "name": "Persistence Master (坚持大神)", "threshold": 1000},
+    {"id": "persistence_pro", "name": "Persistence Pro", "threshold": 200},
+    {"id": "persistence_champion", "name": "Persistence Champion", "threshold": 500},
+    {"id": "persistence_master", "name": "Persistence Master", "threshold": 1000},
 )
 
 

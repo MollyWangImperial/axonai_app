@@ -205,7 +205,10 @@ def test_emergency_entry_is_prominent_and_alira_can_open_it():
     navigation = (FRONTEND_ROOT / "src" / "aliraNavigation.ts").read_text(encoding="utf-8")
     emergency = (FRONTEND_ROOT / "app" / "(tabs)" / "emergency.tsx").read_text(encoding="utf-8")
 
-    assert 'tabBarButtonTestID: "tab-emergency-fast"' in tabs
+    # The emergency screen is hidden from the tab bar (three tabs stay: Home,
+    # Journey, Alira); the prominent Home banner remains the entry point.
+    assert 'tabBarButtonTestID: "tab-emergency-fast"' not in tabs
+    assert 'name="emergency"' in tabs
     assert 'testID="home-emergency-fast"' in home
     assert 'emergency_fast_check: { label: "Emergency FAST check"' in navigation
     assert 'testID="emergency-fast-webview"' in emergency

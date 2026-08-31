@@ -1,12 +1,13 @@
 import { useCallback, useState } from "react";
-import { ActivityIndicator, Pressable, StyleSheet, Text, View } from "react-native";
-import { useFocusEffect } from "expo-router";
+import { ActivityIndicator, Modal, Pressable, StyleSheet, Text, View } from "react-native";
+import { useFocusEffect, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 
 import { authedFetch } from "@/src/auth";
 import { useDisplayPreferences } from "@/src/displayPreferences";
 import { getScreenCache, setScreenCache } from "@/src/screenCache";
+import { resolveAliraNavigation } from "@/src/aliraNavigation";
 import { colors, radius, spacing } from "@/src/theme";
 
 // Daily check-in loop: the patient taps "Check in" after signing in, which
@@ -27,8 +28,24 @@ export function localDateString(date = new Date()): string {
 
 const WEEKDAY_LABELS = ["M", "T", "W", "T", "F", "S", "S"];
 
+type NextStep = { action?: string; title?: string; message?: string; cta?: string; destination?: string };
+
+// The care plan's next_step destinations mapped onto the app's navigation map.
+const NEXT_STEP_NAVIGATION: Record<string, string> = {
+  rehab_plan: "rehab_plan",
+  progress: "progress",
+  survey: "alira_chat",
+  alira: "alira_chat",
+  assessment: "next_assessment",
+  initial_assessment: "initial_assessment",
+  emergency: "emergency_fast_check",
+};
+
 export function DailyCheckInCalendar() {
   const { palette } = useDisplayPreferences();
+  const router = useRouter();
+  const [nextStep, setNextStep] = useState<NextStep | null>(null);
+  const [showNextStep, setShowNextStep] = useState(false);
   const cached = getScreenCache<CheckInState>("daily-checkin");
   const [todayStatus, setTodayStatus] = useState<DailyCheckInStatus>(cached?.todayStatus ?? "not_checked_in");
   const [days, setDays] = useState<Record<string, string>>(cached?.days ?? {});
@@ -65,8 +82,32 @@ export function DailyCheckInCalendar() {
       method: "POST",
       body: JSON.stringify({ date: localDateString() }),
     }).catch(() => null);
-    if (response?.ok) applyResponse(await response.json().catch(() => null));
+    if (response?.ok) {
+      applyResponse(await response.json().catch(() => null));
+      // Spec: after checking in, Alira tells the patient the single next step.
+      const plan = await authedFetch("/api/alira/care-plan")
+        .then((planResponse) => (planResponse.ok ? planResponse.json() : null))
+        .catch(() => null);
+      setNextStep((plan?.next_step as NextStep) || {
+        title: "You're checked in",
+        message: "Complete today's exercises to earn your check mark on the calendar.",
+        cta: "OK",
+      });
+      setShowNextStep(true);
+    }
     setSaving(false);
+  };
+
+  const goToNextStep = async () => {
+    setShowNextStep(false);
+    const destination = NEXT_STEP_NAVIGATION[nextStep?.destination || ""];
+    if (!destination) return;
+    try {
+      const resolution = await resolveAliraNavigation(destination);
+      if (resolution.success && resolution.path) router.push(resolution.path as never);
+    } catch {
+      // Staying on Home is a safe fallback; the cards above show the same step.
+    }
   };
 
   const shownMonth = (() => {
@@ -154,6 +195,25 @@ export function DailyCheckInCalendar() {
           </View>
         </View>
       ) : null}
+
+      <Modal visible={showNextStep} transparent animationType="fade" onRequestClose={() => setShowNextStep(false)}>
+        <View style={styles.modalBackdrop}>
+          <View style={[styles.modalCard, { backgroundColor: palette.surface }]} testID="daily-checkin-next-step">
+            <View style={[styles.modalBadge, { backgroundColor: palette.soft }]}>
+              <Ionicons name="checkmark-circle" size={30} color={colors.success} />
+            </View>
+            <Text style={[styles.modalKicker, { color: palette.brand }]}>CHECKED IN - HERE'S YOUR NEXT STEP</Text>
+            <Text style={[styles.modalTitle, { color: palette.text }]}>{nextStep?.title || "You're checked in"}</Text>
+            <Text style={[styles.modalBody, { color: palette.muted }]}>{nextStep?.message || "Complete today's exercises to earn your check mark."}</Text>
+            <Pressable testID="daily-checkin-next-step-go" onPress={goToNextStep} style={styles.modalPrimary}>
+              <Text style={styles.modalPrimaryText}>{nextStep?.cta || "Let's go"}</Text>
+            </Pressable>
+            <Pressable testID="daily-checkin-next-step-later" onPress={() => setShowNextStep(false)} style={styles.modalLater}>
+              <Text style={[styles.modalLaterText, { color: palette.muted }]}>Later</Text>
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -188,4 +248,14 @@ const styles = StyleSheet.create({
   legendItem: { flexDirection: "row", alignItems: "center", gap: 6 },
   legendDot: { width: 12, height: 12, borderRadius: 6 },
   legendText: { fontSize: 12 },
+  modalBackdrop: { flex: 1, alignItems: "center", justifyContent: "center", padding: spacing.lg, backgroundColor: "rgba(10,22,16,0.6)" },
+  modalCard: { width: "100%", maxWidth: 420, borderRadius: radius.md, padding: spacing.lg, alignItems: "center", gap: spacing.xs },
+  modalBadge: { width: 56, height: 56, borderRadius: 28, alignItems: "center", justifyContent: "center", marginBottom: 2 },
+  modalKicker: { fontSize: 11, fontWeight: "900", letterSpacing: 0.4 },
+  modalTitle: { fontSize: 20, lineHeight: 26, fontWeight: "800", textAlign: "center" },
+  modalBody: { fontSize: 14, lineHeight: 21, textAlign: "center" },
+  modalPrimary: { alignSelf: "stretch", minHeight: 50, borderRadius: radius.sm, backgroundColor: colors.brandPrimary, alignItems: "center", justifyContent: "center", marginTop: spacing.sm },
+  modalPrimaryText: { color: "#FFFFFF", fontSize: 16, fontWeight: "800" },
+  modalLater: { minHeight: 40, alignItems: "center", justifyContent: "center", alignSelf: "stretch" },
+  modalLaterText: { fontSize: 14, fontWeight: "700" },
 });

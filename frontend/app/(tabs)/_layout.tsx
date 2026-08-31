@@ -1,8 +1,7 @@
 import { Tabs } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
-import { Platform, Text, View } from "react-native";
+import { Platform } from "react-native";
 import { useDisplayPreferences } from "@/src/displayPreferences";
-import { colors } from "@/src/theme";
 
 export default function TabsLayout() {
   const isWeb = Platform.OS === "web";
@@ -54,18 +53,12 @@ export default function TabsLayout() {
           tabBarButtonTestID: "tab-chat",
         }}
       />
+      {/* The Emergency FAST check stays reachable from the prominent red
+          banner on Home; it is hidden from the tab bar so the bar keeps
+          three tabs: Home, Journey, Alira. */}
       <Tabs.Screen
         name="emergency"
-        options={{
-          title: "Emergency",
-          tabBarLabel: () => <Text style={{ color: colors.error, fontSize: 11 * scale, lineHeight: 16 * scale, fontWeight: "800" }}>Emergency</Text>,
-          tabBarIcon: () => (
-            <View style={{ width: 32, height: 32, borderRadius: 16, alignItems: "center", justifyContent: "center", backgroundColor: "#FCE6E3" }}>
-              <Ionicons name="warning" size={21} color={colors.error} />
-            </View>
-          ),
-          tabBarButtonTestID: "tab-emergency-fast",
-        }}
+        options={{ href: null }}
       />
       <Tabs.Screen
         name="community"

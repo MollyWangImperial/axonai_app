@@ -213,9 +213,9 @@ def test_medal_ladder():
     rewards = compute_rewards([], [], {}, now=NOW)
     names = [medal["name"] for medal in rewards["medals"]]
     assert names == [
-        "Persistence Pro (坚持达人)",
-        "Persistence Champion (坚持冠军)",
-        "Persistence Master (坚持大神)",
+        "Persistence Pro",
+        "Persistence Champion",
+        "Persistence Master",
     ]
     assert all(medal["earned"] is False for medal in rewards["medals"])
 
