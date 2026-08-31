@@ -173,7 +173,9 @@ def test_patient_results_and_direct_plan_route_enforce_clinical_review_hold():
     assert '"clinical-review-hold"' in results
     assert 'reviewGate?.rehab_access === "blocked"' in results
     assert '"plan-clinical-review-hold"' in plan
-    assert 'data.clinical_review_gate?.rehab_access !== "allowed"' in plan
+    # Interim survey-derived starting plans pass the hold; everything else is
+    # still blocked until clinical review clears it.
+    assert '(planAccess !== "allowed" && !interimPlan)' in plan
     assert 'data.rehab_plan.length === 0' in plan
     assert '"plan-no-rehab-needed"' in plan
     assert 'testID={canViewPlan ? "results-view-plan" : "results-return-home"}' in results

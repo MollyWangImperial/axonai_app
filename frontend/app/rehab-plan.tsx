@@ -38,13 +38,13 @@ type AdaptiveCarePlan = {
     action?: string;
     dose_change_percent?: number;
     reason?: string;
-    prescriptions?: Array<{
+    prescriptions?: {
       exercise_id: string;
       sets: number;
       reps: number;
       frequency: string;
       weekly_frequency?: number;
-    }>;
+    }[];
   };
 };
 
@@ -243,7 +243,9 @@ export default function RehabPlanScreen() {
     return <View style={[styles.container, styles.center]}><Text>No plan available.</Text></View>;
   }
 
-  if (adaptiveCarePlan?.safety?.blocks_exercise || data.clinical_review_gate?.rehab_access !== "allowed" || data.rehab_plan.length === 0) {
+  const planAccess = data.clinical_review_gate?.rehab_access || "allowed";
+  const interimPlan = planAccess === "interim" && data.rehab_plan.length > 0;
+  if (adaptiveCarePlan?.safety?.blocks_exercise || (planAccess !== "allowed" && !interimPlan) || data.rehab_plan.length === 0) {
     const gate = data.clinical_review_gate;
     const adaptiveHold = Boolean(adaptiveCarePlan?.safety?.blocks_exercise);
     const awaiting = gate?.status === "awaiting_model_analysis";
@@ -293,6 +295,14 @@ export default function RehabPlanScreen() {
       <ScrollView contentContainerStyle={styles.scrollContent}>
         <View style={styles.page}>
           <DisclaimerBanner />
+        {interimPlan && (
+          <View style={styles.interimBanner} testID="plan-interim-banner">
+            <Ionicons name="time-outline" size={18} color="#6B4A0B" />
+            <Text style={styles.interimBannerText}>
+              Starting plan from your survey answers. It will be updated automatically once your movement analysis is complete.
+            </Text>
+          </View>
+        )}
           {isDemo && (
             <View style={styles.demoBanner} testID="rehab-demo-banner">
               <Ionicons name="sparkles" size={22} color="#675080" />
@@ -432,6 +442,8 @@ export default function RehabPlanScreen() {
 }
 
 const styles = StyleSheet.create({
+  interimBanner: { flexDirection: "row", alignItems: "flex-start", gap: 8, backgroundColor: "#FFF4DA", borderRadius: 12, padding: 12, marginBottom: 12 },
+  interimBannerText: { flex: 1, fontSize: 13, lineHeight: 18, color: "#6B4A0B", fontWeight: "700" },
   container: { flex: 1, backgroundColor: "#FBFCFA" },
   center: { alignItems: "center", justifyContent: "center" },
   header: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: spacing.md, paddingBottom: spacing.sm, backgroundColor: "#FFFFFF", borderBottomWidth: 1, borderBottomColor: colors.divider },

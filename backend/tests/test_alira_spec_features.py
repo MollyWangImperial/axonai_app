@@ -326,9 +326,105 @@ def test_never_assessed_activity_is_not_assessed_not_a_low_score():
     for item in metrics["activities"]:
         assert item["status"] == "not_assessed"
         assert item["change_from_baseline"] is None
+        assert item["qualitative_score"] is None
 
 
-# ---------- Frontend wiring (static) ----------
+def test_survey_only_metrics_carry_a_qualitative_weak_medium_normal_score():
+    # With no completed camera tasks there is nothing quantitative to score:
+    # each activity gets a plain weak / medium / normal band from the survey.
+    metrics = build_daily_activity_metrics([], profile(
+        affected_arm_movement="no_movement",
+        affected_hand_movement="some_finger_movement",
+        mobility_level="independent",
+    ))
+    by_name = {item["activity"]: item for item in metrics["activities"]}
+    assert by_name["Eating and drinking"]["qualitative_score"] == "weak"
+    assert by_name["Eating and drinking"]["qualitative_score_label"] == "Weak"
+    assert by_name["Grooming and self-care"]["qualitative_score"] == "medium"
+    assert by_name["Moving around"]["qualitative_score"] == "normal"
+    assert metrics["qualitative_scores"] == ["weak", "medium", "normal"]
+    # A quantitative 0-100 score is always present too, calculated from the
+    # survey when no camera task has been completed.
+    assert by_name["Eating and drinking"]["score"] == 25
+    assert by_name["Eating and drinking"]["score_source"] == "survey"
+    assert by_name["Grooming and self-care"]["score"] == 65
+    assert by_name["Moving around"]["score"] == 95
+    assert all(item["score_scale"] == "0_to_100" for item in metrics["activities"])
+
+
+def test_survey_interim_rehab_plan_always_gives_a_starting_plan():
+    plan = server.survey_interim_rehab_plan({
+        "sitting_ability": "independent",
+        "affected_arm_movement": "help_only",
+        "affected_hand_movement": "very_little_movement",
+        "mobility_level": "cane",
+    })
+
+    assert plan, "a survey-derived starting plan is expected"
+    ids = {exercise.id for exercise in plan}
+    assert len(ids) >= 2
+    assert all("Starting plan from your survey answers" in (exercise.selection_reason or "") for exercise in plan)
+
+
+def test_interim_plan_surfaces_instead_of_the_waiting_for_review_dead_end():
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[2]
+    server_source = (root / "backend" / "server.py").read_text(encoding="utf-8")
+    rehab_plan_screen = (root / "frontend" / "app" / "rehab-plan.tsx").read_text(encoding="utf-8")
+    movement_map = (root / "frontend" / "app" / "movement-map.tsx").read_text(encoding="utf-8")
+    results = (root / "frontend" / "app" / "results.tsx").read_text(encoding="utf-8")
+    home = (root / "frontend" / "app" / "(tabs)" / "index.tsx").read_text(encoding="utf-8")
+
+    # While the movement analysis processes, a survey-derived starting plan is
+    # issued (rehab_access "interim") and replaced automatically on completion.
+    assert '"rehab_access": "interim"' in server_source
+    assert '"rehab_plan_source": "survey_interim"' in server_source
+    assert 'in ("allowed", "interim")' in server_source
+    assert 'testID="plan-interim-banner"' in rehab_plan_screen
+    assert 'reviewGate?.rehab_access === "interim"' in movement_map
+    assert '"Your starting plan is ready"' in movement_map
+    assert 'reviewGate?.rehab_access === "interim"' in results
+
+    # The Home goal is derived from the survey's functional problems.
+    assert "deriveFunctionalGoal" in home
+    assert "eating and dressing with your arm" in home
+    assert "grooming and small hand tasks" in home
+    assert "moving around more safely" in home
+
+
+def test_snapshot_and_report_screens_show_qualitative_scores_and_survey_highlights():
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[2]
+    panel = (root / "frontend" / "src" / "components" / "DailyActivitiesPanel.tsx").read_text(encoding="utf-8")
+    report = (root / "frontend" / "app" / "survey-report.tsx").read_text(encoding="utf-8")
+    results = (root / "frontend" / "app" / "results.tsx").read_text(encoding="utf-8")
+
+    # "Daily life at a glance": one card per activity with a four-band help
+    # meter and a legend, plus the honest not-assessed handling.
+    assert "Daily life at a glance" in panel
+    assert "A simple view of where you may need help." in panel
+    for label in ("Full help", "A lot of help", "A little help", "Independent"):
+        assert f'label: "{label}"' in panel
+    assert 'testID="daily-activities-legend"' in panel
+    assert "daily-activity-card-" in panel
+    assert "daily-activity-meter-" in panel
+    assert 'testID="daily-activities-source-badge"' in panel
+    assert "Not assessed appears separately" in panel
+    assert "QUALITATIVE_TO_BAND" in panel  # weak/medium/normal folds into the bands
+    assert "What this means for daily life" not in panel
+
+    # The assessment report's first page reuses the same board.
+    assert "DailyActivitiesBoard" in report
+    assert "DailyActivitiesBoard activities={report.daily_activities.activities}" in report
+
+    # The movement-snapshot anatomy shades potentially weak areas from the
+    # survey answers while no observed finding covers that region.
+    assert 'authedFetch("/api/assessment/survey-report")' in results
+    assert "anatomy-survey-highlight-" in results
+    assert 'testID="anatomy-survey-highlights-note"' in results
+    assert 'pin.domain === "upper_limb" && hasShoulderFinding' in results
+    assert 'pin.severity === "needs_attention" || pin.severity === "building_strength"' in results
+
 
 def test_safety_strip_and_rewards_and_preview_are_wired():
     exercise = (ROOT / "frontend" / "app" / "exercise.tsx").read_text(encoding="utf-8")

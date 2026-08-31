@@ -6,6 +6,7 @@ import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 
 import { authedFetch } from "@/src/auth";
+import { ActivityMetric, DailyActivitiesBoard } from "@/src/components/DailyActivitiesPanel";
 import { getAgeAnatomyPresentation, loadPatientAgeBand } from "@/src/ageAnatomy";
 import { getScreenCache, setScreenCache } from "@/src/screenCache";
 import { colors, radius, spacing } from "@/src/theme";
@@ -16,12 +17,6 @@ import { colors, radius, spacing } from "@/src/theme";
 // pin-pointed problems, page 3 the rehab plan. Viewing it hands the Home
 // next step over to the rehab plan.
 
-type ActivityMetric = {
-  activity: string;
-  status: "complete" | "estimated" | "not_assessed";
-  observed?: string | null;
-  reported_assistance_level?: string | null;
-};
 
 type FunctionalPin = {
   domain: "upper_limb" | "hand" | "lower_limb";
@@ -52,28 +47,13 @@ type SurveyReport = {
   };
 };
 
-const ASSISTANCE_LABELS: Record<string, string> = {
-  unable: "Unable / not safely attempted",
-  maximum_assistance: "Maximum assistance",
-  moderate_assistance: "Moderate assistance",
-  minimum_assistance: "Minimum assistance",
-  supervision_only: "Supervision only",
-  fully_independent: "Fully independent",
-};
-
-const STATUS_PRESENTATION = {
-  complete: { label: "Observed", color: "#1F7047", background: "#E2F1E7", icon: "checkmark-circle" as const },
-  estimated: { label: "Estimated from your answers", color: "#6B4A0B", background: "#FFF4DA", icon: "ellipse-outline" as const },
-  not_assessed: { label: "Not assessed", color: "#5D6962", background: "#EAEDEA", icon: "remove-circle-outline" as const },
-};
-
 const SEVERITY_PRESENTATION = {
   needs_attention: { color: "#F05F4C", soft: "#FCE7E3", label: "Needs attention", icon: "alert" as const },
   building_strength: { color: "#DEA128", soft: "#FFF3D8", label: "Building strength", icon: "barbell-outline" as const },
   moving_well: { color: "#3E8256", soft: "#E5F1E8", label: "Moving well", icon: "checkmark" as const },
 };
 
-const PAGE_TITLES = ["Daily activities", "Where the problems are", "Your rehab plan"];
+const PAGE_TITLES = ["Daily life", "Where the problems are", "Your rehab plan"];
 const CACHE_KEY = "survey-report";
 
 export default function SurveyReportScreen() {
@@ -173,29 +153,7 @@ export default function SurveyReportScreen() {
 
         {report && page === 0 && (
           <View testID="survey-report-page-activities">
-            <Text style={styles.pageTitle}>What this means for daily life</Text>
-            <Text style={styles.pageSub}>
-              Your scores for everyday activities and the help needed. Anything not assessed stays honestly blank - it is never turned into a low score.
-            </Text>
-            {report.daily_activities.activities.map((item) => {
-              const presentation = STATUS_PRESENTATION[item.status] ?? STATUS_PRESENTATION.not_assessed;
-              const detail = item.observed
-                || (item.reported_assistance_level
-                  ? `Reported level of help: ${ASSISTANCE_LABELS[item.reported_assistance_level] || item.reported_assistance_level}`
-                  : "No observation or report yet.");
-              return (
-                <View key={item.activity} style={styles.activityRow}>
-                  <View style={styles.activityTop}>
-                    <Text style={styles.activityName}>{item.activity}</Text>
-                    <View style={[styles.badge, { backgroundColor: presentation.background }]}>
-                      <Ionicons name={presentation.icon} size={13} color={presentation.color} />
-                      <Text style={[styles.badgeText, { color: presentation.color }]}>{presentation.label}</Text>
-                    </View>
-                  </View>
-                  <Text style={styles.activityDetail}>{detail}</Text>
-                </View>
-              );
-            })}
+            <DailyActivitiesBoard activities={report.daily_activities.activities} />
           </View>
         )}
 
@@ -328,6 +286,7 @@ const styles = StyleSheet.create({
   pageSub: { fontSize: 14, lineHeight: 20, color: colors.onSurfaceSecondary, marginTop: spacing.sm, marginBottom: spacing.md },
   activityRow: { borderTopWidth: 1, borderTopColor: "#ECEFEC", paddingVertical: spacing.sm, gap: 4 },
   activityTop: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: spacing.sm },
+  badgeGroup: { flexDirection: "row", alignItems: "center", gap: 6, flexWrap: "wrap", justifyContent: "flex-end" },
   activityName: { fontSize: 15, fontWeight: "800", color: colors.onSurface, flexShrink: 1 },
   badge: { flexDirection: "row", alignItems: "center", gap: 4, paddingHorizontal: 8, paddingVertical: 4, borderRadius: radius.pill },
   badgeText: { fontSize: 11, fontWeight: "800" },

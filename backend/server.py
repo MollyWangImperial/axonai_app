@@ -1633,6 +1633,50 @@ def _clinical_grade(patient_parameters: Optional[Dict[str, Any]], *keys: str) ->
     return int(match.group(1)) if match else None
 
 
+def survey_interim_rehab_plan(profile: Optional[Dict[str, Any]] = None) -> List[RehabExercise]:
+    """A starting rehab plan derived from the survey alone.
+
+    The patient always has a plan: while the movement and musculoskeletal
+    analysis is still processing (or a task such as the walking video is not
+    recorded yet), gentle survey-derived exercises for the affected domains
+    are issued, and the plan is replaced automatically once observed findings
+    arrive.
+    """
+    profile = dict(profile or {})
+    sitting = str(profile.get("sitting_ability") or "").lower()
+    arm = str(profile.get("affected_arm_movement") or "").lower()
+    hand = str(profile.get("affected_hand_movement") or "").lower()
+    mobility = str(profile.get("mobility_level") or "").lower()
+    issues: List[FunctionalIssue] = []
+    if sitting == "independent" and arm in {"most_movements", "some_movement", "help_only", "not_sure"}:
+        issues.append(FunctionalIssue(
+            code="REACH_INCOMPLETE",
+            label="Reaching may need support (reported in your survey)",
+            description="Derived from your movement-readiness answers, not a camera observation.",
+            source="survey", severity="mild", related_task="T1",
+        ))
+    if sitting == "independent" and hand in {"some_finger_movement", "very_little_movement", "not_sure"}:
+        issues.append(FunctionalIssue(
+            code="HAND_OPENING",
+            label="Hand opening may need support (reported in your survey)",
+            description="Derived from your movement-readiness answers, not a camera observation.",
+            source="survey", severity="mild", related_task="H1",
+        ))
+    if mobility in {"independent", "cane", "walker"}:
+        issues.append(FunctionalIssue(
+            code="SIT_TO_STAND_IMPAIRED",
+            label="Standing practice to support walking (reported in your survey)",
+            description="Derived from your movement-readiness answers, not a camera observation.",
+            source="survey", severity="mild", related_task="L2",
+        ))
+    plan = build_rehab_plan(issues, profile)
+    for exercise in plan:
+        exercise.selection_reason = (
+            "Starting plan from your survey answers - it is updated automatically once your movement analysis is complete."
+        )
+    return plan
+
+
 def build_rehab_plan(
     issues: List[FunctionalIssue],
     patient_parameters: Optional[Dict[str, Any]] = None,
@@ -2603,12 +2647,33 @@ async def submit_assessment(payload: AssessmentSubmit, request: Request):
         trusted_model_outputs,
         expected_task_count,
     )
-    plan = build_rehab_plan(issues, patient_parameters) if clinical_review_gate.get("rehab_access") == "allowed" else []
+    if clinical_review_gate.get("rehab_access") == "allowed":
+        plan = build_rehab_plan(issues, patient_parameters)
+    elif clinical_review_gate.get("status") == "awaiting_model_analysis":
+        # The patient always has a plan: a survey-derived starting plan is
+        # issued while the analysis processes, then replaced by the observed
+        # plan when the validated results land.
+        plan = survey_interim_rehab_plan({**(user.get("profile") or {}), **(patient_parameters or {})})
+        if plan:
+            clinical_review_gate = {
+                **clinical_review_gate,
+                "rehab_access": "interim",
+                "rehab_plan_source": "survey_interim",
+                "interim_plan_available": True,
+                "patient_title": "Your starting plan is ready",
+                "patient_message": (
+                    "A starting plan built from your survey answers is active now. It will be updated "
+                    "automatically once the movement and musculoskeletal analysis is complete."
+                ),
+                "next_step": "Begin the gentle starting plan. Alira refreshes it when your analysis finishes.",
+            }
+    else:
+        plan = []
     previous_assessments = await _care_assessments_for_user(user["id"])
     latest_previous = max(previous_assessments, key=lambda item: item.get("created_at", ""), default=None)
     if access.get("trigger") == "new_functional_issue":
         plan = _merge_targeted_rehab_plan(plan, latest_previous)
-    if plan:
+    if plan and clinical_review_gate.get("rehab_access") == "allowed":
         await consume_credits(user["id"], "rehab_plan")
     assessment = Assessment(
         id=assessment_id,
@@ -2836,7 +2901,7 @@ async def get_patient_assessment_summary(assessment_id: str, request: Request):
             doc.get("musculoskeletal_research_stage") or {},
             doc.get("model_analysis") or {},
         ),
-        "rehab_plan_ready": bool(doc.get("rehab_plan")) and (doc.get("clinical_review_gate") or {}).get("rehab_access", "allowed") == "allowed",
+        "rehab_plan_ready": bool(doc.get("rehab_plan")) and (doc.get("clinical_review_gate") or {}).get("rehab_access", "allowed") in ("allowed", "interim"),
         "clinical_review_gate": doc.get("clinical_review_gate") or {},
     }
 
@@ -3180,7 +3245,23 @@ async def save_model_results(assessment_id: str, payload: ModelResultSubmit, req
     )
     plan = build_rehab_plan(issues, patient_parameters)
     if clinical_review_gate.get("rehab_access") != "allowed":
-        plan = []
+        if clinical_review_gate.get("status") == "awaiting_model_analysis":
+            plan = survey_interim_rehab_plan(patient_parameters)
+            if plan:
+                clinical_review_gate = {
+                    **clinical_review_gate,
+                    "rehab_access": "interim",
+                    "rehab_plan_source": "survey_interim",
+                    "interim_plan_available": True,
+                    "patient_title": "Your starting plan is ready",
+                    "patient_message": (
+                        "A starting plan built from your survey answers is active now. It will be updated "
+                        "automatically once the movement and musculoskeletal analysis is complete."
+                    ),
+                    "next_step": "Begin the gentle starting plan. Alira refreshes it when your analysis finishes.",
+                }
+        else:
+            plan = []
     expected_summary_domains = _expected_domains_for_tasks(package_id, assigned_task_ids)
     body_function_summary = patient_body_function_summary(
         task_results,

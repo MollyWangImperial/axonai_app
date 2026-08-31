@@ -59,7 +59,28 @@ type HomeScreenCache = {
   greetName: string;
   carePlan: AliraCarePlan | null;
   dailyGoal: string;
+  ownGoal: string;
 };
+
+// The Home goal is derived from the functional problems in the survey: an
+// affected arm points at arm-led daily activities, and the same for the hand
+// and leg. The patient's own words are kept alongside.
+function deriveFunctionalGoal(profile: any): string {
+  const arm = String(profile?.affected_arm_movement || "").toLowerCase();
+  const hand = String(profile?.affected_hand_movement || "").toLowerCase();
+  const mobility = String(profile?.mobility_level || "").toLowerCase();
+  const goals: string[] = [];
+  if (["some_movement", "help_only", "no_movement", "not_sure"].includes(arm)) goals.push("eating and dressing with your arm");
+  if (["some_finger_movement", "very_little_movement", "no_movement", "not_sure"].includes(hand)) goals.push("grooming and small hand tasks");
+  if (["person_assist", "wheelchair", "unable_walk", "not_cleared", "unsure"].includes(mobility)) goals.push("moving around more safely");
+  if (goals.length === 0) return "";
+  const joined = goals.length === 1
+    ? goals[0]
+    : goals.length === 2
+      ? `${goals[0]} and ${goals[1]}`
+      : `${goals[0]}, ${goals[1]}, and ${goals[2]}`;
+  return `Manage ${joined} with less help`;
+}
 
 export default function HomeScreen() {
   const insets = useSafeAreaInsets();
@@ -72,6 +93,7 @@ export default function HomeScreen() {
   const [greetName, setGreetName] = useState(cached?.greetName ?? "");
   const [carePlan, setCarePlan] = useState<AliraCarePlan | null>(cached?.carePlan ?? null);
   const [dailyGoal, setDailyGoal] = useState(cached?.dailyGoal ?? "");
+  const [ownGoal, setOwnGoal] = useState(cached?.ownGoal ?? "");
   const [loading, setLoading] = useState(!cached);
 
   const load = useCallback(async () => {
@@ -91,14 +113,16 @@ export default function HomeScreen() {
     ]);
     const nextGreetName = preferredName || user?.name?.split(" ")[0] || "there";
     const nextCarePlan = carePlan || null;
-    // The patient's own words from the initial survey ("hold my grandchild",
-    // "eat with a fork") become the daily-activity goal shown at the top.
-    const nextDailyGoal = String(onboarding?.profile?.primary_goal || "").trim();
+    // The goal is derived from the survey's functional problems (arm, hand,
+    // leg), with the patient's own words ("hold my grandchild") kept alongside.
+    const nextOwnGoal = String(onboarding?.profile?.primary_goal || "").trim();
+    const nextDailyGoal = deriveFunctionalGoal(onboarding?.profile) || nextOwnGoal;
     setHistory(assessments);
     setGreetName(nextGreetName);
     setCarePlan(nextCarePlan);
     setDailyGoal(nextDailyGoal);
-    setScreenCache<HomeScreenCache>("home", { history: assessments, greetName: nextGreetName, carePlan: nextCarePlan, dailyGoal: nextDailyGoal });
+    setOwnGoal(nextOwnGoal);
+    setScreenCache<HomeScreenCache>("home", { history: assessments, greetName: nextGreetName, carePlan: nextCarePlan, dailyGoal: nextDailyGoal, ownGoal: nextOwnGoal });
     setLoading(false);
   }, []);
 
@@ -183,7 +207,9 @@ export default function HomeScreen() {
                 <Text style={styles.goalEyebrow}>YOUR GOAL</Text>
                 <Text style={[styles.goalText, { color: palette.text }]}>{dailyGoal}</Text>
                 <Text style={[styles.goalHint, { color: palette.muted }]}>
-                  Every session and daily activity works toward this.
+                  {ownGoal && ownGoal !== dailyGoal
+                    ? `Includes your own goal: "${ownGoal}". Every session and daily activity works toward this.`
+                    : "Every session and daily activity works toward this."}
                 </Text>
               </View>
             </View>

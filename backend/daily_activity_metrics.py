@@ -47,6 +47,56 @@ _HAND_TO_ASSISTANCE = {
 }
 
 
+# Qualitative score bands (weak / medium / normal). With no completed camera
+# tasks there is nothing quantitative to score, so the patient sees a plain
+# qualitative band derived from the reported level of help; observed rows map
+# their observation onto the same three bands.
+QUALITATIVE_SCORES = ("weak", "medium", "normal")
+QUALITATIVE_SCORE_LABELS = {"weak": "Weak", "medium": "Medium", "normal": "Normal"}
+_ASSISTANCE_TO_QUALITATIVE = {
+    "unable": "weak",
+    "maximum_assistance": "weak",
+    "moderate_assistance": "medium",
+    "minimum_assistance": "medium",
+    "supervision_only": "normal",
+    "fully_independent": "normal",
+}
+
+
+# Quantitative 0-100 score. Even before any camera assessment, the survey
+# answers produce a number, so the patient always sees a score; observed task
+# metrics replace the survey estimate once tasks are completed.
+_ASSISTANCE_TO_SCORE = {
+    "unable": 10,
+    "maximum_assistance": 25,
+    "moderate_assistance": 45,
+    "minimum_assistance": 65,
+    "supervision_only": 80,
+    "fully_independent": 95,
+}
+
+
+def _quantitative_score(observed_ratio, reported_level):
+    if observed_ratio is not None:
+        return max(0, min(100, int(round(float(observed_ratio) * 100))))
+    if reported_level:
+        return _ASSISTANCE_TO_SCORE.get(reported_level)
+    return None
+
+
+def _qualitative_score(observed, reported_level):
+    if observed:
+        lowered = observed.lower()
+        if "difficult to complete" in lowered:
+            return "weak"
+        if "part" in lowered or "some difficulty" in lowered:
+            return "medium"
+        return "normal"
+    if reported_level:
+        return _ASSISTANCE_TO_QUALITATIVE.get(reported_level)
+    return None
+
+
 def _observed_upper(row: Mapping[str, Any]) -> Optional[str]:
     reach = row.get("reach_completion")
     if reach is None:
@@ -115,6 +165,7 @@ def build_daily_activity_metrics(
         observed: Optional[str],
         reported_level: Optional[str],
         change: Optional[str],
+        observed_ratio: Optional[float] = None,
     ) -> Dict[str, Any]:
         if observed:
             status = STATUS_COMPLETE
@@ -122,11 +173,18 @@ def build_daily_activity_metrics(
             status = STATUS_ESTIMATED
         else:
             status = STATUS_NOT_ASSESSED
+        qualitative = _qualitative_score(observed, reported_level)
+        score = _quantitative_score(observed_ratio if observed else None, reported_level)
         return {
             "activity": name,
             "domain": domain,
             "status": status,
             "observed": observed,
+            "qualitative_score": qualitative,
+            "qualitative_score_label": QUALITATIVE_SCORE_LABELS.get(qualitative) if qualitative else None,
+            "score": score,
+            "score_scale": "0_to_100",
+            "score_source": "observed" if (observed and observed_ratio is not None) else ("survey" if score is not None else None),
             "reported_assistance_level": reported_level,
             "change_from_baseline": change if status == STATUS_COMPLETE else None,
             "source": (
@@ -145,17 +203,23 @@ def build_daily_activity_metrics(
             "Eating and drinking", "upper_limb",
             upper_observed, arm_reported,
             _change_text(latest.get("reach_completion"), baseline.get("reach_completion")),
+            observed_ratio=latest.get("reach_completion"),
         ),
         activity(
             "Dressing", "upper_limb",
             upper_observed if upper_observed and hand_observed else None,
             arm_reported or hand_reported,
             _change_text(latest.get("reach_completion"), baseline.get("reach_completion")),
+            observed_ratio=latest.get("reach_completion"),
         ),
         activity(
             "Grooming and self-care", "hand",
             hand_observed, hand_reported,
             _change_text(latest.get("hand_opening"), baseline.get("hand_opening")),
+            observed_ratio=max(
+                (value for value in (latest.get("hand_opening"), latest.get("pinch_grip")) if value is not None),
+                default=None,
+            ),
         ),
         activity(
             "Moving around", "lower_limb",
@@ -167,6 +231,7 @@ def build_daily_activity_metrics(
     return {
         "activities": activities,
         "status_labels": list(STATUS_LABELS),
+        "qualitative_scores": list(QUALITATIVE_SCORES),
         "principles": {
             "no_score_when_not_assessed": True,
             "no_pass_fail_thresholds": True,

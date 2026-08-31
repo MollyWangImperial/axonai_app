@@ -82,7 +82,9 @@ export default function MovementMapScreen() {
   const activation = data?.insights.activation_profile.find((item) => item.domain === selected);
   const ratio = activation?.template_mean ? activation.mean / activation.template_mean : null;
   const reviewGate = data?.clinical_review_gate;
-  const canViewPlan = data?.rehab_plan_ready === true && reviewGate?.rehab_access === "allowed";
+  const planAccessAllowed = reviewGate?.rehab_access === "allowed" || reviewGate?.rehab_access === "interim";
+  const interimPlan = reviewGate?.rehab_access === "interim";
+  const canViewPlan = data?.rehab_plan_ready === true && planAccessAllowed;
   const noRehabNeeded = reviewGate?.rehab_access === "not_needed" || reviewGate?.status === "no_rehab_needed";
   const ageBand = assessment?.patient_parameters?.age_band || profileAgeBand || (isDemo ? "70-79" : null);
   const ageAnatomy = getAgeAnatomyPresentation(ageBand);
@@ -238,11 +240,11 @@ export default function MovementMapScreen() {
 
           <View style={styles.planSection}>
             <Text style={styles.planEyebrow}>NEXT STEP</Text>
-            <Text style={styles.planTitle}>{canViewPlan ? "Your rehab plan is ready" : noRehabNeeded ? "No rehab plan is needed" : "Your plan is waiting for review"}</Text>
-            <Text style={styles.planText}>{canViewPlan ? "Your plan focuses on the movement areas that need support." : reviewGate?.patient_message}</Text>
+            <Text style={styles.planTitle}>{canViewPlan ? (interimPlan ? "Your starting plan is ready" : "Your rehab plan is ready") : noRehabNeeded ? "No rehab plan is needed" : "Your plan is waiting for review"}</Text>
+            <Text style={styles.planText}>{canViewPlan ? (interimPlan ? "Built from your survey answers while your movement analysis completes - it updates automatically." : "Your plan focuses on the movement areas that need support.") : reviewGate?.patient_message}</Text>
             <Pressable onPress={openPlan} style={styles.planButton} testID={canViewPlan ? "movement-map-view-plan" : "movement-map-return-home"}>
               <Ionicons name={canViewPlan ? "clipboard-outline" : "home-outline"} size={23} color="#FFFFFF" />
-              <Text style={styles.planButtonText}>{canViewPlan ? "View your rehab plan" : "Return home"}</Text>
+              <Text style={styles.planButtonText}>{canViewPlan ? (interimPlan ? "View your starting plan" : "View your rehab plan") : "Return home"}</Text>
             </Pressable>
           </View>
         </View>

@@ -635,8 +635,17 @@ def test_completed_initial_collection_returns_domain_metrics_without_a_normal_re
         )
         assert submitted.status_code == 200
         assessment = submitted.json()
-        assert assessment["rehab_plan"] == []
+        # New policy: the patient always has a plan. While the analysis is
+        # processing, a survey-derived starting plan is issued and marked
+        # "interim"; the observed plan replaces it automatically.
         assert assessment["clinical_review_gate"]["status"] == "awaiting_model_analysis"
+        assert assessment["clinical_review_gate"]["rehab_access"] == "interim"
+        assert assessment["clinical_review_gate"]["rehab_plan_source"] == "survey_interim"
+        assert assessment["rehab_plan"], "a survey-derived starting plan is expected"
+        assert all(
+            "Starting plan from your survey answers" in (exercise.get("selection_reason") or "")
+            for exercise in assessment["rehab_plan"]
+        )
         assert assessment["body_function_summary"]["overall_status"] == "analysis_pending"
         assert assessment["metrics"]["reach_completion"] == 1.0
         assert assessment["metrics"]["domains"]["hand"]["step_completion_percent"] == 100
@@ -647,7 +656,8 @@ def test_completed_initial_collection_returns_domain_metrics_without_a_normal_re
         ]
         assert all(item["step_completion_percent"] == 100 for item in summary["body_function_summary"]["domains"])
         assert summary["functional_metrics"]["domains"]["lower_limb"]["step_completion_percent"] == 100
-        assert summary["rehab_plan_ready"] is False
+        # The interim starting plan is viewable right away.
+        assert summary["rehab_plan_ready"] is True
 
 
 def test_screened_initial_collection_does_not_report_unassigned_walking(monkeypatch):

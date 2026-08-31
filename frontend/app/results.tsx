@@ -6,6 +6,7 @@ import { useLocalSearchParams, useRouter } from "expo-router";
 import * as Haptics from "expo-haptics";
 
 import { Assessment, fetchAssessment, fetchPatientAssessmentSummary, FunctionalIssue, PatientAssessmentSummary } from "@/src/api";
+import { authedFetch } from "@/src/auth";
 import { DailyActivitiesPanel } from "@/src/components/DailyActivitiesPanel";
 import { getScreenCache, setScreenCache } from "@/src/screenCache";
 import { getAgeAnatomyPresentation, loadPatientAgeBand } from "@/src/ageAnatomy";
@@ -73,6 +74,19 @@ function toPatientProblem(issue: FunctionalIssue, affectedSide: "left" | "right"
   };
 }
 
+type SurveyPin = {
+  domain: "upper_limb" | "hand" | "lower_limb";
+  title: string;
+  affected_side: "left" | "right";
+  severity: "needs_attention" | "building_strength" | "moving_well";
+  problem: string;
+};
+
+const SURVEY_HIGHLIGHT_PRESENTATION = {
+  needs_attention: { border: "#F05F4C", fill: "rgba(240,95,76,0.28)" },
+  building_strength: { border: "#DEA128", fill: "rgba(222,161,40,0.24)" },
+} as const;
+
 export default function ResultsScreen() {
   const insets = useSafeAreaInsets();
   const { width } = useWindowDimensions();
@@ -84,6 +98,7 @@ export default function ResultsScreen() {
   const [loading, setLoading] = useState(!cachedResult);
   const [showDetails, setShowDetails] = useState(false);
   const [anatomyZoom, setAnatomyZoom] = useState(1);
+  const [surveyPins, setSurveyPins] = useState<SurveyPin[]>(getScreenCache<SurveyPin[]>("survey-problems") ?? []);
   const isDemo = id === DEMO_ASSESSMENT_ID;
   const [profileAgeBand, setProfileAgeBand] = useState<string | null>(null);
 
@@ -94,6 +109,24 @@ export default function ResultsScreen() {
     });
     return () => { active = false; };
   }, []);
+
+  useEffect(() => {
+    // Survey-based weakness/spasticity highlights: while nothing has been
+    // observed for a region, the anatomy shades areas the survey answers mark
+    // as potentially weak, so the snapshot is never an unexplained blank.
+    if (isDemo) return;
+    let cancelled = false;
+    void authedFetch("/api/assessment/survey-report")
+      .then(async (response) => (response.ok ? response.json() : null))
+      .then((body) => {
+        if (cancelled || !body) return;
+        const pins = (body?.functional_problems?.pins || []) as SurveyPin[];
+        setSurveyPins(pins);
+        setScreenCache<SurveyPin[]>("survey-problems", pins);
+      })
+      .catch(() => null);
+    return () => { cancelled = true; };
+  }, [isDemo]);
 
   useEffect(() => {
     let cancelled = false;
@@ -134,7 +167,8 @@ export default function ResultsScreen() {
   const awaitingAnalysis = reviewGate?.status === "awaiting_model_analysis";
   const snapshotDecision = data?.movement_snapshot_decision || assessment?.movement_snapshot_decision;
   const findingsUnavailable = !assessment && !isDemo && !snapshotDecision;
-  const canViewPlan = data?.rehab_plan_ready === true && reviewGate?.rehab_access === "allowed";
+  const planAccessAllowed = reviewGate?.rehab_access === "allowed" || reviewGate?.rehab_access === "interim";
+  const canViewPlan = data?.rehab_plan_ready === true && planAccessAllowed;
   const affectedSide = assessment?.affected_side?.toLowerCase() === "left" ? "left" : "right";
   const topObservation = data?.insights.observations[0];
   const isWide = width >= 820;
@@ -152,6 +186,13 @@ export default function ResultsScreen() {
   const hasShoulderFinding = snapshotDecision
     ? Boolean(snapshotDecision.anatomy_marker.visible && snapshotDecision.anatomy_marker.region?.endsWith("_shoulder"))
     : primaryProblem?.icon === "body-outline";
+
+  // Only potentially weak areas are shaded, and an observed shoulder finding
+  // replaces the survey shading for that region.
+  const surveyHighlights = surveyPins.filter((pin) =>
+    (pin.severity === "needs_attention" || pin.severity === "building_strength")
+    && !(pin.domain === "upper_limb" && hasShoulderFinding),
+  );
 
   const mainInsight = findingsUnavailable
       ? { eyebrow: "RESULT UNAVAILABLE", title: "We could not load this finding", text: "Please refresh the page. Missing analysis is not treated as normal movement.", tone: "pending" as const }
@@ -269,6 +310,28 @@ export default function ResultsScreen() {
                       <View style={styles.markerCore} />
                     </Pressable>
                   )}
+                  {surveyHighlights.map((pin) => {
+                    const x = pin.domain === "upper_limb" ? ageAnatomy.shoulderX : pin.domain === "hand" ? ageAnatomy.handX : ageAnatomy.lowerLimbX;
+                    const y = pin.domain === "upper_limb" ? ageAnatomy.shoulderY : pin.domain === "hand" ? ageAnatomy.handY : ageAnatomy.lowerLimbY;
+                    const presentation = SURVEY_HIGHLIGHT_PRESENTATION[pin.severity as keyof typeof SURVEY_HIGHLIGHT_PRESENTATION];
+                    if (!presentation) return null;
+                    return (
+                      <View
+                        key={pin.domain}
+                        testID={`anatomy-survey-highlight-${pin.domain}`}
+                        pointerEvents="none"
+                        style={[
+                          styles.surveyHighlight,
+                          {
+                            top: `${y}%` as `${number}%`,
+                            left: `${affectedSide === "right" ? x : 100 - x}%` as `${number}%`,
+                            borderColor: presentation.border,
+                            backgroundColor: presentation.fill,
+                          },
+                        ]}
+                      />
+                    );
+                  })}
                 </View>
 
                 {hasShoulderFinding && (
@@ -290,6 +353,11 @@ export default function ResultsScreen() {
                   </Pressable>
                 </View>
               </View>
+              {surveyHighlights.length > 0 && (
+                <Text style={styles.surveyHighlightNote} testID="anatomy-survey-highlights-note">
+                  Shaded areas are potentially weak or tight based on your survey answers. Completed camera tasks refine them into observed findings.
+                </Text>
+              )}
             </View>
 
             <View style={[styles.insightPane, isWide && styles.insightPaneWide]}>
@@ -403,6 +471,8 @@ const styles = StyleSheet.create({
   anatomyImage: { ...StyleSheet.absoluteFillObject, width: "100%", height: "100%" },
   bodyMarker: { position: "absolute", width: 68, height: 68, marginTop: -34, marginLeft: -34, borderRadius: 34, borderWidth: 2, borderColor: "#F26E5A", backgroundColor: "rgba(241,108,90,0.24)", alignItems: "center", justifyContent: "center", shadowColor: "#F06B58", shadowOpacity: 0.22, shadowRadius: 10, shadowOffset: { width: 0, height: 0 } },
   markerCore: { width: 16, height: 16, borderRadius: 8, backgroundColor: "#F06B58", borderWidth: 3, borderColor: "#FFFFFF" },
+  surveyHighlight: { position: "absolute", width: 56, height: 56, marginLeft: -28, marginTop: -28, borderRadius: 28, borderWidth: 2, zIndex: 2 },
+  surveyHighlightNote: { marginTop: spacing.sm, paddingHorizontal: spacing.sm, fontSize: 12, lineHeight: 17, color: "#5D6962", fontWeight: "600" },
   anatomyFindingLabel: { position: "absolute", top: spacing.sm, right: spacing.sm, minHeight: 36, paddingHorizontal: spacing.sm, borderRadius: radius.pill, backgroundColor: "rgba(255,254,251,0.96)", borderWidth: 1, borderColor: "#F06B58", flexDirection: "row", alignItems: "center" },
   anatomyFindingLabelWide: { top: "18%", right: spacing.lg },
   anatomyFindingDot: { width: 9, height: 9, borderRadius: 5, backgroundColor: "#F06B58" },
