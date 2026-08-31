@@ -24,9 +24,12 @@ def test_patient_tabs_are_home_journey_and_alira_only():
 def test_home_launches_standardized_initial_assessment():
     home = read("frontend/app/(tabs)/index.tsx")
     assert '"Start Initial Assessment"' in home
-    assert 'mode: isInitialAssessment ? "initial" : "followup"' in home
-    assert 'package: selectedPackage || "initial"' in home
-    assert "selects suitable guided arm, hand, and walking observations" in home
+    assert 'carePlanAssessment?.task_ids' in home
+    assert 'carePlanAssessment?.task_ids?.includes("L6")' in home
+    assert '"Selected if safe"' in home
+    assert '"Not assigned"' in home
+    assert 'authedFetch("/api/alira/care-plan")' in home
+    assert '"Alira selected suitable tasks from your readiness answers."' in home
     assert 'pathname: "/session-check"' in home
 
 
@@ -34,11 +37,10 @@ def test_home_becomes_next_assessment_after_initial_completion():
     home = read("frontend/app/(tabs)/index.tsx")
     journey = read("frontend/app/(tabs)/journey.tsx")
     assert 'history.some((item) => item.assessment_package === "initial")' in home
-    assert '"Start Recommended Assessment"' in home
-    assert '"Assessment Not Due Yet"' in home
-    assert "!isInitialAssessment && !followUpDue" in home
-    assert 'mode: isInitialAssessment ? "initial" : "followup"' in home
-    assert 'testID="home-view-latest-results"' in home
+    assert "followUpDue" in home
+    assert 'testID: "home-assessment-action"' in home
+    assert 'testID="home-see-full-progress"' in home
+    assert "startNextSession" in home
     assert 'testID="assessment-history"' in journey
     assert 'item.id === initialAssessmentId ? "Initial Assessment" : "Movement check-in"' in journey
     assert 'return "No rehab plan recommended"' in journey

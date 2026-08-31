@@ -99,10 +99,7 @@ def test_home_screen_wires_the_calendar_and_exercise_completion_earns_the_mark()
     root = Path(__file__).resolve().parents[2]
     home = (root / "frontend" / "app" / "(tabs)" / "index.tsx").read_text(encoding="utf-8")
     exercise = (root / "frontend" / "app" / "exercise.tsx").read_text(encoding="utf-8")
-    card = (root / "frontend" / "src" / "components" / "DailyCheckInCalendar.tsx").read_text(encoding="utf-8")
-
-    assert "<DailyCheckInCalendar />" in home
+    assert 'authedFetch("/api/users/daily-checkin")' in home
+    assert 'testID: "daily-checkin-button"' in home
+    assert 'testID="home-week-toggle"' in home
     assert 'authedFetch("/api/users/daily-checkin/complete"' in exercise
-    assert 'testID="daily-checkin-button"' in card
-    assert 'testID="daily-checkin-calendar-toggle"' in card
-    assert "Complete today's exercises to earn your check mark" in card

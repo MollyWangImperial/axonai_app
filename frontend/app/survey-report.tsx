@@ -55,6 +55,7 @@ const SEVERITY_PRESENTATION = {
 
 const PAGE_TITLES = ["Daily life", "Where the problems are", "Your rehab plan"];
 const CACHE_KEY = "survey-report";
+const ANATOMY_ASPECT_RATIO = 866 / 1816;
 
 export default function SurveyReportScreen() {
   const insets = useSafeAreaInsets();
@@ -68,8 +69,6 @@ export default function SurveyReportScreen() {
   const [finishing, setFinishing] = useState(false);
   const [selectedPin, setSelectedPin] = useState<FunctionalPin | null>(null);
   const [ageBand, setAgeBand] = useState<string | null>(null);
-
-  const anatomyHeight = Math.min(480, Math.max(360, width * 1.1));
 
   useEffect(() => {
     let active = true;
@@ -86,11 +85,11 @@ export default function SurveyReportScreen() {
       setScreenCache<SurveyReport>(CACHE_KEY, body as SurveyReport);
       setError(null);
     } catch (e: any) {
-      if (!report) setError(String(e?.message || e));
+      setError(String(e?.message || e));
     } finally {
       setLoading(false);
     }
-  }, [report]);
+  }, []);
 
   useEffect(() => { void load(); }, [load]);
 
@@ -107,6 +106,12 @@ export default function SurveyReportScreen() {
   };
 
   const anatomy = getAgeAnatomyPresentation(ageBand);
+  const desiredAnatomyHeight = Math.min(480, Math.max(360, width * 1.1));
+  const anatomyWidth = Math.min(
+    desiredAnatomyHeight * ANATOMY_ASPECT_RATIO,
+    Math.max(120, width - spacing.lg * 2),
+  );
+  const anatomyHeight = anatomyWidth / ANATOMY_ASPECT_RATIO;
   const pins = report?.functional_problems?.pins ?? [];
   const affectedSide = report?.functional_problems?.affected_side ?? "right";
   const activePin = selectedPin ?? pins.find((pin) => pin.severity === "needs_attention") ?? pins[0] ?? null;
@@ -161,7 +166,10 @@ export default function SurveyReportScreen() {
           <View testID="survey-report-page-anatomy">
             <Text style={styles.pageTitle}>Where the problems are</Text>
             <Text style={styles.pageSub}>{report.functional_problems.reason}</Text>
-            <View style={[styles.mapCanvas, { height: anatomyHeight }]}>
+            <View
+              style={[styles.mapCanvas, { width: anatomyWidth, height: anatomyHeight }]}
+              testID="survey-report-anatomy-coordinate-frame"
+            >
               <Image source={anatomy.source} resizeMode="contain" style={styles.anatomyImage} accessibilityLabel={anatomy.viewLabel} />
               {pins.map((pin) => {
                 const x = pin.domain === "upper_limb" ? anatomy.shoulderX : pin.domain === "hand" ? anatomy.handX : anatomy.lowerLimbX;
@@ -279,7 +287,7 @@ const styles = StyleSheet.create({
   pagerDotTextActive: { color: colors.brandPrimary },
   pagerLabel: { fontSize: 11, lineHeight: 14, fontWeight: "700", color: colors.onSurfaceSecondary, textAlign: "center" },
   pagerLabelActive: { color: colors.brandPrimary },
-  scroll: { width: "100%", maxWidth: 620, alignSelf: "center", padding: spacing.lg, paddingBottom: 140 },
+  scroll: { width: "100%", maxWidth: 1724, alignSelf: "center", padding: spacing.lg, paddingBottom: 140 },
   sourceBanner: { flexDirection: "row", alignItems: "flex-start", gap: spacing.sm, backgroundColor: "#FFF4DA", borderRadius: radius.sm, padding: spacing.sm, marginBottom: spacing.md },
   sourceBannerText: { flex: 1, fontSize: 12, lineHeight: 17, color: "#6B4A0B", fontWeight: "700" },
   pageTitle: { fontSize: 24, lineHeight: 30, fontWeight: "800", color: colors.onSurface },
@@ -291,7 +299,7 @@ const styles = StyleSheet.create({
   badge: { flexDirection: "row", alignItems: "center", gap: 4, paddingHorizontal: 8, paddingVertical: 4, borderRadius: radius.pill },
   badgeText: { fontSize: 11, fontWeight: "800" },
   activityDetail: { fontSize: 14, lineHeight: 20, color: "#35443C" },
-  mapCanvas: { width: "100%", position: "relative" },
+  mapCanvas: { position: "relative", alignSelf: "center" },
   anatomyImage: { width: "100%", height: "100%" },
   pin: { position: "absolute", width: 44, height: 44, marginLeft: -22, marginTop: -22, borderRadius: 22, borderWidth: 2, alignItems: "center", justifyContent: "center", zIndex: 3 },
   pinActive: { borderWidth: 4, transform: [{ scale: 1.1 }], zIndex: 5 },

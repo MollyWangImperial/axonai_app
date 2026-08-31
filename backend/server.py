@@ -2675,6 +2675,22 @@ async def submit_assessment(payload: AssessmentSubmit, request: Request):
         plan = _merge_targeted_rehab_plan(plan, latest_previous)
     if plan and clinical_review_gate.get("rehab_access") == "allowed":
         await consume_credits(user["id"], "rehab_plan")
+    _record_alira_action(
+        "rehab_plan_issued",
+        source="assessment_submit",
+        user_id=user["id"],
+        status="completed" if plan else "empty",
+        details={
+            "plan_source": clinical_review_gate.get("rehab_plan_source")
+            or ("observed_findings" if clinical_review_gate.get("rehab_access") == "allowed" else "none"),
+            "rehab_access": clinical_review_gate.get("rehab_access"),
+            "review_status": clinical_review_gate.get("status"),
+            "exercises": [
+                {"id": exercise.id, "name": exercise.name, "targets_issue": exercise.targets_issue, "reason": exercise.selection_reason}
+                for exercise in plan
+            ],
+        },
+    )
     assessment = Assessment(
         id=assessment_id,
         created_at=datetime.now(timezone.utc).isoformat(),

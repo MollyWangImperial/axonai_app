@@ -1,16 +1,12 @@
 import { useCallback, useState } from "react";
-import { StyleSheet, Text, useWindowDimensions, View } from "react-native";
+import { Modal, Pressable, StyleSheet, Text, useWindowDimensions, View } from "react-native";
 import { useFocusEffect } from "expo-router";
-import { Ionicons } from "@expo/vector-icons";
+import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 
 import { authedFetch } from "@/src/auth";
+import { useDisplayPreferences } from "@/src/displayPreferences";
 import { getScreenCache, setScreenCache } from "@/src/screenCache";
 import { radius, spacing } from "@/src/theme";
-
-// Spec section 6, presented as "Daily life at a glance": a simple card per
-// activity with a four-band help meter - Full help, A lot of help, A little
-// help, Independent. Anything not assessed appears separately underneath,
-// never as a low score.
 
 export type ActivityMetric = {
   activity: string;
@@ -32,16 +28,6 @@ const HELP_BANDS: { id: HelpBandId; label: string }[] = [
   { id: "independent", label: "Independent" },
 ];
 
-const BAND_INDEX: Record<HelpBandId, number> = {
-  full_help: 0,
-  a_lot_of_help: 1,
-  a_little_help: 2,
-  independent: 3,
-};
-
-// The six-level reported assistance scale folds into the four patient-facing
-// help bands; an observed row without a report falls back to its qualitative
-// weak / medium / normal score.
 const ASSISTANCE_TO_BAND: Record<string, HelpBandId> = {
   unable: "full_help",
   maximum_assistance: "full_help",
@@ -57,34 +43,33 @@ const QUALITATIVE_TO_BAND: Record<string, HelpBandId> = {
   normal: "independent",
 };
 
-const HELP_TONE = { text: "#B06A00", border: "#E4C388", cardBackground: "#FBF3E2", fill: "#D98A00" };
-const WELL_TONE = { text: "#1F6A4A", border: "#BFD6C6", cardBackground: "#EAF2EC", fill: "#2E7D57" };
-
 const BAND_DESCRIPTIONS: Record<HelpBandId, { estimated: string; observed: string }> = {
   full_help: {
-    estimated: "Someone may need to help with most of this activity.",
-    observed: "Most of this activity needed hands-on help in the assessment.",
+    estimated: "Someone may need to help with most steps.",
+    observed: "Most steps needed hands-on help in the assessment.",
   },
   a_lot_of_help: {
-    estimated: "Hands-on support may be needed for much of this activity.",
+    estimated: "Hands-on support may be helpful for much of this activity.",
     observed: "Much of this activity needed hands-on support in the assessment.",
   },
   a_little_help: {
-    estimated: "A little help or someone nearby may be needed.",
+    estimated: "A little help or someone nearby may be useful.",
     observed: "Only a little help was needed in the assessment.",
   },
   independent: {
-    estimated: "You reported managing this activity on your own.",
-    observed: "You managed this activity on your own in the assessment.",
+    estimated: "You reported managing this on your own.",
+    observed: "You managed this on your own in the assessment.",
   },
 };
 
-const ACTIVITY_ICONS: Record<string, keyof typeof Ionicons.glyphMap> = {
-  "Eating and drinking": "restaurant-outline",
-  "Dressing": "shirt-outline",
-  "Grooming and self-care": "brush-outline",
-  "Moving around": "walk-outline",
+const ACTIVITY_ICONS: Record<string, keyof typeof MaterialCommunityIcons.glyphMap> = {
+  "Eating and drinking": "silverware-fork-knife",
+  Dressing: "tshirt-crew-outline",
+  "Grooming and self-care": "brush",
+  "Moving around": "walk",
 };
+
+const NUMBER_WORDS = ["No", "One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine", "Ten"];
 
 function bandFor(item: ActivityMetric): HelpBandId | null {
   if (item.reported_assistance_level && ASSISTANCE_TO_BAND[item.reported_assistance_level]) {
@@ -96,9 +81,50 @@ function bandFor(item: ActivityMetric): HelpBandId | null {
   return null;
 }
 
+function countLabel(count: number) {
+  return NUMBER_WORDS[count] || String(count);
+}
+
+function activitySummary(scored: ActivityMetric[]) {
+  if (!scored.length) return "These activities have not been assessed yet.";
+  const bands = scored.map((item) => ({ item, band: bandFor(item) as HelpBandId }));
+  const independent = bands.filter(({ band }) => band === "independent");
+  const fullHelp = bands.filter(({ band }) => band === "full_help");
+  const aLot = bands.filter(({ band }) => band === "a_lot_of_help");
+  const aLittle = bands.filter(({ band }) => band === "a_little_help");
+  const messages: string[] = [];
+
+  if (independent.length === scored.length) return "These everyday activities look independent.";
+  if (independent.length === 1) messages.push(`${independent[0].item.activity} looks independent.`);
+  if (independent.length > 1) messages.push(`${countLabel(independent.length)} activities look independent.`);
+  if (fullHelp.length) messages.push(`${countLabel(fullHelp.length)} ${fullHelp.length === 1 ? "activity" : "activities"} may need full help.`);
+  else if (aLot.length) messages.push(`${countLabel(aLot.length)} ${aLot.length === 1 ? "activity" : "activities"} may need a lot of help.`);
+  else if (aLittle.length) messages.push(`${countLabel(aLittle.length)} ${aLittle.length === 1 ? "activity" : "activities"} may need a little help.`);
+
+  return messages.join(" ") || "Your answers give an early picture of daily life.";
+}
+
+function toneFor(band: HelpBandId) {
+  if (band === "full_help") return { accent: "#E2A000", text: "#995700", badge: "#FFE8B5", icon: "people-outline" as const };
+  if (band === "a_lot_of_help") return { accent: "#D79A18", text: "#875900", badge: "#FFF0C9", icon: "people-outline" as const };
+  if (band === "a_little_help") return { accent: "#78A06F", text: "#275D3E", badge: "#E5F0E5", icon: "person-outline" as const };
+  return { accent: "#63966C", text: "#18533B", badge: "#DCECDF", icon: "person-outline" as const };
+}
+
+function descriptionFor(item: ActivityMetric, band: HelpBandId) {
+  if (item.activity === "Grooming and self-care" && item.status !== "complete" && band === "full_help") {
+    return "Hands-on support may be helpful.";
+  }
+  return item.observed && item.status === "complete"
+    ? BAND_DESCRIPTIONS[band].observed
+    : BAND_DESCRIPTIONS[band].estimated;
+}
+
 export function DailyActivitiesBoard({ activities }: { activities: ActivityMetric[] }) {
   const { width } = useWindowDimensions();
-  const twoColumns = width >= 700;
+  const { palette } = useDisplayPreferences();
+  const compact = width < 700;
+  const [showMethodology, setShowMethodology] = useState(false);
   const scored = activities.filter((item) => item.status !== "not_assessed" && bandFor(item));
   const notAssessed = activities.filter((item) => item.status === "not_assessed" || !bandFor(item));
   const allObserved = scored.length > 0 && scored.every((item) => item.status === "complete");
@@ -110,108 +136,101 @@ export function DailyActivitiesBoard({ activities }: { activities: ActivityMetri
       : "Estimated from your answers";
 
   return (
-    <View style={styles.card} testID="daily-activities-panel">
-      <View style={styles.headerRow}>
+    <View style={[styles.panel, compact && styles.panelCompact, { backgroundColor: palette.surface, borderColor: palette.border }]} testID="daily-activities-panel">
+      <View style={[styles.headerRow, compact && styles.headerRowCompact]}>
         <View style={styles.headerCopy}>
-          <Text style={styles.title}>Daily life at a glance</Text>
-          <Text style={styles.subtitle}>A simple view of where you may need help.</Text>
+          <Text style={[styles.title, compact && styles.titleCompact, { color: palette.text }]}>Daily life at a glance</Text>
+          <Text style={[styles.subtitle, compact && styles.subtitleCompact, { color: palette.muted }]}>How much help you may need with everyday activities.</Text>
         </View>
-        {scored.length > 0 && (
+        {scored.length > 0 ? (
           <View style={styles.sourceBadge} testID="daily-activities-source-badge">
-            <Ionicons name="ellipse-outline" size={12} color="#6B4A0B" />
-            <Text style={styles.sourceBadgeText}>{sourceBadge}</Text>
+            <Ionicons name="information-circle-outline" size={compact ? 20 : 25} color="#915D05" />
+            <Text style={[styles.sourceBadgeText, compact && styles.sourceBadgeTextCompact]}>{sourceBadge}</Text>
           </View>
-        )}
+        ) : null}
       </View>
 
-      <View style={styles.legendRow} testID="daily-activities-legend">
-        {HELP_BANDS.map((band) => {
-          const helping = band.id === "full_help" || band.id === "a_lot_of_help";
-          const tone = helping ? HELP_TONE : WELL_TONE;
-          return (
-            <View key={band.id} style={styles.legendItem}>
+      <View style={styles.summaryRow} testID="daily-activities-summary">
+        <Ionicons name="checkmark-circle-outline" size={30} color="#145C43" />
+        <Text style={[styles.summaryText, compact && styles.summaryTextCompact, { color: palette.text }]}>{activitySummary(scored)}</Text>
+      </View>
+
+      {scored.length > 0 ? (
+        <View style={[styles.activityList, { borderColor: palette.border }]} testID="daily-activities-list">
+          {scored.map((item, index) => {
+            const band = bandFor(item) as HelpBandId;
+            const tone = toneFor(band);
+            const bandLabel = HELP_BANDS.find((candidate) => candidate.id === band)?.label || "Not assessed";
+            const description = descriptionFor(item, band);
+            return (
               <View
+                key={item.activity}
                 style={[
-                  styles.legendSwatch,
-                  { borderColor: band.id === "independent" ? tone.text : tone.border },
-                  band.id === "full_help" && { backgroundColor: HELP_TONE.fill, borderColor: HELP_TONE.fill },
-                  band.id === "a_little_help" && { backgroundColor: WELL_TONE.cardBackground },
+                  styles.activityRow,
+                  compact && styles.activityRowCompact,
+                  index < scored.length - 1 && { borderBottomWidth: 1, borderBottomColor: palette.border },
                 ]}
-              />
-              <Text style={styles.legendLabel}>{band.label}</Text>
-            </View>
-          );
-        })}
-      </View>
-
-      <View style={[styles.grid, twoColumns && styles.gridWide]}>
-        {scored.map((item) => {
-          const band = bandFor(item) as HelpBandId;
-          const bandIndex = BAND_INDEX[band];
-          const helping = band === "full_help" || band === "a_lot_of_help";
-          const tone = helping ? HELP_TONE : WELL_TONE;
-          const bandLabel = HELP_BANDS[bandIndex].label;
-          const description = item.observed && item.status === "complete"
-            ? BAND_DESCRIPTIONS[band].observed
-            : BAND_DESCRIPTIONS[band].estimated;
-          return (
-            <View
-              key={item.activity}
-              style={[styles.activityCard, { backgroundColor: tone.cardBackground, borderColor: tone.border }, twoColumns && styles.activityCardWide]}
-              testID={`daily-activity-card-${item.activity}`}
-            >
-              <View style={styles.activityIcon}>
-                <Ionicons name={ACTIVITY_ICONS[item.activity] || "body-outline"} size={44} color={tone.text} />
-              </View>
-              <View style={styles.activityCopy}>
-                <Text style={styles.activityName}>{item.activity}</Text>
-                <View style={styles.bandRow}>
-                  <Text style={[styles.activityBand, { color: tone.text }]}>{bandLabel}</Text>
-                  {typeof item.score === "number" && (
-                    <View style={[styles.scorePill, { borderColor: tone.border }]} testID={`daily-activity-score-${item.activity}`}>
-                      <Text style={[styles.scorePillText, { color: tone.text }]}>{item.score}</Text>
-                      <Text style={styles.scorePillScale}>/ 100</Text>
-                    </View>
-                  )}
+                testID={`daily-activity-card-${item.activity}`}
+              >
+                <View style={[styles.activityRail, { backgroundColor: tone.accent }]} />
+                <View style={styles.activityIcon}>
+                  <MaterialCommunityIcons name={ACTIVITY_ICONS[item.activity] || "human"} size={compact ? 44 : 58} color={tone.text} />
                 </View>
-                <Text style={styles.activityDetail}>{description}</Text>
-                <View style={styles.meterRow} testID={`daily-activity-meter-${item.activity}`}>
-                  {HELP_BANDS.map((meterBand, index) => (
-                    <View
-                      key={meterBand.id}
-                      style={[
-                        styles.meterSegment,
-                        { borderColor: tone.border },
-                        index === bandIndex && { backgroundColor: tone.fill, borderColor: tone.fill },
-                      ]}
-                    />
-                  ))}
+                <View style={styles.activityCopy}>
+                  <Text style={[styles.activityName, compact && styles.activityNameCompact, { color: palette.text }]}>{item.activity}</Text>
+                  <Text style={[styles.activityDetail, compact && styles.activityDetailCompact, { color: palette.muted }]}>{description}</Text>
                 </View>
-                <Text style={[styles.meterLabel, { color: tone.text }]}>{bandLabel}</Text>
-                {item.change_from_baseline ? (
-                  <Text style={styles.change}>
-                    <Ionicons name="trending-up-outline" size={13} color={WELL_TONE.text} /> {item.change_from_baseline}
-                  </Text>
-                ) : null}
+                <View
+                  style={[styles.statusPill, compact && styles.statusPillCompact, { backgroundColor: tone.badge }]}
+                  testID={`daily-activity-status-${item.activity}`}
+                >
+                  <Ionicons name={tone.icon} size={compact ? 25 : 31} color={tone.text} />
+                  <Text style={[styles.statusPillText, compact && styles.statusPillTextCompact, { color: tone.text }]}>{bandLabel}</Text>
+                </View>
               </View>
-            </View>
-          );
-        })}
-      </View>
-
-      {notAssessed.length > 0 && (
-        <View style={styles.notAssessedRow} testID="daily-activities-not-assessed">
-          <Ionicons name="remove-circle-outline" size={15} color="#5D6962" />
-          <Text style={styles.notAssessedText}>
-            Not assessed yet: {notAssessed.map((item) => item.activity).join(", ")}
-          </Text>
+            );
+          })}
         </View>
-      )}
+      ) : null}
 
-      <View style={styles.footerRow}>
-        <Ionicons name="leaf-outline" size={14} color="#3E5C4A" />
-        <Text style={styles.footerText}>Not assessed appears separately — never as a low score.</Text>
+      {notAssessed.length > 0 ? (
+        <View style={[styles.notAssessedRow, { backgroundColor: palette.soft }]} testID="daily-activities-not-assessed">
+          <Ionicons name="remove-circle-outline" size={20} color={palette.muted} />
+          <Text style={[styles.notAssessedText, { color: palette.muted }]}>Not assessed yet: {notAssessed.map((item) => item.activity).join(", ")}</Text>
+        </View>
+      ) : null}
+
+      <View style={[styles.footerRow, compact && styles.footerRowCompact]}>
+        <Pressable
+          accessibilityRole="button"
+          onPress={() => setShowMethodology(true)}
+          style={({ pressed }) => [styles.methodologyButton, pressed && styles.pressed]}
+          testID="daily-activities-methodology"
+        >
+          <Ionicons name="open-outline" size={21} color="#175A43" />
+          <Text style={styles.methodologyText}>How these results are estimated</Text>
+        </Pressable>
+        {!compact ? <View style={[styles.footerDivider, { backgroundColor: palette.border }]} /> : null}
+        <Text style={[styles.footerText, { color: palette.muted }]}>Not assessed activities appear separately.</Text>
       </View>
+
+      <Modal visible={showMethodology} transparent animationType="fade" onRequestClose={() => setShowMethodology(false)}>
+        <View style={styles.modalBackdrop}>
+          <View style={[styles.modalCard, { backgroundColor: palette.surface, borderColor: palette.border }]} testID="daily-activities-methodology-modal">
+            <View style={styles.modalHeader}>
+              <Text style={[styles.modalTitle, { color: palette.text }]}>How these results are estimated</Text>
+              <Pressable accessibilityLabel="Close estimation details" onPress={() => setShowMethodology(false)} style={({ pressed }) => [styles.closeButton, pressed && styles.pressed]}>
+                <Ionicons name="close-outline" size={26} color={palette.text} />
+              </Pressable>
+            </View>
+            <Text style={[styles.modalBody, { color: palette.muted }]}>Estimated results use your survey answers about movement and the help you receive. Observed results also use relevant completed assessment tasks.</Text>
+            <Text style={[styles.modalBody, { color: palette.muted }]}>If Rehyn does not have enough information for an activity, it stays not assessed instead of being shown as a low result.</Text>
+            <Pressable onPress={() => setShowMethodology(false)} style={({ pressed }) => [styles.modalDone, pressed && styles.pressed]}>
+              <Text style={styles.modalDoneText}>Done</Text>
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -234,43 +253,55 @@ export function DailyActivitiesPanel() {
   }, []);
 
   useFocusEffect(useCallback(() => { void load(); }, [load]));
-
   if (!activities || activities.length === 0) return null;
-
   return <DailyActivitiesBoard activities={activities} />;
 }
 
 const styles = StyleSheet.create({
-  card: { backgroundColor: "#FFFFFF", borderWidth: 1, borderColor: "#D9DEDA", borderRadius: radius.md, padding: spacing.md, gap: spacing.sm, marginBottom: spacing.md },
-  headerRow: { flexDirection: "row", alignItems: "flex-start", justifyContent: "space-between", gap: spacing.sm, flexWrap: "wrap" },
-  headerCopy: { flexShrink: 1, minWidth: 200 },
-  title: { fontSize: 22, lineHeight: 28, fontWeight: "800", color: "#17211B" },
-  subtitle: { fontSize: 13, lineHeight: 19, color: "#5D6962", marginTop: 2 },
-  sourceBadge: { flexDirection: "row", alignItems: "center", gap: 4, paddingHorizontal: 10, paddingVertical: 6, borderRadius: radius.pill, backgroundColor: "#FFF4DA" },
-  sourceBadgeText: { fontSize: 11, fontWeight: "800", color: "#6B4A0B" },
-  legendRow: { flexDirection: "row", alignItems: "center", gap: spacing.md, flexWrap: "wrap" },
-  legendItem: { flexDirection: "row", alignItems: "center", gap: 6 },
-  legendSwatch: { width: 26, height: 14, borderRadius: 5, borderWidth: 1.5, backgroundColor: "#FFFFFF" },
-  legendLabel: { fontSize: 12, fontWeight: "700", color: "#35443C" },
-  grid: { gap: spacing.sm },
-  gridWide: { flexDirection: "row", flexWrap: "wrap" },
-  activityCard: { flexDirection: "row", gap: spacing.md, alignItems: "center", borderWidth: 1, borderRadius: radius.md, padding: spacing.md },
-  activityCardWide: { flexBasis: "48.5%", flexGrow: 1 },
-  activityIcon: { width: 72, alignItems: "center", justifyContent: "center" },
-  activityCopy: { flex: 1, minWidth: 0 },
-  activityName: { fontSize: 15, fontWeight: "800", color: "#17211B" },
-  activityBand: { fontSize: 26, lineHeight: 32, fontWeight: "900" },
-  bandRow: { flexDirection: "row", alignItems: "center", gap: spacing.sm, flexWrap: "wrap" },
-  scorePill: { flexDirection: "row", alignItems: "baseline", gap: 2, borderWidth: 1.5, borderRadius: radius.pill, paddingHorizontal: 10, paddingVertical: 2, backgroundColor: "#FFFFFF" },
-  scorePillText: { fontSize: 17, fontWeight: "900" },
-  scorePillScale: { fontSize: 11, fontWeight: "700", color: "#5D6962" },
-  activityDetail: { fontSize: 13, lineHeight: 18, color: "#35443C", marginTop: 2 },
-  meterRow: { flexDirection: "row", gap: 6, marginTop: spacing.sm },
-  meterSegment: { flex: 1, maxWidth: 64, height: 18, borderRadius: 9, borderWidth: 1.5, backgroundColor: "#FFFFFF" },
-  meterLabel: { fontSize: 12, fontWeight: "800", marginTop: 4 },
-  change: { fontSize: 13, lineHeight: 18, color: "#2E7D57", fontWeight: "700", marginTop: 4 },
-  notAssessedRow: { flexDirection: "row", alignItems: "center", gap: 6, paddingTop: 2 },
-  notAssessedText: { flex: 1, fontSize: 13, lineHeight: 18, color: "#5D6962", fontWeight: "600" },
-  footerRow: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, paddingTop: 2 },
-  footerText: { fontSize: 12, lineHeight: 17, color: "#3E5C4A", fontWeight: "700" },
+  panel: { borderWidth: 1.5, borderRadius: radius.md, padding: 36, gap: spacing.lg, marginBottom: spacing.md },
+  panelCompact: { padding: spacing.lg, gap: spacing.md },
+  headerRow: { flexDirection: "row", alignItems: "flex-start", justifyContent: "space-between", gap: spacing.lg },
+  headerRowCompact: { flexDirection: "column" },
+  headerCopy: { flex: 1, minWidth: 0 },
+  title: { fontSize: 44, lineHeight: 52, fontWeight: "900" },
+  titleCompact: { fontSize: 30, lineHeight: 37 },
+  subtitle: { marginTop: 8, fontSize: 21, lineHeight: 29 },
+  subtitleCompact: { fontSize: 16, lineHeight: 23 },
+  sourceBadge: { minHeight: 56, flexDirection: "row", alignItems: "center", gap: 9, paddingHorizontal: 20, borderRadius: radius.pill, backgroundColor: "#FFECC1" },
+  sourceBadgeText: { fontSize: 18, lineHeight: 24, fontWeight: "900", color: "#8A5700" },
+  sourceBadgeTextCompact: { fontSize: 14, lineHeight: 20 },
+  summaryRow: { minHeight: 42, flexDirection: "row", alignItems: "center", gap: spacing.md },
+  summaryText: { flex: 1, fontSize: 20, lineHeight: 28, fontWeight: "500" },
+  summaryTextCompact: { fontSize: 16, lineHeight: 24 },
+  activityList: { borderWidth: 1, borderRadius: radius.md, overflow: "hidden" },
+  activityRow: { minHeight: 122, flexDirection: "row", alignItems: "center", gap: spacing.lg, paddingHorizontal: spacing.xl, paddingVertical: spacing.md, position: "relative" },
+  activityRowCompact: { minHeight: 0, flexWrap: "wrap", gap: spacing.md, paddingHorizontal: spacing.md, paddingVertical: spacing.lg },
+  activityRail: { position: "absolute", left: 0, top: 5, bottom: 5, width: 7 },
+  activityIcon: { width: 104, alignItems: "center", justifyContent: "center" },
+  activityCopy: { flex: 1, minWidth: 220 },
+  activityName: { fontSize: 27, lineHeight: 34, fontWeight: "900" },
+  activityNameCompact: { fontSize: 21, lineHeight: 27 },
+  activityDetail: { marginTop: 4, fontSize: 19, lineHeight: 27 },
+  activityDetailCompact: { fontSize: 15, lineHeight: 22 },
+  statusPill: { width: 290, minHeight: 68, borderRadius: radius.pill, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: spacing.sm, paddingHorizontal: spacing.md },
+  statusPillCompact: { width: "100%", minWidth: 0, minHeight: 48, marginLeft: 0 },
+  statusPillText: { fontSize: 21, lineHeight: 27, fontWeight: "900" },
+  statusPillTextCompact: { fontSize: 17, lineHeight: 23 },
+  notAssessedRow: { minHeight: 48, borderRadius: radius.sm, flexDirection: "row", alignItems: "center", gap: spacing.sm, paddingHorizontal: spacing.md, paddingVertical: spacing.sm },
+  notAssessedText: { flex: 1, fontSize: 14, lineHeight: 20, fontWeight: "600" },
+  footerRow: { minHeight: 38, flexDirection: "row", alignItems: "center", gap: spacing.lg },
+  footerRowCompact: { alignItems: "flex-start", flexDirection: "column", gap: spacing.sm },
+  methodologyButton: { minHeight: 42, flexDirection: "row", alignItems: "center", gap: 9 },
+  methodologyText: { color: "#154F3C", fontSize: 17, lineHeight: 23, fontWeight: "900", textDecorationLine: "underline" },
+  footerDivider: { width: 1, height: 30 },
+  footerText: { flex: 1, fontSize: 17, lineHeight: 23 },
+  pressed: { opacity: 0.65 },
+  modalBackdrop: { flex: 1, backgroundColor: "rgba(9, 22, 16, 0.46)", alignItems: "center", justifyContent: "center", padding: spacing.lg },
+  modalCard: { width: "100%", maxWidth: 560, borderWidth: 1, borderRadius: radius.md, padding: spacing.lg, gap: spacing.md },
+  modalHeader: { flexDirection: "row", alignItems: "center", gap: spacing.md },
+  modalTitle: { flex: 1, fontSize: 23, lineHeight: 29, fontWeight: "900" },
+  closeButton: { width: 44, height: 44, alignItems: "center", justifyContent: "center" },
+  modalBody: { fontSize: 16, lineHeight: 24 },
+  modalDone: { minHeight: 48, marginTop: spacing.sm, borderRadius: radius.sm, backgroundColor: "#0B6547", alignItems: "center", justifyContent: "center" },
+  modalDoneText: { color: "#FFFFFF", fontSize: 16, fontWeight: "900" },
 });

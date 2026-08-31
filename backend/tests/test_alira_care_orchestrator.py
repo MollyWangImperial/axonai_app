@@ -641,7 +641,7 @@ def test_home_goal_banner_and_journey_completion_summary_are_wired():
     # The patient's own initial-survey goal leads the Home page, and the
     # Journey page always opens with completed assessments and exercises
     # before the progress metrics.
-    assert 'testID="home-goal-banner"' in home
+    assert 'testID="home-goal-line"' in home
     assert "primary_goal" in home
     assert 'testID="journey-completion-summary"' in journey
     assert "exercises_completed" in journey

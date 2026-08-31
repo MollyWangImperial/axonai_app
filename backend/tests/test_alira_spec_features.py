@@ -399,18 +399,23 @@ def test_snapshot_and_report_screens_show_qualitative_scores_and_survey_highligh
     report = (root / "frontend" / "app" / "survey-report.tsx").read_text(encoding="utf-8")
     results = (root / "frontend" / "app" / "results.tsx").read_text(encoding="utf-8")
 
-    # "Daily life at a glance": one card per activity with a four-band help
-    # meter and a legend, plus the honest not-assessed handling.
+    # "Daily life at a glance": one plain-language row per activity, with the
+    # source, summary, status, and honest not-assessed handling kept visible.
     assert "Daily life at a glance" in panel
-    assert "A simple view of where you may need help." in panel
+    assert "How much help you may need with everyday activities." in panel
     for label in ("Full help", "A lot of help", "A little help", "Independent"):
         assert f'label: "{label}"' in panel
-    assert 'testID="daily-activities-legend"' in panel
+    assert 'testID="daily-activities-summary"' in panel
+    assert 'testID="daily-activities-list"' in panel
     assert "daily-activity-card-" in panel
-    assert "daily-activity-meter-" in panel
+    assert "daily-activity-status-" in panel
     assert 'testID="daily-activities-source-badge"' in panel
-    assert "Not assessed appears separately" in panel
+    assert 'testID="daily-activities-methodology"' in panel
+    assert 'testID="daily-activities-methodology-modal"' in panel
+    assert "Not assessed activities appear separately." in panel
     assert "QUALITATIVE_TO_BAND" in panel  # weak/medium/normal folds into the bands
+    assert "daily-activity-meter-" not in panel
+    assert '"/ 100"' not in panel
     assert "What this means for daily life" not in panel
 
     # The assessment report's first page reuses the same board.
@@ -436,7 +441,8 @@ def test_safety_strip_and_rewards_and_preview_are_wired():
 
     assert "<SafetyStopStrip />" in exercise
     assert "<SafetyStopStrip />" in assessment_screen
-    assert "<RewardsCard />" in home
+    assert 'authedFetch("/api/users/rewards")' in home
+    assert 'testID="home-points-badge"' in home
     assert 'testID="post-preview"' in community
     assert "confirmed_preview: true" in community
     assert "This one is for:" in rehab
