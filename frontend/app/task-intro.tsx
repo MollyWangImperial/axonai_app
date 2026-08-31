@@ -37,6 +37,28 @@ const WALKING_PREPARATION_TIPS = [
 const HELPER_PREPARATION_TIP =
   "Have your carer stay within arm's reach to steady or guide you - attempt each movement yourself so Alira can measure it";
 
+const ASSESSMENT_TASK_LABELS: Record<string, string> = {
+  T1: "Seated forward reach",
+  T2: "Shoulder raise",
+  T3: "Hand to mouth",
+  H1: "Open hand",
+  H3: "Thumb-index pinch",
+  H4: "Open and close hand",
+  L6: "Comfortable walk",
+};
+
+type FunctionalRehabProfile = {
+  id: string;
+  label: string;
+  description: string;
+  rationale: string[];
+  reported_domains: string[];
+  assessment_domains: string[];
+  candidate_task_ids: string[];
+  source: "movement_readiness_survey";
+  non_diagnostic: boolean;
+};
+
 type InitialAssessmentRecommendation = {
   status: "needs_answers" | "support_needed" | "clinical_review" | "ready";
   can_start: boolean;
@@ -49,6 +71,7 @@ type InitialAssessmentRecommendation = {
   requires_clinician_review: boolean;
   safety_notes: string[];
   message: string;
+  functional_profile: FunctionalRehabProfile;
 };
 
 type AdaptiveAssessmentSelection = {
@@ -289,6 +312,33 @@ export default function TaskIntro() {
             : "We have selected the next standardized movement session for you. Alira will guide each task in order."}
         </Text>
 
+        {isInitial && recommendation?.functional_profile && (
+          <View style={styles.profileCard} testID="task-intro-functional-profile">
+            <View style={styles.profileHeadingRow}>
+              <View style={styles.profileIcon}>
+                <Ionicons name="git-branch-outline" size={20} color={colors.brandPrimary} />
+              </View>
+              <View style={styles.profileHeadingCopy}>
+                <Text style={styles.profileEyebrow}>YOUR FUNCTIONAL ASSESSMENT PROFILE</Text>
+                <Text style={styles.profileTitle}>{recommendation.functional_profile.label}</Text>
+              </View>
+            </View>
+            <Text style={styles.profileDescription}>{recommendation.functional_profile.description}</Text>
+            {recommendation.task_ids.length > 0 && (
+              <View style={styles.selectedTasks}>
+                <Text style={styles.selectedTasksTitle}>Tasks selected from your answers</Text>
+                {recommendation.task_ids.map((taskId) => (
+                  <View key={taskId} style={styles.selectedTaskRow}>
+                    <Ionicons name="checkmark-circle-outline" size={18} color={colors.brandPrimary} />
+                    <Text style={styles.selectedTaskText}>{ASSESSMENT_TASK_LABELS[taskId] || taskId}</Text>
+                  </View>
+                ))}
+              </View>
+            )}
+            <Text style={styles.profileNote}>This profile guides task selection. It is not a medical diagnosis.</Text>
+          </View>
+        )}
+
         <View style={styles.tipsCard} testID="task-intro-tips">
           <Text style={styles.tipsHeader}>Before we begin</Text>
           {preparationTips.map((tip) => (
@@ -420,6 +470,18 @@ const styles = StyleSheet.create({
   introIcon: { width: 56, height: 56, borderRadius: 28, alignItems: "center", justifyContent: "center", backgroundColor: colors.brandTertiary, marginBottom: spacing.md },
   title: { fontSize: 28, lineHeight: 34, fontWeight: "800", color: colors.onSurface },
   sub: { fontSize: 15, lineHeight: 22, color: colors.onSurfaceSecondary, marginTop: spacing.sm, marginBottom: spacing.lg },
+  profileCard: { borderWidth: 1, borderColor: colors.border, borderRadius: radius.md, backgroundColor: colors.surfaceSecondary, padding: spacing.md, marginBottom: spacing.lg },
+  profileHeadingRow: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
+  profileIcon: { width: 40, height: 40, borderRadius: 20, alignItems: "center", justifyContent: "center", backgroundColor: colors.brandTertiary },
+  profileHeadingCopy: { flex: 1, minWidth: 0 },
+  profileEyebrow: { color: colors.brandPrimary, fontSize: 11, lineHeight: 15, fontWeight: "800" },
+  profileTitle: { color: colors.onSurface, fontSize: 18, lineHeight: 23, fontWeight: "800", marginTop: 2 },
+  profileDescription: { color: colors.onSurfaceSecondary, fontSize: 14, lineHeight: 20, marginTop: spacing.sm },
+  selectedTasks: { borderTopWidth: 1, borderTopColor: colors.divider, marginTop: spacing.md, paddingTop: spacing.sm, gap: 5 },
+  selectedTasksTitle: { color: colors.onSurface, fontSize: 13, lineHeight: 18, fontWeight: "800", marginBottom: 2 },
+  selectedTaskRow: { flexDirection: "row", alignItems: "center", gap: spacing.sm, minHeight: 26 },
+  selectedTaskText: { flex: 1, color: colors.onSurface, fontSize: 14, lineHeight: 19, fontWeight: "600" },
+  profileNote: { color: colors.onSurfaceSecondary, fontSize: 12, lineHeight: 17, marginTop: spacing.sm },
   tipsCard: { backgroundColor: colors.brandTertiary, borderRadius: radius.md, padding: spacing.md, marginBottom: spacing.lg },
   tipsHeader: { fontSize: 16, fontWeight: "800", color: colors.onBrandTertiary, marginBottom: spacing.sm },
   tipRow: { flexDirection: "row", alignItems: "center", gap: spacing.sm, paddingVertical: 4 },

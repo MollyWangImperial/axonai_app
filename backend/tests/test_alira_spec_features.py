@@ -437,6 +437,54 @@ def test_snapshot_and_report_screens_show_qualitative_scores_and_survey_highligh
     assert 'testID="results-summary"' not in results  # the old anatomy panel is gone
 
 
+def test_your_day_reveals_steps_progressively_with_grey_locked_connectors():
+    home = (ROOT / "frontend" / "app" / "(tabs)" / "index.tsx").read_text(encoding="utf-8")
+
+    # Before check-in everything downstream is locked and both connector
+    # segments are grey; the third step unlocks only once the initial
+    # assessment exists.
+    assert "const stepTwoRevealed = checkedInToday;" in home
+    assert "const stepThreeRevealed = checkedInToday && (assessmentCompletedToday || !isInitialAssessment);" in home
+    assert "!checkedInToday && styles.dayConnectorInactive" in home
+    assert "!stepThreeRevealed && styles.dayConnectorInactive" in home
+    assert "Check in first to see today's next step." in home
+    assert "Complete the initial assessment to see what comes next." in home
+    assert home.count('label="Locked"') == 2
+
+
+def test_secondary_goals_options_show_pictures_instead_of_symbols():
+    onboarding = (ROOT / "frontend" / "app" / "onboarding.tsx").read_text(encoding="utf-8")
+
+    assert "GOAL_PICTURES" in onboarding
+    for value in ("reach_overhead", "self_feed", "dress", "write", "drive", "cook", "play_music", "exercise", "other"):
+        assert f"{value}:" in onboarding
+    assert "goal-picture-" in onboarding
+    assert 'step.key === "secondary_goals"' in onboarding
+    assert "styles.goalPicture" in onboarding
+    # The goals picker renders picture cards, never the emoji symbol.
+    assert "goalCard" in onboarding
+
+
+def test_earning_points_pops_a_fading_congratulations_toast():
+    component = (ROOT / "frontend" / "src" / "components" / "PointsCelebration.tsx").read_text(encoding="utf-8")
+    home = (ROOT / "frontend" / "app" / "(tabs)" / "index.tsx").read_text(encoding="utf-8")
+    caregiver = (ROOT / "frontend" / "app" / "caregiver-plan.tsx").read_text(encoding="utf-8")
+    exercise = (ROOT / "frontend" / "app" / "exercise.tsx").read_text(encoding="utf-8")
+
+    # The toast pops in, holds briefly, and fades out on its own.
+    assert 'testID="points-celebration"' in component
+    assert "Animated.delay(1400)" in component
+    assert "toValue: 0, duration: 450" in component
+    assert 'pointerEvents="none"' in component
+    # Every points-earning moment celebrates: check-in (+2), a delivered
+    # caregiver routine (+5), and a completed exercise (+5).
+    assert "celebrationEvent(2" in home
+    assert "celebrationEvent(5" in caregiver
+    assert "celebrationEvent(5" in exercise
+    for source in (home, caregiver, exercise):
+        assert "<PointsCelebration event={celebration} onDone={() => setCelebration(null)} />" in source
+
+
 def test_safety_strip_and_rewards_and_preview_are_wired():
     exercise = (ROOT / "frontend" / "app" / "exercise.tsx").read_text(encoding="utf-8")
     assessment_screen = (ROOT / "frontend" / "app" / "assessment.tsx").read_text(encoding="utf-8")

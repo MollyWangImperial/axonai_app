@@ -20,6 +20,11 @@ SURVEY_PREFACE = (
 )
 APPROVED_ASSESSMENT_PACKAGES = {"initial", "upper_limb", "hand", "lower_limb", "balance"}
 INITIAL_ASSESSMENT_TASK_IDS = ("T1", "T2", "T3", "H1", "H3", "H4", "L6")
+INITIAL_TASKS_BY_DOMAIN = {
+    "upper_limb": ("T1", "T2", "T3"),
+    "hand": ("H1", "H3", "H4"),
+    "lower_limb": ("L6",),
+}
 ASSESSMENT_READINESS_FIELDS = (
     "sitting_ability",
     "affected_arm_movement",
@@ -54,6 +59,174 @@ ASSISTANCE_LEVEL_LABELS = {
 # plan. Tier 2: moves with caregiver assistance - goal is independence.
 # Tier 3: independent but quality may be impaired - full camera assessment.
 FUNCTIONAL_TIER_DOMAINS = ("upper_limb", "hand", "lower_limb")
+
+
+def classify_functional_rehab_profile(profile: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Classify survey answers for rehabilitation routing, not stroke diagnosis."""
+    profile = dict(profile or {})
+    missing = [
+        key
+        for key in ASSESSMENT_READINESS_FIELDS
+        if profile.get(key) is None or str(profile.get(key)).strip() == ""
+    ]
+    arm = str(profile.get("affected_arm_movement") or "").lower()
+    hand = str(profile.get("affected_hand_movement") or "").lower()
+    mobility = str(profile.get("mobility_level") or "").lower()
+    sitting = str(profile.get("sitting_ability") or "").lower()
+    pain = str(profile.get("movement_pain") or "").lower()
+    instruction_support = str(profile.get("instruction_support") or "").lower()
+    affected_areas = {str(item).lower() for item in (profile.get("affected_areas") or [])}
+
+    upper_relevant = arm not in {"", "not_affected"}
+    hand_relevant = hand not in {"", "not_affected"}
+    lower_relevant = any(area.endswith("_lower") for area in affected_areas) or mobility not in {"", "independent"}
+    reported_domains = [
+        domain
+        for domain, relevant in (
+            ("upper_limb", upper_relevant),
+            ("hand", hand_relevant),
+            ("lower_limb", lower_relevant),
+        )
+        if relevant
+    ]
+
+    def result(
+        profile_id: str,
+        label: str,
+        description: str,
+        rationale: List[str],
+        domains: Optional[List[str]] = None,
+        candidate_tasks: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        assessment_domains = list(reported_domains if domains is None else domains)
+        selected_candidates = candidate_tasks or [
+            task_id
+            for domain in assessment_domains
+            for task_id in INITIAL_TASKS_BY_DOMAIN.get(domain, ())
+        ]
+        return {
+            "version": "rehyn-functional-profile-v1",
+            "id": profile_id,
+            "label": label,
+            "description": description,
+            "rationale": rationale,
+            "reported_domains": list(reported_domains),
+            "assessment_domains": assessment_domains,
+            "candidate_task_ids": selected_candidates,
+            "missing_fields": list(missing),
+            "source": "movement_readiness_survey",
+            "non_diagnostic": True,
+        }
+
+    if missing:
+        return result(
+            "needs_clarification",
+            "More readiness information needed",
+            "Alira needs the remaining movement-readiness answers before selecting a functional profile or camera tasks.",
+            [f"Missing readiness answer: {key}." for key in missing],
+            [],
+        )
+    if pain == "severe_or_worsening":
+        return result(
+            "safety_pause",
+            "Safety pause",
+            "Severe or worsening movement pain was reported, so camera assessment is paused for clinical advice.",
+            ["Severe or worsening movement pain was reported."],
+            [],
+        )
+    if sitting == "unable" and arm == "no_movement" and hand == "no_movement" and mobility in {"unable_walk", "not_cleared", "wheelchair"}:
+        return result(
+            "profound_dependency",
+            "Profound movement support needs",
+            "The survey indicates that the current camera tasks are not suitable and caregiver-delivered support is the safer route.",
+            ["Safe unsupported sitting, active arm and hand movement, and walking were not available for camera assessment."],
+            [],
+        )
+
+    helper_needed = (
+        sitting == "needs_support"
+        or instruction_support in {"helper_preferred", "helper_required"}
+        or arm in {"help_only", "not_sure"}
+        or mobility == "person_assist"
+    )
+    communication_support = "face_speech" in affected_areas and instruction_support in {"helper_preferred", "helper_required"}
+    if communication_support:
+        routing_domains = list(reported_domains or FUNCTIONAL_TIER_DOMAINS)
+        return result(
+            "communication_supported",
+            "Communication-supported movement profile",
+            "Motor tasks are selected from current movement ability, with a helper present for instructions and screen use.",
+            ["Face or speech effects and a preference or need for instruction support were reported."],
+            routing_domains,
+            None if reported_domains else ["T1", "H1", "L6"],
+        )
+    if helper_needed:
+        routing_domains = list(reported_domains or FUNCTIONAL_TIER_DOMAINS)
+        return result(
+            "helper_dependent",
+            "Helper-supported movement profile",
+            "Suitable tasks can be attempted only with the support identified in the survey.",
+            ["The survey reports support needs for sitting, movement, walking, or following the assessment."],
+            routing_domains,
+            None if reported_domains else ["T1", "H1", "L6"],
+        )
+
+    has_upper = upper_relevant or hand_relevant
+    if has_upper and lower_relevant:
+        mild_pattern = (
+            arm in {"most_movements", "not_affected"}
+            and hand in {"opens_and_moves", "not_affected"}
+            and mobility in {"independent", "cane"}
+        )
+        if mild_pattern:
+            return result(
+                "mild_mixed_impairment",
+                "Mild mixed movement difficulty",
+                "Independent arm, hand and mobility tasks can establish a broad functional baseline.",
+                ["More than one movement domain was reported, with independent movement across the selected domains."],
+            )
+        return result(
+            "mixed_moderate_impairment",
+            "Mixed arm, hand and mobility needs",
+            "The assessment combines eligible arm, hand and walking observations because more than one domain may need support.",
+            ["The survey indicates current needs across upper-limb and mobility domains."],
+        )
+    if lower_relevant:
+        return result(
+            "walking_dominant_impairment",
+            "Walking and mobility dominant difficulty",
+            "The assessment focuses on walking because no current arm or hand difficulty was reported.",
+            ["A lower-limb or mobility effect was reported while arm and hand were marked not affected."],
+        )
+    if has_upper:
+        if arm in {"most_movements", "not_affected"} and hand in {"some_finger_movement", "very_little_movement", "no_movement", "not_sure"}:
+            return result(
+                "hand_dominant_difficulty",
+                "Hand-control dominant difficulty",
+                "The assessment prioritises eligible hand-control tasks while retaining arm positioning checks when relevant.",
+                ["Arm movement is relatively preserved while current finger or hand control difficulty was reported."],
+            )
+        if hand == "no_movement" or not hand_relevant:
+            return result(
+                "arm_dominant_weakness",
+                "Arm and reaching dominant difficulty",
+                "The assessment focuses on eligible reaching and arm-raising tasks; active hand tasks are not assigned without finger movement.",
+                ["Current arm difficulty was reported without testable active hand movement."],
+            )
+        return result(
+            "mixed_moderate_impairment",
+            "Mixed arm and hand needs",
+            "The assessment combines eligible reaching and hand-control tasks.",
+            ["Current arm and hand movement difficulties were both reported."],
+        )
+    return result(
+        "high_functioning_monitoring",
+        "High-functioning monitoring",
+        "A short cross-domain screen can establish a baseline without requiring the full seven-task assessment.",
+        ["No current arm, hand, or mobility difficulty was reported, so a brief baseline is sufficient."],
+        ["upper_limb", "hand", "lower_limb"],
+        ["T1", "H1", "L6"],
+    )
 
 
 def functional_tiers(profile: Optional[Dict[str, Any]]) -> Dict[str, Any]:
@@ -497,14 +670,12 @@ DEFAULT_FOLLOW_UP_TASKS: Dict[str, List[str]] = {
 def initial_assessment_recommendation(profile: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     """Select only approved initial tasks that match the saved self-reported prerequisites."""
     profile = dict(profile or {})
-    missing = [
-        key
-        for key in ASSESSMENT_READINESS_FIELDS
-        if profile.get(key) is None or str(profile.get(key)).strip() == ""
-    ]
+    functional_profile = classify_functional_rehab_profile(profile)
+    missing = list(functional_profile["missing_fields"])
     base = {
         "policy_version": CARE_POLICY_VERSION,
         "package_id": "initial",
+        "functional_profile": functional_profile,
         "missing_answers": missing,
         "task_ids": [],
         "task_count": 0,
@@ -553,39 +724,72 @@ def initial_assessment_recommendation(profile: Optional[Dict[str, Any]]) -> Dict
     # sit for seated tasks, cannot walk / advised not to walk) excludes it.
     # When help is needed but no caregiver was reported, the tasks stay
     # assigned and the start is paused until a helper is confirmed present.
-    active_arm = arm in {"most_movements", "some_movement", "not_affected"}
+    assessment_domains = set(functional_profile["assessment_domains"])
+    candidate_task_ids = set(functional_profile["candidate_task_ids"])
+    active_arm = arm in {"most_movements", "some_movement"}
     helper_capable_arm = arm in {"help_only", "not_sure"}
-    active_hand = hand in {"opens_and_moves", "some_finger_movement", "very_little_movement", "not_affected"}
+    active_hand = hand in {"opens_and_moves", "some_finger_movement", "very_little_movement"}
     helper_capable_hand = hand == "not_sure"
     independent_sitting = sitting == "independent"
     helper_assisted_task_ids: List[str] = []
 
-    arm_tasks_possible = independent_sitting and (active_arm or helper_capable_arm)
-    if arm_tasks_possible:
-        task_ids.extend(["T1", "T2", "T3"])
-        if not active_arm:
-            helper_assisted_task_ids.extend(["T1", "T2", "T3"])
+    # An unaffected arm can position an affected hand, but it is not itself a
+    # reason to assign upper-limb assessment tasks.
+    arm_positioning_possible = independent_sitting and (active_arm or helper_capable_arm or arm == "not_affected")
+    upper_profile_tasks = [task_id for task_id in INITIAL_TASKS_BY_DOMAIN["upper_limb"] if task_id in candidate_task_ids]
+    skipped_upper_tasks = [task_id for task_id in INITIAL_TASKS_BY_DOMAIN["upper_limb"] if task_id not in candidate_task_ids]
+    if skipped_upper_tasks and "upper_limb" in assessment_domains:
+        excluded.append({
+            "task_ids": skipped_upper_tasks,
+            "reason": "This functional profile uses a shorter upper-limb screen rather than the detailed task set.",
+        })
+    if "upper_limb" not in assessment_domains or not upper_profile_tasks:
+        excluded.append({
+            "task_ids": ["T1", "T2", "T3"],
+            "reason": "No current affected-arm difficulty was reported, so upper-limb camera tasks are not needed for this profile.",
+        })
+    elif arm_positioning_possible:
+        task_ids.extend(upper_profile_tasks)
+        if helper_capable_arm:
+            helper_assisted_task_ids.extend(upper_profile_tasks)
     else:
         reason = (
             "These seated reaching tasks need the patient to sit upright safely without being held."
             if not independent_sitting
             else "No affected-arm movement was reported, even with help, so an active reaching task cannot be measured yet."
         )
-        excluded.append({"task_ids": ["T1", "T2", "T3"], "reason": reason})
+        excluded.append({"task_ids": upper_profile_tasks, "reason": reason})
 
-    if arm_tasks_possible and (active_hand or helper_capable_hand):
-        task_ids.extend(["H1", "H3", "H4"])
-        if not (active_arm and active_hand):
-            helper_assisted_task_ids.extend(["H1", "H3", "H4"])
+    hand_profile_tasks = [task_id for task_id in INITIAL_TASKS_BY_DOMAIN["hand"] if task_id in candidate_task_ids]
+    skipped_hand_tasks = [task_id for task_id in INITIAL_TASKS_BY_DOMAIN["hand"] if task_id not in candidate_task_ids]
+    if skipped_hand_tasks and "hand" in assessment_domains:
+        excluded.append({
+            "task_ids": skipped_hand_tasks,
+            "reason": "This functional profile uses a shorter hand-control screen rather than the detailed task set.",
+        })
+    if "hand" not in assessment_domains or not hand_profile_tasks:
+        excluded.append({
+            "task_ids": ["H1", "H3", "H4"],
+            "reason": "No current affected-hand difficulty was reported, so hand-control camera tasks are not needed for this profile.",
+        })
+    elif arm_positioning_possible and (active_hand or helper_capable_hand or hand == "not_affected"):
+        task_ids.extend(hand_profile_tasks)
+        if helper_capable_hand or helper_capable_arm:
+            helper_assisted_task_ids.extend(hand_profile_tasks)
     else:
         reason = (
             "These hand tasks require the affected hand to be raised safely in front of the camera."
-            if not arm_tasks_possible
+            if not arm_positioning_possible
             else "No affected-finger movement was reported, even with help, so an active hand task cannot be measured yet."
         )
-        excluded.append({"task_ids": ["H1", "H3", "H4"], "reason": reason})
+        excluded.append({"task_ids": hand_profile_tasks, "reason": reason})
 
-    if mobility in {"independent", "cane", "walker"}:
+    if "lower_limb" not in assessment_domains:
+        excluded.append({
+            "task_ids": ["L6"],
+            "reason": "No current lower-limb or mobility difficulty was reported, so the walking video is not needed for this profile.",
+        })
+    elif mobility in {"independent", "cane", "walker"}:
         task_ids.append("L6")
         safety_notes.append("Use the usual walking aid and have a separate helper nearby if normally needed for safety.")
     elif mobility == "person_assist":
@@ -657,7 +861,10 @@ def initial_assessment_recommendation(profile: Optional[Dict[str, Any]]) -> Dict
             ),
         }
 
-    message = f"Alira selected {len(task_ids)} suitable task{'s' if len(task_ids) != 1 else ''} from the approved initial assessment."
+    message = (
+        f"Your answers fit the {functional_profile['label'].lower()} functional profile. "
+        f"Alira selected {len(task_ids)} suitable task{'s' if len(task_ids) != 1 else ''} from the approved initial assessment."
+    )
     if helper_assisted_task_ids:
         message += " Your carer should stay close to support the assisted tasks."
 

@@ -105,10 +105,16 @@ def test_proactive_alira_message_uses_next_step_instead_of_generic_daily_check_i
 
 
 def test_initial_recommendation_uses_saved_capabilities(monkeypatch):
+    recorded = {}
+
     async def user_from_header(_headers):
         return readiness_user()
 
+    def record_action(action_type, **kwargs):
+        recorded.update({"action_type": action_type, **kwargs})
+
     monkeypatch.setattr(server, "_user_from_header", user_from_header)
+    monkeypatch.setattr(server, "_record_alira_action", record_action)
     response = TestClient(server.app).get(
         "/api/assessment/recommendation?package=initial",
         headers={"X-User-Id": "u_alira_care"},
@@ -116,8 +122,13 @@ def test_initial_recommendation_uses_saved_capabilities(monkeypatch):
 
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("application/json")
+    assert response.json()["functional_profile"]["id"] == "mixed_moderate_impairment"
+    assert response.json()["functional_profile"]["assessment_domains"] == ["upper_limb", "hand", "lower_limb"]
     assert response.json()["task_ids"] == ["T1", "T2", "T3", "H1", "H3", "H4"]
     assert "L6" not in response.json()["task_ids"]
+    assert recorded["action_type"] == "assessment_tasks_selected"
+    assert recorded["details"]["functional_profile_id"] == "mixed_moderate_impairment"
+    assert recorded["details"]["candidate_task_ids"] == ["T1", "T2", "T3", "H1", "H3", "H4", "L6"]
 
 
 def test_initial_task_endpoint_rejects_client_override(monkeypatch):

@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { View, Text, StyleSheet, Pressable, TextInput, ScrollView, ActivityIndicator, KeyboardAvoidingView, Modal, Platform } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { Ionicons } from "@expo/vector-icons";
+import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import * as Haptics from "expo-haptics";
 import { colors, spacing, radius } from "@/src/theme";
@@ -11,6 +11,20 @@ import { ASSESSMENT_READINESS_KEYS, PATIENT_SURVEY_STEPS } from "@/src/patientSu
 const READINESS_SURVEY_STEPS = PATIENT_SURVEY_STEPS.filter((item) =>
   ASSESSMENT_READINESS_KEYS.includes(item.key as typeof ASSESSMENT_READINESS_KEYS[number]),
 );
+
+// "Any other goals?" shows a picture for each option instead of a symbol:
+// large pictograms on tinted cards, with a check mark when selected.
+const GOAL_PICTURES: Record<string, { icon: keyof typeof MaterialCommunityIcons.glyphMap; tint: string; background: string }> = {
+  reach_overhead: { icon: "human-handsup", tint: "#1F6A4A", background: "#E4F1E8" },
+  self_feed: { icon: "silverware-fork-knife", tint: "#8A5A00", background: "#FBF0DB" },
+  dress: { icon: "tshirt-crew", tint: "#28618C", background: "#E3EEF7" },
+  write: { icon: "lead-pencil", tint: "#6B4A9B", background: "#EDE7F7" },
+  drive: { icon: "car-side", tint: "#A34A2A", background: "#FBE9E1" },
+  cook: { icon: "chef-hat", tint: "#8A5A00", background: "#FBF0DB" },
+  play_music: { icon: "guitar-acoustic", tint: "#8C2E52", background: "#F9E6EE" },
+  exercise: { icon: "run", tint: "#1F6A4A", background: "#E4F1E8" },
+  other: { icon: "star-plus-outline", tint: "#4E5A52", background: "#EEF1EE" },
+};
 
 export default function OnboardingScreen() {
   const insets = useSafeAreaInsets();
@@ -247,10 +261,32 @@ export default function OnboardingScreen() {
                   else next = active ? selected.filter((s) => s !== o.value) : [...selected.filter((s) => s !== "none"), o.value];
                   setVal(step.key, next);
                 }}
-                style={[styles.chip, active && styles.chipActive]}
+                style={step.key === "secondary_goals"
+                  ? [styles.goalCard, active && styles.goalCardActive]
+                  : [styles.chip, active && styles.chipActive]}
               >
-                {o.emoji && <Text style={styles.chipEmoji}>{o.emoji}</Text>}
-                <Text style={[styles.chipText, active && styles.chipTextActive]}>{o.label}</Text>
+                {step.key === "secondary_goals" ? (
+                  <>
+                    <View style={[styles.goalPicture, { backgroundColor: (GOAL_PICTURES[o.value] || GOAL_PICTURES.other).background }]} testID={`goal-picture-${o.value}`}>
+                      <MaterialCommunityIcons
+                        name={(GOAL_PICTURES[o.value] || GOAL_PICTURES.other).icon}
+                        size={44}
+                        color={(GOAL_PICTURES[o.value] || GOAL_PICTURES.other).tint}
+                      />
+                    </View>
+                    <Text style={[styles.goalCardText, active && styles.goalCardTextActive]}>{o.label}</Text>
+                    {active && (
+                      <View style={styles.goalCheck}>
+                        <Ionicons name="checkmark-circle" size={24} color={colors.brandPrimary} />
+                      </View>
+                    )}
+                  </>
+                ) : (
+                  <>
+                    {o.emoji && <Text style={styles.chipEmoji}>{o.emoji}</Text>}
+                    <Text style={[styles.chipText, active && styles.chipTextActive]}>{o.label}</Text>
+                  </>
+                )}
               </Pressable>
             );
           })}
@@ -536,6 +572,12 @@ const styles = StyleSheet.create({
   chip: { maxWidth: "100%", flexDirection: "row", alignItems: "center", gap: 6, backgroundColor: colors.surfaceSecondary, paddingHorizontal: spacing.md, paddingVertical: 10, borderRadius: radius.pill, borderWidth: 2, borderColor: "transparent" },
   chipActive: { borderColor: colors.brandPrimary, backgroundColor: colors.brandTertiary },
   chipEmoji: { fontSize: 16 },
+  goalCard: { width: "47%", flexGrow: 1, alignItems: "center", gap: spacing.sm, paddingVertical: spacing.md, paddingHorizontal: spacing.sm, borderRadius: radius.md, borderWidth: 2, borderColor: colors.border, backgroundColor: colors.surface, position: "relative" },
+  goalCardActive: { borderColor: colors.brandPrimary, backgroundColor: colors.brandTertiary },
+  goalPicture: { width: 76, height: 76, borderRadius: 38, alignItems: "center", justifyContent: "center" },
+  goalCardText: { fontSize: 14, lineHeight: 19, fontWeight: "800", color: colors.onSurface, textAlign: "center" },
+  goalCardTextActive: { color: colors.brandPrimary },
+  goalCheck: { position: "absolute", top: 8, right: 8 },
   chipText: { flexShrink: 1, fontSize: 14, lineHeight: 19, fontWeight: "600", color: colors.onSurface },
   chipTextActive: { color: colors.onBrandTertiary, fontWeight: "700" },
   footer: { padding: spacing.md, backgroundColor: colors.surface, borderTopWidth: 1, borderTopColor: colors.divider },

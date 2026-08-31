@@ -7,6 +7,7 @@ import * as Haptics from "expo-haptics";
 
 import { authedFetch } from "@/src/auth";
 import { localDateString } from "@/src/components/DailyCheckInCalendar";
+import { PointsCelebration, PointsCelebrationEvent, celebrationEvent } from "@/src/components/PointsCelebration";
 import { SafetyStopStrip } from "@/src/components/SafetyStopStrip";
 import { getScreenCache, setScreenCache } from "@/src/screenCache";
 import { colors, radius, spacing } from "@/src/theme";
@@ -79,6 +80,7 @@ export default function CaregiverPlanScreen() {
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState<string | null>(null);
   const [observingId, setObservingId] = useState<string | null>(null);
+  const [celebration, setCelebration] = useState<PointsCelebrationEvent | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -120,6 +122,8 @@ export default function CaregiverPlanScreen() {
       setDoneIds(nextDone);
       setObservingId(null);
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      // Each delivered routine earns points - celebrate, then fade out.
+      setCelebration(celebrationEvent(5, "Routine delivered - thank you!"));
       const allIds = plan?.daily_delivery?.programme_ids ?? plan?.programmes.map((item) => item.id) ?? [];
       if (allIds.length > 0 && allIds.every((id) => nextDone.includes(id))) {
         // Every routine is delivered: the day earns its calendar check mark.
@@ -268,6 +272,7 @@ export default function CaregiverPlanScreen() {
 
         <SafetyStopStrip />
       </ScrollView>
+      <PointsCelebration event={celebration} onDone={() => setCelebration(null)} />
     </View>
   );
 }

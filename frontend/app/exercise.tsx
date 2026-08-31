@@ -5,6 +5,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import * as Haptics from "expo-haptics";
 import { colors, spacing, radius } from "@/src/theme";
+import { PointsCelebration, PointsCelebrationEvent, celebrationEvent } from "@/src/components/PointsCelebration";
 import { storage } from "@/src/utils/storage";
 import { SafetyStopStrip } from "@/src/components/SafetyStopStrip";
 import { localDateString } from "@/src/components/DailyCheckInCalendar";
@@ -28,6 +29,7 @@ export default function ExerciseScreen() {
   const webRef = useRef<WebView>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [celebration, setCelebration] = useState<PointsCelebrationEvent | null>(null);
   const [doneInfo, setDoneInfo] = useState<{ reps: number; avgScore: number | null } | null>(null);
   const [voiceGuidance, setVoiceGuidance] = useState(true);
   // Per-rep toast state
@@ -116,6 +118,8 @@ export default function ExerciseScreen() {
                 completed_at: new Date().toISOString(),
               }),
             });
+            // Every completed exercise earns points - celebrate, then fade out.
+            setCelebration(celebrationEvent(5, "Exercise complete - great work!"));
           } catch {
             // Local exercise progress remains available and can sync on a later session.
           }
@@ -191,6 +195,7 @@ export default function ExerciseScreen() {
         </View>
       )}
       <SafetyStopStrip />
+      <PointsCelebration event={celebration} onDone={() => setCelebration(null)} />
     </View>
   );
 }

@@ -1871,6 +1871,7 @@ async def get_assessment_recommendation(request: Request, package: str = "initia
     if package != "initial":
         raise HTTPException(status_code=422, detail="Capability screening is currently available for the initial assessment only")
     recommendation = initial_assessment_recommendation(user.get("profile") or {})
+    functional_profile = recommendation.get("functional_profile") or {}
     _record_alira_action(
         "assessment_tasks_selected",
         source="assessment_recommendation",
@@ -1879,6 +1880,12 @@ async def get_assessment_recommendation(request: Request, package: str = "initia
         details={
             "package_id": package,
             "selection_policy": "saved_readiness_survey",
+            "functional_profile_id": functional_profile.get("id"),
+            "functional_profile_label": functional_profile.get("label"),
+            "functional_profile_rationale": functional_profile.get("rationale") or [],
+            "reported_domains": functional_profile.get("reported_domains") or [],
+            "assessment_domains": functional_profile.get("assessment_domains") or [],
+            "candidate_task_ids": functional_profile.get("candidate_task_ids") or [],
             "task_ids": recommendation.get("task_ids") or [],
             "excluded_task_ids": [
                 task_id

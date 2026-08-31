@@ -16,6 +16,7 @@ import * as Haptics from "expo-haptics";
 
 import { Assessment, fetchHistory } from "@/src/api";
 import { authedFetch, getCachedUser, preferredNameKey } from "@/src/auth";
+import { PointsCelebration, PointsCelebrationEvent, celebrationEvent } from "@/src/components/PointsCelebration";
 import { SurveyPrefaceModal } from "@/src/components/SurveyPrefaceModal";
 import { useDisplayPreferences } from "@/src/displayPreferences";
 import { getScreenCache, setScreenCache } from "@/src/screenCache";
@@ -284,6 +285,7 @@ export default function HomeScreen() {
   const [checkingIn, setCheckingIn] = useState(false);
   const [showWeek, setShowWeek] = useState(false);
   const [showSurveyPreface, setShowSurveyPreface] = useState(false);
+  const [celebration, setCelebration] = useState<PointsCelebrationEvent | null>(null);
 
   const load = useCallback(async () => {
     if (!getScreenCache<HomeScreenCache>("home")) setLoading(true);
@@ -406,7 +408,9 @@ export default function HomeScreen() {
     if (response?.ok) {
       const payload = await response.json().catch(() => null);
       if (payload) setCheckIn({ status: payload.status || "in_progress", days: payload.days || [] });
-      // Checking in earns points (2 per day) - refresh the badge right away.
+      // Checking in earns points (2 per day): celebrate briefly, then the
+      // toast fades out on its own, and the badge refreshes right away.
+      setCelebration(celebrationEvent(2, "Checked in - great start to today!"));
       const rewardsResponse = await authedFetch("/api/users/rewards").catch(() => null);
       if (rewardsResponse?.ok) {
         const rewardsPayload = await rewardsResponse.json().catch(() => null);
@@ -427,6 +431,12 @@ export default function HomeScreen() {
   const assessmentCompletedToday = Boolean(
     latest && String(latest.created_at || "").slice(0, 10) === localDateString(),
   );
+
+  // Progressive disclosure: the next step is revealed by checking in, and the
+  // third step only after the initial assessment exists.
+  const checkedInToday = checkIn.status !== "not_checked_in";
+  const stepTwoRevealed = checkedInToday;
+  const stepThreeRevealed = checkedInToday && (assessmentCompletedToday || !isInitialAssessment);
 
   const primaryTitle = isInitialAssessment
     ? "Initial assessment"
@@ -499,13 +509,13 @@ export default function HomeScreen() {
               <View style={[styles.dayBoard, { backgroundColor: palette.surface, borderColor: palette.border }, !isWide && styles.dayBoardCompact]} testID="home-your-day">
                 {isWide ? (
                   <>
-                    <View style={[styles.dayConnectorSegment, styles.dayConnectorLeft, checkIn.status === "not_checked_in" && styles.dayConnectorInactive]} />
+                    <View style={[styles.dayConnectorSegment, styles.dayConnectorLeft, !checkedInToday && styles.dayConnectorInactive]} />
                     <View
                       testID="home-day-connector-right"
                       style={[
                         styles.dayConnectorSegment,
                         styles.dayConnectorRight,
-                        !(assessmentCompletedToday || initialWalkingAssigned || walkingOutstanding || carePlan?.survey?.due || followUpDue) && styles.dayConnectorInactive,
+                        !stepThreeRevealed && styles.dayConnectorInactive,
                       ]}
                     />
                   </>
@@ -518,7 +528,14 @@ export default function HomeScreen() {
                   description={checkIn.status === "not_checked_in" ? "Start today's recovery plan. Checking in earns 2 points." : checkIn.status === "complete" ? "Today's plan is complete." : "Daily check-in complete. +2 points earned."}
                   button={checkIn.status === "not_checked_in" ? { label: checkingIn ? "Checking in..." : "Check in", icon: "hand-right-outline", onPress: checkInForToday, testID: "daily-checkin-button" } : undefined}
                 />
-                {assessmentCompletedToday ? (
+                {!stepTwoRevealed ? (
+                  <DayStep
+                    icon="lock-closed-outline"
+                    title="Your next step"
+                    badge={<StatusPill icon="lock-closed-outline" label="Locked" tone="grey" />}
+                    description="Check in first to see today's next step."
+                  />
+                ) : assessmentCompletedToday ? (
                   <DayStep
                     icon="checkmark"
                     title="Today's assessment"
@@ -537,7 +554,16 @@ export default function HomeScreen() {
                     button={{ label: primaryButton.label, icon: "arrow-forward-circle-outline", onPress: () => primaryButton.destination === "rehab_plan" ? openExercisePlan() : openDestination(primaryButton.destination), primary: true, testID: "home-primary-action" }}
                   />
                 )}
-                {assessmentCompletedToday ? (
+                {!stepThreeRevealed ? (
+                  <DayStep
+                    icon="lock-closed-outline"
+                    title="Later today"
+                    badge={<StatusPill icon="lock-closed-outline" label="Locked" tone="grey" />}
+                    description={!checkedInToday
+                      ? "Check in to unlock your day."
+                      : "Complete the initial assessment to see what comes next."}
+                  />
+                ) : assessmentCompletedToday ? (
                   <DayStep
                     icon={primaryComplete ? "checkmark" : "fitness-outline"}
                     title="Today's exercises"
@@ -645,6 +671,7 @@ export default function HomeScreen() {
           )}
         </View>
       </ScrollView>
+      <PointsCelebration event={celebration} onDone={() => setCelebration(null)} />
       <SurveyPrefaceModal visible={showSurveyPreface} onBegin={openSurveyChat} onClose={() => setShowSurveyPreface(false)} />
     </View>
   );

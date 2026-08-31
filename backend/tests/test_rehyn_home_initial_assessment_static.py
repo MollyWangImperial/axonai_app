@@ -59,6 +59,14 @@ def test_initial_assessment_is_automatically_selected_without_a_manual_task_choi
     assert "setSelectedTaskId" not in intro
 
 
+def test_initial_assessment_shows_the_survey_based_functional_profile_and_tasks():
+    intro = read("frontend/app/task-intro.tsx")
+    assert 'testID="task-intro-functional-profile"' in intro
+    assert "YOUR FUNCTIONAL ASSESSMENT PROFILE" in intro
+    assert "recommendation.task_ids.map" in intro
+    assert "This profile guides task selection. It is not a medical diagnosis." in intro
+
+
 def test_followup_starts_fresh_without_removing_assessment_history():
     intro = read("frontend/app/task-intro.tsx")
     assert "if (!isInitial && assessmentComplete && userId)" in intro

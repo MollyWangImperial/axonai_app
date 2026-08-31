@@ -7,6 +7,7 @@ from backend.alira_care_orchestrator import (
     ASSESSMENT_READINESS_FIELDS,
     MAX_CHECK_IN_QUESTIONS,
     build_adaptive_care_plan,
+    classify_functional_rehab_profile,
     initial_assessment_recommendation,
     survey_functional_problems,
     validate_check_in_answers,
@@ -83,7 +84,85 @@ def test_initial_assessment_selects_all_tasks_only_when_prerequisites_are_met():
 
     assert recommendation["status"] == "ready"
     assert recommendation["can_start"] is True
+    assert recommendation["functional_profile"]["id"] == "mixed_moderate_impairment"
     assert recommendation["task_ids"] == ["T1", "T2", "T3", "H1", "H3", "H4", "L6"]
+
+
+@pytest.mark.parametrize(
+    ("answers", "expected_profile", "expected_tasks"),
+    [
+        (
+            {
+                "affected_areas": ["right_upper"],
+                "affected_arm_movement": "some_movement",
+                "affected_hand_movement": "not_affected",
+                "mobility_level": "independent",
+            },
+            "arm_dominant_weakness",
+            ["T1", "T2", "T3"],
+        ),
+        (
+            {
+                "affected_areas": ["right_upper"],
+                "affected_arm_movement": "not_affected",
+                "affected_hand_movement": "some_finger_movement",
+                "mobility_level": "independent",
+            },
+            "hand_dominant_difficulty",
+            ["H1", "H3", "H4"],
+        ),
+        (
+            {
+                "affected_areas": ["right_lower"],
+                "affected_arm_movement": "not_affected",
+                "affected_hand_movement": "not_affected",
+                "mobility_level": "cane",
+            },
+            "walking_dominant_impairment",
+            ["L6"],
+        ),
+        (
+            {
+                "affected_areas": ["right_upper", "right_lower"],
+                "affected_arm_movement": "most_movements",
+                "affected_hand_movement": "opens_and_moves",
+                "mobility_level": "cane",
+            },
+            "mild_mixed_impairment",
+            ["T1", "T2", "T3", "H1", "H3", "H4", "L6"],
+        ),
+    ],
+)
+def test_functional_profile_selects_only_relevant_initial_tasks(answers, expected_profile, expected_tasks):
+    recommendation = initial_assessment_recommendation(ready_profile(**answers))
+
+    assert recommendation["functional_profile"]["id"] == expected_profile
+    assert recommendation["functional_profile"]["non_diagnostic"] is True
+    assert recommendation["task_ids"] == expected_tasks
+
+
+def test_profile_classification_waits_for_complete_readiness_answers():
+    functional_profile = classify_functional_rehab_profile({"sitting_ability": "independent"})
+
+    assert functional_profile["id"] == "needs_clarification"
+    assert functional_profile["assessment_domains"] == []
+    assert set(functional_profile["missing_fields"]) == set(ASSESSMENT_READINESS_FIELDS) - {"sitting_ability"}
+
+
+def test_communication_supported_profile_gets_a_short_baseline_with_a_helper():
+    recommendation = initial_assessment_recommendation(ready_profile(
+        affected_areas=["face_speech"],
+        affected_arm_movement="not_affected",
+        affected_hand_movement="not_affected",
+        mobility_level="independent",
+        instruction_support="helper_required",
+        has_caregiver=True,
+    ))
+
+    assert recommendation["functional_profile"]["id"] == "communication_supported"
+    assert recommendation["requires_helper"] is True
+    assert recommendation["can_start"] is True
+    assert recommendation["task_ids"] == ["T1", "H1", "L6"]
 
 
 def test_walking_with_hands_on_help_is_assigned_as_a_helper_supported_task():
@@ -280,14 +359,31 @@ def test_initial_assessment_does_not_assign_active_arm_or_hand_tasks_without_act
     assert recommendation["task_ids"] == []
 
 
-def test_initial_assessment_keeps_tasks_for_an_unaffected_arm_and_hand():
+def test_initial_assessment_does_not_assign_unaffected_arm_and_hand_tasks():
     recommendation = initial_assessment_recommendation(ready_profile(
         affected_arm_movement="not_affected",
         affected_hand_movement="not_affected",
     ))
 
     assert recommendation["can_start"] is True
-    assert recommendation["task_ids"] == ["T1", "T2", "T3", "H1", "H3", "H4", "L6"]
+    assert recommendation["functional_profile"]["id"] == "walking_dominant_impairment"
+    assert recommendation["task_ids"] == ["L6"]
+
+
+def test_no_reported_motor_difficulty_gets_a_short_cross_domain_baseline():
+    recommendation = initial_assessment_recommendation(ready_profile(
+        affected_areas=["face_speech"],
+        affected_arm_movement="not_affected",
+        affected_hand_movement="not_affected",
+        mobility_level="independent",
+    ))
+
+    assert recommendation["status"] == "ready"
+    assert recommendation["can_start"] is True
+    assert recommendation["requires_clinician_review"] is False
+    assert recommendation["functional_profile"]["id"] == "high_functioning_monitoring"
+    assert recommendation["functional_profile"]["candidate_task_ids"] == ["T1", "H1", "L6"]
+    assert recommendation["task_ids"] == ["T1", "H1", "L6"]
 
 
 def test_helper_required_treats_saved_no_answer_as_no_available_caregiver():
