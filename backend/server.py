@@ -1012,7 +1012,9 @@ async def _assessment_access_plan(
                 detail="Your Initial Assessment is already complete. The next assessment opens only when Alira's schedule says it is due.",
             )
         recommendation = initial_assessment_recommendation(user.get("profile") or {})
-        if not recommendation["can_start"]:
+        # A helper-confirmation pause keeps the tasks assigned: the app collects
+        # the "my helper is with me" confirmation before it launches the camera.
+        if not recommendation["can_start"] and not recommendation.get("helper_confirmation_required"):
             raise HTTPException(status_code=409, detail=recommendation["message"])
         expected_task_ids = list(recommendation["task_ids"])
         if requested_task_ids is not None and set(requested_task_ids) != set(expected_task_ids):
@@ -1837,6 +1839,12 @@ async def get_assessment_recommendation(request: Request, package: str = "initia
             ],
             "readiness_status": recommendation.get("status"),
             "requires_helper": recommendation.get("requires_helper", False),
+            "helper_assisted_task_ids": recommendation.get("helper_assisted_task_ids") or [],
+            "helper_confirmation_required": recommendation.get("helper_confirmation_required", False),
+            "exclusion_reasons": [
+                str(exclusion.get("reason") or "")
+                for exclusion in recommendation.get("excluded") or []
+            ],
         },
     )
     return recommendation

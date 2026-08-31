@@ -26,7 +26,7 @@ def readiness_user(**overrides):
         "sitting_ability": "independent",
         "affected_arm_movement": "some_movement",
         "affected_hand_movement": "some_finger_movement",
-        "mobility_level": "person_assist",
+        "mobility_level": "not_cleared",
         "movement_pain": "mild",
         "instruction_support": "independent",
         "has_caregiver": True,

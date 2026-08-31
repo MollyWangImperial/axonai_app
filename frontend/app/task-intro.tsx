@@ -19,13 +19,23 @@ function parseCompletedTasks(raw: string): Record<string, boolean> {
   }
 }
 
-const PREPARATION_TIPS = [
+// Tips are assembled per patient from the selected tasks: walking guidance
+// only appears when a walking task is assigned, and the carer tip only when
+// Alira marked the assessment as helper-assisted.
+const BASE_PREPARATION_TIPS = [
   "Wear short or fitted sleeves so your arms are visible",
-  "Use a stable seat and clear a short, safe walking path",
+  "Use a stable seat that will not slide or tip",
   "Keep your phone propped up so your full body can be seen",
+];
+
+const WALKING_PREPARATION_TIPS = [
+  "Clear a short, safe walking path",
   "Use your usual walking aid and do not attempt walking if it is not normally safe",
   "Ask a carer or family member to film the walking task from the side and keep your full body visible",
 ];
+
+const HELPER_PREPARATION_TIP =
+  "Have your carer stay within arm's reach to steady or guide you - attempt each movement yourself so Alira can measure it";
 
 type InitialAssessmentRecommendation = {
   status: "needs_answers" | "support_needed" | "clinical_review" | "ready";
@@ -34,6 +44,8 @@ type InitialAssessmentRecommendation = {
   task_count: number;
   missing_answers: string[];
   requires_helper: boolean;
+  helper_assisted_task_ids?: string[];
+  helper_confirmation_required?: boolean;
   requires_clinician_review: boolean;
   safety_notes: string[];
   message: string;
@@ -67,6 +79,7 @@ export default function TaskIntro() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [showStartOver, setShowStartOver] = useState(false);
+  const [helperConfirmed, setHelperConfirmed] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -99,7 +112,12 @@ export default function TaskIntro() {
         const profileSide = profileResponse?.profile?.side_affected;
         const resolvedSide = storedSide || profileSide;
         setAffectedSide(resolvedSide === "left" ? "left" : "right");
-        if (recommendationResponse && !recommendationResponse.can_start) {
+        // A helper-confirmation pause still loads the assigned tasks; the
+        // Start button stays locked until the patient confirms a helper.
+        const pausedForHelper = Boolean(
+          recommendationResponse?.helper_confirmation_required && recommendationResponse?.task_ids?.length,
+        );
+        if (recommendationResponse && !recommendationResponse.can_start && !pausedForHelper) {
           setTaskIds([]);
           setCompletedTasks({});
           setNextTaskId(null);
@@ -175,11 +193,17 @@ export default function TaskIntro() {
     })();
   }, [isInitial, packageId, params.task_ids]);
 
+  const helperConfirmationNeeded = Boolean(
+    isInitial && recommendation?.helper_confirmation_required && taskIds.length > 0,
+  );
+  const blockedByRecommendation = Boolean(recommendation && !recommendation.can_start && !helperConfirmationNeeded);
+
   const onBegin = async () => {
-    if (isInitial && recommendation && !recommendation.can_start) {
+    if (isInitial && blockedByRecommendation) {
       router.push("/onboarding?mode=assessment-readiness" as never);
       return;
     }
+    if (helperConfirmationNeeded && !helperConfirmed) return;
     let taskToStart = nextTaskId;
     let completedTaskIds = Object.keys(completedTasks).filter((taskId) => completedTasks[taskId]);
     if (!isInitial && assessmentComplete && userId) {
@@ -238,9 +262,13 @@ export default function TaskIntro() {
 
   const completedCount = taskIds.filter((taskId) => completedTasks[taskId]).length;
   const assessmentComplete = taskIds.length > 0 && completedCount === taskIds.length;
-  const preparationTips = recommendation && !recommendation.task_ids.includes("L6")
-    ? PREPARATION_TIPS.filter((tip) => !tip.toLowerCase().includes("walking"))
-    : PREPARATION_TIPS;
+  const effectiveTaskIds = recommendation ? recommendation.task_ids : taskIds;
+  const includesWalkingTask = effectiveTaskIds.some((taskId) => taskId.startsWith("L"));
+  const preparationTips = [
+    ...BASE_PREPARATION_TIPS,
+    ...(includesWalkingTask ? WALKING_PREPARATION_TIPS : []),
+    ...(recommendation?.requires_helper ? [HELPER_PREPARATION_TIP] : []),
+  ];
 
   return (
     <View style={styles.container}>
@@ -281,15 +309,17 @@ export default function TaskIntro() {
             </View>
             <View style={styles.sessionReadyCopy}>
               <Text style={styles.sessionReadyTitle}>
-                {recommendation && !recommendation.can_start
-                  ? recommendation.status === "needs_answers" ? "A few readiness answers are needed" : "Camera tasks are paused"
+                {blockedByRecommendation
+                  ? recommendation?.status === "needs_answers" ? "A few readiness answers are needed" : "Camera tasks are paused"
+                  : helperConfirmationNeeded && !helperConfirmed
+                  ? "A helper needs to be with you"
                   : assessmentComplete
                   ? isInitial ? "Your Initial Assessment is complete" : "Your next assessment is ready"
                   : completedCount > 0 ? "Continue where you left off" : isInitial ? "Your first guided task is ready" : "Your next guided task is ready"}
               </Text>
               <Text style={styles.sessionReadyText}>
-                {recommendation && !recommendation.can_start
-                  ? recommendation.message
+                {blockedByRecommendation || (helperConfirmationNeeded && !helperConfirmed)
+                  ? recommendation?.message
                   : assessmentComplete
                   ? isInitial
                     ? "You do not need to repeat these tasks. Your saved results are ready from the Home screen."
@@ -302,6 +332,22 @@ export default function TaskIntro() {
                   <Text style={styles.savedVideoText}>{note}</Text>
                 </View>
               ))}
+              {helperConfirmationNeeded && (
+                <Pressable
+                  testID="task-intro-helper-confirm"
+                  onPress={() => setHelperConfirmed((value) => !value)}
+                  style={styles.helperConfirmRow}
+                >
+                  <Ionicons
+                    name={helperConfirmed ? "checkbox" : "square-outline"}
+                    size={22}
+                    color={colors.brandPrimary}
+                  />
+                  <Text style={styles.helperConfirmText}>
+                    A helper is with me now and will stay for the whole assessment.
+                  </Text>
+                </Pressable>
+              )}
               {savedVideoCount > 0 && recommendation?.can_start !== false && (
                 <View style={styles.savedVideoRow} testID="saved-task-video-count">
                   <Ionicons name="cloud-done-outline" size={16} color={colors.brandPrimary} />
@@ -322,11 +368,22 @@ export default function TaskIntro() {
             <Text style={styles.startOverText}>Start over</Text>
           </Pressable>
         )}
-        <Pressable testID="task-intro-begin" disabled={loading} onPress={onBegin} style={[styles.ctaBtn, loading && { opacity: 0.4 }]}>
-          <Ionicons name={recommendation && !recommendation.can_start ? "clipboard" : assessmentComplete && isInitial ? "home" : "videocam"} size={21} color={colors.onBrandPrimary} />
+        <Pressable
+          testID="task-intro-begin"
+          disabled={loading || (helperConfirmationNeeded && !helperConfirmed)}
+          onPress={onBegin}
+          style={[styles.ctaBtn, (loading || (helperConfirmationNeeded && !helperConfirmed)) && { opacity: 0.4 }]}
+        >
+          <Ionicons
+            name={blockedByRecommendation ? "clipboard" : helperConfirmationNeeded && !helperConfirmed ? "people" : assessmentComplete && isInitial ? "home" : "videocam"}
+            size={21}
+            color={colors.onBrandPrimary}
+          />
           <Text style={styles.ctaText}>
-            {recommendation && !recommendation.can_start
-              ? recommendation.status === "needs_answers" ? "Answer readiness questions" : "Review readiness answers"
+            {blockedByRecommendation
+              ? recommendation?.status === "needs_answers" ? "Answer readiness questions" : "Review readiness answers"
+              : helperConfirmationNeeded && !helperConfirmed
+              ? "Confirm your helper is here first"
               : assessmentComplete
               ? isInitial ? "Return Home" : "Start Next Assessment"
               : completedCount > 0 ? "Continue Assessment" : isInitial ? "Begin Initial Assessment" : "Begin Movement Check-in"}
@@ -373,6 +430,8 @@ const styles = StyleSheet.create({
   sessionReadyTitle: { color: colors.onSurface, fontSize: 16, lineHeight: 21, fontWeight: "800" },
   sessionReadyText: { color: colors.onSurfaceSecondary, fontSize: 13, lineHeight: 19, marginTop: 3 },
   savedVideoRow: { flexDirection: "row", alignItems: "center", gap: 6, marginTop: spacing.sm },
+  helperConfirmRow: { flexDirection: "row", alignItems: "center", gap: spacing.sm, marginTop: spacing.sm, padding: spacing.sm, borderRadius: radius.sm, borderWidth: 1, borderColor: colors.brandPrimary },
+  helperConfirmText: { flex: 1, color: colors.onSurface, fontSize: 13, lineHeight: 18, fontWeight: "700" },
   savedVideoText: { flex: 1, color: colors.brandPrimary, fontSize: 12, lineHeight: 17, fontWeight: "700" },
   errorText: { color: colors.error, fontSize: 14, lineHeight: 20, marginVertical: spacing.md },
   cta: { position: "absolute", left: 0, right: 0, bottom: 0, padding: spacing.md, backgroundColor: colors.surface, borderTopWidth: 1, borderTopColor: colors.divider, gap: spacing.sm },

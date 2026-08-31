@@ -85,12 +85,80 @@ def test_initial_assessment_selects_all_tasks_only_when_prerequisites_are_met():
     assert recommendation["task_ids"] == ["T1", "T2", "T3", "H1", "H3", "H4", "L6"]
 
 
-def test_initial_assessment_does_not_assign_walking_when_hands_on_help_is_needed():
-    recommendation = initial_assessment_recommendation(ready_profile(mobility_level="person_assist"))
+def test_walking_with_hands_on_help_is_assigned_as_a_helper_supported_task():
+    recommendation = initial_assessment_recommendation(ready_profile(
+        mobility_level="person_assist",
+        has_caregiver="yes",
+    ))
+
+    assert recommendation["can_start"] is True
+    assert recommendation["task_ids"] == ["T1", "T2", "T3", "H1", "H3", "H4", "L6"]
+    assert recommendation["helper_assisted_task_ids"] == ["L6"]
+    assert recommendation["requires_helper"] is True
+    assert any("hands-on" in note for note in recommendation["safety_notes"])
+
+
+@pytest.mark.parametrize("mobility", ["not_cleared", "unable_walk", "wheelchair", "unsure"])
+def test_walking_video_is_never_assigned_when_unassisted_walking_is_not_reported(mobility):
+    recommendation = initial_assessment_recommendation(ready_profile(mobility_level=mobility))
+
+    assert "L6" not in recommendation["task_ids"]
+    walking_exclusion = next(item for item in recommendation["excluded"] if item["task_ids"] == ["L6"])
+    assert walking_exclusion["reason"]
+    if mobility == "not_cleared":
+        assert "advised against" in walking_exclusion["reason"]
+
+
+def test_seated_tasks_stay_assigned_with_carer_support_when_arm_moves_only_with_help():
+    recommendation = initial_assessment_recommendation(ready_profile(
+        affected_arm_movement="help_only",
+        has_caregiver="yes",
+        mobility_level="not_cleared",
+    ))
 
     assert recommendation["can_start"] is True
     assert recommendation["task_ids"] == ["T1", "T2", "T3", "H1", "H3", "H4"]
-    assert any("hands-on assistance" in item["reason"] for item in recommendation["excluded"])
+    assert recommendation["requires_helper"] is True
+    assert recommendation["helper_assisted_task_ids"] == ["T1", "T2", "T3", "H1", "H3", "H4"]
+    assert any("carer" in note.lower() for note in recommendation["safety_notes"])
+    assert "carer" in recommendation["message"].lower()
+
+
+def test_help_only_arm_without_a_carer_keeps_tasks_but_pauses_start_for_helper_confirmation():
+    recommendation = initial_assessment_recommendation(ready_profile(
+        affected_arm_movement="help_only",
+        has_caregiver="no",
+    ))
+
+    assert recommendation["status"] == "support_needed"
+    assert recommendation["can_start"] is False
+    assert recommendation["helper_confirmation_required"] is True
+    assert recommendation["task_ids"] == ["T1", "T2", "T3", "H1", "H3", "H4", "L6"]
+    assert recommendation["helper_assisted_task_ids"] == ["T1", "T2", "T3", "H1", "H3", "H4"]
+    assert "helper" in recommendation["message"].lower()
+
+
+def test_uncertain_arm_and_hand_answers_still_assign_tasks_when_a_carer_is_available():
+    recommendation = initial_assessment_recommendation(ready_profile(
+        affected_arm_movement="not_sure",
+        affected_hand_movement="not_sure",
+        has_caregiver="yes",
+    ))
+
+    assert recommendation["can_start"] is True
+    assert recommendation["task_ids"] == ["T1", "T2", "T3", "H1", "H3", "H4", "L6"]
+    assert recommendation["requires_helper"] is True
+    assert recommendation["helper_assisted_task_ids"] == ["T1", "T2", "T3", "H1", "H3", "H4"]
+
+
+def test_no_arm_movement_is_excluded_even_with_a_carer_available():
+    recommendation = initial_assessment_recommendation(ready_profile(
+        affected_arm_movement="no_movement",
+        has_caregiver="yes",
+    ))
+
+    assert all(task_id not in recommendation["task_ids"] for task_id in ("T1", "T2", "T3", "H1", "H3", "H4"))
+    assert any("even with help" in item["reason"] for item in recommendation["excluded"])
 
 
 def test_initial_assessment_does_not_assign_active_arm_or_hand_tasks_without_active_arm_movement():
@@ -123,6 +191,9 @@ def test_helper_required_treats_saved_no_answer_as_no_available_caregiver():
 
     assert recommendation["can_start"] is False
     assert recommendation["status"] == "support_needed"
+    # The tasks stay assigned; only the start is paused until a helper is confirmed.
+    assert recommendation["helper_confirmation_required"] is True
+    assert recommendation["task_ids"] == ["T1", "T2", "T3", "H1", "H3", "H4", "L6"]
 
 
 def test_initial_assessment_pauses_for_severe_or_worsening_pain():
@@ -386,3 +457,33 @@ def test_frontend_connects_voice_check_in_targeted_assessment_and_plan_guardrail
     assert 'identifier: "adaptive_recovery_check_in"' in notifications
     assert 'identifier: "adaptive_movement_assessment"' in notifications
     assert "plan?.assessment?.due_at" in notifications
+
+
+def test_preparation_tips_follow_the_assigned_tasks():
+    root = Path(__file__).resolve().parents[2]
+    task_intro = (root / "frontend" / "app" / "task-intro.tsx").read_text(encoding="utf-8")
+
+    # Walking guidance only shows when a walking task is actually assigned,
+    # and the carer tip only when Alira marked the assessment helper-assisted.
+    assert "BASE_PREPARATION_TIPS" in task_intro
+    assert "WALKING_PREPARATION_TIPS" in task_intro
+    assert "HELPER_PREPARATION_TIP" in task_intro
+    assert 'effectiveTaskIds.some((taskId) => taskId.startsWith("L"))' in task_intro
+    assert "includesWalkingTask ? WALKING_PREPARATION_TIPS : []" in task_intro
+    assert "recommendation?.requires_helper ? [HELPER_PREPARATION_TIP] : []" in task_intro
+    assert "const PREPARATION_TIPS" not in task_intro
+
+
+def test_task_intro_pauses_start_until_the_helper_is_confirmed_present():
+    root = Path(__file__).resolve().parents[2]
+    task_intro = (root / "frontend" / "app" / "task-intro.tsx").read_text(encoding="utf-8")
+
+    # A helper-confirmation pause loads the assigned tasks but locks the Start
+    # button behind an explicit "a helper is with me" confirmation.
+    assert "helper_confirmation_required?: boolean" in task_intro
+    assert 'testID="task-intro-helper-confirm"' in task_intro
+    assert "recommendationResponse?.helper_confirmation_required && recommendationResponse?.task_ids?.length" in task_intro
+    assert "disabled={loading || (helperConfirmationNeeded && !helperConfirmed)}" in task_intro
+    assert "if (helperConfirmationNeeded && !helperConfirmed) return;" in task_intro
+    assert "A helper is with me now and will stay for the whole assessment." in task_intro
+    assert "Confirm your helper is here first" in task_intro

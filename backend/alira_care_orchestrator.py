@@ -393,6 +393,8 @@ def initial_assessment_recommendation(profile: Optional[Dict[str, Any]]) -> Dict
         "task_count": 0,
         "excluded": [],
         "requires_helper": False,
+        "helper_assisted_task_ids": [],
+        "helper_confirmation_required": False,
         "requires_clinician_review": False,
         "safety_notes": [],
     }
@@ -428,48 +430,73 @@ def initial_assessment_recommendation(profile: Optional[Dict[str, Any]]) -> Dict
             "message": "The camera assessment is paused because severe or worsening pain needs clinical advice first.",
         }
 
-    if instruction_support == "helper_required" and not has_caregiver:
-        return {
-            **base,
-            "status": "support_needed",
-            "can_start": False,
-            "requires_helper": True,
-            "excluded": [{"task_ids": list(INITIAL_ASSESSMENT_TASK_IDS), "reason": "The patient reported needing help to follow instructions or use the screen."}],
-            "message": "Please have a trusted helper present before starting the camera assessment.",
-        }
-
+    # Task gate (spec Tier 2): a task is assigned whenever the patient can
+    # attempt it independently OR with a helper's support. Only an answer that
+    # rules the movement out entirely ("no movement even with help", cannot
+    # sit for seated tasks, cannot walk / advised not to walk) excludes it.
+    # When help is needed but no caregiver was reported, the tasks stay
+    # assigned and the start is paused until a helper is confirmed present.
     active_arm = arm in {"most_movements", "some_movement", "not_affected"}
+    helper_capable_arm = arm in {"help_only", "not_sure"}
     active_hand = hand in {"opens_and_moves", "some_finger_movement", "very_little_movement", "not_affected"}
+    helper_capable_hand = hand == "not_sure"
     independent_sitting = sitting == "independent"
+    helper_assisted_task_ids: List[str] = []
 
-    if independent_sitting and active_arm:
+    arm_tasks_possible = independent_sitting and (active_arm or helper_capable_arm)
+    if arm_tasks_possible:
         task_ids.extend(["T1", "T2", "T3"])
+        if not active_arm:
+            helper_assisted_task_ids.extend(["T1", "T2", "T3"])
     else:
         reason = (
-            "These seated reaching tasks need independent sitting and some unassisted affected-arm movement."
-            if sitting != "independent"
-            else "The patient did not report enough unassisted affected-arm movement for active reaching tasks."
+            "These seated reaching tasks need the patient to sit upright safely without being held."
+            if not independent_sitting
+            else "No affected-arm movement was reported, even with help, so an active reaching task cannot be measured yet."
         )
         excluded.append({"task_ids": ["T1", "T2", "T3"], "reason": reason})
 
-    if independent_sitting and active_arm and active_hand:
+    if arm_tasks_possible and (active_hand or helper_capable_hand):
         task_ids.extend(["H1", "H3", "H4"])
+        if not (active_arm and active_hand):
+            helper_assisted_task_ids.extend(["H1", "H3", "H4"])
     else:
         reason = (
             "These hand tasks require the affected hand to be raised safely in front of the camera."
-            if not independent_sitting or not active_arm
-            else "The patient did not report active affected-finger movement for these hand tasks."
+            if not arm_tasks_possible
+            else "No affected-finger movement was reported, even with help, so an active hand task cannot be measured yet."
         )
         excluded.append({"task_ids": ["H1", "H3", "H4"], "reason": reason})
 
     if mobility in {"independent", "cane", "walker"}:
         task_ids.append("L6")
         safety_notes.append("Use the usual walking aid and have a separate helper nearby if normally needed for safety.")
+    elif mobility == "person_assist":
+        task_ids.append("L6")
+        helper_assisted_task_ids.append("L6")
+        safety_notes.append(
+            "The helper must stay hands-on for the whole walking task, and a second person should film from the side. Alira records this walk as helper-supported."
+        )
     else:
+        walking_exclusion_reasons = {
+            "not_cleared": "Walking has been advised against for this patient, so the walking video is never assigned.",
+            "unable_walk": "The patient cannot walk at the moment, so the walking video is not assigned.",
+            "wheelchair": "The patient uses a wheelchair, so the walking video is not assigned.",
+            "unsure": "It is not clear that walking is currently safe, so the walking video is not assigned.",
+        }
         excluded.append({
             "task_ids": ["L6"],
-            "reason": "Walking video is assigned only when the patient reports walking safely without hands-on assistance.",
+            "reason": walking_exclusion_reasons.get(
+                mobility,
+                "Walking video is assigned only when the patient can walk with, at most, hands-on help from another person.",
+            ),
         })
+
+    if helper_assisted_task_ids:
+        requires_helper = True
+        safety_notes.append(
+            "A carer should stay within arm's reach to steady or guide the affected side, while the patient attempts each movement themselves so Alira can measure it."
+        )
 
     if pain in {"moderate", "not_sure"}:
         safety_notes.append("Use a comfortable range and stop if pain increases, dizziness occurs, or movement feels unsafe.")
@@ -478,6 +505,11 @@ def initial_assessment_recommendation(profile: Optional[Dict[str, Any]]) -> Dict
 
     selected = set(task_ids)
     task_ids = [task_id for task_id in INITIAL_ASSESSMENT_TASK_IDS if task_id in selected]
+    helper_assisted_task_ids = [task_id for task_id in INITIAL_ASSESSMENT_TASK_IDS if task_id in set(helper_assisted_task_ids)]
+    helper_needed_to_start = bool(helper_assisted_task_ids) or instruction_support == "helper_required"
+    if helper_needed_to_start:
+        requires_helper = True
+
     if not task_ids:
         return {
             **base,
@@ -490,6 +522,28 @@ def initial_assessment_recommendation(profile: Optional[Dict[str, Any]]) -> Dict
             "message": "None of the current camera tasks match the reported abilities safely. A clinician should choose an appropriate assessment.",
         }
 
+    if helper_needed_to_start and not has_caregiver:
+        return {
+            **base,
+            "status": "support_needed",
+            "can_start": False,
+            "helper_confirmation_required": True,
+            "task_ids": task_ids,
+            "task_count": len(task_ids),
+            "excluded": excluded,
+            "requires_helper": True,
+            "helper_assisted_task_ids": helper_assisted_task_ids,
+            "safety_notes": safety_notes,
+            "message": (
+                f"Alira assigned {len(task_ids)} task{'s' if len(task_ids) != 1 else ''}, but they need a helper with you. "
+                "The assessment stays paused until you confirm a helper is present."
+            ),
+        }
+
+    message = f"Alira selected {len(task_ids)} suitable task{'s' if len(task_ids) != 1 else ''} from the approved initial assessment."
+    if helper_assisted_task_ids:
+        message += " Your carer should stay close to support the assisted tasks."
+
     return {
         **base,
         "status": "ready",
@@ -498,8 +552,9 @@ def initial_assessment_recommendation(profile: Optional[Dict[str, Any]]) -> Dict
         "task_count": len(task_ids),
         "excluded": excluded,
         "requires_helper": requires_helper,
+        "helper_assisted_task_ids": helper_assisted_task_ids,
         "safety_notes": safety_notes,
-        "message": f"Alira selected {len(task_ids)} suitable task{'s' if len(task_ids) != 1 else ''} from the approved initial assessment.",
+        "message": message,
     }
 
 
