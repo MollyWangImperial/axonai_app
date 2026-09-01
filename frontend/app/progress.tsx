@@ -290,7 +290,7 @@ export default function ProgressScreen() {
     if (latestPlanId) {
       router.push({ pathname: "/rehab-plan" as never, params: { id: latestPlanId } });
     } else {
-      router.replace("/");
+      router.dismissTo("/");
     }
   };
 
@@ -310,7 +310,7 @@ export default function ProgressScreen() {
           <View style={styles.emptyIcon}><Ionicons name="trending-up-outline" size={42} color={colors.brandPrimary} /></View>
           <Text style={styles.emptyTitle}>Your progress starts here</Text>
           <Text style={styles.emptyBody}>Complete your first assessment to create a recovery baseline and see what changes over time.</Text>
-          <Pressable onPress={() => router.replace("/")} style={styles.primaryButton} testID="progress-empty-cta">
+          <Pressable onPress={() => router.dismissTo("/")} style={styles.primaryButton} testID="progress-empty-cta">
             <Text style={styles.primaryButtonText}>Start assessment</Text>
             <Ionicons name="chevron-forward" size={21} color="#FFFFFF" />
           </Pressable>

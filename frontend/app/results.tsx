@@ -201,11 +201,16 @@ export default function ResultsScreen() {
   // Inline movement map: observed domain results lead; survey answers fill in
   // any domain that has not been observed yet.
   const MAP_SEVERITIES = {
-    needs_attention: { color: "#F05F4C", soft: "#FCE7E3", label: "Needs attention", icon: "alert" as const },
-    building_strength: { color: "#DEA128", soft: "#FFF3D8", label: "Building strength", icon: "barbell-outline" as const },
-    moving_well: { color: "#3E8256", soft: "#E5F1E8", label: "Moving well", icon: "checkmark" as const },
+    needs_attention: { color: "#E84432", soft: "#FFF1EF", label: "May need support" },
+    building_strength: { color: "#C88913", soft: "#FFF7E6", label: "Building strength" },
+    moving_well: { color: "#3E8256", soft: "#F1F8F2", label: "Moving well" },
   };
-  const MAP_TITLES: Record<string, string> = { upper_limb: "shoulder and arm", hand: "hand", lower_limb: "leg and walking" };
+  const MAP_TITLES: Record<string, string> = { upper_limb: "shoulder and arm", hand: "hand", lower_limb: "leg" };
+  const MAP_DOMAIN_ICONS = {
+    upper_limb: "body-outline",
+    hand: "hand-left-outline",
+    lower_limb: "walk-outline",
+  } as const;
   const mapMarkers = (["upper_limb", "hand", "lower_limb"] as const).map((domain) => {
     const observed = data?.body_function_summary.domains.find((item) => item.domain === domain);
     const pin = surveyPins.find((item) => item.domain === domain);
@@ -248,7 +253,7 @@ export default function ResultsScreen() {
   const goPlan = () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     if (canViewPlan && id) router.push({ pathname: "/rehab-plan", params: { id } });
-    else router.replace("/");
+    else router.dismissTo("/");
   };
 
   if (loading) {
@@ -259,7 +264,7 @@ export default function ResultsScreen() {
     return (
       <View style={[styles.container, styles.center]}>
         <Text style={styles.errorText}>We could not load your movement snapshot.</Text>
-        <Pressable onPress={() => router.replace("/")} style={[styles.cta, { marginTop: spacing.md }]}><Text style={styles.ctaText}>Back home</Text></Pressable>
+        <Pressable onPress={() => router.dismissTo("/")} style={[styles.cta, { marginTop: spacing.md }]}><Text style={styles.ctaText}>Back home</Text></Pressable>
       </View>
     );
   }
@@ -267,7 +272,7 @@ export default function ResultsScreen() {
   return (
     <View style={styles.container}>
       <View style={[styles.header, { paddingTop: insets.top + spacing.xs }]}>
-        <Pressable onPress={() => router.replace("/")} style={styles.headerButton} testID="results-home"><Ionicons name="home-outline" size={23} color="#174834" /></Pressable>
+        <Pressable onPress={() => router.dismissTo("/")} style={styles.headerButton} testID="results-home"><Ionicons name="home-outline" size={23} color="#174834" /></Pressable>
         <View style={styles.headerCopy}>
           <Text style={[styles.headerTitle, isWide && styles.headerTitleWide]}>Movement snapshot</Text>
           <Text style={[styles.headerDate, isWide && styles.headerDateWide]}>{new Date(data.created_at).toLocaleDateString(undefined, { day: "numeric", month: "long", year: "numeric" })}</Text>
@@ -285,72 +290,100 @@ export default function ResultsScreen() {
             ? <DailyActivitiesBoard activities={DEMO_DAILY_ACTIVITIES} title="What this means for daily life" sectionHeading />
             : <DailyActivitiesPanel title="What this means for daily life" sectionHeading />}
           {mapMarkers.length > 0 && (
-            <View style={styles.mapPanel} testID="results-movement-map">
-              <Text style={styles.mapHeading}>Your movement map</Text>
-              <Text style={styles.mapInstruction}>Select a highlighted area to view its details.</Text>
-              <View style={styles.mapLegendRow} testID="anatomy-severity-legend">
-                {(["needs_attention", "building_strength", "moving_well"] as const).map((severity) => (
-                  <View key={severity} style={styles.mapLegendItem}>
-                    <View style={[styles.mapLegendIcon, { borderColor: MAP_SEVERITIES[severity].color, backgroundColor: MAP_SEVERITIES[severity].soft }]}>
-                      <Ionicons name={MAP_SEVERITIES[severity].icon} size={17} color={MAP_SEVERITIES[severity].color} />
-                    </View>
-                    <Text style={styles.mapLegendText}>{MAP_SEVERITIES[severity].label}</Text>
+            <View style={[styles.mapPanel, !isWide && styles.mapPanelNarrow]} testID="results-movement-map">
+              <Text style={[styles.mapHeading, !isWide && styles.mapHeadingNarrow]}>Your movement map</Text>
+              <Text style={[styles.mapInstruction, !isWide && styles.mapInstructionNarrow]}>Choose a number to learn about that area.</Text>
+              <View style={[styles.mapLayout, !isWide && styles.mapLayoutStacked]}>
+                <View style={[styles.mapFigure, !isWide && styles.mapFigureStacked]}>
+                  <View
+                    style={[styles.mapCanvas, { width: mapAnatomyWidth, height: mapAnatomyHeight }]}
+                    testID="results-map-coordinate-frame"
+                  >
+                    <Image source={ageAnatomy.source} resizeMode="contain" style={styles.anatomyImage} accessibilityLabel={ageAnatomy.viewLabel} />
+                    {mapMarkers.map((marker, index) => {
+                      const x = marker.domain === "upper_limb" ? ageAnatomy.shoulderX : marker.domain === "hand" ? ageAnatomy.handX : ageAnatomy.lowerLimbX;
+                      const y = marker.domain === "upper_limb" ? ageAnatomy.shoulderY : marker.domain === "hand" ? ageAnatomy.handY : ageAnatomy.lowerLimbY;
+                      const presentation = MAP_SEVERITIES[marker.severity];
+                      const active = activeMapMarker?.domain === marker.domain;
+                      const areaTitle = `${affectedSide === "left" ? "Left" : "Right"} ${MAP_TITLES[marker.domain]}`;
+                      return (
+                        <Pressable
+                          key={marker.domain}
+                          testID={`results-map-marker-${marker.domain}`}
+                          accessibilityRole="button"
+                          accessibilityLabel={`Area ${index + 1}, ${areaTitle}: ${presentation.label}.`}
+                          accessibilityHint="Shows details for this movement area"
+                          onPress={() => setSelectedMapDomain(marker.domain)}
+                          style={[
+                            styles.mapMarker,
+                            {
+                              top: `${y}%` as `${number}%`,
+                              left: `${affectedSide === "right" ? x : 100 - x}%` as `${number}%`,
+                              borderColor: presentation.color,
+                              backgroundColor: active ? presentation.soft : "#FFFFFF",
+                              shadowColor: presentation.color,
+                            },
+                            active && styles.mapMarkerActive,
+                          ]}
+                        >
+                          <Text style={[styles.mapMarkerNumber, { color: presentation.color }]}>{index + 1}</Text>
+                        </Pressable>
+                      );
+                    })}
                   </View>
-                ))}
-              </View>
-              <View
-                style={[styles.mapCanvas, { width: mapAnatomyWidth, height: mapAnatomyHeight }]}
-                testID="results-map-coordinate-frame"
-              >
-                <Image source={ageAnatomy.source} resizeMode="contain" style={styles.anatomyImage} accessibilityLabel={ageAnatomy.viewLabel} />
-                {mapMarkers.map((marker) => {
-                  const x = marker.domain === "upper_limb" ? ageAnatomy.shoulderX : marker.domain === "hand" ? ageAnatomy.handX : ageAnatomy.lowerLimbX;
-                  const y = marker.domain === "upper_limb" ? ageAnatomy.shoulderY : marker.domain === "hand" ? ageAnatomy.handY : ageAnatomy.lowerLimbY;
-                  const presentation = MAP_SEVERITIES[marker.severity];
-                  const active = activeMapMarker?.domain === marker.domain;
-                  return (
-                    <Pressable
-                      key={marker.domain}
-                      testID={`results-map-marker-${marker.domain}`}
-                      accessibilityLabel={`${MAP_TITLES[marker.domain]}: ${presentation.label}. Activate for details.`}
-                      onPress={() => setSelectedMapDomain(marker.domain)}
-                      style={[
-                        styles.mapMarker,
-                        {
-                          top: `${y}%` as `${number}%`,
-                          left: `${affectedSide === "right" ? x : 100 - x}%` as `${number}%`,
-                          borderColor: presentation.color,
-                          backgroundColor: presentation.soft,
-                        },
-                        active && styles.mapMarkerActive,
-                      ]}
-                    >
-                      <Ionicons name={presentation.icon} size={18} color={presentation.color} />
-                    </Pressable>
-                  );
-                })}
-              </View>
-              {activeMapMarker && (
-                <View style={[styles.mapDetailCard, { borderColor: MAP_SEVERITIES[activeMapMarker.severity].color }]} testID="results-map-detail">
-                  <View style={[styles.mapDetailBadge, { backgroundColor: MAP_SEVERITIES[activeMapMarker.severity].soft }]}>
-                    <Ionicons name={MAP_SEVERITIES[activeMapMarker.severity].icon} size={14} color={MAP_SEVERITIES[activeMapMarker.severity].color} />
-                    <Text style={[styles.mapDetailBadgeText, { color: MAP_SEVERITIES[activeMapMarker.severity].color }]}>
-                      {MAP_SEVERITIES[activeMapMarker.severity].label}
-                    </Text>
-                  </View>
-                  <Text style={styles.mapDetailTitle}>
-                    {(affectedSide === "left" ? "Left " : "Right ") + MAP_TITLES[activeMapMarker.domain]}
-                  </Text>
-                  <Text style={styles.mapDetailText}>{activeMapMarker.detail}</Text>
-                  {activeMapMarker.source === "observed" ? (
-                    <Text style={styles.mapDetailMeta}>
-                      {activeMapMarker.coverage}% task coverage · {activeMapMarker.findings} finding{activeMapMarker.findings === 1 ? "" : "s"} to review
-                    </Text>
-                  ) : (
-                    <Text style={styles.mapDetailMeta}>Pin-pointed from your survey answers; completed camera tasks refine it.</Text>
-                  )}
                 </View>
-              )}
+
+                <View style={styles.mapAreasPanel} testID="results-map-areas">
+                  <View style={styles.mapAreasHeader}>
+                    <Text style={styles.mapAreasTitle}>Areas</Text>
+                  </View>
+                  {mapMarkers.map((marker, index) => {
+                    const presentation = MAP_SEVERITIES[marker.severity];
+                    const active = activeMapMarker?.domain === marker.domain;
+                    const areaTitle = `${affectedSide === "left" ? "Left" : "Right"} ${MAP_TITLES[marker.domain]}`;
+                    return (
+                      <Pressable
+                        key={marker.domain}
+                        testID={`results-map-area-${marker.domain}`}
+                        accessibilityRole="button"
+                        accessibilityState={{ selected: active }}
+                        accessibilityLabel={`Area ${index + 1}, ${areaTitle}, ${presentation.label}`}
+                        accessibilityHint="Selects this area and shows its explanation"
+                        onPress={() => setSelectedMapDomain(marker.domain)}
+                        style={[
+                          styles.mapAreaRow,
+                          {
+                            borderLeftColor: active ? presentation.color : "transparent",
+                            backgroundColor: active ? presentation.soft : "#FFFFFF",
+                          },
+                        ]}
+                      >
+                        <View style={[styles.mapAreaNumber, { borderColor: presentation.color }]}>
+                          <Text style={[styles.mapAreaNumberText, { color: presentation.color }]}>{index + 1}</Text>
+                        </View>
+                        <View style={styles.mapAreaIcon}>
+                          <Ionicons name={MAP_DOMAIN_ICONS[marker.domain]} size={isWide ? 46 : 38} color={presentation.color} />
+                        </View>
+                        <View style={styles.mapAreaCopy}>
+                          <Text style={[styles.mapAreaTitle, isWide && styles.mapAreaTitleWide]}>{areaTitle}</Text>
+                          <Text style={[styles.mapAreaStatus, isWide && styles.mapAreaStatusWide, { color: presentation.color }]}>{presentation.label}</Text>
+                          {active && (
+                            <View testID="results-map-detail">
+                              <Text style={[styles.mapAreaDetail, isWide && styles.mapAreaDetailWide]}>{marker.detail}</Text>
+                              <Text style={[styles.mapAreaMeta, isWide && styles.mapAreaMetaWide]}>
+                                {marker.source === "observed"
+                                  ? `${marker.coverage}% task coverage · ${marker.findings} finding${marker.findings === 1 ? "" : "s"} to review`
+                                  : "Based on your survey answers; completed camera tasks refine this area."}
+                              </Text>
+                            </View>
+                          )}
+                        </View>
+                        <Ionicons name="chevron-forward" size={30} color="#0D4C35" />
+                      </Pressable>
+                    );
+                  })}
+                </View>
+              </View>
             </View>
           )}
           <View style={styles.summaryNote}>
@@ -437,22 +470,36 @@ const styles = StyleSheet.create({
   report: { alignSelf: "center" },
   lead: { fontSize: 17, lineHeight: 24, color: colors.onSurface, textAlign: "center", paddingHorizontal: spacing.sm },
   snapshotPanel: { overflow: "hidden", borderWidth: 1, borderColor: "#CDD6CE", borderRadius: radius.sm, backgroundColor: "#FFFFFF" },
-  mapPanel: { borderWidth: 1, borderColor: "#CDD6CE", borderRadius: radius.sm, backgroundColor: "#FFFFFF", padding: spacing.md, gap: spacing.sm, marginBottom: spacing.md },
-  mapHeading: { fontSize: 27, lineHeight: 34, fontWeight: "900", color: "#17211B" },
-  mapInstruction: { fontSize: 14, fontWeight: "800", color: "#17211B" },
-  mapLegendRow: { flexDirection: "row", alignItems: "center", gap: spacing.lg, flexWrap: "wrap", borderBottomWidth: 1, borderBottomColor: "#ECEFEC", paddingBottom: spacing.sm },
-  mapLegendItem: { flexDirection: "row", alignItems: "center", gap: 8 },
-  mapLegendIcon: { width: 34, height: 34, borderRadius: 17, borderWidth: 2, alignItems: "center", justifyContent: "center" },
-  mapLegendText: { fontSize: 13, fontWeight: "700", color: "#35443C" },
+  mapPanel: { borderWidth: 1, borderColor: "#CBD2CC", borderRadius: radius.sm, backgroundColor: "#FFFEFC", padding: 32, marginBottom: spacing.md, overflow: "hidden" },
+  mapPanelNarrow: { padding: spacing.md },
+  mapHeading: { fontSize: 38, lineHeight: 47, fontWeight: "900", color: "#0C402E" },
+  mapHeadingNarrow: { fontSize: 30, lineHeight: 38 },
+  mapInstruction: { marginTop: 8, fontSize: 19, lineHeight: 27, color: "#243B32" },
+  mapInstructionNarrow: { fontSize: 17, lineHeight: 24 },
+  mapLayout: { marginTop: spacing.lg, flexDirection: "row", alignItems: "center", gap: 32 },
+  mapLayoutStacked: { flexDirection: "column", gap: spacing.md },
+  mapFigure: { flex: 0.42, minWidth: 250, alignItems: "center", justifyContent: "center", paddingVertical: spacing.sm },
+  mapFigureStacked: { width: "100%", minWidth: 0 },
   mapCanvas: { position: "relative", alignSelf: "center" },
-  mapMarker: { position: "absolute", width: 52, height: 52, marginLeft: -26, marginTop: -26, borderRadius: 26, borderWidth: 2, alignItems: "center", justifyContent: "center", zIndex: 3 },
-  mapMarkerActive: { borderWidth: 4, transform: [{ scale: 1.1 }], zIndex: 5 },
-  mapDetailCard: { borderWidth: 1, borderRadius: radius.sm, padding: spacing.md, gap: 6, backgroundColor: "#FFFEFB" },
-  mapDetailBadge: { alignSelf: "flex-start", flexDirection: "row", alignItems: "center", gap: 4, paddingHorizontal: 8, paddingVertical: 4, borderRadius: radius.pill },
-  mapDetailBadgeText: { fontSize: 12, fontWeight: "800" },
-  mapDetailTitle: { fontSize: 17, fontWeight: "800", color: "#17211B" },
-  mapDetailText: { fontSize: 14, lineHeight: 20, color: "#35443C" },
-  mapDetailMeta: { fontSize: 12, lineHeight: 17, color: "#5D6962", fontWeight: "700" },
+  mapMarker: { position: "absolute", width: 56, height: 56, marginLeft: -28, marginTop: -28, borderRadius: 28, borderWidth: 2, alignItems: "center", justifyContent: "center", zIndex: 3, shadowOpacity: 0.08, shadowRadius: 6, shadowOffset: { width: 0, height: 2 }, elevation: 2 },
+  mapMarkerActive: { borderWidth: 3, transform: [{ scale: 1.08 }], shadowOpacity: 0.26, shadowRadius: 13, elevation: 5, zIndex: 5 },
+  mapMarkerNumber: { fontSize: 22, lineHeight: 27, fontWeight: "900" },
+  mapAreasPanel: { flex: 0.58, minWidth: 0, width: "100%", borderWidth: 1, borderColor: "#D4D9D5", borderRadius: radius.sm, backgroundColor: "#FFFFFF", overflow: "hidden" },
+  mapAreasHeader: { minHeight: 72, justifyContent: "center", paddingHorizontal: spacing.lg, borderBottomWidth: 1, borderBottomColor: "#DDE2DE" },
+  mapAreasTitle: { fontSize: 25, lineHeight: 31, fontWeight: "900", color: "#123F2F" },
+  mapAreaRow: { minHeight: 142, flexDirection: "row", alignItems: "center", gap: spacing.md, paddingHorizontal: spacing.lg, paddingVertical: spacing.md, borderTopWidth: 1, borderTopColor: "#DDE2DE", borderLeftWidth: 6 },
+  mapAreaNumber: { width: 52, height: 52, borderRadius: 26, borderWidth: 2, alignItems: "center", justifyContent: "center", backgroundColor: "#FFFFFF" },
+  mapAreaNumberText: { fontSize: 22, lineHeight: 27, fontWeight: "900" },
+  mapAreaIcon: { width: 58, alignItems: "center", justifyContent: "center" },
+  mapAreaCopy: { flex: 1, minWidth: 0 },
+  mapAreaTitle: { fontSize: 19, lineHeight: 25, fontWeight: "900", color: "#123F2F" },
+  mapAreaTitleWide: { fontSize: 22, lineHeight: 29 },
+  mapAreaStatus: { marginTop: 3, fontSize: 17, lineHeight: 23, fontWeight: "700" },
+  mapAreaStatusWide: { fontSize: 19, lineHeight: 25 },
+  mapAreaDetail: { marginTop: 7, fontSize: 15, lineHeight: 22, color: "#273D34" },
+  mapAreaDetailWide: { fontSize: 17, lineHeight: 25 },
+  mapAreaMeta: { marginTop: 5, fontSize: 13, lineHeight: 18, fontWeight: "700", color: "#617067" },
+  mapAreaMetaWide: { fontSize: 14, lineHeight: 20 },
   snapshotPanelWide: { flexDirection: "row", alignItems: "stretch" },
   anatomyPane: { backgroundColor: "#FFFCF8" },
   anatomyPaneWide: { width: "48%", borderRightWidth: 1, borderRightColor: "#D8DED8" },

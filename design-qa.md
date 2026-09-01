@@ -275,3 +275,43 @@ The FAST entry now follows the requested safety-first hierarchy: full-screen hea
 - Focused ESLint, six emergency-flow tests, and the production Expo web export pass.
 
 final result: passed
+
+---
+
+# Movement Map Design QA
+
+- Source visual truth: current-turn movement-map reference attachment (1536 x 1084 px).
+- Implementation evidence: `C:/Users/LENOVO/Documents/New project/movement-map-implementation.png` (1280 x 720 px browser viewport, device scale factor 1).
+- Route: `http://127.0.0.1:4174/results?id=rehyn-demo-assessment`.
+- State: demo assessment, Area 1 selected; the same component receives real assessment findings.
+- Density normalization: both views were compared at CSS scale; the implementation viewport crop is shorter than the full reference and remains vertically scrollable.
+
+## Full-View Comparison
+
+The rendered section preserves the reference hierarchy: large movement-map heading and instruction, anatomy on the left, bordered Areas list on the right, and a clear selected state. The narrower implementation report width follows the app's existing 1120 px report constraint and does not change the composition.
+
+## Focused Region Comparison
+
+The numbered anatomy markers match the numbered list rows. Area 1 uses the attention colour and expands to show the finding and evidence; Areas 2 and 3 remain compact. Marker and row selection stay synchronized when another area is selected. Text remains comfortably readable: 38 px section heading, 22 px wide-row titles, 19 px statuses, and 17 px expanded explanations.
+
+## Findings
+
+- No actionable P0, P1, or P2 differences remain.
+- P3: the implementation intentionally retains Rehyn's age-specific anatomy illustration instead of the reference's clothed figure, preserving the survey-driven age behaviour requested for the product.
+- P3: the implementation includes task coverage and finding count in the expanded row because these are useful assessment evidence already supported by the app.
+
+## Comparison History
+
+1. Initial implementation replaced the icon legend and detached detail card with numbered pins and synchronized area rows.
+2. Browser comparison found the selected explanation needed a stable detail hook; the explanation was wrapped in `results-map-detail` and all contract tests were rerun.
+3. Post-fix browser evidence confirmed the selected Area 1 row, all three numbered pins, readable typography, and successful selection of Area 2.
+
+## Verification
+
+- Focused ESLint: passed.
+- Report feature tests: 39 passed.
+- Production Expo web export: passed.
+- Primary interaction: selecting another area updates the expanded explanation.
+- Responsive code path: the map stacks anatomy above Areas below 820 px; a separate phone screenshot was not available from the fixed in-app browser viewport.
+
+final result: passed

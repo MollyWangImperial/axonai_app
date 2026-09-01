@@ -148,11 +148,11 @@ export default function JourneyScreen() {
             </View>
           ) : <>
             {demoMode && (
-              <Pressable testID="assessment-history-demo" onPress={() => router.push({ pathname: "/function-summary" as never, params: { id: DEMO_ASSESSMENT_ID } })} style={[styles.historyRow, styles.demoHistoryRow, { backgroundColor: palette.surface }]}>
+              <Pressable testID="assessment-history-demo" onPress={() => router.push({ pathname: "/results" as never, params: { id: DEMO_ASSESSMENT_ID } })} style={[styles.historyRow, styles.demoHistoryRow, { backgroundColor: palette.surface }]}>
                 <View style={[styles.historyIcon, styles.demoHistoryIcon]}><Ionicons name="sparkles" size={21} color="#7B5EA7" /></View>
                 <View style={styles.historyCopy}>
-                  <View style={styles.demoTitleRow}><Text style={[styles.historyTitle, { color: palette.text }]}>Demo assessment summary</Text><Text style={styles.demoBadge}>SAMPLE</Text></View>
-                  <Text style={[styles.historyMeta, { color: palette.muted }]}>Explore a sample function summary, movement story and map</Text>
+                  <View style={styles.demoTitleRow}><Text style={[styles.historyTitle, { color: palette.text }]}>Demo movement snapshot</Text><Text style={styles.demoBadge}>SAMPLE</Text></View>
+                  <Text style={[styles.historyMeta, { color: palette.muted }]}>Movement scores, daily-life activities and an interactive anatomy map</Text>
                 </View>
                 <Ionicons name="chevron-forward" size={20} color={colors.borderStrong} />
               </Pressable>

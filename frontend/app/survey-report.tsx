@@ -102,7 +102,7 @@ export default function SurveyReportScreen() {
     const planType = report?.rehab_plan?.type;
     if (planType === "caregiver_delivered") router.replace("/caregiver-plan" as never);
     else if (planType === "camera_guided") router.replace("/rehab-plan" as never);
-    else router.replace("/");
+    else router.dismissTo("/");
   };
 
   const anatomy = getAgeAnatomyPresentation(ageBand);

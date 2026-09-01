@@ -366,7 +366,7 @@ export default function RehabPlanScreen() {
     return (
       <View style={styles.container}>
         <View style={[styles.header, { paddingTop: insets.top + spacing.sm }]}>
-          <Pressable onPress={() => router.replace("/")} style={styles.backBtn} testID="plan-blocked-back">
+          <Pressable onPress={() => router.dismissTo("/")} style={styles.backBtn} testID="plan-blocked-back">
             <Ionicons name="chevron-back" size={24} color={colors.onSurface} />
           </Pressable>
           <Text style={styles.headerTitle}>Rehab plan</Text>
@@ -379,7 +379,7 @@ export default function RehabPlanScreen() {
           <Text style={styles.blockedTitle}>{title}</Text>
           <Text style={styles.blockedText}>{message}</Text>
           <Text style={styles.blockedNext}>{nextStep}</Text>
-          <Pressable onPress={() => router.replace("/")} style={styles.blockedButton} testID="plan-blocked-home">
+          <Pressable onPress={() => router.dismissTo("/")} style={styles.blockedButton} testID="plan-blocked-home">
             <Ionicons name="home-outline" size={20} color={colors.onBrandPrimary} />
             <Text style={styles.guidedBtnText}>Return home</Text>
           </Pressable>
@@ -500,7 +500,7 @@ export default function RehabPlanScreen() {
             })}
           </View>
 
-          <Pressable disabled={!allComplete} onPress={() => router.replace("/")} style={[styles.finishButton, !allComplete && styles.finishButtonDisabled]} accessibilityRole="button" testID="plan-done">
+          <Pressable disabled={!allComplete} onPress={() => router.dismissTo("/")} style={[styles.finishButton, !allComplete && styles.finishButtonDisabled]} accessibilityRole="button" testID="plan-done">
             <Ionicons name="checkmark-circle-outline" size={21} color={allComplete ? "#FFFFFF" : "#A3A8A4"} />
             <Text style={[styles.finishButtonText, !allComplete && styles.finishButtonTextDisabled]}>Complete session</Text>
           </Pressable>

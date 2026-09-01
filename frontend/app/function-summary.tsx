@@ -202,7 +202,7 @@ export default function FunctionSummaryScreen() {
     return (
       <View style={[styles.container, styles.center]}>
         <Text style={styles.errorText}>We could not load this assessment.</Text>
-        <Pressable onPress={() => router.replace("/(tabs)/journey")} style={styles.primaryButton}><Text style={styles.primaryButtonText}>Back to Journey</Text></Pressable>
+        <Pressable onPress={() => router.dismissTo("/(tabs)/journey")} style={styles.primaryButton}><Text style={styles.primaryButtonText}>Back to Journey</Text></Pressable>
       </View>
     );
   }
@@ -210,7 +210,7 @@ export default function FunctionSummaryScreen() {
   return (
     <View style={styles.container}>
       <View style={[styles.header, { paddingTop: insets.top + spacing.xs }]}>
-        <Pressable accessibilityLabel="Back to Journey" onPress={() => router.replace("/(tabs)/journey")} style={styles.headerButton}><Ionicons name="arrow-back" size={24} color="#174834" /></Pressable>
+        <Pressable accessibilityLabel="Back to Journey" onPress={() => router.dismissTo("/(tabs)/journey")} style={styles.headerButton}><Ionicons name="arrow-back" size={24} color="#174834" /></Pressable>
         <View style={styles.headerCopy}>
           <Text style={styles.headerTitle}>{isDemo ? "Demo function summary" : "Your function summary"}</Text>
           <Text style={styles.headerDate}>{new Date(data.created_at).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" })}</Text>

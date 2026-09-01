@@ -179,7 +179,7 @@ export default function MovementMapScreen() {
 
   const openPlan = () => {
     if (canViewPlan && id) router.push({ pathname: "/rehab-plan", params: { id } });
-    else router.replace("/");
+    else router.dismissTo("/");
   };
   const selectedPosition = Math.max(0, domains.findIndex((domain) => domain.domain === selected));
 
@@ -188,7 +188,7 @@ export default function MovementMapScreen() {
   }
 
   if (!data) {
-    return <View style={styles.center}><Text style={styles.errorText}>We could not load your movement map.</Text><Pressable onPress={() => router.replace("/")} style={styles.planButton}><Text style={styles.planButtonText}>Return home</Text></Pressable></View>;
+    return <View style={styles.center}><Text style={styles.errorText}>We could not load your movement map.</Text><Pressable onPress={() => router.dismissTo("/")} style={styles.planButton}><Text style={styles.planButtonText}>Return home</Text></Pressable></View>;
   }
 
   return (

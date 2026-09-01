@@ -465,10 +465,14 @@ def test_snapshot_and_report_screens_show_qualitative_scores_and_survey_highligh
     assert 'title="What this means for daily life"' in results
     assert 'testID="results-movement-map"' in results
     assert "Your movement map" in results
-    assert 'testID="anatomy-severity-legend"' in results
-    assert "Select a highlighted area to view its details." in results
+    assert "Choose a number to learn about that area." in results
+    assert 'testID="results-map-areas"' in results
+    assert ">Areas</Text>" in results
     assert "results-map-marker-" in results
     assert 'testID="results-map-detail"' in results
+    assert "MAP_DOMAIN_ICONS" in results
+    assert "mapAreaTitleWide" in results
+    assert results.count('testID="results-movement-map"') == 1  # shared by demo and real assessment data
     assert results.index("<MovementScoresPanel") < results.index('title="What this means for daily life"')
     assert results.index('title="What this means for daily life"') < results.index('testID="results-movement-map"')
     assert "goPlan" in results and "goMap" not in results
@@ -591,3 +595,17 @@ def test_rehab_plan_loading_tracks_real_plan_preparation_stages():
     assert 'authedFetch("/api/alira/care-plan")' in rehab
     assert "setPreparationStage(2);" in rehab
     assert "await loadProgress(adjustedAssessment);" in rehab
+
+
+def test_journey_demo_opens_the_completed_movement_snapshot():
+    journey = (ROOT / "frontend" / "app" / "(tabs)" / "journey.tsx").read_text(encoding="utf-8")
+    results = (ROOT / "frontend" / "app" / "results.tsx").read_text(encoding="utf-8")
+
+    demo_row = journey.split('testID="assessment-history-demo"', 1)[1].split("</Pressable>", 1)[0]
+    assert 'pathname: "/results"' in demo_row
+    assert 'pathname: "/function-summary"' not in demo_row
+    assert "Demo movement snapshot" in demo_row
+    assert "Movement scores, daily-life activities and an interactive anatomy map" in demo_row
+    assert "<MovementScoresPanel" in results
+    assert 'title="What this means for daily life"' in results
+    assert 'testID="results-movement-map"' in results

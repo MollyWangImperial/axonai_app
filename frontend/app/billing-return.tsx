@@ -59,16 +59,16 @@ export default function BillingReturnScreen() {
                 ? "Unlimited assessments, plans, and guided exercises are now unlocked."
                 : `Your balance: ${creditsNow ?? "—"} credits.`}
             </Text>
-            <Pressable onPress={() => router.replace("/")} style={styles.cta} testID="billing-return-home">
+            <Pressable onPress={() => router.dismissTo("/")} style={styles.cta} testID="billing-return-home">
               <Text style={styles.ctaText}>Back to Rehyn</Text>
             </Pressable>
           </>
         ) : (
           <>
             <View style={styles.icFail}><Ionicons name="alert" size={36} color="#fff" /></View>
-            <Text style={styles.title}>Couldn't verify the payment</Text>
+            <Text style={styles.title}>{"Couldn't verify the payment"}</Text>
             <Text style={styles.body}>If you completed checkout, your unlock may take a minute to apply. Try refreshing your credits later.</Text>
-            <Pressable onPress={() => router.replace("/")} style={styles.cta}>
+            <Pressable onPress={() => router.dismissTo("/")} style={styles.cta}>
               <Text style={styles.ctaText}>Back to Rehyn</Text>
             </Pressable>
           </>

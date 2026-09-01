@@ -1,4 +1,5 @@
-const CACHE_NAME = "rehyn-shell-v3";
+// Replaced with the exported JavaScript bundle hash by scripts/inject-pwa.js.
+const CACHE_NAME = "rehyn-shell-__BUILD_ID__";
 const SHELL_FILES = [
   "/",
   "/manifest.json",
@@ -35,14 +36,8 @@ self.addEventListener("activate", (event) => {
   event.waitUntil(
     (async () => {
       const keys = await caches.keys();
-      const staleShellExists = keys.some((key) => key.startsWith("rehyn-shell-") && key !== CACHE_NAME);
       await Promise.all(keys.filter((key) => key !== CACHE_NAME).map((key) => caches.delete(key)));
       await self.clients.claim();
-
-      if (staleShellExists) {
-        const windows = await self.clients.matchAll({ type: "window" });
-        await Promise.all(windows.map((client) => client.navigate(client.url)));
-      }
     })(),
   );
 });
