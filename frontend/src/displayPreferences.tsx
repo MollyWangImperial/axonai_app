@@ -31,16 +31,46 @@ const LIGHT_PALETTE: DisplayPalette = {
   onBrand: "#FFFFFF",
 };
 
-const DARK_PALETTE: DisplayPalette = {
-  page: "#0F1D18",
-  surface: "#182A23",
-  soft: "#22382F",
-  text: "#F2F7F4",
-  muted: "#B7C8C0",
-  border: "#365046",
-  brand: "#78B58A",
-  onBrand: "#0E1B16",
+// Dark mode is a neutral dark grey, not a dark green: the grey ground stays
+// out of the way of photos and lets the green branding read as the accent.
+// The two anchor palettes below are the softest and deepest ends of the
+// user's "Dark mode depth" slider; darkPaletteFor() blends between them.
+const DARK_SOFT_ANCHOR = {
+  page: "#23262A",
+  surface: "#2C3034",
+  soft: "#363B40",
+  border: "#4A5157",
 };
+
+const DARK_DEEP_ANCHOR = {
+  page: "#0A0B0D",
+  surface: "#121417",
+  soft: "#1B1E22",
+  border: "#2E3338",
+};
+
+function mixHex(from: string, to: string, t: number) {
+  const channel = (offset: number) => {
+    const a = parseInt(from.slice(offset, offset + 2), 16);
+    const b = parseInt(to.slice(offset, offset + 2), 16);
+    return Math.round(a + (b - a) * t).toString(16).padStart(2, "0");
+  };
+  return `#${channel(1)}${channel(3)}${channel(5)}`;
+}
+
+export function darkPaletteFor(darkness: number): DisplayPalette {
+  const t = Math.max(0, Math.min(100, Number.isFinite(darkness) ? darkness : 55)) / 100;
+  return {
+    page: mixHex(DARK_SOFT_ANCHOR.page, DARK_DEEP_ANCHOR.page, t),
+    surface: mixHex(DARK_SOFT_ANCHOR.surface, DARK_DEEP_ANCHOR.surface, t),
+    soft: mixHex(DARK_SOFT_ANCHOR.soft, DARK_DEEP_ANCHOR.soft, t),
+    text: "#F2F4F3",
+    muted: "#B6BDBA",
+    border: mixHex(DARK_SOFT_ANCHOR.border, DARK_DEEP_ANCHOR.border, t),
+    brand: "#78B58A",
+    onBrand: "#101512",
+  };
+}
 
 type DisplayPreferencesValue = {
   preferences: UserPreferences;
@@ -71,18 +101,22 @@ export function DisplayPreferencesProvider({ children }: { children: React.React
     };
   }, []);
 
+  const palette = useMemo(
+    () => (preferences.darkMode ? darkPaletteFor(preferences.darkness) : LIGHT_PALETTE),
+    [preferences.darkMode, preferences.darkness],
+  );
+
   useEffect(() => {
     const scheme = preferences.darkMode ? "dark" : "light";
     if (Platform.OS === "web") {
       document.documentElement.style.colorScheme = scheme;
-      document.documentElement.style.backgroundColor = preferences.darkMode ? DARK_PALETTE.page : LIGHT_PALETTE.page;
-      document.body.style.backgroundColor = preferences.darkMode ? DARK_PALETTE.page : LIGHT_PALETTE.page;
+      document.documentElement.style.backgroundColor = palette.page;
+      document.body.style.backgroundColor = palette.page;
     } else {
       Appearance.setColorScheme(scheme);
     }
-  }, [preferences.darkMode]);
+  }, [preferences.darkMode, palette.page]);
 
-  const palette = preferences.darkMode ? DARK_PALETTE : LIGHT_PALETTE;
   const scale = textScaleFor(preferences.textSize);
   const brightnessDim = Math.min(0.2, Math.max(0, (100 - preferences.brightness) / 100) * 0.66);
   const unthemedDarkDim = preferences.darkMode ? 0.08 : 0;

@@ -8,6 +8,7 @@ export const SHARE_CARE_CIRCLE_KEY = "rehyn_share_care_circle_v1";
 export const USAGE_ANALYTICS_KEY = "rehyn_usage_analytics_v1";
 export const DEMO_MODE_KEY = "rehyn_demo_mode_v1";
 export const BRIGHTNESS_KEY = "rehyn_brightness_v1";
+export const DARKNESS_KEY = "rehyn_dark_depth_v1";
 
 export const TEXT_SIZES = ["Comfortable", "Large", "Extra large"] as const;
 export type TextSizePreference = (typeof TEXT_SIZES)[number];
@@ -21,6 +22,7 @@ export type UserPreferences = {
   usageAnalytics: boolean;
   demoMode: boolean;
   brightness: number;
+  darkness: number;
 };
 
 export const DEFAULT_USER_PREFERENCES: UserPreferences = {
@@ -32,6 +34,7 @@ export const DEFAULT_USER_PREFERENCES: UserPreferences = {
   usageAnalytics: false,
   demoMode: false,
   brightness: 94,
+  darkness: 55,
 };
 
 const preferenceListeners = new Set<(preferences: UserPreferences) => void>();
@@ -42,7 +45,7 @@ export function subscribeUserPreferences(listener: (preferences: UserPreferences
 }
 
 export async function loadUserPreferences(): Promise<UserPreferences> {
-  const [darkMode, textSize, voiceGuidance, shareAssessments, shareCareCircle, usageAnalytics, demoMode, brightness] = await Promise.all([
+  const [darkMode, textSize, voiceGuidance, shareAssessments, shareCareCircle, usageAnalytics, demoMode, brightness, darkness] = await Promise.all([
     storage.getItem(DARK_MODE_KEY, DEFAULT_USER_PREFERENCES.darkMode),
     storage.getItem(TEXT_SIZE_KEY, DEFAULT_USER_PREFERENCES.textSize),
     storage.getItem(VOICE_GUIDANCE_KEY, DEFAULT_USER_PREFERENCES.voiceGuidance),
@@ -51,7 +54,9 @@ export async function loadUserPreferences(): Promise<UserPreferences> {
     storage.getItem(USAGE_ANALYTICS_KEY, DEFAULT_USER_PREFERENCES.usageAnalytics),
     storage.getItem(DEMO_MODE_KEY, DEFAULT_USER_PREFERENCES.demoMode),
     storage.getItem(BRIGHTNESS_KEY, DEFAULT_USER_PREFERENCES.brightness),
+    storage.getItem(DARKNESS_KEY, DEFAULT_USER_PREFERENCES.darkness),
   ]);
+  const darknessNumber = Number(darkness);
   return {
     darkMode: Boolean(darkMode),
     textSize: TEXT_SIZES.includes(textSize as TextSizePreference) ? textSize as TextSizePreference : "Comfortable",
@@ -61,6 +66,7 @@ export async function loadUserPreferences(): Promise<UserPreferences> {
     usageAnalytics: Boolean(usageAnalytics),
     demoMode: Boolean(demoMode),
     brightness: Math.max(70, Math.min(100, Number(brightness) || DEFAULT_USER_PREFERENCES.brightness)),
+    darkness: Number.isFinite(darknessNumber) ? Math.max(0, Math.min(100, darknessNumber)) : DEFAULT_USER_PREFERENCES.darkness,
   };
 }
 
@@ -74,6 +80,7 @@ export async function saveUserPreference<K extends keyof UserPreferences>(key: K
     usageAnalytics: USAGE_ANALYTICS_KEY,
     demoMode: DEMO_MODE_KEY,
     brightness: BRIGHTNESS_KEY,
+    darkness: DARKNESS_KEY,
   };
   await storage.setItem(storageKeys[key], value);
   const preferences = await loadUserPreferences();

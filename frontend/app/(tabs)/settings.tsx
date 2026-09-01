@@ -94,6 +94,17 @@ export default function SettingsScreen() {
             <SettingsToggle testID="settings-reminders" icon="notifications-outline" title="Reminders" subtitle="Sessions and gentle check-ins" value={reminders} onValueChange={toggleReminders} palette={palette} scale={scale} />
             <Divider palette={palette} />
             <SettingsToggle testID="settings-dark-mode" icon="moon-outline" title="Dark mode" subtitle="Reduce brightness in low light" value={preferences.darkMode} onValueChange={toggleDarkMode} palette={palette} scale={scale} />
+            {preferences.darkMode ? (
+              <>
+                <Divider palette={palette} />
+                <DarknessSetting
+                  value={preferences.darkness}
+                  onCommit={(value) => updatePreference("darkness", value, `Dark mode depth is ${value}%.`)}
+                  palette={palette}
+                  scale={scale}
+                />
+              </>
+            ) : null}
             <Divider palette={palette} />
             <BrightnessSetting
               value={preferences.brightness}
@@ -240,6 +251,69 @@ function BrightnessSetting({ value, onCommit, palette, scale }: { value: number;
           <View style={[styles.brightnessThumb, { left: `${ratio * 100}%`, backgroundColor: palette.surface, borderColor: palette.brand }]} />
         </View>
         <Pressable accessibilityLabel="Increase brightness" onPress={() => adjust(4)} style={styles.brightnessIconButton}><Ionicons name="sunny" size={23} color={palette.brand} /></Pressable>
+      </View>
+    </View>
+  );
+}
+
+function DarknessSetting({ value, onCommit, palette, scale }: { value: number; onCommit: (value: number) => void; palette: Palette; scale: number }) {
+  const [draft, setDraft] = useState(value);
+  const trackWidth = useRef(1);
+  const draftRef = useRef(value);
+
+  useEffect(() => {
+    setDraft(value);
+    draftRef.current = value;
+  }, [value]);
+
+  const setFromPosition = (x: number, commit: boolean) => {
+    const ratio = Math.max(0, Math.min(1, x / trackWidth.current));
+    const next = Math.round((ratio * 100) / 5) * 5;
+    draftRef.current = next;
+    setDraft(next);
+    if (commit) onCommit(next);
+  };
+
+  const adjust = (amount: number) => {
+    const next = Math.max(0, Math.min(100, draftRef.current + amount));
+    draftRef.current = next;
+    setDraft(next);
+    onCommit(next);
+  };
+
+  const ratio = draft / 100;
+  return (
+    <View style={styles.brightnessSetting}>
+      <View style={styles.brightnessHeading}>
+        <View style={[styles.settingIcon, { backgroundColor: palette.soft }]}><Ionicons name="contrast-outline" size={22} color={palette.brand} /></View>
+        <View style={styles.settingCopy}>
+          <Text style={[styles.settingTitle, { color: palette.text, fontSize: 16 * scale }]}>Dark mode depth</Text>
+          <Text style={[styles.settingSubtitle, { color: palette.muted, fontSize: 12 * scale, lineHeight: 17 * scale }]}>Slide between soft grey and deep black</Text>
+        </View>
+        <Text testID="settings-darkness-value" style={[styles.brightnessValue, { color: palette.text }]}>{draft}%</Text>
+      </View>
+      <View style={styles.brightnessControls}>
+        <Pressable accessibilityLabel="Softer dark mode" onPress={() => adjust(-5)} style={styles.brightnessIconButton}><Ionicons name="moon-outline" size={17} color={palette.muted} /></Pressable>
+        <View
+          testID="settings-darkness-slider"
+          accessible
+          accessibilityRole="adjustable"
+          accessibilityLabel="Dark mode depth"
+          accessibilityValue={{ min: 0, max: 100, now: draft, text: `${draft}%` }}
+          accessibilityActions={[{ name: "increment" }, { name: "decrement" }]}
+          onAccessibilityAction={(event) => adjust(event.nativeEvent.actionName === "increment" ? 5 : -5)}
+          onLayout={(event) => { trackWidth.current = Math.max(1, event.nativeEvent.layout.width); }}
+          onStartShouldSetResponder={() => true}
+          onMoveShouldSetResponder={() => true}
+          onResponderGrant={(event) => setFromPosition(event.nativeEvent.locationX, false)}
+          onResponderMove={(event) => setFromPosition(event.nativeEvent.locationX, false)}
+          onResponderRelease={(event) => setFromPosition(event.nativeEvent.locationX, true)}
+          style={[styles.brightnessTrack, { backgroundColor: palette.soft }]}
+        >
+          <View style={[styles.brightnessFill, { width: `${ratio * 100}%`, backgroundColor: palette.brand }]} />
+          <View style={[styles.brightnessThumb, { left: `${ratio * 100}%`, backgroundColor: palette.surface, borderColor: palette.brand }]} />
+        </View>
+        <Pressable accessibilityLabel="Deeper dark mode" onPress={() => adjust(5)} style={styles.brightnessIconButton}><Ionicons name="moon" size={23} color={palette.brand} /></Pressable>
       </View>
     </View>
   );

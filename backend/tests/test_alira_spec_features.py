@@ -545,6 +545,29 @@ def test_trend_charts_get_shiny_points_and_a_value_axis_after_assessment():
     assert "if (!shiny || values.length === 0) return;" in home
 
 
+def test_dark_mode_is_neutral_grey_with_a_darkness_slider():
+    display = (ROOT / "frontend" / "src" / "displayPreferences.tsx").read_text(encoding="utf-8")
+    prefs = (ROOT / "frontend" / "src" / "userPreferences.ts").read_text(encoding="utf-8")
+    settings = (ROOT / "frontend" / "app" / "(tabs)" / "settings.tsx").read_text(encoding="utf-8")
+
+    # Dark mode uses a neutral dark grey ground (not the old dark green) so
+    # photos and the green branding stand out; green survives only as accent.
+    assert "darkPaletteFor" in display
+    assert '"#0F1D18"' not in display  # old green page colour removed
+    assert '"#182A23"' not in display  # old green surface removed
+    assert "DARK_SOFT_ANCHOR" in display and "DARK_DEEP_ANCHOR" in display
+    assert '"#78B58A"' in display  # brand green kept as the accent
+    assert "preferences.darkness" in display
+
+    # Patients pick their own darkness with a slider (0-100, persisted).
+    assert "DARKNESS_KEY" in prefs
+    assert "darkness: 55" in prefs  # default depth
+    assert 'testID="settings-darkness-slider"' in settings
+    assert "Dark mode depth" in settings
+    # The slider only appears while dark mode is on.
+    assert "preferences.darkMode ? (" in settings
+
+
 def test_earning_points_pops_a_fading_congratulations_toast():
     component = (ROOT / "frontend" / "src" / "components" / "PointsCelebration.tsx").read_text(encoding="utf-8")
     home = (ROOT / "frontend" / "app" / "(tabs)" / "index.tsx").read_text(encoding="utf-8")
