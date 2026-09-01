@@ -19,7 +19,7 @@ export const TERMS_SECTIONS: LegalSection[] = [
   {
     title: "1. Who we are and what these Terms cover",
     paragraphs: [
-      "1.1 Rehyn Ltd, a company incorporated in England and Wales with company number 17417716 and registered office at Sandwich, Kent, operates the Rehyn mobile application, website and connected features (together, the \"Services\"). Rehyn is referred to in these Terms as \"Rehyn\", \"we\" or \"us\", and the person using the Services is referred to as \"you\".",
+      "1.1 Rehyn Ltd, a company incorporated in England and Wales with company number 17417716 and registered office at 64 Woodnesborough Road, Sandwich, Kent CT13 0AD, operates the Rehyn mobile application, website and connected features (together, the \"Services\"). Rehyn is referred to in these Terms as \"Rehyn\", \"we\" or \"us\", and the person using the Services is referred to as \"you\".",
       "1.2 These Terms of Use, together with the Rehyn Privacy Notice, govern your access to and use of the Services. By creating an account or otherwise using the Services, you confirm that you accept these Terms and that you are legally able to do so.",
       "1.3 The Services are currently provided free of charge as an early release. This means some features are still in development, may change or be withdrawn, and may not perform with the accuracy or reliability of a finished product. Section 8 explains what this means for availability, and section 12 explains the limits of our liability.",
       "1.4 The Services are intended for people aged 18 or over. If you are under 18, you may not create an account or use the Services.",
