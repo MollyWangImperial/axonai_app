@@ -1,7 +1,8 @@
 import { Stack, useRouter, useSegments } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
-import { useEffect } from "react";
-import { LogBox } from "react-native";
+import * as Notifications from "expo-notifications";
+import { useEffect, useRef } from "react";
+import { LogBox, Platform } from "react-native";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 
@@ -10,6 +11,7 @@ import { getCachedUser, authedFetch, cachePatientOnboarding, onboardingCompleteK
 import { preloadAssessmentMediaPipe } from "@/src/assessmentPreload";
 import { storage } from "@/src/utils/storage";
 import { DisplayPreferencesProvider, useDisplayPreferences } from "@/src/displayPreferences";
+import { FAST_ACTION_ID, initializeNotificationActions } from "@/src/utils/notifications";
 
 LogBox.ignoreAllLogs(true);
 SplashScreen.preventAutoHideAsync();
@@ -17,10 +19,10 @@ SplashScreen.preventAutoHideAsync();
 function AuthGate() {
   const router = useRouter();
   const segments = useSegments();
+  const seg0 = segments[0] || "";
   useEffect(() => {
     (async () => {
       const u = await getCachedUser();
-      const seg0 = segments[0] || "";
       // Public routes that should be reachable without auth (e.g., legal pages linked from sign-in footer).
       const publicRoutes = ["sign-in", "consent", "privacy-policy", "terms-of-use", "data-permissions", "movement-videos"];
       // If not signed in and not on a public route, redirect
@@ -75,7 +77,34 @@ function AuthGate() {
         }
       }
     })();
-  }, [segments.join("/")]);
+  }, [router, seg0]);
+  return null;
+}
+
+function NotificationRouteHandler() {
+  const router = useRouter();
+  const handledResponseId = useRef("");
+
+  useEffect(() => {
+    if (Platform.OS === "web") return;
+    void initializeNotificationActions();
+    const openResponse = (response: Notifications.NotificationResponse | null) => {
+      if (!response) return;
+      const responseId = `${response.notification.request.identifier}:${response.actionIdentifier}`;
+      if (handledResponseId.current === responseId) return;
+      handledResponseId.current = responseId;
+      const dataRoute = response.notification.request.content.data?.route;
+      const route = response.actionIdentifier === FAST_ACTION_ID ? "/emergency" : dataRoute;
+      if (route === "/emergency" || route === "/chat" || route === "/") {
+        router.push(route as never);
+      }
+    };
+
+    void Notifications.getLastNotificationResponseAsync().then(openResponse);
+    const subscription = Notifications.addNotificationResponseReceivedListener(openResponse);
+    return () => subscription.remove();
+  }, [router]);
+
   return null;
 }
 
@@ -106,6 +135,7 @@ function AppStack() {
   return (
     <>
       <AuthGate />
+      <NotificationRouteHandler />
       <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: palette.page } }} />
     </>
   );

@@ -5,7 +5,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 
 import { colors, radius, spacing } from "@/src/theme";
-import { DEFAULT_SETTINGS, ensurePermission, loadSettings, rescheduleReminders, saveSettings } from "@/src/utils/notifications";
+import { configureFastQuickAccess, DEFAULT_SETTINGS, ensurePermission, loadSettings, ReminderSettings, rescheduleReminders, saveSettings } from "@/src/utils/notifications";
 import { loadUserPreferences, saveUserPreference, TEXT_SIZES, textScaleFor, TextSizePreference, UserPreferences } from "@/src/userPreferences";
 import { DisplayPalette, useDisplayPreferences } from "@/src/displayPreferences";
 import { PATIENT_SURVEY_STEPS } from "@/src/patientSurvey";
@@ -15,7 +15,7 @@ type Palette = DisplayPalette;
 export default function SettingsScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
-  const [reminders, setReminders] = useState(DEFAULT_SETTINGS.enabled);
+  const [reminderSettings, setReminderSettings] = useState<ReminderSettings>(DEFAULT_SETTINGS);
   const [preferences, setPreferences] = useState<UserPreferences | null>(null);
   const [showTextSizes, setShowTextSizes] = useState(false);
   const [notice, setNotice] = useState("");
@@ -24,7 +24,7 @@ export default function SettingsScreen() {
   useFocusEffect(useCallback(() => {
     void (async () => {
       const [savedReminders, savedPreferences] = await Promise.all([loadSettings(), loadUserPreferences()]);
-      setReminders(savedReminders.enabled);
+      setReminderSettings(savedReminders);
       setPreferences(savedPreferences);
     })();
   }, []));
@@ -34,25 +34,50 @@ export default function SettingsScreen() {
 
   const toggleReminders = async (enabled: boolean) => {
     setNotice("");
-    if (enabled && Platform.OS === "web" && "Notification" in window) {
-      const permission = await Notification.requestPermission();
-      if (permission !== "granted") {
-        setNotice("Browser notifications are blocked. Allow them in site settings, then try again.");
-        return;
-      }
-    } else if (enabled && Platform.OS !== "web") {
+    if (enabled && Platform.OS !== "web") {
       const allowed = await ensurePermission();
       if (!allowed) {
         setNotice("Notifications are blocked. Allow them in device settings, then try again.");
         return;
       }
     }
-    const current = await loadSettings();
-    const next = { ...current, enabled };
-    setReminders(enabled);
+    const next = { ...reminderSettings, enabled };
+    setReminderSettings(next);
     await saveSettings(next);
     await rescheduleReminders(next);
-    setNotice(enabled ? "Session reminders are on." : "Session reminders are off.");
+    setNotice(enabled
+      ? Platform.OS === "web"
+        ? "Reminder time is saved. Phone pop-ups are available in the installed mobile app."
+        : "Session reminders are on."
+      : "Session reminders are off.");
+  };
+
+  const selectReminderTime = async (dailyHour: number) => {
+    const next = { ...reminderSettings, dailyHour, dailyMinute: 0 };
+    setReminderSettings(next);
+    await saveSettings(next);
+    await rescheduleReminders(next);
+    setNotice(`Daily plan reminder set for ${String(dailyHour).padStart(2, "0")}:00.`);
+  };
+
+  const toggleFastShortcut = async (enabled: boolean) => {
+    setNotice("");
+    if (enabled && Platform.OS !== "web") {
+      const allowed = await ensurePermission();
+      if (!allowed) {
+        setNotice("Notifications are blocked. Allow them in device settings, then try again.");
+        return;
+      }
+    }
+    const next = { ...reminderSettings, fastShortcutEnabled: enabled };
+    setReminderSettings(next);
+    await saveSettings(next);
+    await configureFastQuickAccess(enabled);
+    setNotice(enabled
+      ? Platform.OS === "web"
+        ? "FAST shortcut is enabled. Install Rehyn, then long-press its app icon for direct access."
+        : "FAST quick access is on in your phone notifications."
+      : "FAST quick access is off.");
   };
 
   const updatePreference = async <K extends keyof UserPreferences>(key: K, value: UserPreferences[K], message: string) => {
@@ -91,7 +116,24 @@ export default function SettingsScreen() {
           {notice ? <View style={[styles.notice, { backgroundColor: palette.soft }]}><Ionicons name="checkmark-circle" size={20} color={colors.success} /><Text style={[styles.noticeText, { color: palette.text }]}>{notice}</Text></View> : null}
 
           <SettingsGroup label="GENERAL" palette={palette}>
-            <SettingsToggle testID="settings-reminders" icon="notifications-outline" title="Reminders" subtitle="Sessions and gentle check-ins" value={reminders} onValueChange={toggleReminders} palette={palette} scale={scale} />
+            <SettingsToggle testID="settings-reminders" icon="notifications-outline" title="Daily reminder" subtitle="A phone reminder for your recovery plan" value={reminderSettings.enabled} onValueChange={toggleReminders} palette={palette} scale={scale} />
+            {reminderSettings.enabled ? (
+              <>
+                <Divider palette={palette} />
+                <ReminderTimeSetting value={reminderSettings.dailyHour} onChange={selectReminderTime} palette={palette} scale={scale} />
+              </>
+            ) : null}
+            <Divider palette={palette} />
+            <SettingsToggle
+              testID="settings-fast-shortcut"
+              icon="medical-outline"
+              title="FAST quick access"
+              subtitle={Platform.OS === "web" ? "Direct shortcut from the installed app icon" : "Keep a direct FAST action in phone notifications"}
+              value={reminderSettings.fastShortcutEnabled}
+              onValueChange={toggleFastShortcut}
+              palette={palette}
+              scale={scale}
+            />
             <Divider palette={palette} />
             <SettingsToggle testID="settings-dark-mode" icon="moon-outline" title="Dark mode" subtitle="Reduce brightness in low light" value={preferences.darkMode} onValueChange={toggleDarkMode} palette={palette} scale={scale} />
             {preferences.darkMode ? (
@@ -192,6 +234,39 @@ function SettingsLink({ icon, title, subtitle, onPress, testID, palette, scale }
 }
 
 function Divider({ palette }: { palette: Palette }) { return <View style={[styles.divider, { backgroundColor: palette.border }]} />; }
+
+function ReminderTimeSetting({ value, onChange, palette, scale }: { value: number; onChange: (value: number) => void; palette: Palette; scale: number }) {
+  const choices = [9, 13, 18];
+  return (
+    <View style={styles.reminderTimeSetting} testID="settings-reminder-time">
+      <View style={styles.reminderTimeHeading}>
+        <View style={[styles.settingIcon, { backgroundColor: palette.soft }]}><Ionicons name="time-outline" size={22} color={colors.brandPrimary} /></View>
+        <View style={styles.settingCopy}>
+          <Text style={[styles.settingTitle, { color: palette.text, fontSize: 16 * scale }]}>Reminder time</Text>
+          <Text style={[styles.settingSubtitle, { color: palette.muted, fontSize: 12 * scale, lineHeight: 17 * scale }]}>Choose when to see your daily plan prompt</Text>
+        </View>
+      </View>
+      <View style={styles.reminderTimeChoices}>
+        {choices.map((hour) => {
+          const selected = value === hour;
+          const label = `${String(hour).padStart(2, "0")}:00`;
+          return (
+            <Pressable
+              key={hour}
+              onPress={() => onChange(hour)}
+              style={[styles.reminderTimeChoice, { borderColor: selected ? palette.brand : palette.border, backgroundColor: selected ? palette.soft : palette.surface }]}
+              accessibilityRole="radio"
+              accessibilityState={{ checked: selected }}
+              testID={`settings-reminder-${hour}`}
+            >
+              <Text style={[styles.reminderTimeText, { color: selected ? palette.brand : palette.text }]}>{label}</Text>
+            </Pressable>
+          );
+        })}
+      </View>
+    </View>
+  );
+}
 
 function BrightnessSetting({ value, onCommit, palette, scale }: { value: number; onCommit: (value: number) => void; palette: Palette; scale: number }) {
   const [draft, setDraft] = useState(value);
@@ -329,6 +404,11 @@ const styles = StyleSheet.create({
   group: { borderRadius: radius.md, borderWidth: 1, paddingHorizontal: spacing.md, paddingBottom: spacing.xs }, groupLabel: { fontSize: 11, fontWeight: "800", paddingTop: spacing.sm, paddingBottom: 2 },
   settingRow: { minHeight: 82, flexDirection: "row", alignItems: "center", gap: spacing.sm }, settingIcon: { width: 44, height: 44, borderRadius: radius.sm, alignItems: "center", justifyContent: "center" },
   settingCopy: { flex: 1, minWidth: 0 }, settingTitle: { fontWeight: "800" }, settingSubtitle: { marginTop: 2 }, divider: { height: 1, marginLeft: 56 }, version: { textAlign: "center", marginVertical: spacing.sm },
+  reminderTimeSetting: { minHeight: 128, justifyContent: "center", gap: spacing.sm, paddingVertical: spacing.sm },
+  reminderTimeHeading: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
+  reminderTimeChoices: { flexDirection: "row", gap: spacing.xs, paddingLeft: 56 },
+  reminderTimeChoice: { flex: 1, minHeight: 42, borderWidth: 1, borderRadius: radius.sm, alignItems: "center", justifyContent: "center", paddingHorizontal: spacing.xs },
+  reminderTimeText: { fontSize: 13, lineHeight: 18, fontWeight: "800" },
   brightnessSetting: { minHeight: 112, justifyContent: "center", gap: spacing.sm, paddingVertical: spacing.sm },
   brightnessHeading: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
   brightnessValue: { minWidth: 44, textAlign: "right", fontSize: 14, fontWeight: "800" },

@@ -66,6 +66,7 @@ try:
         validate_check_in_answers,
     )
     from backend.alira_action_log import AliraActionLogger
+    from backend.rehab_games import game_catalog, rehab_game_html
 except ImportError:
     from rehab_assessment import (
         build_biomechanical_estimates,
@@ -109,6 +110,7 @@ except ImportError:
         validate_check_in_answers,
     )
     from alira_action_log import AliraActionLogger
+    from rehab_games import game_catalog, rehab_game_html
 
 try:
     from openai import OpenAI
@@ -7956,6 +7958,257 @@ REHAB_RUNNER_CONFIG: Dict[str, Dict[str, Any]] = {
 }
 
 
+SESSION_DIFFICULTY_PRESETS: Dict[str, Dict[str, float]] = {
+    "easy": {
+        "rep_factor": 0.7,
+        "set_delta": -1,
+        "target_y_delta": 0.06,
+        "target_distance_scale": 0.85,
+        "radius_scale": 1.2,
+        "hold_scale": 0.8,
+    },
+    "medium": {
+        "rep_factor": 1.0,
+        "set_delta": 0,
+        "target_y_delta": 0.0,
+        "target_distance_scale": 1.0,
+        "radius_scale": 1.0,
+        "hold_scale": 1.0,
+    },
+    "difficult": {
+        "rep_factor": 1.15,
+        "set_delta": 1,
+        "target_y_delta": -0.04,
+        "target_distance_scale": 1.15,
+        "radius_scale": 0.9,
+        "hold_scale": 1.15,
+    },
+}
+
+SUPERVISED_EXERCISE_IDS = {
+    "ex_sit_to_stand",
+    "ex_supported_stand",
+    "ex_supported_step",
+    "ex_weight_shift",
+    "ex_step_stance",
+}
+
+EXERCISE_RUNNER_ALIASES = {
+    "demo_supported_reach": "ex_reach",
+    "demo_hand_opening": "ex_handopen",
+}
+
+EXERCISE_SESSION_RULES: Dict[str, Dict[str, str]] = {
+    "ex_reach": {
+        "variation": "Reach on a gentle diagonal instead of straight ahead.",
+        "easy": "Use a lower, larger target close to the comfortable reach.",
+        "medium": "Use the usual forward target and planned dose.",
+        "difficult": "Use a slightly higher, smaller target and a longer controlled hold.",
+    },
+    "ex_trunk": {
+        "variation": "Alternate a centre reach with a small diagonal reach while the back stays supported.",
+        "easy": "Use a short, lower reach with a larger target and fewer repetitions.",
+        "medium": "Reach forward while maintaining chair-back contact.",
+        "difficult": "Reach slightly higher and hold longer without losing chair-back contact.",
+    },
+    "ex_wallslide": {
+        "variation": "Slide toward a slightly diagonal target while keeping the forearm supported.",
+        "easy": "Use a low table-slide target in a pain-free range.",
+        "medium": "Use the usual supported elevation target.",
+        "difficult": "Use a slightly higher target and longer hold, still pain-free and without adding resistance.",
+    },
+    "ex_scapdepress": {
+        "variation": "Reach slightly across the body while keeping the shoulder away from the ear.",
+        "easy": "Practise a short supported reach with a large target.",
+        "medium": "Use the usual reach while controlling shoulder position.",
+        "difficult": "Use a slightly higher, smaller target and maintain the relaxed shoulder longer.",
+    },
+    "ex_h2m": {
+        "variation": "Alternate an empty-hand movement with a light spoon or empty cup.",
+        "easy": "Use an empty hand or large light handle and a generous mouth target.",
+        "medium": "Use the planned hand-to-mouth movement with a light object.",
+        "difficult": "Use a smaller target and pause longer near the mouth without leaning the trunk.",
+    },
+    "ex_grasp": {
+        "variation": "Transport the object in the opposite table direction.",
+        "easy": "Use a large, very light object over a short distance.",
+        "medium": "Use a soft cup across the usual table distance.",
+        "difficult": "Use a slightly smaller light object over a longer path with a controlled release.",
+    },
+    "ex_handopen": {
+        "variation": "Alternate opening around a rolled towel and a large light cup.",
+        "easy": "Use assistance and a large object; every small opening effort counts.",
+        "medium": "Open and release independently as far as comfortable.",
+        "difficult": "Hold the hand open longer around a slightly smaller object; never add resistance automatically.",
+    },
+    "ex_pinch": {
+        "variation": "Change between a large peg, coin, pen, and different finger oppositions.",
+        "easy": "Use a large peg or thick pen with fewer placements.",
+        "medium": "Use coins or standard pegs with the thumb and index finger.",
+        "difficult": "Use a smaller object or another finger opposition with a longer controlled release.",
+    },
+    "ex_bilateral": {
+        "variation": "Alternate towel-folding with a two-handed forward roller movement.",
+        "easy": "Use a small two-handed movement at a lower height.",
+        "medium": "Use the usual symmetrical movement at chest height.",
+        "difficult": "Use a slightly larger path and longer pause while both arms stay level.",
+    },
+    "ex_lower_selective": {
+        "variation": "Alternate a slow knee straighten with a heel-slide pattern in supported sitting.",
+        "easy": "Use assisted partial range with fewer repetitions.",
+        "medium": "Use the comfortable planned knee range and dose.",
+        "difficult": "Pause longer near extension and add only one controlled repetition.",
+    },
+    "ex_ankle_dorsiflexion": {
+        "variation": "Alternate toe lifts with a slow lift-and-lower rhythm cue.",
+        "easy": "Use a small assisted toe lift while the heel stays down.",
+        "medium": "Use the usual independent comfortable toe lift.",
+        "difficult": "Hold the toe lift longer and lower more slowly without moving the knee.",
+    },
+    "ex_sit_to_stand": {
+        "variation": "Alternate a full repetition with a carefully rehearsed foot-placement and forward-lean sequence.",
+        "easy": "Use the agreed higher chair and more assistance.",
+        "medium": "Use the current therapist-agreed chair, aid, and assistance.",
+        "difficult": "Add at most one slow repetition; never lower the chair or remove support automatically.",
+    },
+    "ex_supported_stand": {
+        "variation": "Alternate an alignment focus with an even-weight focus.",
+        "easy": "Use a shorter supported hold with full guarding.",
+        "medium": "Use the planned supported standing hold.",
+        "difficult": "Hold slightly longer with the same fixed support and guarding.",
+    },
+    "ex_supported_step": {
+        "variation": "Alternate step initiation with a toe-clearance and placement focus.",
+        "easy": "Use a very small step with full support and fewer repetitions.",
+        "medium": "Use the therapist-agreed step length and support.",
+        "difficult": "Add one controlled repetition or a slightly longer pause; never reduce guarding.",
+    },
+    "ex_weight_shift": {
+        "variation": "Alternate a side shift with a return-to-centre accuracy focus.",
+        "easy": "Use a small shift with full support and a short pause.",
+        "medium": "Use the planned comfortable shift and pause.",
+        "difficult": "Use a slightly larger controlled shift or longer pause with unchanged guarding.",
+    },
+    "ex_sitting_balance": {
+        "variation": "Reach on a gentle diagonal and return precisely to midline.",
+        "easy": "Use a small reach with feet supported and close guarding.",
+        "medium": "Use the planned reach and controlled return.",
+        "difficult": "Use a slightly farther target and longer pause with the same guarding.",
+    },
+    "ex_step_stance": {
+        "variation": "Alternate which safely approved foot leads while practising the same short stance.",
+        "easy": "Use a very short stance and brief hold with full support.",
+        "medium": "Use the therapist-agreed stance and hold.",
+        "difficult": "Hold slightly longer or add one repetition; never remove fixed support or guarding.",
+    },
+    "ex_maintenance": {
+        "variation": "Reach on alternating gentle diagonals instead of only straight ahead.",
+        "easy": "Use a lower, larger target and fewer repetitions.",
+        "medium": "Use the usual full comfortable movement.",
+        "difficult": "Use a slightly higher, smaller target with a longer smooth hold.",
+    },
+}
+
+
+def _exercise_by_id(exercise_id: str) -> Optional[RehabExercise]:
+    exercise_id = EXERCISE_RUNNER_ALIASES.get(exercise_id, exercise_id)
+    return next((exercise for exercise in EXERCISE_LIBRARY.values() if exercise.id == exercise_id), None)
+
+
+def _difficulty_dose(exercise: RehabExercise, level: str) -> Dict[str, int]:
+    preset = SESSION_DIFFICULTY_PRESETS.get(level) or SESSION_DIFFICULTY_PRESETS["medium"]
+    if level == "easy":
+        sets = max(1, exercise.sets + int(preset["set_delta"]))
+        reps = max(3, round(exercise.reps * preset["rep_factor"]))
+    elif level == "difficult" and exercise.id in SUPERVISED_EXERCISE_IDS:
+        sets = exercise.sets
+        reps = min(20, exercise.reps + 1)
+    elif level == "difficult":
+        sets = min(4, exercise.sets + int(preset["set_delta"]))
+        reps = min(20, max(exercise.reps + 1, round(exercise.reps * preset["rep_factor"])))
+    else:
+        sets, reps = exercise.sets, exercise.reps
+    return {"sets": sets, "reps": reps}
+
+
+def _exercise_difficulty_levels(exercise: RehabExercise) -> Dict[str, Dict[str, Any]]:
+    rules = EXERCISE_SESSION_RULES.get(exercise.id) or EXERCISE_SESSION_RULES["ex_maintenance"]
+    return {
+        level: {
+            "label": level.capitalize(),
+            **_difficulty_dose(exercise, level),
+            "adjustment": rules[level],
+        }
+        for level in ("easy", "medium", "difficult")
+    }
+
+
+def _configure_rehab_runner(exercise_id: str, difficulty: str, variation: str) -> Dict[str, Any]:
+    import copy as _copy
+
+    exercise_id = EXERCISE_RUNNER_ALIASES.get(exercise_id, exercise_id)
+    level = difficulty if difficulty in SESSION_DIFFICULTY_PRESETS else "medium"
+    selected_variation = variation if variation in {"standard", "alternate"} else "standard"
+    cfg = _copy.deepcopy(REHAB_RUNNER_CONFIG.get(exercise_id) or REHAB_RUNNER_CONFIG["ex_maintenance"])
+    preset = SESSION_DIFFICULTY_PRESETS[level]
+    rules = EXERCISE_SESSION_RULES.get(exercise_id) or EXERCISE_SESSION_RULES["ex_maintenance"]
+    target_steps = [step for step in cfg.get("cycle") or [] if isinstance(step.get("target"), dict)]
+    for index, step in enumerate(target_steps):
+        target = step["target"]
+        is_return_target = float(target.get("y", 0.5)) >= 0.70
+        if not is_return_target:
+            y = float(target.get("y", 0.5)) + preset["target_y_delta"]
+            target["y"] = max(0.16, min(0.68, round(y, 3)))
+            x = float(target.get("x", 0.5))
+            if exercise_id == "ex_grasp":
+                distance = (x - 0.5) * preset["target_distance_scale"]
+                target["x"] = round(0.5 + distance, 3)
+                if selected_variation == "alternate":
+                    target["x"] = round(1 - target["x"], 3)
+            elif selected_variation == "alternate":
+                shift = 0.10 if index % 2 == 0 else -0.10
+                target["x"] = max(0.18, min(0.82, round(x + shift, 3)))
+        target["r"] = max(0.07, min(0.34, round(float(target.get("r", 0.10)) * preset["radius_scale"], 3)))
+        step["hold_ms"] = max(600, round(float(step.get("hold_ms") or 1000) * preset["hold_scale"]))
+
+    variation_cue = rules["variation"] if selected_variation == "alternate" else "Use the familiar movement pattern today."
+    safety_cue = (
+        " Keep the same fixed support, walking aid, and hands-on guarding at every difficulty level."
+        if exercise_id in SUPERVISED_EXERCISE_IDS else ""
+    )
+    cfg["setup_voice"] = f"{cfg.get('setup_voice', '')} Today's level is {level}. {rules[level]} {variation_cue}{safety_cue}".strip()
+    cfg["difficulty"] = level
+    cfg["variation"] = selected_variation
+    cfg["difficulty_adjustment"] = rules[level]
+    cfg["variation_adjustment"] = variation_cue
+    return cfg
+
+
+@api_router.get("/rehab/session-options")
+async def rehab_session_options(exercise_ids: str = ""):
+    requested = [value.strip() for value in exercise_ids.split(",") if value.strip()]
+    exercises = []
+    for requested_id in requested:
+        exercise_id = EXERCISE_RUNNER_ALIASES.get(requested_id, requested_id)
+        exercise = _exercise_by_id(exercise_id)
+        if not exercise or exercise_id not in REHAB_RUNNER_CONFIG:
+            continue
+        rules = EXERCISE_SESSION_RULES.get(exercise_id) or EXERCISE_SESSION_RULES["ex_maintenance"]
+        exercises.append({
+            "exercise_id": requested_id,
+            "name": exercise.name,
+            "requires_same_support_at_all_levels": exercise_id in SUPERVISED_EXERCISE_IDS,
+            "alternate_variation": rules["variation"],
+            "levels": _exercise_difficulty_levels(exercise),
+        })
+    return {
+        "levels": ["easy", "medium", "difficult"],
+        "variations": ["standard", "alternate"],
+        "exercises": exercises,
+        "safety_rule": "Difficulty changes are incremental. Pain, dizziness, marked fatigue, new weakness, or loss of balance means stop and use the easier plan or contact the rehabilitation team.",
+    }
+
+
 @api_router.get("/emergency/fast-runner", response_class=HTMLResponse)
 async def emergency_fast_runner():
     return HTMLResponse(
@@ -8061,6 +8314,8 @@ async def get_testing_library(request: Request):
             "guided_reps": int(runner.get("reps") or exercise.reps),
             "pose_mode": str(runner.get("pose_mode") or "guided"),
             "support_required": any(term in support_text for term in ("therapist", "carer", "caregiver", "guarding", "supervised")),
+            "difficulty_levels": _exercise_difficulty_levels(exercise),
+            "alternate_variation": (EXERCISE_SESSION_RULES.get(exercise.id) or EXERCISE_SESSION_RULES["ex_maintenance"])["variation"],
         })
 
     return {
@@ -8072,10 +8327,14 @@ async def get_testing_library(request: Request):
     }
 
 
-def _rehab_runner_html(exercise_id: str, prescribed_reps: Optional[int] = None) -> str:
-    import copy as _copy
+def _rehab_runner_html(
+    exercise_id: str,
+    prescribed_reps: Optional[int] = None,
+    difficulty: str = "medium",
+    variation: str = "standard",
+) -> str:
     import json as _json
-    cfg = _copy.deepcopy(REHAB_RUNNER_CONFIG.get(exercise_id) or REHAB_RUNNER_CONFIG["ex_maintenance"])
+    cfg = _configure_rehab_runner(exercise_id, difficulty, variation)
     if prescribed_reps is not None:
         cfg["reps"] = max(1, min(20, int(prescribed_reps)))
     cfg_json = _json.dumps(cfg)
@@ -8083,8 +8342,26 @@ def _rehab_runner_html(exercise_id: str, prescribed_reps: Optional[int] = None) 
 
 
 @api_router.get("/rehab/runner", response_class=HTMLResponse)
-async def rehab_runner(exercise_id: str = "ex_maintenance", reps: Optional[int] = None):
-    return HTMLResponse(content=_rehab_runner_html(exercise_id, reps))
+async def rehab_runner(
+    exercise_id: str = "ex_maintenance",
+    reps: Optional[int] = None,
+    difficulty: str = "medium",
+    variation: str = "standard",
+):
+    return HTMLResponse(content=_rehab_runner_html(exercise_id, reps, difficulty, variation))
+
+
+@api_router.get("/rehab/games")
+async def rehab_games_catalog():
+    return {"games": game_catalog(), "optional_practice": True}
+
+
+@api_router.get("/rehab/game-runner", response_class=HTMLResponse)
+async def rehab_game_runner(game_id: str = "garden_reach", difficulty: str = "medium"):
+    return HTMLResponse(
+        content=rehab_game_html(game_id, difficulty),
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 REHAB_RUNNER_HTML_TEMPLATE = r"""<!DOCTYPE html>

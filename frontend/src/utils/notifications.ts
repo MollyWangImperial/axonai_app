@@ -4,12 +4,16 @@ import { storage } from "@/src/utils/storage";
 import { authedFetch } from "@/src/auth";
 
 const STORE_KEY = "reminders_settings_v1";
+const FAST_CATEGORY_ID = "rehyn-fast-access";
+const FAST_NOTIFICATION_ID = "rehyn-fast-quick-access";
+export const FAST_ACTION_ID = "open-fast";
 
 export type ReminderSettings = {
   enabled: boolean;
   dailyHour: number;
   dailyMinute: number;
   weeklyDay: number; // 1=Mon .. 7=Sun
+  fastShortcutEnabled: boolean;
 };
 
 export const DEFAULT_SETTINGS: ReminderSettings = {
@@ -17,6 +21,7 @@ export const DEFAULT_SETTINGS: ReminderSettings = {
   dailyHour: 9,
   dailyMinute: 0,
   weeklyDay: 1,
+  fastShortcutEnabled: false,
 };
 
 Notifications.setNotificationHandler({
@@ -45,6 +50,57 @@ export async function loadSettings(): Promise<ReminderSettings> {
 
 export async function saveSettings(s: ReminderSettings) {
   await storage.setItem(STORE_KEY, JSON.stringify(s));
+}
+
+export async function initializeNotificationActions() {
+  if (Platform.OS === "web") return;
+  try {
+    await Notifications.setNotificationCategoryAsync(FAST_CATEGORY_ID, [
+      {
+        identifier: FAST_ACTION_ID,
+        buttonTitle: "Start FAST check",
+        options: { opensAppToForeground: true },
+      },
+    ]);
+  } catch {
+    // Notification actions can be unavailable in preview clients.
+  }
+}
+
+export async function configureFastQuickAccess(enabled: boolean) {
+  if (Platform.OS === "web") return;
+  try {
+    await Notifications.cancelScheduledNotificationAsync(FAST_NOTIFICATION_ID);
+  } catch {
+    // It may already be absent.
+  }
+  try {
+    await Notifications.dismissNotificationAsync(FAST_NOTIFICATION_ID);
+  } catch {
+    // It may already be absent.
+  }
+  if (!enabled) return;
+
+  await initializeNotificationActions();
+  const allowed = await ensurePermission();
+  if (!allowed) return;
+  try {
+    await Notifications.scheduleNotificationAsync({
+      identifier: FAST_NOTIFICATION_ID,
+      content: {
+        title: "FAST check quick access",
+        body: "Tap if you need to check Face, Arms and Speech.",
+        sound: false,
+        sticky: Platform.OS === "android",
+        autoDismiss: false,
+        categoryIdentifier: FAST_CATEGORY_ID,
+        data: { route: "/emergency" },
+      } as any,
+      trigger: null,
+    });
+  } catch {
+    // The Settings screen explains when the platform cannot keep this notification visible.
+  }
 }
 
 type AdaptiveReminderPlan = {
@@ -83,6 +139,7 @@ export async function rescheduleReminders(s: ReminderSettings, suppliedPlan?: Ad
           title: "Rehyn · Today's plan",
           body: "Your guided recovery plan is ready when you are.",
           sound: true,
+          data: { route: "/" },
         },
         trigger: {
           type: Notifications.SchedulableTriggerInputTypes.CALENDAR,
@@ -103,6 +160,7 @@ export async function rescheduleReminders(s: ReminderSettings, suppliedPlan?: Ad
           title: "Rehyn · Short recovery check-in",
           body: "Alira has a few short questions to keep your next plan relevant.",
           sound: true,
+          data: { route: "/chat" },
         },
         trigger: { type: Notifications.SchedulableTriggerInputTypes.DATE, date: surveyDate } as any,
       });
@@ -116,6 +174,7 @@ export async function rescheduleReminders(s: ReminderSettings, suppliedPlan?: Ad
           title: "Rehyn · Movement check",
           body: "Your next short movement assessment is ready.",
           sound: true,
+          data: { route: "/" },
         },
         trigger: { type: Notifications.SchedulableTriggerInputTypes.DATE, date: assessmentDate } as any,
       });
@@ -128,6 +187,7 @@ export async function rescheduleReminders(s: ReminderSettings, suppliedPlan?: Ad
           title: "Rehyn · Movement check-in",
           body: "Reconnect with Alira to refresh your recovery schedule.",
           sound: true,
+          data: { route: "/chat" },
         },
         trigger: {
           type: Notifications.SchedulableTriggerInputTypes.CALENDAR,
@@ -138,6 +198,7 @@ export async function rescheduleReminders(s: ReminderSettings, suppliedPlan?: Ad
         } as any,
       });
     }
+    if (s.fastShortcutEnabled) await configureFastQuickAccess(true);
   } catch {
     // Silent — local notifications may be limited in Expo Go on iOS
   }

@@ -48,6 +48,28 @@ type AdaptiveCarePlan = {
 };
 
 type PlanPreparationStage = 0 | 1 | 2;
+type SessionDifficulty = "easy" | "medium" | "difficult";
+type SessionVariation = "standard" | "alternate";
+
+type ExerciseSessionOption = {
+  exercise_id: string;
+  name: string;
+  requires_same_support_at_all_levels: boolean;
+  alternate_variation: string;
+  levels: Record<SessionDifficulty, {
+    label: string;
+    sets: number;
+    reps: number;
+    adjustment: string;
+  }>;
+};
+
+type SessionOptionsResponse = {
+  levels: SessionDifficulty[];
+  variations: SessionVariation[];
+  exercises: ExerciseSessionOption[];
+  safety_rule: string;
+};
 
 const PREPARATION_STEPS = [
   "Reviewing your assessment",
@@ -60,6 +82,13 @@ const MINIMUM_STAGE_DURATION_MS = 420;
 const SUPPORTED_REACH_IMAGE = require("../assets/images/rehab-supported-forward-reach.png") as ImageSourcePropType;
 const HAND_OPENING_IMAGE = require("../assets/images/rehab-relaxed-hand-opening.png") as ImageSourcePropType;
 const PROGRESS_KEY = (planId: string, exId: string) => `ex_progress_v1:${planId}:${exId}`;
+const SESSION_VISITS_KEY = (planId: string) => `rehab_session_visits_v1:${planId}`;
+
+const DIFFICULTY_COPY: Record<SessionDifficulty, { label: string; summary: string; icon: keyof typeof Ionicons.glyphMap }> = {
+  easy: { label: "Easy", summary: "Fewer repetitions and a more reachable target.", icon: "leaf-outline" },
+  medium: { label: "Medium", summary: "Your usual dose and target position.", icon: "options-outline" },
+  difficult: { label: "Difficult", summary: "A small dose increase and a higher or more precise target.", icon: "trending-up-outline" },
+};
 
 function exerciseImage(exercise: RehabExercise): ImageSourcePropType {
   const text = `${exercise.name} ${exercise.description} ${exercise.targets_issue}`.toLowerCase();
@@ -111,6 +140,40 @@ function applyAdaptiveDose(plan: Assessment, carePlan: AdaptiveCarePlan | null):
         requires_clinician_confirmation: false,
         selection_reason: `${exercise.selection_reason || "Selected from the approved exercise library."} ${actionText}`,
       };
+    }),
+  };
+}
+
+function sessionDose(exercise: RehabExercise, difficulty: SessionDifficulty, requiresSameSupport: boolean) {
+  if (difficulty === "easy") {
+    return {
+      sets: Math.max(1, exercise.sets - 1),
+      reps: Math.max(3, Math.round(exercise.reps * 0.7)),
+    };
+  }
+  if (difficulty === "difficult") {
+    return {
+      sets: requiresSameSupport ? exercise.sets : Math.min(4, exercise.sets + 1),
+      reps: requiresSameSupport
+        ? exercise.reps + 1
+        : Math.min(20, Math.max(exercise.reps + 1, Math.round(exercise.reps * 1.15))),
+    };
+  }
+  return { sets: exercise.sets, reps: exercise.reps };
+}
+
+function configureSessionPlan(
+  plan: Assessment,
+  difficulty: SessionDifficulty,
+  options: ExerciseSessionOption[],
+): Assessment {
+  const optionById = new Map(options.map((option) => [option.exercise_id, option]));
+  return {
+    ...plan,
+    rehab_plan: plan.rehab_plan.map((exercise) => {
+      const option = optionById.get(exercise.id);
+      const dose = sessionDose(exercise, difficulty, Boolean(option?.requires_same_support_at_all_levels));
+      return { ...exercise, ...dose };
     }),
   };
 }
@@ -206,6 +269,143 @@ function RehabPlanPreparation({
   );
 }
 
+function RehabSessionSetup({
+  plan,
+  options,
+  difficulty,
+  variation,
+  switchRecommended,
+  onDifficultyChange,
+  onVariationChange,
+  onConfirm,
+  onBack,
+  topInset,
+}: {
+  plan: Assessment;
+  options: ExerciseSessionOption[];
+  difficulty: SessionDifficulty;
+  variation: SessionVariation;
+  switchRecommended: boolean;
+  onDifficultyChange: (value: SessionDifficulty) => void;
+  onVariationChange: (value: SessionVariation) => void;
+  onConfirm: () => void;
+  onBack: () => void;
+  topInset: number;
+}) {
+  const optionById = useMemo(() => new Map(options.map((option) => [option.exercise_id, option])), [options]);
+
+  return (
+    <View style={styles.container} testID="rehab-session-setup">
+      <View style={[styles.header, { paddingTop: topInset + spacing.sm }]}>
+        <Pressable onPress={onBack} style={styles.backBtn} accessibilityLabel="Go back">
+          <Ionicons name="chevron-back" size={26} color={colors.brandPrimary} />
+        </Pressable>
+        <Text style={styles.headerTitle}>Rehab plan</Text>
+        <View style={styles.headerSpacer} />
+      </View>
+      <ScrollView contentContainerStyle={styles.sessionSetupScroll}>
+        <View style={styles.sessionSetupPage}>
+          <Text style={styles.sessionSetupEyebrow}>TODAY&apos;S SESSION</Text>
+          <Text style={styles.sessionSetupTitle}>Choose how today should feel</Text>
+          <Text style={styles.sessionSetupIntro}>
+            Your recovery goals stay the same. You can keep the familiar set or switch to alternate versions of the same movements, then choose a comfortable challenge for today.
+          </Text>
+
+          <Text style={styles.sessionSectionTitle}>Exercise set</Text>
+          <View style={styles.sessionChoiceRow}>
+            {([
+              { value: "standard" as const, icon: "repeat-outline" as const, label: "Keep familiar set", copy: "Use the movement pattern from your current plan." },
+              { value: "alternate" as const, icon: "shuffle-outline" as const, label: "Switch to a different set", copy: "Use alternate versions that train the same functional goals." },
+            ]).map((choice) => {
+              const selected = variation === choice.value;
+              return (
+                <Pressable
+                  key={choice.value}
+                  onPress={() => onVariationChange(choice.value)}
+                  style={[styles.sessionChoice, selected && styles.sessionChoiceSelected]}
+                  accessibilityRole="radio"
+                  accessibilityState={{ checked: selected }}
+                  testID={`session-variation-${choice.value}`}
+                >
+                  <View style={[styles.sessionChoiceIcon, selected && styles.sessionChoiceIconSelected]}>
+                    <Ionicons name={choice.icon} size={24} color={selected ? "#FFFFFF" : colors.brandPrimary} />
+                  </View>
+                  <View style={styles.sessionChoiceCopy}>
+                    <View style={styles.sessionChoiceHeading}>
+                      <Text style={styles.sessionChoiceLabel}>{choice.label}</Text>
+                      {choice.value === "alternate" && switchRecommended && (
+                        <View style={styles.recommendedTag}><Text style={styles.recommendedTagText}>Suggested today</Text></View>
+                      )}
+                    </View>
+                    <Text style={styles.sessionChoiceDescription}>{choice.copy}</Text>
+                  </View>
+                  <Ionicons name={selected ? "radio-button-on" : "radio-button-off"} size={24} color={selected ? colors.brandPrimary : "#78847C"} />
+                </Pressable>
+              );
+            })}
+          </View>
+
+          <Text style={styles.sessionSectionTitle}>Difficulty</Text>
+          <View style={styles.difficultyRow}>
+            {(Object.keys(DIFFICULTY_COPY) as SessionDifficulty[]).map((level) => {
+              const selected = difficulty === level;
+              const item = DIFFICULTY_COPY[level];
+              return (
+                <Pressable
+                  key={level}
+                  onPress={() => onDifficultyChange(level)}
+                  style={[styles.difficultyChoice, selected && styles.difficultyChoiceSelected]}
+                  accessibilityRole="radio"
+                  accessibilityState={{ checked: selected }}
+                  testID={`session-difficulty-${level}`}
+                >
+                  <Ionicons name={item.icon} size={25} color={selected ? colors.brandPrimary : "#6A756E"} />
+                  <Text style={styles.difficultyLabel}>{item.label}</Text>
+                  <Text style={styles.difficultySummary}>{item.summary}</Text>
+                </Pressable>
+              );
+            })}
+          </View>
+
+          <View style={styles.sessionPreview}>
+            <Text style={styles.sessionPreviewTitle}>What changes today</Text>
+            {plan.rehab_plan.map((exercise) => {
+              const option = optionById.get(exercise.id);
+              const dose = sessionDose(exercise, difficulty, Boolean(option?.requires_same_support_at_all_levels));
+              const adjustment = option?.levels?.[difficulty]?.adjustment || DIFFICULTY_COPY[difficulty].summary;
+              return (
+                <View key={exercise.id} style={styles.sessionPreviewItem} testID={`session-preview-${exercise.id}`}>
+                  <View style={styles.sessionPreviewIcon}><Ionicons name="fitness-outline" size={20} color={colors.brandPrimary} /></View>
+                  <View style={styles.sessionPreviewCopy}>
+                    <Text style={styles.sessionPreviewName}>{exercise.name}</Text>
+                    <Text style={styles.sessionPreviewDose}>{dose.sets} sets x {dose.reps} reps · {adjustment}</Text>
+                    {variation === "alternate" && option?.alternate_variation && (
+                      <Text style={styles.sessionPreviewVariation}>{option.alternate_variation}</Text>
+                    )}
+                    {option?.requires_same_support_at_all_levels && (
+                      <Text style={styles.sessionPreviewSafety}>Use the same support and guarding at every level.</Text>
+                    )}
+                  </View>
+                </View>
+              );
+            })}
+          </View>
+
+          <View style={styles.sessionSafetyNote}>
+            <Ionicons name="shield-checkmark-outline" size={24} color="#A85006" />
+            <Text style={styles.sessionSafetyNoteText}>Choose easy if you feel unusually tired or less steady. Stop for new pain, dizziness, marked fatigue, or loss of balance.</Text>
+          </View>
+
+          <Pressable onPress={onConfirm} style={styles.sessionConfirm} testID="session-show-plan">
+            <Text style={styles.sessionConfirmText}>Show today&apos;s plan</Text>
+            <Ionicons name="arrow-forward" size={22} color="#FFFFFF" />
+          </Pressable>
+        </View>
+      </ScrollView>
+    </View>
+  );
+}
+
 export default function RehabPlanScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
@@ -220,6 +420,11 @@ export default function RehabPlanScreen() {
   const [paywallReason, setPaywallReason] = useState<string | undefined>();
   const [demonstrationId, setDemonstrationId] = useState<string | null>(null);
   const [expandedPurposeIds, setExpandedPurposeIds] = useState<Set<string>>(new Set());
+  const [sessionOptions, setSessionOptions] = useState<ExerciseSessionOption[]>([]);
+  const [sessionDifficulty, setSessionDifficulty] = useState<SessionDifficulty>("medium");
+  const [sessionVariation, setSessionVariation] = useState<SessionVariation>("standard");
+  const [sessionConfirmed, setSessionConfirmed] = useState(false);
+  const [switchRecommended, setSwitchRecommended] = useState(false);
 
   const planId = id || "default";
   const isDemo = id === DEMO_ASSESSMENT_ID;
@@ -249,6 +454,8 @@ export default function RehabPlanScreen() {
     (async () => {
       try {
         if (id) {
+          setSessionConfirmed(false);
+          setSessionOptions([]);
           setPreparationStage(0);
           let stageStartedAt = Date.now();
           const assessment = id === DEMO_ASSESSMENT_ID ? demoAssessment : await fetchAssessment(id);
@@ -274,6 +481,32 @@ export default function RehabPlanScreen() {
           const adjustedAssessment = applyAdaptiveDose(assessment, carePlan);
           setAdaptiveCarePlan(carePlan);
           setData(adjustedAssessment);
+          const doseChange = Number(carePlan?.exercise_plan?.dose_change_percent || 0);
+          setSessionDifficulty(doseChange < 0 ? "easy" : doseChange > 0 ? "difficult" : "medium");
+          try {
+            const exerciseIds = adjustedAssessment.rehab_plan.map((exercise) => exercise.id).join(",");
+            const response = await authedFetch(`/api/rehab/session-options?exercise_ids=${encodeURIComponent(exerciseIds)}`);
+            if (response.ok) {
+              const sessionResponse = await response.json() as SessionOptionsResponse;
+              if (!cancelled) setSessionOptions(sessionResponse.exercises || []);
+            }
+          } catch {
+            // The plan remains usable with the generic difficulty descriptions.
+          }
+          try {
+            const rawVisits = await storage.getItem(SESSION_VISITS_KEY(planId), "0");
+            const visits = Math.max(0, Number.parseInt(String(rawVisits || "0"), 10) || 0);
+            const recommendSwitch = (visits + 1) % 3 === 0;
+            if (!cancelled) {
+              setSwitchRecommended(recommendSwitch);
+              setSessionVariation(recommendSwitch ? "alternate" : "standard");
+            }
+          } catch {
+            if (!cancelled) {
+              setSwitchRecommended(false);
+              setSessionVariation("standard");
+            }
+          }
           await loadProgress(adjustedAssessment);
           await waitForMinimumStageTime(stageStartedAt);
         }
@@ -284,11 +517,13 @@ export default function RehabPlanScreen() {
     return () => {
       cancelled = true;
     };
-  }, [id, loadProgress]);
+  }, [id, loadProgress, planId]);
 
   useFocusEffect(
     React.useCallback(() => {
-      if (data) loadProgress(data);
+      if (data) {
+        loadProgress(data);
+      }
     }, [data, loadProgress])
   );
 
@@ -301,7 +536,6 @@ export default function RehabPlanScreen() {
     () => data?.rehab_plan.find((exercise) => exercise.id === demonstrationId) || null,
     [data, demonstrationId]
   );
-
   const togglePurpose = (exerciseId: string) => {
     setExpandedPurposeIds((current) => {
       const next = new Set(current);
@@ -309,6 +543,21 @@ export default function RehabPlanScreen() {
       else next.add(exerciseId);
       return next;
     });
+  };
+
+  const confirmSessionChoice = async () => {
+    if (!data) return;
+    const configuredPlan = configureSessionPlan(data, sessionDifficulty, sessionOptions);
+    setData(configuredPlan);
+    await loadProgress(configuredPlan);
+    try {
+      const rawVisits = await storage.getItem(SESSION_VISITS_KEY(planId), "0");
+      const visits = Math.max(0, Number.parseInt(String(rawVisits || "0"), 10) || 0);
+      await storage.setItem(SESSION_VISITS_KEY(planId), String(visits + 1));
+    } catch {
+      // Session setup should still continue when local visit history is unavailable.
+    }
+    setSessionConfirmed(true);
   };
 
   const openGuidedExercise = async (exercise: RehabExercise) => {
@@ -330,7 +579,15 @@ export default function RehabPlanScreen() {
     }
     router.push({
       pathname: "/exercise",
-      params: { exercise_id: exercise.id, name: exercise.name, plan_id: planId, sets: String(exercise.sets), reps: String(exercise.reps) },
+      params: {
+        exercise_id: exercise.id,
+        name: exercise.name,
+        plan_id: planId,
+        sets: String(exercise.sets),
+        reps: String(exercise.reps),
+        difficulty: sessionDifficulty,
+        variation: sessionVariation,
+      },
     });
   };
 
@@ -388,6 +645,23 @@ export default function RehabPlanScreen() {
     );
   }
 
+  if (!sessionConfirmed) {
+    return (
+      <RehabSessionSetup
+        plan={data}
+        options={sessionOptions}
+        difficulty={sessionDifficulty}
+        variation={sessionVariation}
+        switchRecommended={switchRecommended}
+        onDifficultyChange={setSessionDifficulty}
+        onVariationChange={setSessionVariation}
+        onConfirm={confirmSessionChoice}
+        onBack={() => router.back()}
+        topInset={insets.top}
+      />
+    );
+  }
+
   return (
     <View style={styles.container}>
       <View style={[styles.header, { paddingTop: insets.top + spacing.sm }]}>
@@ -418,6 +692,7 @@ export default function RehabPlanScreen() {
           <View style={styles.planIntro} testID="plan-progress-summary">
             <Text style={[styles.summaryTitle, !isWide && styles.summaryTitleNarrow]}>Today&apos;s plan</Text>
             <Text style={styles.summarySubtitle}>{totalExercises} exercise{totalExercises === 1 ? "" : "s"} · about {estimatedMinutes} minutes</Text>
+            <Text style={styles.sessionSummary}>{DIFFICULTY_COPY[sessionDifficulty].label} · {sessionVariation === "alternate" ? "alternate exercise set" : "familiar exercise set"}</Text>
             <View style={styles.progressRow}>
               <View style={styles.progressTrack}>
                 <View style={[styles.progressFill, { width: `${Math.max(1, planPercent)}%` as `${number}%` }]} />
@@ -574,6 +849,41 @@ const styles = StyleSheet.create({
   backBtn: { width: 44, height: 44, alignItems: "center", justifyContent: "center" },
   headerTitle: { fontSize: 19, lineHeight: 24, fontWeight: "800", color: "#123E2D" },
   headerSpacer: { width: 44 },
+  sessionSetupScroll: { paddingHorizontal: spacing.md, paddingTop: spacing.xl, paddingBottom: 48 },
+  sessionSetupPage: { width: "100%", maxWidth: 920, alignSelf: "center" },
+  sessionSetupEyebrow: { fontSize: 13, lineHeight: 18, fontWeight: "800", color: "#4E7C62", letterSpacing: 0 },
+  sessionSetupTitle: { marginTop: spacing.xs, fontSize: 36, lineHeight: 44, fontWeight: "800", color: "#123E2D", letterSpacing: 0 },
+  sessionSetupIntro: { maxWidth: 720, marginTop: spacing.sm, fontSize: 17, lineHeight: 25, color: "#536159" },
+  sessionSectionTitle: { marginTop: spacing.xl, marginBottom: spacing.sm, fontSize: 20, lineHeight: 27, fontWeight: "800", color: "#173F30" },
+  sessionChoiceRow: { gap: spacing.sm },
+  sessionChoice: { minHeight: 92, flexDirection: "row", alignItems: "center", gap: spacing.md, padding: spacing.md, borderWidth: 1, borderColor: "#CBD4CC", borderRadius: radius.sm, backgroundColor: "#FFFFFF" },
+  sessionChoiceSelected: { borderWidth: 2, borderColor: colors.brandPrimary, backgroundColor: "#F0F7F2" },
+  sessionChoiceIcon: { width: 46, height: 46, borderRadius: 23, alignItems: "center", justifyContent: "center", backgroundColor: "#E7EFE9" },
+  sessionChoiceIconSelected: { backgroundColor: colors.brandPrimary },
+  sessionChoiceCopy: { flex: 1, minWidth: 0 },
+  sessionChoiceHeading: { flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: spacing.sm },
+  sessionChoiceLabel: { fontSize: 17, lineHeight: 23, fontWeight: "800", color: "#173F30" },
+  sessionChoiceDescription: { marginTop: 3, fontSize: 14, lineHeight: 20, color: "#5C6861" },
+  recommendedTag: { paddingHorizontal: spacing.sm, paddingVertical: 4, borderRadius: radius.pill, backgroundColor: "#DDEEDF" },
+  recommendedTagText: { fontSize: 11, lineHeight: 15, fontWeight: "800", color: "#2D6B45" },
+  difficultyRow: { flexDirection: "row", flexWrap: "wrap", gap: spacing.sm },
+  difficultyChoice: { flexGrow: 1, flexBasis: 220, minHeight: 138, padding: spacing.md, borderWidth: 1, borderColor: "#CBD4CC", borderRadius: radius.sm, backgroundColor: "#FFFFFF" },
+  difficultyChoiceSelected: { borderWidth: 2, borderColor: colors.brandPrimary, backgroundColor: "#F0F7F2" },
+  difficultyLabel: { marginTop: spacing.sm, fontSize: 18, lineHeight: 24, fontWeight: "800", color: "#173F30" },
+  difficultySummary: { marginTop: 4, fontSize: 13, lineHeight: 19, color: "#5C6861" },
+  sessionPreview: { marginTop: spacing.xl, borderTopWidth: 1, borderTopColor: "#D7DDD8" },
+  sessionPreviewTitle: { paddingTop: spacing.lg, paddingBottom: spacing.sm, fontSize: 20, lineHeight: 27, fontWeight: "800", color: "#173F30" },
+  sessionPreviewItem: { flexDirection: "row", alignItems: "flex-start", gap: spacing.sm, paddingVertical: spacing.md, borderBottomWidth: 1, borderBottomColor: "#E2E6E2" },
+  sessionPreviewIcon: { width: 38, height: 38, borderRadius: 19, alignItems: "center", justifyContent: "center", backgroundColor: "#E8F0EA" },
+  sessionPreviewCopy: { flex: 1, minWidth: 0 },
+  sessionPreviewName: { fontSize: 16, lineHeight: 22, fontWeight: "800", color: "#173F30" },
+  sessionPreviewDose: { marginTop: 3, fontSize: 14, lineHeight: 20, color: "#536159" },
+  sessionPreviewVariation: { marginTop: 4, fontSize: 13, lineHeight: 19, fontWeight: "700", color: colors.brandPrimary },
+  sessionPreviewSafety: { marginTop: 4, fontSize: 13, lineHeight: 19, fontWeight: "700", color: "#9A570F" },
+  sessionSafetyNote: { marginTop: spacing.lg, flexDirection: "row", alignItems: "flex-start", gap: spacing.sm, padding: spacing.md, borderWidth: 1, borderColor: "#E8C788", borderRadius: radius.sm, backgroundColor: "#FFF8EC" },
+  sessionSafetyNoteText: { flex: 1, fontSize: 14, lineHeight: 21, color: "#6D4A18" },
+  sessionConfirm: { width: "100%", maxWidth: 390, minHeight: 58, marginTop: spacing.xl, alignSelf: "center", paddingHorizontal: spacing.lg, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: spacing.sm, borderRadius: radius.sm, backgroundColor: colors.brandPrimary },
+  sessionConfirmText: { fontSize: 16, lineHeight: 22, fontWeight: "800", color: "#FFFFFF" },
   scrollContent: { paddingHorizontal: spacing.md, paddingTop: spacing.lg },
   page: { width: "100%", maxWidth: 1100, alignSelf: "center" },
   interimBanner: { flexDirection: "row", alignItems: "flex-start", gap: spacing.xs, backgroundColor: "#FFF4DA", borderRadius: radius.sm, padding: spacing.sm, marginBottom: spacing.sm },
@@ -584,6 +894,7 @@ const styles = StyleSheet.create({
   summaryTitle: { fontSize: 38, lineHeight: 46, fontWeight: "800", color: "#123E2D" },
   summaryTitleNarrow: { fontSize: 28, lineHeight: 34 },
   summarySubtitle: { marginTop: 4, fontSize: 17, lineHeight: 24, color: colors.onSurfaceSecondary },
+  sessionSummary: { marginTop: spacing.xs, fontSize: 14, lineHeight: 20, fontWeight: "700", color: colors.brandPrimary },
   progressRow: { marginTop: spacing.lg, flexDirection: "row", alignItems: "center", gap: spacing.md },
   progressTrack: { flex: 1, height: 8, borderRadius: 4, backgroundColor: "#DDE5DE", overflow: "hidden" },
   progressFill: { height: 8, minWidth: 8, borderRadius: 4, backgroundColor: "#58A477" },

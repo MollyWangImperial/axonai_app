@@ -53,9 +53,16 @@ export default function TabsLayout() {
           tabBarButtonTestID: "tab-chat",
         }}
       />
+      <Tabs.Screen
+        name="my-time"
+        options={{
+          title: "My Time",
+          tabBarIcon: ({ color, size }) => <Ionicons name="headset-outline" size={size} color={color} />,
+          tabBarButtonTestID: "tab-my-time",
+        }}
+      />
       {/* The Emergency FAST check stays reachable from the prominent red
-          banner on Home; it is hidden from the tab bar so the bar keeps
-          three tabs: Home, Journey, Alira. */}
+          banner on Home, so the tab bar remains focused on everyday use. */}
       <Tabs.Screen
         name="emergency"
         options={{ href: null, tabBarStyle: { display: "none" } }}

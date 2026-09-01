@@ -316,6 +316,114 @@ The numbered anatomy markers match the numbered list rows. Area 1 uses the atten
 
 final result: passed
 
+---
+
+# My Time Design QA
+
+- Source visual truth: `C:\Users\LENOVO\AppData\Local\Temp\codex-clipboard-ba75b459-4f3f-4feb-9e99-b59a3932abae.png`
+- Browser-rendered top state: `C:\Users\LENOVO\Documents\New project\my-time-final-top.png`
+- Browser-rendered continuation state: `C:\Users\LENOVO\Documents\New project\my-time-final.png`
+- Song-game feedback state: `C:\Users\LENOVO\Documents\New project\my-time-song-game-qa.png`
+- Movement-games desktop state: `C:\Users\LENOVO\Documents\New project\my-time-movement-games-desktop.png`
+- Movement-games mobile state: `C:\Users\LENOVO\Documents\New project\my-time-movement-games-mobile.png`
+- Combined comparison: `C:\Users\LENOVO\Documents\New project\my-time-reference-comparison.png`
+- Browser viewport: 1280 x 720 CSS pixels; reported device scale factor 1.25
+- State: signed-in local patient, light theme, audiobook paused at the saved position
+
+## Full-View Evidence
+
+The combined comparison confirms the requested hierarchy: Rehyn identity, `My Time` heading and invitation, coastal audiobook cover and progress, a prominent listening control, the botanical `Name That Song` activity, three optional movement games, and the selected fourth tab. The desktop implementation uses the app's 1040 px reading width while retaining the reference's order and visual emphasis.
+
+The compact layout switches both content cards to a vertical composition below 760 px. Book artwork has explicit dimensions, controls retain at least 54 px height, titles wrap, and the scroll container leaves room for the persistent tab bar.
+
+## Fidelity Surfaces
+
+- Typography: dark-green heavy headings, readable supporting copy, zero letter spacing, and clear control labels match the reference hierarchy.
+- Spacing and layout: restrained 8 px corners, thin neutral borders, off-white surfaces, and the book/content and artwork/content pairings follow the supplied structure.
+- Image quality: the book cover and music artwork are dedicated generated raster assets sized for their actual slots; no screenshot background, placeholder, CSS illustration, inline SVG, or emoji stand-in is used.
+- Copy and content: the supplied title, chapter, remaining time, activity name, and prompt are preserved.
+- Theme compatibility: page, surface, border, foreground, and muted colors come from Rehyn's display palette, while green remains the brand action color.
+
+## Interaction Checks
+
+- `Continue audiobook` plays and pauses a one-minute bundled OpenAI Nova narration; browser state advanced from `0:00` to `0:01` and the button changed to `Pause audiobook`.
+- Listening position is persisted and feeds the chapter progress and remaining-time display.
+- `Play` opens the song activity with three real public-domain melody clips.
+- Selecting the correct first answer shows `You got it. Nicely remembered.` and `Next clip` advances from clip 1 to clip 2.
+- `Garden Reach`, `Lantern Trail`, and `Set the Table` now appear after `Name That Song`; they no longer appear beneath the prescribed Rehab Plan exercises.
+- Game availability is matched to the latest rehab-plan movement focus. Demo mode unlocked all three sample games, and `Garden Reach` launched `/rehab-game` with the demo assessment ID and medium difficulty.
+- Existing per-plan completion keys are retained, so played status and progress continue to appear after the relocation.
+- The new `My Time` tab is reachable from the primary bottom navigation and displays as selected on the route.
+- Focused ESLint, eight focused game/My Time tests, and the production Expo web export pass.
+
+## Comparison History
+
+1. The first browser pass found a P1 web sizing issue: the cover inherited its 1536 px source height and displaced the listening controls. Explicit 190 x 285 and 254 x 381 render slots fixed the card.
+2. The first voice check exposed a local stale API key and an overly detailed backend error. The narration is now bundled from Rehyn's OpenAI voice endpoint, starts without a network round trip, and does not consume credits on replay.
+3. The second playback pass found that an awaited resume seek could lose the browser user gesture. Resume seeking now happens during load and `play()` remains directly inside the button action. Final browser evidence shows successful playback.
+
+final result: passed
+
+---
+
+# Rehab Games Design QA
+
+The game launch cards are now owned by `My Time`, after the audiobook and music activity. The full-screen camera runners, voice sequence, safety controls, activity logging, and per-plan completion persistence are unchanged.
+
+- Source visual truth:
+  - `C:\Users\LENOVO\AppData\Local\Temp\codex-clipboard-f34fc6ad-c3fa-4fca-b7bb-d82437fada7f.png`
+  - `C:\Users\LENOVO\AppData\Local\Temp\codex-clipboard-3ec3d455-ae56-4ded-8e55-eb99e3b4b90b.png`
+  - `C:\Users\LENOVO\AppData\Local\Temp\codex-clipboard-fc9e89af-c2f8-4b86-acfa-b35665bd4a45.png`
+- Browser-rendered implementations:
+  - `C:\Users\LENOVO\Documents\New project\rehab-game-qa\garden-implementation-final.png`
+  - `C:\Users\LENOVO\Documents\New project\rehab-game-qa\lantern-implementation-final.png`
+  - `C:\Users\LENOVO\Documents\New project\rehab-game-qa\table-implementation-final.png`
+- Combined comparisons:
+  - `C:\Users\LENOVO\Documents\New project\rehab-game-qa\garden-comparison.png`
+  - `C:\Users\LENOVO\Documents\New project\rehab-game-qa\lantern-comparison.png`
+  - `C:\Users\LENOVO\Documents\New project\rehab-game-qa\table-comparison.png`
+- Browser viewport: 1280 x 720 CSS pixels; reported device scale factor 1.25
+- Source pixels: 1536 x 1024 for each reference
+- Implementation screenshots: 1280 x 720 pixels
+- Density normalization: each source was proportionally contained in a 1280 x 720 frame and paired with the browser capture at its CSS-pixel output size
+- State: first guided target active, voice disabled only for deterministic visual QA; the supplied references show later progress states
+
+## Full-View Evidence
+
+All three comparisons preserve the reference hierarchy: Rehyn identity and game title, prominent one-step instruction, immersive illustrated play scene, shiny tracked-hand cursor, one active target, progress segments, and calm coaching footer. Garden Reach uses five flowers, Lantern Trail uses four path checkpoints, and Set the Table uses four select-and-place transfers.
+
+The implementation adds a clearly labelled Exit command alongside Sound and Pause. This is an intentional usability addition because the game route otherwise has no safe return control.
+
+## Fidelity Surfaces
+
+- Typography: system sans-serif, dark-green hierarchy, heavy game titles, readable instruction scale, zero letter spacing, and footer text wrapping align with the references.
+- Spacing and layout: header, instruction band, scene, and footer retain the same order and visual proportions. A two-to-one maximum scene aspect preserves the wide reference composition without clipping edge targets.
+- Colors and tokens: deep Rehyn green, warm off-white surfaces, green progress states, amber active-target ring, and luminous green cursor follow the supplied palette.
+- Image quality: all three 1536 x 1024 scene assets were generated as clean raster artwork from the supplied visual direction. No placeholder, inline SVG, CSS illustration, or screenshot-as-background shortcut is used.
+- Copy and content: visible instructions are adapted to the active target, while OpenAI voice prompts provide setup, each movement step, rest coaching, and completion guidance.
+- Accessibility and responsiveness: controls meet practical touch sizes, focus rings are visible, text uses live regions, no horizontal overflow was found at the tested browser viewport, portrait layouts stack safely, and short landscape screens use compact header/footer rules.
+
+## Focused Evidence
+
+Separate focused crops were not needed because the combined 2560 x 720 comparisons keep the game title, instruction, target ring, cursor, progress state, and coaching copy legible. Browser DOM checks additionally confirmed that every scene image loaded and that Exit, Sound, Pause, and Start controls were present.
+
+## Comparison History
+
+1. The first pass exposed a P1 missing-image state when the API runner loaded before the packaged static assets. The runner now uses a versioned asset URL, and the packaged deploy server returned every scene successfully.
+2. The first visible comparison found a P2 layout mismatch: the scene used the source asset's 3:2 ratio and left excessive desktop side gutters. The scene now expands to the reference's wider play-area proportion, with every target remapped through the actual cover crop.
+3. The revised Lantern Trail capture found a P2 clipped first-target ring. Visual target diameter is now capped independently from the larger accessible hit radius; the final capture shows the first lantern and its complete ring above the footer.
+4. The final browser pass confirmed loaded imagery, accurate target placement, all required controls, and no horizontal document overflow for Garden Reach, Lantern Trail, and Set the Table. No actionable P0, P1, or P2 finding remains.
+
+## Verification
+
+- Focused ESLint: passed.
+- Rehab game and session tests: 15 passed.
+- Production Expo web export: passed.
+- Packaged game assets: three valid 1536 x 1024 PNG files included in `dist/game-assets`.
+- Residual P3 difference: the source screenshots use icon-only sound controls and show mid-session progress; the implementation uses clearer text controls and begins at the first target.
+
+final result: passed
+
 # Dark Mode Soft-Grey Range Design QA
 
 - Source visual truth: `C:\Users\LENOVO\AppData\Local\Temp\codex-clipboard-4cda5628-76b2-4045-9a00-82b2a2844df8.png`

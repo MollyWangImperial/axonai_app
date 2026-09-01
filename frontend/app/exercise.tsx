@@ -25,7 +25,7 @@ const PROGRESS_KEY = (planId: string, exId: string) => `ex_progress_v1:${planId}
 
 export default function ExerciseScreen() {
   const router = useRouter();
-  const { exercise_id, name, plan_id, sets, reps, library_test } = useLocalSearchParams<{ exercise_id: string; name?: string; plan_id?: string; sets?: string; reps?: string; library_test?: string }>();
+  const { exercise_id, name, plan_id, sets, reps, difficulty, variation, library_test } = useLocalSearchParams<{ exercise_id: string; name?: string; plan_id?: string; sets?: string; reps?: string; difficulty?: string; variation?: string; library_test?: string }>();
   const webRef = useRef<WebView>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -44,7 +44,9 @@ export default function ExerciseScreen() {
   const isLibraryTest = library_test === "1";
 
   const guidedReps = Math.max(1, Math.min(20, totalReps));
-  const url = `${BASE}/api/rehab/runner?exercise_id=${encodeURIComponent(exercise_id || "ex_maintenance")}&reps=${guidedReps}&voice_guidance=${voiceGuidance ? "1" : "0"}`;
+  const sessionDifficulty = difficulty === "easy" || difficulty === "difficult" ? difficulty : "medium";
+  const sessionVariation = variation === "alternate" ? "alternate" : "standard";
+  const url = `${BASE}/api/rehab/runner?exercise_id=${encodeURIComponent(exercise_id || "ex_maintenance")}&reps=${guidedReps}&difficulty=${sessionDifficulty}&variation=${sessionVariation}&voice_guidance=${voiceGuidance ? "1" : "0"}`;
 
   useEffect(() => {
     void loadUserPreferences().then((saved) => setVoiceGuidance(saved.voiceGuidance));
@@ -63,7 +65,7 @@ export default function ExerciseScreen() {
     if (isLibraryTest) return;
     if (!exercise_id) return;
     try {
-      const raw = await storage.getItem(PROGRESS_KEY(planId, exercise_id));
+      const raw = await storage.getItem(PROGRESS_KEY(planId, exercise_id), "");
       const prev: ExerciseProgress = raw
         ? JSON.parse(raw)
         : { completed_reps: 0, total_reps: totalAll, last_score: null, best_score: null, sessions: 0 };
@@ -100,7 +102,7 @@ export default function ExerciseScreen() {
         if (!isLibraryTest) {
           // Mark this session complete — bump sessions counter
           try {
-            const raw = await storage.getItem(PROGRESS_KEY(planId, exercise_id || ""));
+            const raw = await storage.getItem(PROGRESS_KEY(planId, exercise_id || ""), "");
             if (raw) {
               const p: ExerciseProgress = JSON.parse(raw);
               p.sessions += 1;
