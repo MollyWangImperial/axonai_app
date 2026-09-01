@@ -137,11 +137,7 @@ export function DailyActivitiesBoard({
   const notAssessed = activities.filter((item) => item.status === "not_assessed" || !bandFor(item));
   const allObserved = scored.length > 0 && scored.every((item) => item.status === "complete");
   const anyObserved = scored.some((item) => item.status === "complete");
-  const sourceBadge = allObserved
-    ? "Observed in your assessment"
-    : anyObserved
-      ? "Observed and estimated"
-      : "Estimated from your answers";
+  const sourceBadge = anyObserved ? "Observed and estimated" : "Estimated from your answers";
 
   return (
     <View style={[styles.panel, compact && styles.panelCompact, { backgroundColor: palette.surface, borderColor: palette.border }]} testID="daily-activities-panel">
@@ -150,7 +146,7 @@ export function DailyActivitiesBoard({
           <Text style={[styles.title, sectionHeading && styles.titleSection, compact && styles.titleCompact, { color: palette.text }]}>{title}</Text>
           <Text style={[styles.subtitle, compact && styles.subtitleCompact, { color: palette.muted }]}>How much help you may need with everyday activities.</Text>
         </View>
-        {scored.length > 0 ? (
+        {scored.length > 0 && !allObserved ? (
           <View style={styles.sourceBadge} testID="daily-activities-source-badge">
             <Ionicons name="information-circle-outline" size={compact ? 20 : 25} color="#915D05" />
             <Text style={[styles.sourceBadgeText, compact && styles.sourceBadgeTextCompact]}>{sourceBadge}</Text>
