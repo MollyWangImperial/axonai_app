@@ -565,7 +565,7 @@ export default function HomeScreen() {
               <View style={[styles.welcomeRow, !isWide && styles.welcomeRowCompact]}>
                 <View style={styles.welcomeCopy}>
                   <Text style={[styles.welcomeTitle, { color: palette.text }]}>{greeting}, {greetName}</Text>
-                  <Text style={[styles.goalLine, { color: palette.muted }]} testID="home-goal-line">Working towards your goal: <Text style={styles.goalStrong}>{displayGoal}</Text></Text>
+                  <Text style={[styles.goalLine, { color: palette.muted }]} testID="home-goal-line">Your goal: <Text style={styles.goalStrong}>{displayGoal}</Text></Text>
                   <Text style={[styles.dateLine, { color: palette.muted }]}>{todayLabel}</Text>
                 </View>
                 <View style={[styles.pointsBadge, { backgroundColor: palette.soft }]} testID="home-points-badge">

@@ -385,11 +385,14 @@ def test_interim_plan_surfaces_instead_of_the_waiting_for_review_dead_end():
     assert '"Your starting plan is ready"' in movement_map
     assert 'reviewGate?.rehab_access === "interim"' in results
 
-    # The Home goal is derived from the survey's functional problems.
+    # The Home goal is derived from the survey's functional problems and stays
+    # short: a keyword list behind a compact lead-in, never a long sentence.
     assert "deriveFunctionalGoal" in home
     assert "Eating & dressing" in home
     assert "Grooming & hand tasks" in home
     assert "Safer mobility" in home
+    assert "Your goal: " in home
+    assert "Working towards your goal" not in home
 
 
 def test_movement_map_is_anatomy_first_with_shiny_navigable_findings():
