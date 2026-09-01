@@ -7,7 +7,7 @@ import { useRouter } from "expo-router";
 import * as Haptics from "expo-haptics";
 import * as WebBrowser from "expo-web-browser";
 import { colors, spacing, radius } from "@/src/theme";
-import { signIn, authedFetch, cachePatientOnboarding, getCachedPatientProfile, USER_KEY, USER_OBJ, hasPendingConsent, setConsentAccepted, clearPendingConsent } from "@/src/auth";
+import { signIn, authedFetch, cachePatientOnboarding, getCachedPatientProfile, USER_KEY, USER_OBJ, hasPendingConsent, setConsentAccepted, clearPendingConsent, notifyAuthStateChanged } from "@/src/auth";
 import { storage } from "@/src/utils/storage";
 import { API_BASE as BASE } from "@/src/config";
 
@@ -86,6 +86,7 @@ export default function SignInScreen() {
       const u = await r.json();
       await storage.setItem(USER_KEY, u.id);
       await storage.setItem(USER_OBJ, JSON.stringify(u));
+      notifyAuthStateChanged();
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       // Patient onboarding routing
       if (u.role === "therapist") {

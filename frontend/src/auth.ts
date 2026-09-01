@@ -8,6 +8,16 @@ export type Me = { id: string; email: string; name: string; role: "patient" | "t
 export const USER_KEY = "active_user_id_v1";
 export const USER_OBJ = "active_user_obj_v1";
 const BACKEND_USER_KEY = `backend_user_id_v1:${BASE}`;
+const authStateListeners = new Set<() => void>();
+
+export function subscribeAuthState(listener: () => void) {
+  authStateListeners.add(listener);
+  return () => authStateListeners.delete(listener);
+}
+
+export function notifyAuthStateChanged() {
+  authStateListeners.forEach((listener) => listener());
+}
 
 export const onboardingCompleteKey = (userId: string) => `onboarding_complete_v2:${userId}`;
 export const preferredNameKey = (userId: string) => `preferred_name_v2:${userId}`;
@@ -67,6 +77,7 @@ export async function signIn(email: string, name: string, role: "patient" | "the
   await storage.setItem(USER_KEY, u.id);
   await storage.setItem(USER_OBJ, JSON.stringify(u));
   await storage.setItem(BACKEND_USER_KEY, u.id);
+  notifyAuthStateChanged();
   return u;
 }
 
@@ -78,6 +89,7 @@ export async function signOut() {
   // Retain account-scoped onboarding and assessment progress for the next sign-in.
   await storage.removeItem("onboarding_complete_v1");
   await storage.removeItem("preferred_name_v1");
+  notifyAuthStateChanged();
 }
 
 const CURRENT_TERMS_VERSION = "1.0";

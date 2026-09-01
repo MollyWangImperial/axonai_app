@@ -548,6 +548,7 @@ def test_trend_charts_get_shiny_points_and_a_value_axis_after_assessment():
 def test_dark_mode_is_neutral_grey_with_a_darkness_slider():
     display = (ROOT / "frontend" / "src" / "displayPreferences.tsx").read_text(encoding="utf-8")
     prefs = (ROOT / "frontend" / "src" / "userPreferences.ts").read_text(encoding="utf-8")
+    auth = (ROOT / "frontend" / "src" / "auth.ts").read_text(encoding="utf-8")
     settings = (ROOT / "frontend" / "app" / "(tabs)" / "settings.tsx").read_text(encoding="utf-8")
 
     # Dark mode uses a neutral dark grey ground (not the old dark green) so
@@ -561,6 +562,15 @@ def test_dark_mode_is_neutral_grey_with_a_darkness_slider():
     assert 'muted: "#C2C7C4"' in display  # readable secondary text on the softer grey surface
     assert '"#96D7A8"' in display  # bright enough for text on the soft-grey surface
     assert "preferences.darkness" in display
+
+    # Light mode is the account default. Dark mode persists only after that
+    # signed-in patient explicitly enables it, so accounts sharing one device
+    # cannot inherit each other's display choice.
+    assert "darkMode: false" in prefs
+    assert "darkModeKey(userId)" in prefs
+    assert "const userId = await getUserId();" in prefs
+    assert "subscribeAuthState(reloadPreferences)" in display
+    assert "notifyAuthStateChanged();" in auth
 
     # Patients pick their own darkness with a slider (0-100, persisted).
     assert "DARKNESS_KEY" in prefs

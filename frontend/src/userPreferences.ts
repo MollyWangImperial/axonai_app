@@ -1,4 +1,5 @@
 import { storage } from "@/src/utils/storage";
+import { getUserId } from "@/src/auth";
 
 export const DARK_MODE_KEY = "rehyn_dark_mode_v1";
 export const TEXT_SIZE_KEY = "rehyn_text_size_v1";
@@ -9,6 +10,7 @@ export const USAGE_ANALYTICS_KEY = "rehyn_usage_analytics_v1";
 export const DEMO_MODE_KEY = "rehyn_demo_mode_v1";
 export const BRIGHTNESS_KEY = "rehyn_brightness_v1";
 export const DARKNESS_KEY = "rehyn_dark_depth_v1";
+export const darkModeKey = (userId: string) => `${DARK_MODE_KEY}:${userId}`;
 
 export const TEXT_SIZES = ["Comfortable", "Large", "Extra large"] as const;
 export type TextSizePreference = (typeof TEXT_SIZES)[number];
@@ -45,8 +47,11 @@ export function subscribeUserPreferences(listener: (preferences: UserPreferences
 }
 
 export async function loadUserPreferences(): Promise<UserPreferences> {
+  const userId = await getUserId();
   const [darkMode, textSize, voiceGuidance, shareAssessments, shareCareCircle, usageAnalytics, demoMode, brightness, darkness] = await Promise.all([
-    storage.getItem(DARK_MODE_KEY, DEFAULT_USER_PREFERENCES.darkMode),
+    userId
+      ? storage.getItem(darkModeKey(userId), DEFAULT_USER_PREFERENCES.darkMode)
+      : Promise.resolve(DEFAULT_USER_PREFERENCES.darkMode),
     storage.getItem(TEXT_SIZE_KEY, DEFAULT_USER_PREFERENCES.textSize),
     storage.getItem(VOICE_GUIDANCE_KEY, DEFAULT_USER_PREFERENCES.voiceGuidance),
     storage.getItem(SHARE_ASSESSMENTS_KEY, DEFAULT_USER_PREFERENCES.shareAssessments),
@@ -82,7 +87,9 @@ export async function saveUserPreference<K extends keyof UserPreferences>(key: K
     brightness: BRIGHTNESS_KEY,
     darkness: DARKNESS_KEY,
   };
-  await storage.setItem(storageKeys[key], value);
+  const userId = key === "darkMode" ? await getUserId() : null;
+  const storageKey = key === "darkMode" && userId ? darkModeKey(userId) : storageKeys[key];
+  await storage.setItem(storageKey, value);
   const preferences = await loadUserPreferences();
   preferenceListeners.forEach((listener) => listener(preferences));
 }

@@ -8,6 +8,7 @@ import {
   textScaleFor,
   UserPreferences,
 } from "@/src/userPreferences";
+import { subscribeAuthState } from "@/src/auth";
 
 export type DisplayPalette = {
   page: string;
@@ -89,15 +90,18 @@ export function DisplayPreferencesProvider({ children }: { children: React.React
 
   useEffect(() => {
     let active = true;
-    void loadUserPreferences().then((saved) => {
+    const reloadPreferences = () => void loadUserPreferences().then((saved) => {
       if (active) setPreferences(saved);
     });
+    reloadPreferences();
     const unsubscribe = subscribeUserPreferences((saved) => {
       if (active) setPreferences(saved);
     });
+    const unsubscribeAuth = subscribeAuthState(reloadPreferences);
     return () => {
       active = false;
       unsubscribe();
+      unsubscribeAuth();
     };
   }, []);
 
