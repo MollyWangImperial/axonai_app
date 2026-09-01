@@ -387,9 +387,9 @@ def test_interim_plan_surfaces_instead_of_the_waiting_for_review_dead_end():
 
     # The Home goal is derived from the survey's functional problems.
     assert "deriveFunctionalGoal" in home
-    assert "eating and dressing with your arm" in home
-    assert "grooming and small hand tasks" in home
-    assert "moving around more safely" in home
+    assert "Eating & dressing" in home
+    assert "Grooming & hand tasks" in home
+    assert "Safer mobility" in home
 
 
 def test_movement_map_is_anatomy_first_with_shiny_navigable_findings():

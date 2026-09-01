@@ -120,16 +120,10 @@ function deriveFunctionalGoal(profile: any): string {
   const hand = String(profile?.affected_hand_movement || "").toLowerCase();
   const mobility = String(profile?.mobility_level || "").toLowerCase();
   const goals: string[] = [];
-  if (["some_movement", "help_only", "no_movement", "not_sure"].includes(arm)) goals.push("eating and dressing with your arm");
-  if (["some_finger_movement", "very_little_movement", "no_movement", "not_sure"].includes(hand)) goals.push("grooming and small hand tasks");
-  if (["person_assist", "wheelchair", "unable_walk", "not_cleared", "unsure"].includes(mobility)) goals.push("moving around more safely");
-  if (goals.length === 0) return "";
-  const joined = goals.length === 1
-    ? goals[0]
-    : goals.length === 2
-      ? `${goals[0]} and ${goals[1]}`
-      : `${goals[0]}, ${goals[1]}, and ${goals[2]}`;
-  return `Manage ${joined} with less help`;
+  if (["some_movement", "help_only", "no_movement", "not_sure"].includes(arm)) goals.push("Eating & dressing");
+  if (["some_finger_movement", "very_little_movement", "no_movement", "not_sure"].includes(hand)) goals.push("Grooming & hand tasks");
+  if (["person_assist", "wheelchair", "unable_walk", "not_cleared", "unsure"].includes(mobility)) goals.push("Safer mobility");
+  return goals.join(" • ");
 }
 
 function normalizeMetric(value: number | null | undefined) {
@@ -423,10 +417,9 @@ export default function HomeScreen() {
   const missingDomains = carePlanAssessment?.missing_domains || nextStep?.missing_domains || [];
   const missingTaskIds = carePlanAssessment?.missing_task_ids || [];
   const walkingOutstanding = missingDomains.includes("lower_limb") || missingTaskIds.includes("L6");
-  // The goal is led by the functional problems from the survey (English daily
-  // activities like eating, dressing, grooming); the patient's own words stay
-  // visible after it.
-  const displayGoal = dailyGoal || ownGoal || "building everyday independence";
+  // Keep the Home summary scannable while the underlying survey retains the
+  // patient's full functional detail.
+  const displayGoal = dailyGoal || "building everyday independence";
   const trends = useMemo(() => buildTrends(progress), [progress]);
   const assessmentDueLabel = formatShortDate(carePlanAssessment?.due_at);
   const surveyDueLabel = formatShortDate(carePlan?.survey?.due_at);
@@ -572,7 +565,7 @@ export default function HomeScreen() {
               <View style={[styles.welcomeRow, !isWide && styles.welcomeRowCompact]}>
                 <View style={styles.welcomeCopy}>
                   <Text style={[styles.welcomeTitle, { color: palette.text }]}>{greeting}, {greetName}</Text>
-                  <Text style={[styles.goalLine, { color: palette.muted }]} testID="home-goal-line">Working towards your goal: <Text style={styles.goalStrong}>{displayGoal}</Text>{ownGoal && displayGoal !== ownGoal ? ` — and your own goal: ${ownGoal}` : ""}</Text>
+                  <Text style={[styles.goalLine, { color: palette.muted }]} testID="home-goal-line">Working towards your goal: <Text style={styles.goalStrong}>{displayGoal}</Text></Text>
                   <Text style={[styles.dateLine, { color: palette.muted }]}>{todayLabel}</Text>
                 </View>
                 <View style={[styles.pointsBadge, { backgroundColor: palette.soft }]} testID="home-points-badge">
