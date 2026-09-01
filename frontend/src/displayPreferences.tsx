@@ -36,10 +36,10 @@ const LIGHT_PALETTE: DisplayPalette = {
 // The two anchor palettes below are the softest and deepest ends of the
 // user's "Dark mode depth" slider; darkPaletteFor() blends between them.
 const DARK_SOFT_ANCHOR = {
-  page: "#23262A",
-  surface: "#2C3034",
-  soft: "#363B40",
-  border: "#4A5157",
+  page: "#454A4F",
+  surface: "#4D5257",
+  soft: "#585E64",
+  border: "#70777E",
 };
 
 const DARK_DEEP_ANCHOR = {
@@ -65,9 +65,9 @@ export function darkPaletteFor(darkness: number): DisplayPalette {
     surface: mixHex(DARK_SOFT_ANCHOR.surface, DARK_DEEP_ANCHOR.surface, t),
     soft: mixHex(DARK_SOFT_ANCHOR.soft, DARK_DEEP_ANCHOR.soft, t),
     text: "#F2F4F3",
-    muted: "#B6BDBA",
+    muted: "#C2C7C4",
     border: mixHex(DARK_SOFT_ANCHOR.border, DARK_DEEP_ANCHOR.border, t),
-    brand: "#78B58A",
+    brand: "#96D7A8",
     onBrand: "#101512",
   };
 }

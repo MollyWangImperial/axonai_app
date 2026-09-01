@@ -556,7 +556,10 @@ def test_dark_mode_is_neutral_grey_with_a_darkness_slider():
     assert '"#0F1D18"' not in display  # old green page colour removed
     assert '"#182A23"' not in display  # old green surface removed
     assert "DARK_SOFT_ANCHOR" in display and "DARK_DEEP_ANCHOR" in display
-    assert '"#78B58A"' in display  # brand green kept as the accent
+    assert 'page: "#454A4F"' in display  # 0-5% is visibly grey, not charcoal-black
+    assert 'surface: "#4D5257"' in display
+    assert 'muted: "#C2C7C4"' in display  # readable secondary text on the softer grey surface
+    assert '"#96D7A8"' in display  # bright enough for text on the soft-grey surface
     assert "preferences.darkness" in display
 
     # Patients pick their own darkness with a slider (0-100, persisted).
@@ -566,6 +569,22 @@ def test_dark_mode_is_neutral_grey_with_a_darkness_slider():
     assert "Dark mode depth" in settings
     # The slider only appears while dark mode is on.
     assert "preferences.darkMode ? (" in settings
+
+
+def test_home_uses_display_palette_for_green_and_supporting_text():
+    home = (ROOT / "frontend" / "app" / "(tabs)" / "index.tsx").read_text(encoding="utf-8")
+
+    # Home must not reuse light-theme dark greens on dark backgrounds. The
+    # shared display palette keeps goal, step, chart and link text readable at
+    # every dark-mode depth while secondary copy uses the accessible muted tone.
+    assert "function DayStep" in home and "const { palette } = useDisplayPreferences();" in home
+    assert "styles.goalStrong, { color: palette.brand }" in home
+    assert "styles.dayStepTitle, { color: palette.brand }" in home
+    assert "styles.dayStepDescription, { color: palette.muted }" in home
+    assert "styles.stepProgressLabel, { color: palette.brand }" in home
+    assert "styles.progressLinkText, { color: palette.brand }" in home
+    assert 'fill={palette.brand}' in home
+    assert 'fill="#155D3C"' not in home
 
 
 def test_earning_points_pops_a_fading_congratulations_toast():

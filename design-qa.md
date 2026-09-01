@@ -315,3 +315,81 @@ The numbered anatomy markers match the numbered list rows. Area 1 uses the atten
 - Responsive code path: the map stacks anatomy above Areas below 820 px; a separate phone screenshot was not available from the fixed in-app browser viewport.
 
 final result: passed
+
+# Dark Mode Soft-Grey Range Design QA
+
+- Source visual truth: `C:\Users\LENOVO\AppData\Local\Temp\codex-clipboard-4cda5628-76b2-4045-9a00-82b2a2844df8.png`
+- Implementation screenshot: `C:\Users\LENOVO\Documents\New project\rehyn-dark-mode-5-percent.png`
+- Combined comparison: `C:\Users\LENOVO\Documents\New project\rehyn-dark-mode-comparison.png`
+- Viewport: 1031 x 762 CSS pixels, device scale factor 1
+- Source and implementation pixels: 1031 x 762; no density normalization required
+- State: Settings, dark mode enabled, dark mode depth 5%, app brightness 98%
+
+## Full-View And Focused Evidence
+
+The implementation preserves the existing Settings structure and makes the requested 5% state visibly greyer than the supplied reference. The GENERAL group was also reviewed closely because it contains every affected palette surface: page background, grouped surface, icon wells, dividers, slider track, secondary text, and green controls. Page, card, soft-control, and divider tones remain distinct, while green remains an accent rather than tinting the background.
+
+## Fidelity Surfaces
+
+- Typography: unchanged; heading, body, value, and label hierarchy remain intact.
+- Spacing and layout: unchanged by this palette update.
+- Colors and tokens: the 0-5% endpoint is now medium neutral grey; 100% still maps to the existing deep-black anchor. Primary text contrast is 7.15:1 and secondary text contrast is 4.61:1 against the softest surface.
+- Image quality: no raster or vector assets changed.
+- Copy and content: unchanged.
+
+## Comparison History
+
+1. The first lighter-grey pass exposed secondary text at 4.07:1 contrast, an actionable P2 accessibility issue.
+2. The dark-palette muted text token was raised from `#B6BDBA` to `#C2C7C4`.
+3. The post-fix browser capture confirmed the intended grey range and 4.61:1 secondary-text contrast. No P0, P1, or P2 findings remain.
+
+## Verification
+
+- Dark mode toggled on and depth adjusted to 5% through the real Settings controls.
+- The displayed 5% value persisted after reload.
+- Rendered page background at 5%: `rgb(66, 71, 76)`.
+- Browser console: no errors.
+- Focused ESLint: passed.
+- Focused dark-mode feature test: passed.
+
+final result: passed
+
+---
+
+# Home Dark-Mode Text Contrast Design QA
+
+- Source visual truth: `C:\Users\LENOVO\AppData\Local\Temp\codex-clipboard-94525221-0988-4697-a1f6-71b6accc41cc.png`
+- Implementation screenshot: `C:\Users\LENOVO\Documents\New project\rehyn-home-dark-text-implementation.png`
+- Combined comparison: `C:\Users\LENOVO\Documents\New project\rehyn-home-dark-text-comparison.png`
+- Browser viewport: 1422 x 858 CSS pixels at device scale factor 1.25
+- Source and normalized implementation pixels: 1422 x 857
+- State: signed-in local test profile, dark mode depth 5%, app brightness 98%, initial assessment not yet completed
+
+## Full-View And Focused Evidence
+
+The matched comparison shows the same Home hierarchy and pre-assessment state. The goal value, all three day-step titles, supporting descriptions, points text, active Home label, recovery icons, and progress affordances now remain legible against the lighter dark-mode surfaces. A focused browser style inspection confirmed the day-board surface is `rgb(74, 79, 84)`, green text is `rgb(150, 215, 168)`, and supporting text is `rgb(194, 199, 196)`.
+
+## Fidelity Surfaces
+
+- Typography: family, sizes, weights, line height, wrapping, and hierarchy are unchanged; only theme-aware foreground colours changed.
+- Spacing and layout: unchanged.
+- Colors and tokens: green text now has 4.73:1 contrast and supporting text has 4.61:1 contrast on the softest day-board surface.
+- Image quality: no image or icon assets changed; existing Ionicons remain in use.
+- Copy and content: unchanged; the local evidence uses the synthetic `Visual` profile while the source shows `Molly`.
+
+## Comparison History
+
+1. The source showed an actionable P1 readability issue: light-theme dark greens and supporting-copy colours were reused on the dark Home surface, making goal and day-plan content difficult to read.
+2. Home goal, day-step, chart, points, progress, and icon colours were routed through the shared display palette; supporting text now uses the palette's muted foreground.
+3. The dark-theme green was lifted to `#96D7A8` so smaller text clears 4.5:1 contrast even at the softest grey depth.
+4. Post-fix browser evidence shows no remaining P0, P1, or P2 contrast findings.
+
+## Verification
+
+- Real Home route loaded through the local frontend and backend.
+- Goal line, all day steps, recovery row, and bottom navigation rendered in dark mode.
+- Browser console: no errors.
+- Focused ESLint: passed with one pre-existing unused-variable warning and no errors.
+- Three focused feature tests: passed.
+
+final result: passed

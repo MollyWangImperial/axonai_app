@@ -173,6 +173,7 @@ function buildTrends(summary: ProgressSummary): TrendDefinition[] {
 const AnimatedCircle = Animated.createAnimatedComponent(Circle);
 
 function MiniTrendChart({ values, shiny }: { values: number[]; shiny?: boolean }) {
+  const { palette } = useDisplayPreferences();
   const width = 300;
   const height = 92;
   const axisX = 30; // left gutter reserved for the y-axis value labels
@@ -198,8 +199,8 @@ function MiniTrendChart({ values, shiny }: { values: number[]; shiny?: boolean }
   if (values.length === 0) {
     return (
       <View style={styles.emptyChart}>
-        <Ionicons name="analytics-outline" size={24} color="#9AABA0" />
-        <Text style={styles.emptyChartText}>No measurements yet</Text>
+        <Ionicons name="analytics-outline" size={24} color={palette.muted} />
+        <Text style={[styles.emptyChartText, { color: palette.muted }]}>No measurements yet</Text>
       </View>
     );
   }
@@ -224,17 +225,17 @@ function MiniTrendChart({ values, shiny }: { values: number[]; shiny?: boolean }
   const sparkleOpacity = pulse.interpolate({ inputRange: [0, 1], outputRange: [0.2, 0.95] });
   return (
     <Svg width="100%" height={height} viewBox={`0 0 ${width} ${height}`} testID="home-trend-chart">
-      <Line x1={axisX} y1={padY - 6} x2={axisX} y2={height - padY + 6} stroke="#C7D2CA" strokeWidth={1} />
+      <Line x1={axisX} y1={padY - 6} x2={axisX} y2={height - padY + 6} stroke={palette.border} strokeWidth={1} />
       {axisTicks.map((tick) => (
         <G key={`tick-${tick}`}>
-          <Line x1={axisX} y1={plotY(tick)} x2={width - padX} y2={plotY(tick)} stroke="#E3EAE5" strokeWidth={1} strokeDasharray="4 5" />
-          <SvgText x={axisX - 5} y={plotY(tick) + 3.5} fontSize={9} fontWeight="600" fill="#6B776F" textAnchor="end" testID="home-trend-axis-label">
+          <Line x1={axisX} y1={plotY(tick)} x2={width - padX} y2={plotY(tick)} stroke={palette.border} strokeWidth={1} strokeDasharray="4 5" />
+          <SvgText x={axisX - 5} y={plotY(tick) + 3.5} fontSize={9} fontWeight="600" fill={palette.muted} textAnchor="end" testID="home-trend-axis-label">
             {Math.round(tick)}
           </SvgText>
         </G>
       ))}
       {points.length > 1 ? (
-        <Polyline points={points.map((point) => `${point.x},${point.y}`).join(" ")} fill="none" stroke="#0A7A3B" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round" />
+        <Polyline points={points.map((point) => `${point.x},${point.y}`).join(" ")} fill="none" stroke={palette.brand} strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round" />
       ) : null}
       {!shiny ? (
         <G>
@@ -250,11 +251,11 @@ function MiniTrendChart({ values, shiny }: { values: number[]; shiny?: boolean }
             {shiny ? (
               <AnimatedCircle cx={point.x} cy={point.y} r={isLast ? lastHaloRadius : haloRadius} fill={isLast ? "#48BE70" : "#5AC77D"} opacity={haloOpacity} />
             ) : null}
-            <Circle cx={point.x} cy={point.y} r={isLast ? 4.5 : 3.4} fill={isLast ? "#087435" : "#0A7A3B"} />
+            <Circle cx={point.x} cy={point.y} r={isLast ? 4.5 : 3.4} fill={palette.brand} />
             {shiny ? (
               <AnimatedCircle cx={point.x + 5} cy={point.y - 6} r={1.6} fill="#7FE0A4" opacity={sparkleOpacity} />
             ) : null}
-            <SvgText x={point.x} y={labelY} fontSize={10} fontWeight="700" fill="#155D3C" textAnchor="middle" testID="home-trend-point-value">
+            <SvgText x={point.x} y={labelY} fontSize={10} fontWeight="700" fill={palette.brand} textAnchor="middle" testID="home-trend-point-value">
               {Math.round(point.value)}
             </SvgText>
           </G>
@@ -289,19 +290,20 @@ type DayStepProps = {
 };
 
 function DayStep({ icon, title, badge, description, active, progress, button }: DayStepProps) {
+  const { palette } = useDisplayPreferences();
   const percentage = progress?.total ? Math.min(100, Math.round((progress.completed / progress.total) * 100)) : 0;
   return (
     <View style={styles.dayStep}>
       <View style={[styles.dayStepIcon, active && styles.dayStepIconActive]}>
-        <Ionicons name={icon} size={28} color={active ? "#0B7338" : "#5E6861"} />
+        <Ionicons name={icon} size={28} color={active ? palette.brand : palette.muted} />
       </View>
-      <Text style={styles.dayStepTitle}>{title}</Text>
+      <Text style={[styles.dayStepTitle, { color: palette.brand }]}>{title}</Text>
       {badge}
-      <Text style={styles.dayStepDescription}>{description}</Text>
+      <Text style={[styles.dayStepDescription, { color: palette.muted }]}>{description}</Text>
       {progress ? (
         <View style={styles.stepProgressWrap}>
-          <Text style={styles.stepProgressLabel}>{progress.completed} of {progress.total} activities complete</Text>
-          <View style={styles.stepProgressTrack}><View style={[styles.stepProgressFill, { width: `${percentage}%` }]} /></View>
+          <Text style={[styles.stepProgressLabel, { color: palette.brand }]}>{progress.completed} of {progress.total} activities complete</Text>
+          <View style={[styles.stepProgressTrack, { backgroundColor: palette.soft }]}><View style={[styles.stepProgressFill, { width: `${percentage}%`, backgroundColor: palette.brand }]} /></View>
         </View>
       ) : null}
       {button ? (
@@ -565,13 +567,13 @@ export default function HomeScreen() {
               <View style={[styles.welcomeRow, !isWide && styles.welcomeRowCompact]}>
                 <View style={styles.welcomeCopy}>
                   <Text style={[styles.welcomeTitle, { color: palette.text }]}>{greeting}, {greetName}</Text>
-                  <Text style={[styles.goalLine, { color: palette.muted }]} testID="home-goal-line">Your goal: <Text style={styles.goalStrong}>{displayGoal}</Text></Text>
+                  <Text style={[styles.goalLine, { color: palette.muted }]} testID="home-goal-line">Your goal: <Text style={[styles.goalStrong, { color: palette.brand }]}>{displayGoal}</Text></Text>
                   <Text style={[styles.dateLine, { color: palette.muted }]}>{todayLabel}</Text>
                 </View>
-                <View style={[styles.pointsBadge, { backgroundColor: palette.soft }]} testID="home-points-badge">
-                  <Ionicons name="ribbon-outline" size={28} color="#276C47" />
+                <View style={[styles.pointsBadge, { backgroundColor: palette.soft, borderColor: palette.brand }]} testID="home-points-badge">
+                  <Ionicons name="ribbon-outline" size={28} color={palette.brand} />
                   <Text style={[styles.pointsValue, { color: palette.text }]}>{rewards?.points ?? 0}</Text>
-                  <Text style={styles.pointsLabel}>points</Text>
+                  <Text style={[styles.pointsLabel, { color: palette.brand }]}>points</Text>
                 </View>
               </View>
 
@@ -690,7 +692,7 @@ export default function HomeScreen() {
                 {trends.map((trend, index) => (
                   <View key={trend.id} style={[styles.trendCard, isWide && index > 0 && { borderLeftWidth: 1, borderLeftColor: palette.border }]} testID={`home-trend-${trend.id}`}>
                     <View style={styles.trendHeader}>
-                      <View style={[styles.trendIcon, { backgroundColor: palette.soft }]}><Ionicons name={trend.icon} size={28} color="#176642" /></View>
+                      <View style={[styles.trendIcon, { backgroundColor: palette.soft }]}><Ionicons name={trend.icon} size={28} color={palette.brand} /></View>
                       <View style={styles.trendCopy}>
                         <Text style={[styles.trendTitle, { color: palette.text }]}>{trend.label}</Text>
                         <Text style={[styles.trendMessage, { color: palette.muted }]}>{trend.message}</Text>
@@ -707,13 +709,13 @@ export default function HomeScreen() {
                 ))}
               </View>
               <Pressable testID="home-see-full-progress" onPress={() => router.push("/progress" as never)} style={({ pressed }) => [styles.progressLink, pressed && styles.pressed]}>
-                <Text style={styles.progressLinkText}>See full progress</Text>
-                <Ionicons name="chevron-forward" size={18} color="#0B653A" />
+                <Text style={[styles.progressLinkText, { color: palette.brand }]}>See full progress</Text>
+                <Ionicons name="chevron-forward" size={18} color={palette.brand} />
               </Pressable>
 
               <View style={[styles.weekPanel, { backgroundColor: palette.surface, borderColor: palette.border }]} testID="home-week-panel">
                 <View style={styles.weekSummaryRow}>
-                  <View style={[styles.weekIcon, { backgroundColor: palette.soft }]}><Ionicons name="calendar-outline" size={21} color="#176642" /></View>
+                  <View style={[styles.weekIcon, { backgroundColor: palette.soft }]}><Ionicons name="calendar-outline" size={21} color={palette.brand} /></View>
                   <Text style={[styles.weekTitle, { color: palette.text }]}>Your week</Text>
                   <Text style={[styles.weekSummary, { color: palette.muted }]}>
                     {checkIn.status === "complete" ? "Daily plan complete" : checkIn.status === "in_progress" ? "Daily check-in complete" : "Check in when ready"}
@@ -771,11 +773,11 @@ const styles = StyleSheet.create({
   welcomeCopy: { flex: 1, minWidth: 0 },
   welcomeTitle: { fontSize: 31, lineHeight: 38, fontWeight: "900" },
   goalLine: { marginTop: 7, fontSize: 16, lineHeight: 23, fontWeight: "500" },
-  goalStrong: { color: "#0A5D3A", fontWeight: "900" },
+  goalStrong: { fontWeight: "900" },
   dateLine: { marginTop: 9, fontSize: 15, lineHeight: 21 },
   pointsBadge: { width: 138, height: 138, borderRadius: 69, borderWidth: 1.5, borderColor: "#2B8A53", alignItems: "center", justifyContent: "center" },
   pointsValue: { marginTop: -2, fontSize: 44, lineHeight: 48, fontWeight: "900" },
-  pointsLabel: { fontSize: 16, lineHeight: 21, fontWeight: "900", color: "#0B653A" },
+  pointsLabel: { fontSize: 16, lineHeight: 21, fontWeight: "900" },
   sectionHeadingRow: { marginTop: spacing.xs, marginBottom: spacing.sm },
   sectionTitle: { fontSize: 29, lineHeight: 35, fontWeight: "900" },
   sectionSubtitle: { marginTop: 2, fontSize: 15, lineHeight: 21 },
@@ -788,12 +790,12 @@ const styles = StyleSheet.create({
   dayStep: { flex: 1, minWidth: 0, alignItems: "center", paddingHorizontal: spacing.md, zIndex: 1 },
   dayStepIcon: { width: 62, height: 62, borderRadius: 31, borderWidth: 1.5, borderColor: "#667169", backgroundColor: "#FFFFFF", alignItems: "center", justifyContent: "center" },
   dayStepIconActive: { borderWidth: 3, borderColor: "#0B7A3A" },
-  dayStepTitle: { marginTop: 12, fontSize: 19, lineHeight: 24, fontWeight: "900", color: "#134D37", textAlign: "center" },
+  dayStepTitle: { marginTop: 12, fontSize: 19, lineHeight: 24, fontWeight: "900", textAlign: "center" },
   statusPill: { minHeight: 31, marginTop: 8, paddingHorizontal: 11, borderRadius: radius.pill, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6 },
   statusPillText: { fontSize: 12, lineHeight: 17, fontWeight: "700" },
-  dayStepDescription: { minHeight: 38, marginTop: 12, maxWidth: 310, fontSize: 13, lineHeight: 19, color: "#35433B", textAlign: "center" },
+  dayStepDescription: { minHeight: 38, marginTop: 12, maxWidth: 310, fontSize: 13, lineHeight: 19, textAlign: "center" },
   stepProgressWrap: { width: "100%", maxWidth: 330, marginTop: 4, alignItems: "center" },
-  stepProgressLabel: { fontSize: 17, lineHeight: 23, fontWeight: "900", color: "#155D3B", textAlign: "center" },
+  stepProgressLabel: { fontSize: 17, lineHeight: 23, fontWeight: "900", textAlign: "center" },
   stepProgressTrack: { width: "100%", height: 13, marginTop: 10, borderRadius: 7, backgroundColor: "#DDE6DF", overflow: "hidden" },
   stepProgressFill: { height: "100%", borderRadius: 7, backgroundColor: "#0B7B3A" },
   stepButton: { minHeight: 46, minWidth: 170, maxWidth: 330, marginTop: 16, borderRadius: radius.md, paddingHorizontal: 18, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 9 },
@@ -813,11 +815,11 @@ const styles = StyleSheet.create({
   trendTitle: { fontSize: 18, lineHeight: 23, fontWeight: "900" },
   trendMessage: { marginTop: 2, fontSize: 13, lineHeight: 18 },
   emptyChart: { height: 84, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8 },
-  emptyChartText: { fontSize: 12, color: "#7B887F", fontWeight: "700" },
+  emptyChartText: { fontSize: 12, fontWeight: "700" },
   trendDates: { marginTop: -2, flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
   trendDate: { fontSize: 11, lineHeight: 16, fontWeight: "600" },
   progressLink: { minHeight: 42, alignSelf: "flex-start", flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 3 },
-  progressLinkText: { fontSize: 14, lineHeight: 20, fontWeight: "900", color: "#0B653A" },
+  progressLinkText: { fontSize: 14, lineHeight: 20, fontWeight: "900" },
   weekPanel: { marginTop: spacing.sm, borderWidth: 1, borderRadius: radius.md, overflow: "hidden" },
   weekSummaryRow: { minHeight: 66, paddingHorizontal: spacing.md, flexDirection: "row", alignItems: "center", gap: spacing.sm },
   weekIcon: { width: 42, height: 42, borderRadius: 21, alignItems: "center", justifyContent: "center" },
