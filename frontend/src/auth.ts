@@ -219,6 +219,8 @@ export async function authedFetch(path: string, init: RequestInit = {}): Promise
   const cached = await getCachedUser();
   if (!cached?.email) return response;
   try {
+    const savedTrialCode = await storage.secureGet(TRIAL_ACCESS_KEY, "");
+    if (!savedTrialCode) return response;
     const [cachedProfile, onboardingComplete] = await Promise.all([
       getCachedPatientProfile(cached.id),
       storage.getItem(onboardingCompleteKey(cached.id), ""),
@@ -226,7 +228,12 @@ export async function authedFetch(path: string, init: RequestInit = {}): Promise
     const login = await fetch(`${BASE}/api/users/login`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ email: cached.email, name: cached.name, role: cached.role }),
+      body: JSON.stringify({
+        email: cached.email,
+        name: cached.name,
+        role: cached.role,
+        trial_code: savedTrialCode,
+      }),
     });
     if (!login.ok) return response;
     const rebound: Me = await login.json();

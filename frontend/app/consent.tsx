@@ -35,7 +35,7 @@ export default function ConsentScreen() {
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       router.replace("/");
     } catch {
-      setError("We could not save your choices. Check your connection and try again.");
+      setError("We could not save your choices. Please sign in again and retry.");
       setSaving(false);
     }
   };
