@@ -664,6 +664,10 @@ def test_safety_strip_and_rewards_and_preview_are_wired():
 
 def test_rehab_plan_loading_tracks_real_plan_preparation_stages():
     rehab = (ROOT / "frontend" / "app" / "rehab-plan.tsx").read_text(encoding="utf-8")
+    results = (ROOT / "frontend" / "app" / "results.tsx").read_text(encoding="utf-8")
+    movement_map = (ROOT / "frontend" / "app" / "movement-map.tsx").read_text(encoding="utf-8")
+    journey = (ROOT / "frontend" / "app" / "(tabs)" / "journey.tsx").read_text(encoding="utf-8")
+    assessment = (ROOT / "frontend" / "app" / "assessment.tsx").read_text(encoding="utf-8")
 
     assert 'testID="rehab-plan-preparation"' in rehab
     assert '"Reviewing your assessment"' in rehab
@@ -675,6 +679,15 @@ def test_rehab_plan_loading_tracks_real_plan_preparation_stages():
     assert 'authedFetch("/api/alira/care-plan")' in rehab
     assert "setPreparationStage(2);" in rehab
     assert "await loadProgress(sessionPlan);" in rehab
+    assert 'entry === "assessment_complete"' in rehab
+    assert "enteredFromFreshAssessment && firstAccess" in rehab
+    assert "loading && showPreparation" in rehab
+    assert 'entry: "assessment_complete"' in assessment
+    assert 'entry === "assessment_complete"' in results
+    assert 'entry: "assessment_complete"' in results
+    assert 'entry: "assessment_complete"' not in movement_map
+    journey_start = journey.split('testID="journey-start-rehab"', 1)[1].split("</Pressable>", 1)[0]
+    assert 'entry: "assessment_complete"' not in journey_start
 
 
 def test_journey_demo_opens_the_completed_movement_snapshot():

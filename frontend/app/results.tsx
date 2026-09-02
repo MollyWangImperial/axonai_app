@@ -94,7 +94,7 @@ export default function ResultsScreen() {
   const insets = useSafeAreaInsets();
   const { width } = useWindowDimensions();
   const router = useRouter();
-  const { id } = useLocalSearchParams<{ id: string }>();
+  const { id, entry } = useLocalSearchParams<{ id: string; entry?: string }>();
   const [data, setData] = useState<PatientAssessmentSummary | null>(getScreenCache<{ data: PatientAssessmentSummary; assessment: Assessment | null }>(`results:${id}`)?.data ?? null);
   const [assessment, setAssessment] = useState<Assessment | null>(getScreenCache<{ data: PatientAssessmentSummary; assessment: Assessment | null }>(`results:${id}`)?.assessment ?? null);
   const cachedResult = getScreenCache<{ data: PatientAssessmentSummary; assessment: Assessment | null }>(`results:${id}`);
@@ -252,8 +252,15 @@ export default function ResultsScreen() {
 
   const goPlan = () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    if (canViewPlan && id) router.push({ pathname: "/rehab-plan", params: { id } });
-    else router.dismissTo("/");
+    if (!canViewPlan || !id) {
+      router.dismissTo("/");
+      return;
+    }
+    if (entry === "assessment_complete") {
+      router.push({ pathname: "/rehab-plan", params: { id, entry: "assessment_complete" } });
+      return;
+    }
+    router.push({ pathname: "/rehab-plan", params: { id } });
   };
 
   if (loading) {

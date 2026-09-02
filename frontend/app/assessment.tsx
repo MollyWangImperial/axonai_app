@@ -100,7 +100,7 @@ export default function AssessmentScreen() {
         router.back();
       } else if (msg.type === "assessment_complete") {
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-        router.replace({ pathname: "/results", params: { id: msg.assessment.id } });
+        router.replace({ pathname: "/results", params: { id: msg.assessment.id, entry: "assessment_complete" } });
       } else if (msg.type === "library_test_complete") {
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
         setTestComplete(true);

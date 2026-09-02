@@ -3195,6 +3195,49 @@ async def get_assessment(assessment_id: str, request: Request):
     return Assessment(**doc)
 
 
+@api_router.post("/assessment/{assessment_id}/rehab-plan-access")
+async def record_rehab_plan_access(assessment_id: str, request: Request):
+    """Claim the one-time preparation view for this user's assessment plan."""
+    doc = await _owned_assessment_doc(assessment_id, request, "rehab plan access")
+    first_viewed_at = doc.get("rehab_plan_first_viewed_at")
+    first_access = False
+    if not first_viewed_at:
+        candidate_time = datetime.now(timezone.utc).isoformat()
+        try:
+            result = await db.assessments.update_one(
+                {
+                    "id": assessment_id,
+                    "user_id": doc.get("user_id"),
+                    "rehab_plan_first_viewed_at": {"$exists": False},
+                },
+                {"$set": {"rehab_plan_first_viewed_at": candidate_time}},
+            )
+            first_access = result.modified_count == 1
+            if first_access:
+                first_viewed_at = candidate_time
+            else:
+                stored = await db.assessments.find_one(
+                    {"id": assessment_id, "user_id": doc.get("user_id")},
+                    {"_id": 0, "rehab_plan_first_viewed_at": 1},
+                )
+                first_viewed_at = (stored or {}).get("rehab_plan_first_viewed_at")
+        except Exception as exc:
+            logger.warning("Mongo unavailable for rehab plan access; local fallback: %s", str(exc)[:120])
+            for item in LOCAL_ASSESSMENTS:
+                if item.get("id") == assessment_id and item.get("user_id") == doc.get("user_id"):
+                    first_viewed_at = item.get("rehab_plan_first_viewed_at")
+                    first_access = not bool(first_viewed_at)
+                    if first_access:
+                        first_viewed_at = candidate_time
+                        item["rehab_plan_first_viewed_at"] = first_viewed_at
+                    break
+    return {
+        "assessment_id": assessment_id,
+        "first_access": first_access,
+        "first_viewed_at": first_viewed_at,
+    }
+
+
 @api_router.get("/assessment/{assessment_id}/patient-summary")
 async def get_patient_assessment_summary(assessment_id: str, request: Request):
     """Return only the concise collection receipt intended for patients."""

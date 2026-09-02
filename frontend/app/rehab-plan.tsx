@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import {
   Animated,
+  ActivityIndicator,
   Easing,
   Image,
   ImageSourcePropType,
@@ -94,6 +95,7 @@ const HAND_OPENING_IMAGE = require("../assets/images/rehab-relaxed-hand-opening.
 const PROGRESS_KEY = (planId: string, exId: string) => `ex_progress_v1:${planId}:${exId}`;
 const SESSION_VISITS_KEY = (planId: string) => `rehab_session_visits_v1:${planId}`;
 const DAILY_SESSION_CHOICE_KEY = (accountId: string) => `rehab_daily_session_choice_v1:${accountId}`;
+const PLAN_VIEWED_KEY = (accountId: string, planId: string) => `rehab_plan_viewed_v1:${accountId}:${planId}`;
 
 function isSessionDifficulty(value: unknown): value is SessionDifficulty {
   return value === "easy" || value === "medium" || value === "difficult";
@@ -129,6 +131,27 @@ async function saveTodaySessionChoice(planId: string, choice: Omit<DailySessionC
     await dailySessionChoiceKey(planId),
     JSON.stringify({ ...choice, date: localDateString() } satisfies DailySessionChoice),
   );
+}
+
+async function claimFirstPlanAccess(planId: string): Promise<boolean> {
+  const userId = await getUserId();
+  const localKey = PLAN_VIEWED_KEY(userId || "anonymous", planId);
+  const localValue: string | null = await storage.getItem(localKey, "" as string);
+  const locallyViewed = localValue === "1";
+  try {
+    const response = await authedFetch(`/api/assessment/${encodeURIComponent(planId)}/rehab-plan-access`, {
+      method: "POST",
+    });
+    if (response.ok) {
+      const access = await response.json() as { first_access?: boolean };
+      await storage.setItem(localKey, "1");
+      return access.first_access === true && !locallyViewed;
+    }
+  } catch {
+    // Account-scoped device storage preserves one-time behavior while offline.
+  }
+  if (!locallyViewed) await storage.setItem(localKey, "1");
+  return !locallyViewed;
 }
 
 const DIFFICULTY_COPY: Record<SessionDifficulty, { label: string; summary: string; icon: keyof typeof Ionicons.glyphMap }> = {
@@ -423,10 +446,11 @@ export default function RehabPlanScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const { width } = useWindowDimensions();
-  const { id } = useLocalSearchParams<{ id: string }>();
+  const { id, entry } = useLocalSearchParams<{ id: string; entry?: string }>();
   const [data, setData] = useState<Assessment | null>(null);
   const [adaptiveCarePlan, setAdaptiveCarePlan] = useState<AdaptiveCarePlan | null>(null);
   const [loading, setLoading] = useState(true);
+  const [showPreparation, setShowPreparation] = useState(false);
   const [preparationStage, setPreparationStage] = useState<PlanPreparationStage>(0);
   const [progress, setProgress] = useState<Record<string, ExerciseProgress>>({});
   const [paywallOpen, setPaywallOpen] = useState(false);
@@ -450,6 +474,7 @@ export default function RehabPlanScreen() {
 
   const planId = id || "default";
   const isDemo = id === DEMO_ASSESSMENT_ID;
+  const enteredFromFreshAssessment = entry === "assessment_complete";
   const isWide = width >= 860;
 
   const loadProgress = React.useCallback(async (plan: Assessment) => {
@@ -476,17 +501,23 @@ export default function RehabPlanScreen() {
     (async () => {
       try {
         if (id) {
+          setLoading(true);
+          setData(null);
           setSessionConfirmed(false);
           setSessionOptions([]);
           setSessionVariation("standard");
           setIncreaseDifficulty(false);
           setPreparationStage(0);
-          let stageStartedAt = Date.now();
+          setShowPreparation(false);
           const assessment = id === DEMO_ASSESSMENT_ID ? demoAssessment : await fetchAssessment(id);
-          await waitForMinimumStageTime(stageStartedAt);
+          const firstAccess = id === DEMO_ASSESSMENT_ID ? false : await claimFirstPlanAccess(id);
+          const shouldPrepare = enteredFromFreshAssessment && firstAccess;
+          setShowPreparation(shouldPrepare);
+          let stageStartedAt = Date.now();
+          if (shouldPrepare) await waitForMinimumStageTime(stageStartedAt);
           if (cancelled) return;
 
-          setPreparationStage(1);
+          if (shouldPrepare) setPreparationStage(1);
           stageStartedAt = Date.now();
           let carePlan: AdaptiveCarePlan | null = null;
           if (id !== DEMO_ASSESSMENT_ID) {
@@ -497,10 +528,10 @@ export default function RehabPlanScreen() {
               // Keep the last assessment plan when the adaptive service is temporarily unavailable.
             }
           }
-          await waitForMinimumStageTime(stageStartedAt);
+          if (shouldPrepare) await waitForMinimumStageTime(stageStartedAt);
           if (cancelled) return;
 
-          setPreparationStage(2);
+          if (shouldPrepare) setPreparationStage(2);
           stageStartedAt = Date.now();
           const adjustedAssessment = applyAdaptiveDose(assessment, carePlan);
           const doseChange = Number(carePlan?.exercise_plan?.dose_change_percent || 0);
@@ -546,7 +577,7 @@ export default function RehabPlanScreen() {
           setSessionConfirmed(Boolean(savedChoice));
           setData(sessionPlan);
           await loadProgress(sessionPlan);
-          await waitForMinimumStageTime(stageStartedAt);
+          if (shouldPrepare) await waitForMinimumStageTime(stageStartedAt);
         }
       } finally {
         if (!cancelled) setLoading(false);
@@ -555,7 +586,7 @@ export default function RehabPlanScreen() {
     return () => {
       cancelled = true;
     };
-  }, [id, loadProgress, planId]);
+  }, [enteredFromFreshAssessment, id, loadProgress, planId]);
 
   useFocusEffect(
     React.useCallback(() => {
@@ -660,7 +691,7 @@ export default function RehabPlanScreen() {
     });
   };
 
-  if (loading) {
+  if (loading && showPreparation) {
     return (
       <RehabPlanPreparation
         stage={preparationStage}
@@ -669,6 +700,10 @@ export default function RehabPlanScreen() {
         compact={width < 700}
       />
     );
+  }
+
+  if (loading) {
+    return <View style={[styles.container, styles.center]}><ActivityIndicator color={colors.brandPrimary} /></View>;
   }
 
   if (!data) {
