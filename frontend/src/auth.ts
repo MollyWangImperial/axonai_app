@@ -3,11 +3,12 @@ import { clearScreenCache } from "@/src/screenCache";
 import { API_BASE as BASE } from "@/src/config";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
-export type Me = { id: string; email: string; name: string; role: "patient" | "therapist"; credits: number };
+export type Me = { id: string; email: string; name: string; role: "patient" | "therapist"; credits: number; trial_access_granted: boolean };
 
-export const USER_KEY = "active_user_id_v1";
-export const USER_OBJ = "active_user_obj_v1";
+export const USER_KEY = "active_user_id_v2";
+export const USER_OBJ = "active_user_obj_v2";
 const BACKEND_USER_KEY = `backend_user_id_v1:${BASE}`;
+const TRIAL_ACCESS_KEY = `trial_access_code_v1:${BASE}`;
 const authStateListeners = new Set<() => void>();
 
 export function subscribeAuthState(listener: () => void) {
@@ -64,19 +65,32 @@ export async function getUserId(): Promise<string | null> {
 export async function getCachedUser(): Promise<Me | null> {
   const raw = await storage.getItem(USER_OBJ, "");
   if (!raw) return null;
-  try { return JSON.parse(raw); } catch { return null; }
+  try {
+    const user = JSON.parse(raw) as Me;
+    return user?.trial_access_granted === true ? user : null;
+  } catch {
+    return null;
+  }
 }
 
-export async function signIn(email: string, name: string, role: "patient" | "therapist"): Promise<Me> {
+export async function signIn(email: string, name: string, role: "patient" | "therapist", trialCode?: string): Promise<Me> {
+  const savedTrialCode = await storage.secureGet(TRIAL_ACCESS_KEY, "");
+  const accessCode = (trialCode || savedTrialCode || "").trim();
+  if (!accessCode) throw new Error("Enter your trial code to continue.");
   const r = await fetch(`${BASE}/api/users/login`, {
     method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ email, name, role }),
+    body: JSON.stringify({ email, name, role, trial_code: accessCode }),
   });
-  if (!r.ok) throw new Error("Sign-in failed");
+  if (!r.ok) {
+    const body = await r.json().catch(() => null);
+    throw new Error(body?.detail || "Sign-in failed. Try again.");
+  }
   const u: Me = await r.json();
+  if (u.trial_access_granted !== true) throw new Error("Trial access could not be confirmed.");
   await storage.setItem(USER_KEY, u.id);
   await storage.setItem(USER_OBJ, JSON.stringify(u));
   await storage.setItem(BACKEND_USER_KEY, u.id);
+  await storage.secureSet(TRIAL_ACCESS_KEY, accessCode);
   notifyAuthStateChanged();
   return u;
 }
@@ -86,6 +100,9 @@ export async function signOut() {
   await storage.removeItem(USER_KEY);
   await storage.removeItem(USER_OBJ);
   await storage.removeItem(BACKEND_USER_KEY);
+  await storage.removeItem("active_user_id_v1");
+  await storage.removeItem("active_user_obj_v1");
+  await storage.secureRemove(TRIAL_ACCESS_KEY);
   // Retain account-scoped onboarding and assessment progress for the next sign-in.
   await storage.removeItem("onboarding_complete_v1");
   await storage.removeItem("preferred_name_v1");

@@ -91,6 +91,89 @@ final result: passed
 
 ---
 
+# Journey Start Rehab Design QA
+
+- Source visual truth: `C:\Users\LENOVO\AppData\Local\Temp\codex-clipboard-b0c5fd3f-8507-4304-afa3-e11e7c4083dd.png`
+- Verified implementation route: `http://127.0.0.1:8082/journey`
+- Browser viewport: 1280 x 720 CSS pixels
+- State: signed-in local test profile with demo mode enabled; two scheduled exercises
+
+## Full-View Evidence
+
+The Journey page now places a compact `Today's rehab` strip directly after the completion counters and before the weekly exercise-score panel, matching the supplied hierarchy. The strip includes a circular walking icon, the live exercise count, a dose-based time estimate, and a prominent green `Start rehab` button with a play icon. Existing Journey content remains unframed and in its original order below the new section.
+
+## Fidelity Surfaces
+
+- Typography: the title, metadata, and button label use the existing Rehyn type hierarchy and remain readable at the verified desktop viewport.
+- Spacing and layout: the wide strip aligns with the counter and score-panel edges. On compact layouts, the summary and full-width action stack without changing the content order.
+- Colors and tokens: the section uses the shared themed surface, border, text, and Rehyn-green action colors rather than introducing a separate palette.
+- Data integrity: the reference's sample `2 / 12 / 6` counters were not hard-coded. The implementation keeps real completion counters and derives the rehab summary from the current Alira care plan, with demo data used only when demo mode is enabled.
+- Interaction: `Start rehab` opens the matching plan at `/rehab-plan?id=rehyn-demo-assessment` in the verified demo state.
+
+## Comparison History
+
+1. The first interaction pass showed `about 8 minutes` in Journey but `about 10 minutes` on the destination plan.
+2. Both screens now use the same dose-based duration helper, producing `2 exercises · about 8 minutes` for the verified plan.
+3. The final browser pass confirmed the section position, copy, route, and duration agreement. No actionable P0, P1, or P2 finding remains.
+
+## Verification
+
+- Focused ESLint: passed.
+- Focused Journey, care-plan, rehab-session, and progress tests: 60 passed.
+- Production Expo web export: passed.
+- Browser interaction: passed; the primary action opens the correct plan and preserves the summary duration.
+
+final result: passed
+
+---
+
+# Journey Exercise Scores Design QA
+
+- Source visual truth: user-provided Journey reference image in the current Codex task. No filesystem path was exposed for the conversation attachment.
+- Rendered implementation: `http://127.0.0.1:8081/journey`, captured in the Codex in-app browser after a fresh Expo web export.
+- Desktop viewport and pixels: 1152 x 1376 at browser density 1; no density normalization required.
+- Mobile responsive check: 390 x 844 CSS pixels at browser density 1.
+- State: light theme, demo mode enabled, seven sample exercise sessions, details collapsed.
+
+## Full-View And Focused Evidence
+
+The score panel appears immediately below the three Journey completion totals and immediately above Your progress, matching the reference hierarchy. Its bordered surface, heading placement, right-side average, goal copy, dashed 80 line, gold below-goal markers, green goal-reaching markers, stems, and date labels match the selected design direction. The full-size desktop capture kept every score-card detail readable, so a separate focused crop was not needed.
+
+The computed demo headline is 81 rather than the mockup's decorative 84 because the seven visible values average to 81. The implementation intentionally reports the true arithmetic mean. The 390-pixel check confirmed that the title and summary reflow without overlap and that the chart becomes horizontally scrollable instead of compressing labels.
+
+## Fidelity Surfaces
+
+- Typography: the existing Rehyn stack, hierarchy, optical weights, fixed font sizes, and zero letter spacing are preserved without clipping or truncation.
+- Spacing and layout: card width, padding, header split, plot spacing, section order, borders, and radii follow the reference and existing Journey system.
+- Colors and tokens: Rehyn surface, text, border, and brand tokens are used; gold and green distinguish below-goal and goal-reaching sessions with readable contrast.
+- Image quality and assets: this score component requires no raster imagery. The chart uses the project's existing `react-native-svg` dependency and the details control uses Ionicons.
+- Copy and content: reference labels are retained. `SAMPLE` appears only in demo mode; real sessions use persisted averages and repetition counts.
+
+## Interaction Checks
+
+- `View exercise details` expands to show the exercise name, date, scored-repetition count, and session average.
+- The empty state appears after API completion when no scored exercise exists.
+- Demo mode is explicitly labelled and renders seven representative sessions.
+- Desktop and mobile layouts were rendered and inspected.
+- Browser console errors after the final desktop and mobile checks: none.
+- The live Journey shell returned HTML containing the current Expo bundle, and the activity endpoint returned JSON for its unauthenticated response; the authenticated success contract is covered by the focused API test.
+
+## Comparison History
+
+1. Initial comparison found device-locale date labels in the new chart.
+2. The formatter was changed to explicit `en-GB`, the bundle was rebuilt, and the revised capture showed `27 Aug` through `2 Sept`.
+3. No actionable P0, P1, or P2 findings remained in the revised capture.
+
+## Verification
+
+- Seventy-nine related tests passed in the broad exercise and Journey run; the final eight Journey and API-contract tests passed after the date adjustment.
+- Focused ESLint passed.
+- Production Expo web export completed. Metro could not persist its optional cache because the system C drive is full, but the bundle itself exported successfully.
+
+final result: passed
+
+---
+
 # Rehab Plan Preparation Design QA
 
 - Source visual truth: `C:\Users\LENOVO\AppData\Local\Temp\codex-clipboard-f9a8e0d3-17a7-4f43-b9a4-eade5acdef72.png`
@@ -499,5 +582,54 @@ The matched comparison shows the same Home hierarchy and pre-assessment state. T
 - Browser console: no errors.
 - Focused ESLint: passed with one pre-existing unused-variable warning and no errors.
 - Three focused feature tests: passed.
+
+final result: passed
+
+---
+
+# Trial Sign-In Design QA
+
+- Source visual truth: `C:\Users\LENOVO\AppData\Local\Temp\codex-clipboard-5c45a520-78ee-4972-86f2-1f0fdd2f4b6f.png`
+- Implementation screenshot: `C:\Users\LENOVO\Documents\New project\rehyn-sign-in-implementation.png`
+- Combined comparison: `C:\Users\LENOVO\Documents\New project\rehyn-sign-in-comparison.png`
+- Browser viewport: 1280 x 720 CSS pixels at device scale factor 1.25
+- Source capture: 1726 x 879 pixels, proportionally contained for side-by-side comparison
+- State: public sign-in landing page with the trial-access form closed
+
+## Full-View And Focused Evidence
+
+The side-by-side comparison confirms the reference hierarchy: a restrained Rehyn header, left-aligned stroke-recovery proposition and primary CTA, plus a right-hand preview card containing the rehab action and progress chart. The final browser capture preserves the single-line headline at the tested desktop width and shows the complete first viewport without clipping or overlap.
+
+## Fidelity Surfaces
+
+- Typography: the reference's large dark-green headline, compact navigation, supporting copy, and card hierarchy are closely matched using the app's existing font stack.
+- Spacing and layout: the two-column composition, generous outer margins, CTA dimensions, card padding, and responsive mobile stack follow the supplied design.
+- Colors and tokens: warm white backgrounds, restrained borders, deep green actions, and muted blue-grey body copy match the reference while reusing Rehyn's established palette.
+- Icons and chart: existing Ionicons are used for controls, and the progress chart includes the reference's emphasized, glowing final point.
+- Copy and content: all visible landing-page copy follows the supplied design. The primary actions consistently open the requested name, email, and trial-code form.
+
+## Interaction And Access Evidence
+
+1. `Start free`, `Sign in`, `Start your assessment`, and the preview `Start rehab` action all open the same trial-access form.
+2. The form validates name, email format, and trial-code presence before submitting.
+3. A wrong trial code was rejected by the backend with a visible error while remaining on `/sign-in`.
+4. The valid trial code created the session and advanced to `/consent`, preserving the existing legal-consent gate before app access.
+5. The trial secret is read only from `REHYN_TRIAL_ACCESS_CODE`; it is not embedded in the frontend bundle or committed to `render.yaml`.
+
+## Comparison History
+
+1. The first desktop capture wrapped the hero headline at 1280 pixels, unlike the reference.
+2. The medium-desktop headline size was reduced to 52 pixels, preserving the one-line composition while retaining the reference's visual prominence.
+3. A final capture after icon-font loading confirmed the complete logo and interface. No actionable P0, P1, or P2 visual issue remains.
+4. Residual P3 difference: the implementation card and chart are slightly more compact after normalizing the wider source image to the browser viewport.
+
+## Verification
+
+- Focused ESLint: passed.
+- Focused authentication, consent, and resume tests: 15 passed.
+- Production Expo web export after the final typography adjustment: passed.
+- Browser interaction test: invalid-code rejection and valid-code continuation both passed.
+- Fresh-origin direct visit to `/rehab-plan`: redirected to the legal/sign-in gate instead of exposing app functionality.
+- Frontend bundle search: the supplied trial code is absent.
 
 final result: passed

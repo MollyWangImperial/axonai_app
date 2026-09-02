@@ -5,18 +5,29 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def test_rehab_plan_requires_a_session_choice_and_passes_it_to_the_runner():
+def test_rehab_plan_uses_targeted_yes_no_session_questions_and_passes_the_result():
     source = (ROOT / "frontend" / "app" / "rehab-plan.tsx").read_text(encoding="utf-8")
 
-    assert "Choose how today should feel" in source
+    assert "rehab-session-popup" in source
+    assert "Switch to a different set of exercises?" in source
+    assert "Increase the difficulty for today?" in source
+    assert "session-switch-yes" in source
+    assert "session-increase-yes" in source
+    assert "nextDifficulty(sessionDifficulty)" in source
     assert "session-options" in source
-    assert "Object.keys(DIFFICULTY_COPY)" in source
-    assert "session-difficulty-${level}" in source
-    assert 'easy: { label: "Easy"' in source
-    assert 'difficult: { label: "Difficult"' in source
     assert "difficulty: sessionDifficulty" in source
     assert "variation: sessionVariation" in source
     assert "requires_same_support_at_all_levels" in source
+
+
+def test_exercise_screen_saves_session_average_and_repetition_scores():
+    source = (ROOT / "frontend" / "app" / "exercise.tsx").read_text(encoding="utf-8")
+
+    assert "saveSessionAverage" in source
+    assert "last_session_scores" in source
+    assert "score_history" in source
+    assert "repetition_scores: arr" in source
+    assert "arr.reduce((a, b) => a + b, 0) / arr.length" in source
 
 
 def test_settings_exposes_reminder_time_and_fast_quick_access():

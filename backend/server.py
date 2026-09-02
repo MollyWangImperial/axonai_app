@@ -19,6 +19,7 @@ import asyncio
 import httpx
 import json
 import hashlib
+import hmac
 import sys
 import tempfile
 from datetime import datetime, timezone
@@ -125,6 +126,13 @@ except Exception:
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env", override=True)
 logger = logging.getLogger(__name__)
+REHYN_TRIAL_ACCESS_CODE = os.environ.get("REHYN_TRIAL_ACCESS_CODE", "").strip()
+
+
+def _require_trial_access_code(candidate: Optional[str]) -> None:
+    supplied = str(candidate or "").strip()
+    if not REHYN_TRIAL_ACCESS_CODE or not supplied or not hmac.compare_digest(supplied, REHYN_TRIAL_ACCESS_CODE):
+        raise HTTPException(status_code=403, detail="The trial code is not valid.")
 
 # MongoDB
 mongo_url = os.environ["MONGO_URL"]
@@ -7958,6 +7966,219 @@ REHAB_RUNNER_CONFIG: Dict[str, Dict[str, Any]] = {
 }
 
 
+# Camera-derived movement guidance standards. Targets are conservative 2D ROM
+# goals for coaching and progress tracking, not diagnostic measurements.
+EXERCISE_MOVEMENT_STANDARDS: Dict[str, Dict[str, Any]] = {
+    "ex_reach": {
+        "tracking_mode": "pose", "posture": "seated",
+        "calibration_instruction": "Sit tall with your face, shoulders, hips, elbows, and wrists visible. Rest both hands comfortably and hold still while I set your starting position.",
+        "rom_steps": [
+            {"id": "shoulder_flexion", "label": "Shoulder reach", "metric": "shoulder_flexion", "targets": {"easy": 45, "medium": 60, "difficult": 75}, "weight": 0.65},
+            {"id": "elbow_extension", "label": "Elbow extension", "metric": "elbow_extension", "targets": {"easy": 130, "medium": 140, "difficult": 150}, "weight": 0.35},
+        ],
+        "compensations": [
+            {"id": "trunk_lean", "metric": "trunk_lean_delta", "threshold_deg": 12, "min_frames": 8, "min_ratio": 0.35, "penalty": 10, "correction": "Keep your chest tall and let your arm travel toward the target."},
+            {"id": "shoulder_hike", "metric": "shoulder_hike_delta", "threshold_deg": 8, "min_frames": 8, "min_ratio": 0.35, "penalty": 8, "correction": "Relax the shoulder away from your ear before you reach again."},
+        ],
+    },
+    "ex_trunk": {
+        "tracking_mode": "pose", "posture": "seated",
+        "calibration_instruction": "Sit with your back supported, both shoulders and hips visible, and your hands resting. Hold still while I learn your upright position.",
+        "rom_steps": [
+            {"id": "shoulder_flexion", "label": "Restrained shoulder reach", "metric": "shoulder_flexion", "targets": {"easy": 40, "medium": 55, "difficult": 65}, "weight": 0.7},
+            {"id": "elbow_extension", "label": "Elbow extension", "metric": "elbow_extension", "targets": {"easy": 125, "medium": 138, "difficult": 145}, "weight": 0.3},
+        ],
+        "compensations": [
+            {"id": "trunk_lean", "metric": "trunk_lean_delta", "threshold_deg": 8, "min_frames": 8, "min_ratio": 0.35, "penalty": 12, "correction": "Settle your back against the chair before the next reach."},
+            {"id": "shoulder_hike", "metric": "shoulder_hike_delta", "threshold_deg": 8, "min_frames": 8, "min_ratio": 0.35, "penalty": 7, "correction": "Soften the top of your shoulder and keep it away from your ear."},
+        ],
+    },
+    "ex_wallslide": {
+        "tracking_mode": "pose", "posture": "seated",
+        "calibration_instruction": "Sit tall with your supported forearm, shoulders, hips, and wrists visible. Hold the comfortable starting position without pain.",
+        "rom_steps": [
+            {"id": "shoulder_flexion", "label": "Supported arm elevation", "metric": "shoulder_flexion", "targets": {"easy": 60, "medium": 80, "difficult": 95}, "weight": 0.8},
+            {"id": "elbow_extension", "label": "Supported elbow position", "metric": "elbow_extension", "targets": {"easy": 120, "medium": 132, "difficult": 140}, "weight": 0.2},
+        ],
+        "compensations": [
+            {"id": "shoulder_hike", "metric": "shoulder_hike_delta", "threshold_deg": 8, "min_frames": 8, "min_ratio": 0.35, "penalty": 10, "correction": "Keep the shoulder heavy and away from your ear as the arm slides."},
+            {"id": "side_lean", "metric": "trunk_lean_delta", "threshold_deg": 10, "min_frames": 8, "min_ratio": 0.35, "penalty": 9, "correction": "Return your chest to the middle before raising the arm again."},
+        ],
+    },
+    "ex_scapdepress": {
+        "tracking_mode": "pose", "posture": "seated",
+        "calibration_instruction": "Sit upright with both shoulders level and your hands resting. Keep your face, shoulders, hips, elbows, and wrists in view.",
+        "rom_steps": [
+            {"id": "shoulder_flexion", "label": "Controlled shoulder reach", "metric": "shoulder_flexion", "targets": {"easy": 35, "medium": 50, "difficult": 60}, "weight": 0.65},
+            {"id": "elbow_extension", "label": "Elbow extension", "metric": "elbow_extension", "targets": {"easy": 125, "medium": 138, "difficult": 145}, "weight": 0.35},
+        ],
+        "compensations": [
+            {"id": "shoulder_hike", "metric": "shoulder_hike_delta", "threshold_deg": 6, "min_frames": 8, "min_ratio": 0.35, "penalty": 12, "correction": "Draw the shoulder gently down before beginning the next reach."},
+            {"id": "trunk_lean", "metric": "trunk_lean_delta", "threshold_deg": 10, "min_frames": 8, "min_ratio": 0.35, "penalty": 8, "correction": "Stay tall through your chest while your arm moves."},
+        ],
+    },
+    "ex_h2m": {
+        "tracking_mode": "pose", "posture": "seated",
+        "calibration_instruction": "Sit tall with your face, shoulders, elbows, wrists, and hips visible. Rest your hands and hold still.",
+        "rom_steps": [
+            {"id": "elbow_flexion", "label": "Elbow bend", "metric": "elbow_flexion", "targets": {"easy": 65, "medium": 80, "difficult": 95}, "weight": 0.7},
+            {"id": "shoulder_flexion", "label": "Shoulder lift", "metric": "shoulder_flexion", "targets": {"easy": 20, "medium": 30, "difficult": 40}, "weight": 0.3},
+        ],
+        "compensations": [
+            {"id": "trunk_forward", "metric": "trunk_lean_delta", "threshold_deg": 10, "min_frames": 8, "min_ratio": 0.35, "penalty": 11, "correction": "Bring your hand toward your mouth instead of moving your mouth toward your hand."},
+            {"id": "shoulder_hike", "metric": "shoulder_hike_delta", "threshold_deg": 8, "min_frames": 8, "min_ratio": 0.35, "penalty": 8, "correction": "Relax the shoulder before bending the elbow again."},
+        ],
+    },
+    "ex_grasp": {
+        "tracking_mode": "pose", "posture": "seated",
+        "calibration_instruction": "Sit square to the camera with both shoulders, hips, elbows, and wrists visible. Place the light object within a comfortable reach and hold still.",
+        "rom_steps": [
+            {"id": "shoulder_flexion", "label": "Reach to the object", "metric": "shoulder_flexion", "targets": {"easy": 30, "medium": 42, "difficult": 52}, "weight": 0.55},
+            {"id": "shoulder_abduction", "label": "Controlled transport", "metric": "shoulder_abduction", "targets": {"easy": 25, "medium": 35, "difficult": 45}, "weight": 0.45},
+        ],
+        "compensations": [
+            {"id": "trunk_lean", "metric": "trunk_lean_delta", "threshold_deg": 12, "min_frames": 8, "min_ratio": 0.35, "penalty": 10, "correction": "Keep your shoulders square and move the light object with your arm."},
+            {"id": "shoulder_hike", "metric": "shoulder_hike_delta", "threshold_deg": 9, "min_frames": 8, "min_ratio": 0.35, "penalty": 7, "correction": "Set the shoulder down before lifting the object again."},
+        ],
+    },
+    "ex_handopen": {
+        "tracking_mode": "hand", "posture": "seated",
+        "calibration_instruction": "Support your forearm and hold your affected hand toward the camera. Keep the whole hand, wrist, and fingertips visible and still.",
+        "rom_steps": [
+            {"id": "finger_extension", "label": "Finger opening", "metric": "finger_extension", "targets": {"easy": 130, "medium": 145, "difficult": 158}, "weight": 1.0},
+        ],
+        "compensations": [
+            {"id": "wrist_flexion", "metric": "wrist_flexion_delta", "threshold_deg": 18, "min_frames": 8, "min_ratio": 0.4, "penalty": 8, "correction": "Keep the wrist comfortably neutral while the fingers open."},
+        ],
+    },
+    "ex_pinch": {
+        "tracking_mode": "hand", "posture": "seated",
+        "calibration_instruction": "Support your forearm and hold your affected hand toward the camera. Keep your thumb, index finger, and wrist clearly visible.",
+        "rom_steps": [
+            {"id": "pinch_flexion", "label": "Thumb and finger control", "metric": "pinch_flexion", "targets": {"easy": 35, "medium": 50, "difficult": 65}, "weight": 1.0},
+        ],
+        "compensations": [
+            {"id": "wrist_flexion", "metric": "wrist_flexion_delta", "threshold_deg": 18, "min_frames": 8, "min_ratio": 0.4, "penalty": 8, "correction": "Keep the wrist steady and let the thumb and finger make the pinch."},
+        ],
+    },
+    "ex_bilateral": {
+        "tracking_mode": "pose", "posture": "seated",
+        "calibration_instruction": "Sit in the middle of the camera with both shoulders, elbows, wrists, and hips visible. Rest both arms and hold still.",
+        "rom_steps": [
+            {"id": "bilateral_shoulder_flexion", "label": "Both-arm range", "metric": "bilateral_shoulder_flexion", "targets": {"easy": 35, "medium": 50, "difficult": 60}, "weight": 1.0},
+        ],
+        "compensations": [
+            {"id": "arm_asymmetry", "metric": "arm_asymmetry", "threshold_deg": 18, "min_frames": 10, "min_ratio": 0.4, "penalty": 9, "correction": "Slow down and aim to move both arms through a similar range."},
+            {"id": "trunk_lean", "metric": "trunk_lean_delta", "threshold_deg": 10, "min_frames": 8, "min_ratio": 0.35, "penalty": 8, "correction": "Return your chest to the middle before moving both arms again."},
+        ],
+    },
+    "ex_lower_selective": {
+        "tracking_mode": "pose", "posture": "seated",
+        "calibration_instruction": "Place the camera where your shoulders, hips, knees, ankles, and feet are visible. Sit still with both feet supported.",
+        "rom_steps": [
+            {"id": "knee_extension", "label": "Knee extension", "metric": "knee_extension", "targets": {"easy": 125, "medium": 140, "difficult": 152}, "weight": 1.0},
+        ],
+        "compensations": [
+            {"id": "hip_hike", "metric": "hip_hike_delta", "threshold_deg": 8, "min_frames": 8, "min_ratio": 0.35, "penalty": 8, "correction": "Keep both hips settled on the chair while the lower leg moves."},
+            {"id": "trunk_lean", "metric": "trunk_lean_delta", "threshold_deg": 10, "min_frames": 8, "min_ratio": 0.35, "penalty": 8, "correction": "Stay tall and avoid leaning back to lift the foot."},
+        ],
+    },
+    "ex_ankle_dorsiflexion": {
+        "tracking_mode": "pose", "posture": "seated",
+        "calibration_instruction": "Place the camera to the side so your affected knee, ankle, heel, and toes are visible. Keep the heel down and hold still.",
+        "rom_steps": [
+            {"id": "ankle_dorsiflexion", "label": "Ankle dorsiflexion", "metric": "ankle_dorsiflexion", "targets": {"easy": 6, "medium": 10, "difficult": 14}, "weight": 1.0},
+        ],
+        "compensations": [
+            {"id": "heel_lift", "metric": "heel_lift_angle", "threshold_deg": 8, "min_frames": 8, "min_ratio": 0.4, "penalty": 10, "correction": "Keep the heel planted and lift only the toes and forefoot."},
+            {"id": "knee_motion", "metric": "knee_motion_delta", "threshold_deg": 10, "min_frames": 8, "min_ratio": 0.4, "penalty": 7, "correction": "Keep the knee quiet while the ankle moves."},
+        ],
+    },
+    "ex_sit_to_stand": {
+        "tracking_mode": "pose", "posture": "full_body",
+        "calibration_instruction": "With your carer beside you, place the camera where your shoulders, hips, knees, ankles, and chair are visible. Sit still in your safe starting position.",
+        "rom_steps": [
+            {"id": "hip_extension", "label": "Hip extension into standing", "metric": "hip_extension", "targets": {"easy": 145, "medium": 158, "difficult": 168}, "weight": 0.5},
+            {"id": "knee_extension", "label": "Knee extension into standing", "metric": "bilateral_knee_extension", "targets": {"easy": 145, "medium": 158, "difficult": 168}, "weight": 0.5},
+        ],
+        "compensations": [
+            {"id": "uneven_loading", "metric": "body_asymmetry", "threshold_deg": 12, "min_frames": 10, "min_ratio": 0.4, "penalty": 9, "correction": "Use your agreed support and press through both feet as evenly as is safe."},
+            {"id": "trunk_side_lean", "metric": "trunk_lean_delta", "threshold_deg": 12, "min_frames": 10, "min_ratio": 0.4, "penalty": 8, "correction": "Keep your chest centred while your carer maintains the same guarding."},
+        ],
+    },
+    "ex_supported_stand": {
+        "tracking_mode": "pose", "posture": "full_body",
+        "calibration_instruction": "With your carer and fixed support ready, place your full body in view from shoulders to feet. Hold your safe starting stance still.",
+        "rom_steps": [
+            {"id": "hip_extension", "label": "Upright hip position", "metric": "hip_extension", "targets": {"easy": 145, "medium": 158, "difficult": 168}, "weight": 0.45},
+            {"id": "knee_extension", "label": "Supported knee extension", "metric": "bilateral_knee_extension", "targets": {"easy": 145, "medium": 158, "difficult": 168}, "weight": 0.55},
+        ],
+        "compensations": [
+            {"id": "trunk_side_lean", "metric": "trunk_lean_delta", "threshold_deg": 10, "min_frames": 10, "min_ratio": 0.4, "penalty": 8, "correction": "Use the fixed support and bring your chest gently back toward the middle."},
+            {"id": "knee_collapse", "metric": "knee_alignment", "threshold_deg": 12, "min_frames": 10, "min_ratio": 0.4, "penalty": 9, "correction": "Keep each knee pointing in the same direction as the foot without forcing it."},
+        ],
+    },
+    "ex_supported_step": {
+        "tracking_mode": "pose", "posture": "full_body",
+        "calibration_instruction": "With your carer and fixed support in place, show your body from shoulders to feet. Stand still in your safe starting stance.",
+        "rom_steps": [
+            {"id": "hip_flexion", "label": "Step hip flexion", "metric": "hip_flexion", "targets": {"easy": 15, "medium": 25, "difficult": 32}, "weight": 0.5},
+            {"id": "knee_flexion", "label": "Step knee flexion", "metric": "knee_flexion", "targets": {"easy": 20, "medium": 32, "difficult": 42}, "weight": 0.5},
+        ],
+        "compensations": [
+            {"id": "hip_hike", "metric": "hip_hike_delta", "threshold_deg": 9, "min_frames": 8, "min_ratio": 0.35, "penalty": 9, "correction": "Keep the pelvis level and make the step small enough to clear safely."},
+            {"id": "trunk_lean", "metric": "trunk_lean_delta", "threshold_deg": 10, "min_frames": 8, "min_ratio": 0.35, "penalty": 8, "correction": "Keep the same support and bring your chest back over your stance."},
+        ],
+    },
+    "ex_weight_shift": {
+        "tracking_mode": "pose", "posture": "full_body",
+        "calibration_instruction": "With your carer and fixed support ready, show your shoulders, hips, knees, ankles, and feet. Stand still in the middle.",
+        "rom_steps": [
+            {"id": "pelvic_shift", "label": "Pelvic weight shift", "metric": "pelvic_shift", "targets": {"easy": 5, "medium": 8, "difficult": 11}, "weight": 1.0},
+        ],
+        "compensations": [
+            {"id": "shoulder_lean", "metric": "shoulder_pelvis_mismatch", "threshold_deg": 10, "min_frames": 9, "min_ratio": 0.4, "penalty": 10, "correction": "Move from your pelvis and keep your shoulders over your support."},
+            {"id": "knee_collapse", "metric": "knee_alignment", "threshold_deg": 12, "min_frames": 9, "min_ratio": 0.4, "penalty": 8, "correction": "Keep the knee aligned with the foot during the small shift."},
+        ],
+    },
+    "ex_sitting_balance": {
+        "tracking_mode": "pose", "posture": "seated",
+        "calibration_instruction": "With your carer nearby if needed, show your shoulders, hips, knees, and both feet. Sit still in your balanced middle position.",
+        "rom_steps": [
+            {"id": "trunk_lateral_rom", "label": "Controlled sitting reach", "metric": "trunk_lateral_rom", "targets": {"easy": 6, "medium": 10, "difficult": 14}, "weight": 1.0},
+        ],
+        "compensations": [
+            {"id": "hip_lift", "metric": "hip_hike_delta", "threshold_deg": 9, "min_frames": 8, "min_ratio": 0.35, "penalty": 9, "correction": "Keep both hips supported on the chair and make the reach smaller."},
+            {"id": "rotation", "metric": "shoulder_rotation", "threshold_deg": 14, "min_frames": 8, "min_ratio": 0.35, "penalty": 7, "correction": "Keep both shoulders facing the camera as you return to the middle."},
+        ],
+    },
+    "ex_step_stance": {
+        "tracking_mode": "pose", "posture": "full_body",
+        "calibration_instruction": "With your carer and fixed support in place, show your body from shoulders to feet. Hold your steady starting stance.",
+        "rom_steps": [
+            {"id": "hip_flexion", "label": "Step placement", "metric": "hip_flexion", "targets": {"easy": 12, "medium": 20, "difficult": 28}, "weight": 0.55},
+            {"id": "knee_flexion", "label": "Controlled knee movement", "metric": "knee_flexion", "targets": {"easy": 18, "medium": 28, "difficult": 38}, "weight": 0.45},
+        ],
+        "compensations": [
+            {"id": "trunk_lean", "metric": "trunk_lean_delta", "threshold_deg": 10, "min_frames": 9, "min_ratio": 0.4, "penalty": 8, "correction": "Keep the stance short and your chest centred over the fixed support."},
+            {"id": "knee_collapse", "metric": "knee_alignment", "threshold_deg": 12, "min_frames": 9, "min_ratio": 0.4, "penalty": 9, "correction": "Keep the front knee pointing in the same direction as the foot."},
+        ],
+    },
+    "ex_maintenance": {
+        "tracking_mode": "pose", "posture": "seated",
+        "calibration_instruction": "Sit tall with your face, shoulders, hips, elbows, and wrists visible. Rest your hands and hold still.",
+        "rom_steps": [
+            {"id": "shoulder_flexion", "label": "Shoulder range", "metric": "shoulder_flexion", "targets": {"easy": 45, "medium": 65, "difficult": 80}, "weight": 0.65},
+            {"id": "elbow_extension", "label": "Elbow extension", "metric": "elbow_extension", "targets": {"easy": 130, "medium": 142, "difficult": 150}, "weight": 0.35},
+        ],
+        "compensations": [
+            {"id": "trunk_lean", "metric": "trunk_lean_delta", "threshold_deg": 12, "min_frames": 8, "min_ratio": 0.35, "penalty": 9, "correction": "Return to a tall position and let the arm do the work."},
+            {"id": "shoulder_hike", "metric": "shoulder_hike_delta", "threshold_deg": 9, "min_frames": 8, "min_ratio": 0.35, "penalty": 7, "correction": "Relax the shoulder before the next movement."},
+        ],
+    },
+}
+
+
 SESSION_DIFFICULTY_PRESETS: Dict[str, Dict[str, float]] = {
     "easy": {
         "rep_factor": 0.7,
@@ -8150,6 +8371,10 @@ def _configure_rehab_runner(exercise_id: str, difficulty: str, variation: str) -
     level = difficulty if difficulty in SESSION_DIFFICULTY_PRESETS else "medium"
     selected_variation = variation if variation in {"standard", "alternate"} else "standard"
     cfg = _copy.deepcopy(REHAB_RUNNER_CONFIG.get(exercise_id) or REHAB_RUNNER_CONFIG["ex_maintenance"])
+    movement_standard = _copy.deepcopy(
+        EXERCISE_MOVEMENT_STANDARDS.get(exercise_id)
+        or EXERCISE_MOVEMENT_STANDARDS["ex_maintenance"]
+    )
     preset = SESSION_DIFFICULTY_PRESETS[level]
     rules = EXERCISE_SESSION_RULES.get(exercise_id) or EXERCISE_SESSION_RULES["ex_maintenance"]
     target_steps = [step for step in cfg.get("cycle") or [] if isinstance(step.get("target"), dict)]
@@ -8181,6 +8406,10 @@ def _configure_rehab_runner(exercise_id: str, difficulty: str, variation: str) -
     cfg["variation"] = selected_variation
     cfg["difficulty_adjustment"] = rules[level]
     cfg["variation_adjustment"] = variation_cue
+    for rom_step in movement_standard.get("rom_steps") or []:
+        rom_step["target_deg"] = float((rom_step.get("targets") or {}).get(level) or 0)
+        rom_step.pop("targets", None)
+    cfg["movement_standard"] = movement_standard
     return cfg
 
 
@@ -8400,6 +8629,13 @@ REHAB_RUNNER_HTML_TEMPLATE = r"""<!DOCTYPE html>
   #overlay p{font-size:15px;color:#bcc2ba;line-height:1.5}
   #overlay button{background:#4A7856;color:#fff;border:none;padding:14px 28px;border-radius:16px;font-weight:700;font-size:16px}
   .hidden{display:none !important}
+  #calibration{position:absolute;inset:0;display:flex;align-items:flex-start;justify-content:center;padding:calc(28px + env(safe-area-inset-top,0px)) 18px 18px;background:linear-gradient(180deg,rgba(12,16,14,.88),rgba(12,16,14,.28));z-index:11;pointer-events:auto}
+  #calibration .panel{width:min(560px,100%);padding:20px;border-radius:16px;background:rgba(253,253,253,.96);color:#1C201D;box-shadow:0 18px 55px rgba(0,0,0,.30)}
+  #calibration h2{font-size:23px;line-height:1.25;margin-bottom:7px}
+  #calibration p{font-size:15px;line-height:1.45;color:#4E5B53}
+  #calibrationStatus{margin-top:14px;font-size:15px;font-weight:750;color:#285C3A}
+  #calibrationTrack{height:8px;margin-top:10px;border-radius:4px;background:#DDE5DE;overflow:hidden}
+  #calibrationFill{width:0;height:100%;border-radius:4px;background:#4A7856;transition:width .18s ease}
   /* Feedback / confirmation overlay */
   #fb{position:absolute;inset:0;background:linear-gradient(180deg, rgba(74,120,86,0.92), rgba(28,32,29,0.95));padding:24px;display:flex;flex-direction:column;justify-content:center;gap:16px;text-align:center;pointer-events:auto;z-index:9;opacity:0;transition:opacity .35s}
   #fb.show{opacity:1}
@@ -8449,6 +8685,14 @@ REHAB_RUNNER_HTML_TEMPLATE = r"""<!DOCTYPE html>
     <p id="overlayBody">We will guide you through each repetition with your camera and voice. After every rep I will share what to improve. Move into the camera view.</p>
     <button id="startBtn" data-testid="rehab-start">Start Exercise</button>
   </div>
+  <div id="calibration" class="hidden" data-testid="exercise-calibration">
+    <div class="panel">
+      <h2>Let us set your starting position</h2>
+      <p id="calibrationInstruction">Move into view and hold still while the camera checks your position.</p>
+      <div id="calibrationStatus" role="status">Looking for the required joints…</div>
+      <div id="calibrationTrack"><div id="calibrationFill"></div></div>
+    </div>
+  </div>
   <div id="fb" class="hidden">
     <div class="step" id="fbStep">Rep 1 complete</div>
     <div class="title" id="fbTitle">Here's what I noticed</div>
@@ -8489,6 +8733,10 @@ const overlay = document.getElementById("overlay");
 const overlayTitle = document.getElementById("overlayTitle");
 const overlayBody = document.getElementById("overlayBody");
 const startBtn = document.getElementById("startBtn");
+const calibrationEl = document.getElementById("calibration");
+const calibrationInstruction = document.getElementById("calibrationInstruction");
+const calibrationStatus = document.getElementById("calibrationStatus");
+const calibrationFill = document.getElementById("calibrationFill");
 const exitBtn = document.getElementById("exitBtn");
 const tapBtn = document.getElementById("tapBtn");
 const fbEl = document.getElementById("fb");
@@ -8502,6 +8750,21 @@ const checkYes = document.getElementById("checkYes");
 const checkUnderstand = document.getElementById("checkUnderstand");
 const URL_PARAMS = new URLSearchParams(window.location.search);
 const VOICE_GUIDANCE_ENABLED = URL_PARAMS.get("voice_guidance") !== "0";
+const AFFECTED_SIDE = URL_PARAMS.get("affected_side") === "left" ? "left" : "right";
+const STANDARD = CFG.movement_standard || {tracking_mode:"pose", posture:"seated", rom_steps:[], compensations:[]};
+const NEEDS_LOWER_BODY_VIEW = (STANDARD.rom_steps||[]).some(step=>/knee|hip|ankle|pelvic|weight|step/.test(step.metric));
+const ASSESSMENT_OVERLAY_STYLE = Object.freeze({
+  landmarkColor:"#D9E5DC",
+  landmarkRadius:3,
+  connectorColor:"#4A7856",
+  connectorWidth:4,
+  targetColor:"#E18E6D",
+  targetEdgeWidth:6,
+  targetInnerScale:.55,
+  holdRingColor:"#3C8255",
+  holdRingScale:1.25,
+  holdRingWidth:8,
+});
 
 function classifyCameraDevice({
   userAgent=navigator.userAgent || "",
@@ -8525,7 +8788,9 @@ function classifyCameraDevice({
 }
 
 const CAMERA_DEVICE_CLASS = classifyCameraDevice();
-const CAMERA_FIT_MODE = CAMERA_DEVICE_CLASS === "phone" ? "cover" : "contain";
+const CAMERA_FIT_MODE = STANDARD.posture === "full_body" || NEEDS_LOWER_BODY_VIEW
+  ? "contain"
+  : CAMERA_DEVICE_CLASS === "phone" ? "cover" : "contain";
 
 function fitCameraViewport(containerWidth, containerHeight, sourceWidth, sourceHeight, fitMode=CAMERA_FIT_MODE){
   const safeContainerWidth = Math.max(1, Number(containerWidth) || 1);
@@ -8582,22 +8847,33 @@ window.addEventListener("orientationchange", () => setTimeout(syncCameraViewport
 video.addEventListener("resize", syncCameraViewport);
 if(window.ResizeObserver) new ResizeObserver(syncCameraViewport).observe(stage);
 
-let landmarker = null, drawingUtils = null;
+let landmarker = null, handLandmarker = null, drawingUtils = null;
 let currentRep = 0;
 let currentSubStep = 0;
 let stepStartTime = 0;
 let inTargetSince = null;
 let stepCompleted = false;
 let running = false;
+let cameraStream = null;
+let confirmationAudioStream = null;
 let audioEl = new Audio();
 const voiceAudioCache = new Map();
 const voiceAudioInflight = new Map();
 let audioUnlockPromise = null;
 
-// Per-rep accumulated metrics
-let trunkLeanMax = 0;
-let shoulderHikeDetected = false;
-let reachMax = 0;
+let calibrating = false;
+let calibrationInstructionFinished = false;
+let calibrationReady = false;
+let calibrationFinishing = false;
+let calibrationSamples = [];
+let calibrationAnchors = [];
+let baselineMetrics = {};
+let romBest = {};
+let compensationHits = {};
+let compensationEligible = {};
+let trackingFrames = 0;
+let lowQualityFrames = 0;
+let feedbackPending = false;
 
 exName.textContent = CFG.name;
 overlayTitle.textContent = CFG.name;
@@ -8735,10 +9011,15 @@ function prefetchVoice(text){
 
 async function setupCamera(){
   try{
-    const stream = await navigator.mediaDevices.getUserMedia({video:responsiveVideoSettings(1280, 720),audio:false});
-    video.srcObject = stream;
+    cameraStream = await navigator.mediaDevices.getUserMedia({video:responsiveVideoSettings(640, 480),audio:false});
+    video.srcObject = cameraStream;
     await new Promise(r => video.onloadedmetadata = r);
     syncCameraViewport();
+    try{
+      confirmationAudioStream = await navigator.mediaDevices.getUserMedia({audio:true});
+    }catch(e){
+      confirmationAudioStream = null;
+    }
     return true;
   }catch(e){
     captionEl.textContent = "Camera permission denied.";
@@ -8753,73 +9034,274 @@ async function setupPose(){
     baseOptions:{modelAssetPath:"/vendor/mediapipe/models/pose_landmarker_lite.task"},
     runningMode:"VIDEO", numPoses:1
   });
+  if(STANDARD.tracking_mode === "hand"){
+    handLandmarker = await HandLandmarker.createFromOptions(fr,{
+      baseOptions:{modelAssetPath:"/vendor/mediapipe/models/hand_landmarker.task"},
+      runningMode:"VIDEO", numHands:1
+    });
+  }
   drawingUtils = new DrawingUtils(ctx);
 }
 
 function rad2deg(r){ return r*180/Math.PI; }
+function clamp(value, low, high){ return Math.max(low, Math.min(high, value)); }
+function pointVisible(point){ return Boolean(point) && (point.visibility == null || point.visibility >= 0.55) && point.x >= -0.05 && point.x <= 1.05 && point.y >= -0.05 && point.y <= 1.05; }
+function angle(a,b,c){
+  if(!a || !b || !c) return NaN;
+  const ab={x:a.x-b.x,y:a.y-b.y,z:(a.z||0)-(b.z||0)};
+  const cb={x:c.x-b.x,y:c.y-b.y,z:(c.z||0)-(b.z||0)};
+  const dot=ab.x*cb.x+ab.y*cb.y+ab.z*cb.z;
+  const mag=Math.hypot(ab.x,ab.y,ab.z)*Math.hypot(cb.x,cb.y,cb.z);
+  return mag > 0.000001 ? rad2deg(Math.acos(clamp(dot/mag,-1,1))) : NaN;
+}
+function midpoint(a,b){ return {x:(a.x+b.x)/2,y:(a.y+b.y)/2,z:((a.z||0)+(b.z||0))/2}; }
+function median(values){
+  const clean=values.filter(Number.isFinite).sort((a,b)=>a-b);
+  if(!clean.length) return 0;
+  const mid=Math.floor(clean.length/2);
+  return clean.length%2 ? clean[mid] : (clean[mid-1]+clean[mid])/2;
+}
+function sideIndexes(side){
+  return side === "left"
+    ? {shoulder:11,elbow:13,wrist:15,hip:23,knee:25,ankle:27,heel:29,toe:31}
+    : {shoulder:12,elbow:14,wrist:16,hip:24,knee:26,ankle:28,heel:30,toe:32};
+}
+const ACTIVE = sideIndexes(AFFECTED_SIDE);
+const OTHER = sideIndexes(AFFECTED_SIDE === "left" ? "right" : "left");
 
-function updateMetrics(lm){
-  if(!lm) return;
-  const Ls=lm[11], Rs=lm[12], Lh=lm[23], Rh=lm[24], Lw=lm[15], Rw=lm[16];
-  const midSh={x:(Ls.x+Rs.x)/2, y:(Ls.y+Rs.y)/2};
-  const midHip={x:(Lh.x+Rh.x)/2, y:(Lh.y+Rh.y)/2};
-  const trunk = Math.abs(rad2deg(Math.atan2(midSh.x-midHip.x, -(midSh.y-midHip.y))));
-  trunkLeanMax = Math.max(trunkLeanMax, trunk);
-  if((midHip.y - midSh.y) > 0.40) shoulderHikeDetected = true;
-  // reach completion proxy: closest wrist distance to current target
-  const sub = CFG.cycle[currentSubStep];
-  if(sub && sub.target){
-    const t = sub.target;
-    const best = Math.min(
-      Math.hypot((1-Lw.x)-t.x, Lw.y-t.y),
-      Math.hypot((1-Rw.x)-t.x, Rw.y-t.y),
+function poseTrackingQuality(lm){
+  if(!lm) return 0;
+  const metrics=(STANDARD.rom_steps||[]).map(step=>step.metric);
+  const needsLowerBody=metrics.some(metric=>/knee|hip|ankle|pelvic|weight|step/.test(metric));
+  const required = STANDARD.posture === "full_body"
+    ? [11,12,23,24,25,26,27,28,29,30,31,32]
+    : needsLowerBody
+      ? [ACTIVE.shoulder,ACTIVE.hip,ACTIVE.knee,ACTIVE.ankle,ACTIVE.heel,ACTIVE.toe]
+      : [11,12,13,14,15,16,23,24];
+  return required.filter(index=>pointVisible(lm[index])).length / required.length;
+}
+function handTrackingQuality(handLm){
+  if(!handLm || handLm.length < 21) return 0;
+  const required=[0,4,5,8,9,12,13,16,17,20];
+  return required.filter(index=>pointVisible(handLm[index])).length / required.length;
+}
+function trackingQuality(lm, handLm){
+  return STANDARD.tracking_mode === "hand" ? handTrackingQuality(handLm) : poseTrackingQuality(lm);
+}
+function poseAlignmentDeviation(hip,knee,ankle){
+  if(!hip || !knee || !ankle) return NaN;
+  const lineX=(hip.x+ankle.x)/2;
+  const length=Math.max(0.02,Math.hypot(hip.x-ankle.x,hip.y-ankle.y));
+  return rad2deg(Math.atan2(Math.abs(knee.x-lineX),length));
+}
+function rawMovementMetrics(lm, handLm){
+  const raw={};
+  if(lm){
+    const ls=lm[11],rs=lm[12],lh=lm[23],rh=lm[24];
+    const midShoulder=midpoint(ls,rs), midHip=midpoint(lh,rh);
+    const shoulderWidth=Math.max(0.03,Math.hypot(ls.x-rs.x,ls.y-rs.y));
+    const hipWidth=Math.max(0.03,Math.hypot(lh.x-rh.x,lh.y-rh.y));
+    raw.trunk_angle=rad2deg(Math.atan2(midShoulder.x-midHip.x,-(midShoulder.y-midHip.y)));
+    raw.shoulder_hike=rad2deg(Math.atan2(lm[OTHER.shoulder].y-lm[ACTIVE.shoulder].y,shoulderWidth));
+    raw.hip_hike=rad2deg(Math.atan2(lm[OTHER.hip].y-lm[ACTIVE.hip].y,hipWidth));
+    raw.shoulder_flexion=angle(lm[ACTIVE.hip],lm[ACTIVE.shoulder],lm[ACTIVE.elbow]);
+    raw.shoulder_abduction=angle(lm[ACTIVE.hip],lm[ACTIVE.shoulder],lm[ACTIVE.wrist]);
+    raw.other_shoulder_flexion=angle(lm[OTHER.hip],lm[OTHER.shoulder],lm[OTHER.elbow]);
+    raw.elbow_extension=angle(lm[ACTIVE.shoulder],lm[ACTIVE.elbow],lm[ACTIVE.wrist]);
+    raw.knee_extension=angle(lm[ACTIVE.hip],lm[ACTIVE.knee],lm[ACTIVE.ankle]);
+    raw.other_knee_extension=angle(lm[OTHER.hip],lm[OTHER.knee],lm[OTHER.ankle]);
+    raw.hip_extension=angle(lm[ACTIVE.shoulder],lm[ACTIVE.hip],lm[ACTIVE.knee]);
+    raw.other_hip_extension=angle(lm[OTHER.shoulder],lm[OTHER.hip],lm[OTHER.knee]);
+    raw.ankle_angle=angle(lm[ACTIVE.knee],lm[ACTIVE.ankle],lm[ACTIVE.toe]);
+    const ankleMid=midpoint(lm[27],lm[28]);
+    raw.pelvic_shift=rad2deg(Math.atan2(Math.abs(midHip.x-ankleMid.x),Math.max(.02,Math.abs(ankleMid.y-midHip.y))));
+    raw.shoulder_pelvis_mismatch=Math.abs(raw.trunk_angle-rad2deg(Math.atan2(midHip.x-ankleMid.x,-(midHip.y-ankleMid.y))));
+    raw.shoulder_rotation=rad2deg(Math.atan2(Math.abs((ls.z||0)-(rs.z||0)),shoulderWidth));
+    raw.knee_alignment=Math.max(
+      poseAlignmentDeviation(lm[23],lm[25],lm[27]),
+      poseAlignmentDeviation(lm[24],lm[26],lm[28])
     );
-    // 0 = at target, 1 = far. compute completion = 1 - clamp(best / (t.r*3))
-    const comp = 1 - Math.min(1, best / (t.r * 3));
-    reachMax = Math.max(reachMax, comp);
+    raw.heel_y=lm[ACTIVE.heel].y;
+    raw.foot_length=Math.max(.02,Math.hypot(lm[ACTIVE.heel].x-lm[ACTIVE.toe].x,lm[ACTIVE.heel].y-lm[ACTIVE.toe].y));
+    raw.knee_x=lm[ACTIVE.knee].x;
+    raw.knee_y=lm[ACTIVE.knee].y;
+    raw.torso_length=Math.max(.04,Math.hypot(midShoulder.x-midHip.x,midShoulder.y-midHip.y));
   }
+  if(handLm){
+    const fingerAngles=[
+      angle(handLm[5],handLm[6],handLm[8]),
+      angle(handLm[9],handLm[10],handLm[12]),
+      angle(handLm[13],handLm[14],handLm[16]),
+      angle(handLm[17],handLm[18],handLm[20]),
+    ];
+    raw.finger_extension=median(fingerAngles);
+    raw.pinch_flexion=((180-angle(handLm[2],handLm[3],handLm[4]))+(180-angle(handLm[5],handLm[6],handLm[8])))/2;
+    raw.hand_axis=rad2deg(Math.atan2(handLm[9].y-handLm[0].y,handLm[9].x-handLm[0].x));
+  }
+  return raw;
+}
+function metricValue(metric,raw){
+  const base=baselineMetrics;
+  if(metric === "shoulder_flexion" || metric === "shoulder_abduction" || metric === "elbow_extension" || metric === "knee_extension" || metric === "hip_extension" || metric === "finger_extension" || metric === "pinch_flexion") return raw[metric];
+  if(metric === "elbow_flexion") return 180-raw.elbow_extension;
+  if(metric === "bilateral_shoulder_flexion") return Math.min(raw.shoulder_flexion,raw.other_shoulder_flexion);
+  if(metric === "bilateral_knee_extension") return Math.min(raw.knee_extension,raw.other_knee_extension);
+  if(metric === "hip_flexion") return Math.abs(raw.hip_extension-(base.hip_extension||raw.hip_extension));
+  if(metric === "knee_flexion") return Math.abs(raw.knee_extension-(base.knee_extension||raw.knee_extension));
+  if(metric === "ankle_dorsiflexion") return Math.abs(raw.ankle_angle-(base.ankle_angle||raw.ankle_angle));
+  if(metric === "pelvic_shift") return Math.abs(raw.pelvic_shift-(base.pelvic_shift||raw.pelvic_shift));
+  if(metric === "trunk_lateral_rom" || metric === "trunk_lean_delta") return Math.abs(raw.trunk_angle-(base.trunk_angle||0));
+  if(metric === "shoulder_hike_delta") return Math.max(0,raw.shoulder_hike-(base.shoulder_hike||0));
+  if(metric === "hip_hike_delta") return Math.abs(raw.hip_hike-(base.hip_hike||0));
+  if(metric === "arm_asymmetry") return Math.abs(raw.shoulder_flexion-raw.other_shoulder_flexion);
+  if(metric === "body_asymmetry") return (Math.abs(raw.hip_extension-raw.other_hip_extension)+Math.abs(raw.knee_extension-raw.other_knee_extension))/2;
+  if(metric === "shoulder_pelvis_mismatch" || metric === "knee_alignment" || metric === "shoulder_rotation") return raw[metric];
+  if(metric === "heel_lift_angle") return rad2deg(Math.atan2(Math.abs(raw.heel_y-(base.heel_y||raw.heel_y)),raw.foot_length||.02));
+  if(metric === "knee_motion_delta") return rad2deg(Math.atan2(Math.hypot(raw.knee_x-(base.knee_x||raw.knee_x),raw.knee_y-(base.knee_y||raw.knee_y)),raw.torso_length||.04));
+  if(metric === "wrist_flexion_delta") return Math.abs(raw.hand_axis-(base.hand_axis||raw.hand_axis));
+  return Number(raw[metric]);
+}
+function movementAnchor(lm,handLm){
+  const points=STANDARD.tracking_mode === "hand"
+    ? [handLm&&handLm[0],handLm&&handLm[4],handLm&&handLm[8],handLm&&handLm[12],handLm&&handLm[20]]
+    : [lm&&lm[11],lm&&lm[12],lm&&lm[23],lm&&lm[24],lm&&lm[ACTIVE.wrist],lm&&lm[ACTIVE.knee],lm&&lm[ACTIVE.ankle]];
+  return points.filter(Boolean).flatMap(point=>[point.x,point.y]);
+}
+function anchorDistance(a,b){
+  if(!a || !b || a.length !== b.length) return Infinity;
+  let sum=0;
+  for(let i=0;i<a.length;i++) sum+=(a[i]-b[i])*(a[i]-b[i]);
+  return Math.sqrt(sum/Math.max(1,a.length));
+}
+function updateCalibration(lm,handLm){
+  const quality=trackingQuality(lm,handLm);
+  if(quality < .72){
+    calibrationSamples=[];
+    calibrationAnchors=[];
+    calibrationReady=false;
+    calibrationFill.style.width="0%";
+    calibrationStatus.textContent=STANDARD.tracking_mode === "hand"
+      ? "Keep your whole hand and fingertips inside the camera view."
+      : "Move back until the joints named above are visible.";
+    return;
+  }
+  const anchor=movementAnchor(lm,handLm);
+  if(calibrationAnchors.length && anchorDistance(anchor,calibrationAnchors[0]) > .035){
+    calibrationSamples=[];
+    calibrationAnchors=[];
+    calibrationStatus.textContent="Almost there. Hold your starting position still.";
+  }
+  calibrationAnchors.push(anchor);
+  calibrationSamples.push(rawMovementMetrics(lm,handLm));
+  if(calibrationSamples.length > 54){
+    calibrationSamples.shift();
+    calibrationAnchors.shift();
+  }
+  const progress=Math.min(100,Math.round(calibrationSamples.length/45*100));
+  calibrationFill.style.width=progress+"%";
+  calibrationStatus.textContent=progress < 100 ? "Position found. Keep still for "+Math.max(1,Math.ceil((45-calibrationSamples.length)/15))+" more seconds." : "Calibration complete.";
+  calibrationReady=calibrationSamples.length >= 45;
+  if(calibrationReady && calibrationInstructionFinished) void completeCalibration();
+}
+async function completeCalibration(){
+  if(calibrationFinishing || !calibrationReady) return;
+  calibrationFinishing=true;
+  const keys=Object.keys(calibrationSamples[0]||{});
+  baselineMetrics=Object.fromEntries(keys.map(key=>[key,median(calibrationSamples.map(sample=>Number(sample[key])))]));
+  calibrating=false;
+  calibrationEl.classList.add("hidden");
+  postRN({type:"exercise_calibrated",exercise_id:CFG.name,tracking_mode:STANDARD.tracking_mode,posture:STANDARD.posture});
+  await playVoice(CFG.setup_voice);
+  await startRep();
+}
+function resetRepMetrics(){
+  romBest={};
+  compensationHits={};
+  compensationEligible={};
+  trackingFrames=0;
+  lowQualityFrames=0;
+}
+function updateMetrics(lm,handLm){
+  const quality=trackingQuality(lm,handLm);
+  if(quality < .72){ lowQualityFrames+=1; return; }
+  const raw=rawMovementMetrics(lm,handLm);
+  trackingFrames+=1;
+  for(const step of STANDARD.rom_steps||[]){
+    const value=metricValue(step.metric,raw);
+    if(Number.isFinite(value)) romBest[step.id]=Math.max(Number(romBest[step.id]||0),value);
+  }
+  for(const rule of STANDARD.compensations||[]){
+    const value=metricValue(rule.metric,raw);
+    if(!Number.isFinite(value)) continue;
+    compensationEligible[rule.id]=(compensationEligible[rule.id]||0)+1;
+    if(value >= Number(rule.threshold_deg||0)) compensationHits[rule.id]=(compensationHits[rule.id]||0)+1;
+  }
+}
+
+function exerciseShoulderWidth(lm){
+  if(!lm) return 0.18;
+  const ls=lm[11], rs=lm[12];
+  if(!ls || !rs) return 0.18;
+  return Math.max(0.08,Math.min(0.40,Math.hypot(ls.x-rs.x,ls.y-rs.y)));
+}
+
+function effectiveExerciseTargetRadius(sub,lm){
+  const baseR=Number(sub && sub.target && sub.target.r)||0.10;
+  // The bilateral outward target intentionally represents a wide movement zone.
+  if(baseR > 0.18) return baseR;
+  return Math.min(Math.max(baseR,exerciseShoulderWidth(lm)*0.55),0.18);
 }
 
 function checkTarget(lm){
   const sub = CFG.cycle[currentSubStep];
   if(!sub || !sub.target || !lm) return false;
   const t = sub.target;
-  // Slightly enlarge the hit radius so users don't have to lean in (Phase B+).
-  // Visual circle below uses the same multiplier so what you see == what triggers.
-  const R = t.r * 1.55;
+  const R = effectiveExerciseTargetRadius(sub,lm);
   const Lw=lm[15], Rw=lm[16];
   const ok = (p) => p && Math.hypot((1-p.x)-t.x, p.y-t.y) < R;
-  return ok(Lw) || ok(Rw);
+  const bilateral=(STANDARD.rom_steps||[]).some(step=>String(step.metric||"").startsWith("bilateral_"));
+  if(bilateral) return ok(Lw) && ok(Rw);
+  return ok(lm[ACTIVE.wrist]);
 }
 
-function drawOverlay(lm){
+function drawOverlay(lm,handLm){
   ctx.clearRect(0,0,canvas.width,canvas.height);
   if(lm){
-    drawingUtils.drawLandmarks(lm,{color:"#D9E5DC", radius:3});
-    drawingUtils.drawConnectors(lm, PoseLandmarker.POSE_CONNECTIONS,{color:"#4A7856",lineWidth:4});
+    drawingUtils.drawLandmarks(lm,{color:ASSESSMENT_OVERLAY_STYLE.landmarkColor,radius:ASSESSMENT_OVERLAY_STYLE.landmarkRadius});
+    drawingUtils.drawConnectors(lm,PoseLandmarker.POSE_CONNECTIONS,{color:ASSESSMENT_OVERLAY_STYLE.connectorColor,lineWidth:ASSESSMENT_OVERLAY_STYLE.connectorWidth});
   }
+  if(handLm){
+    drawingUtils.drawLandmarks(handLm,{color:"#FDFDFD",radius:4});
+    drawingUtils.drawConnectors(handLm,HandLandmarker.HAND_CONNECTIONS,{color:"#4A7856",lineWidth:4});
+  }
+  if(calibrating) return;
   const sub = CFG.cycle[currentSubStep];
   if(sub && sub.target){
     const tx = sub.target.x*canvas.width;
     const ty = sub.target.y*canvas.height;
-    const tr = sub.target.r * 1.55 * Math.min(canvas.width,canvas.height);
+    const tr = effectiveExerciseTargetRadius(sub,lm)*Math.min(canvas.width,canvas.height);
     const pulse = 1 + 0.08*Math.sin(performance.now()/250);
     ctx.beginPath(); ctx.arc(tx,ty,tr*pulse,0,Math.PI*2);
-    ctx.lineWidth = 6; ctx.strokeStyle = "#E18E6D"; ctx.stroke();
-    ctx.beginPath(); ctx.arc(tx,ty,tr*0.5,0,Math.PI*2);
+    ctx.lineWidth=ASSESSMENT_OVERLAY_STYLE.targetEdgeWidth;
+    ctx.strokeStyle=ASSESSMENT_OVERLAY_STYLE.targetColor;
+    ctx.stroke();
+    ctx.beginPath(); ctx.arc(tx,ty,tr*ASSESSMENT_OVERLAY_STYLE.targetInnerScale,0,Math.PI*2);
     ctx.fillStyle = "rgba(225,142,109,0.4)"; ctx.fill();
     if(inTargetSince){
       const elapsed = performance.now() - inTargetSince;
       const progress = Math.min(1, elapsed / sub.hold_ms);
-      ctx.beginPath(); ctx.arc(tx,ty,tr*1.25, -Math.PI/2, -Math.PI/2 + progress*Math.PI*2);
-      ctx.strokeStyle = "#3C8255"; ctx.lineWidth = 8; ctx.stroke();
+      ctx.beginPath(); ctx.arc(tx,ty,tr*ASSESSMENT_OVERLAY_STYLE.holdRingScale,-Math.PI/2,-Math.PI/2+progress*Math.PI*2);
+      ctx.strokeStyle=ASSESSMENT_OVERLAY_STYLE.holdRingColor;
+      ctx.lineWidth=ASSESSMENT_OVERLAY_STYLE.holdRingWidth;
+      ctx.stroke();
     }
   }
 }
 
 async function startRep(){
   currentSubStep = 0;
-  trunkLeanMax = 0; shoulderHikeDetected = false; reachMax = 0;
+  feedbackPending = false;
+  resetRepMetrics();
   repLabel.textContent = `Repetition ${currentRep+1} of ${CFG.reps}`;
   // Update the visual rep progress bar
   try{
@@ -8848,39 +9330,104 @@ async function startSubStep(){
 }
 
 function pickFeedback(){
-  // Evaluate rules; first match wins. Use a minimal mini-expression evaluator.
-  const ctx = {
-    trunk_lean_deg: Math.round(trunkLeanMax),
-    shoulder_hike: shoulderHikeDetected,
-    reach_completion: +reachMax.toFixed(2),
-  };
-  for(const rule of CFG.feedback_rules){
-    if(rule.default) return rule.say || rule.default;
-    if(!rule.if) continue;
-    try{
-      // SAFE: rules are author-controlled in backend config, not user input.
-      const fn = new Function("trunk_lean_deg","shoulder_hike","reach_completion", `return (${rule.if});`);
-      if(fn(ctx.trunk_lean_deg, ctx.shoulder_hike, ctx.reach_completion)){
-        return rule.say;
-      }
-    }catch(e){ /* skip */ }
+  if(trackingFrames < 8) return "I could not see enough of that repetition to score it reliably. Check your camera position, then try again at a comfortable pace.";
+  const compensation=confirmedCompensations()[0];
+  if(compensation) return compensation.correction;
+  let lowest=null;
+  for(const step of STANDARD.rom_steps||[]){
+    const achieved=Number(romBest[step.id]||0);
+    const target=Math.max(1,Number(step.target_deg||1));
+    const ratio=achieved/target;
+    if(!lowest || ratio<lowest.ratio) lowest={step,achieved,ratio};
   }
-  return "Beautiful repetition.";
+  if(lowest && lowest.ratio < .9){
+    return "For the next repetition, gently work toward "+Math.round(lowest.step.target_deg)+" degrees of "+lowest.step.label.toLowerCase()+". Stay within a comfortable range.";
+  }
+  return "That movement stayed close to today’s target. Keep the same smooth control on the next repetition.";
 }
 
-// ===== Speech Recognition for voice confirmation =====
+// Voice confirmation uses the browser recognizer when available and records a
+// short microphone turn for server-side OpenAI transcription everywhere else.
 let recognition = null;
-let yesHeard = false, understandHeard = false;
+let mediaRecorder = null;
+let mediaStopTimer = null;
+let listeningToken = 0;
+let yesHeard = false;
+let confirming = false;
 const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+function isAdvancePhrase(text){
+  const normalized=String(text||"").toLowerCase().replace(/[^a-z\s]/g," ").replace(/\s+/g," ").trim();
+  if(!normalized || normalized.split(" ").length > 7) return false;
+  if(/\b(no|not|don t|do not|stop|wait)\b/.test(normalized)) return false;
+  return /\b(yes|yeah|yep|ready|continue|next|okay|ok)\b/.test(normalized);
+}
+function handleConfirmationTranscript(text){
+  if(yesHeard || confirming || !fbEl.classList.contains("show")) return;
+  fbHeard.textContent='"'+String(text||"").slice(-60).trim()+'"';
+  if(!isAdvancePhrase(text)) return;
+  yesHeard=true;
+  checkYes.textContent="✓ Heard you";
+  checkYes.classList.add("ok");
+  stopListening();
+  void confirmAndContinue();
+}
+function supportedRecorderType(){
+  if(!window.MediaRecorder || !MediaRecorder.isTypeSupported) return "";
+  return ["audio/webm;codecs=opus","audio/webm","audio/mp4"].find(type=>MediaRecorder.isTypeSupported(type))||"";
+}
+async function recordAndTranscribeConfirmation(token){
+  if(token !== listeningToken || yesHeard || confirming || !fbEl.classList.contains("show")) return;
+  if(!window.MediaRecorder){
+    fbHeard.textContent="Voice confirmation is unavailable. Tap Continue when ready.";
+    return;
+  }
+  try{
+    if(!confirmationAudioStream || !confirmationAudioStream.getAudioTracks().some(track=>track.readyState==="live")){
+      confirmationAudioStream=await navigator.mediaDevices.getUserMedia({audio:true});
+    }
+    const mimeType=supportedRecorderType();
+    const chunks=[];
+    mediaRecorder=new MediaRecorder(confirmationAudioStream,mimeType?{mimeType}:undefined);
+    mediaRecorder.ondataavailable=event=>{ if(event.data&&event.data.size) chunks.push(event.data); };
+    mediaRecorder.onerror=()=>{ fbHeard.textContent="I could not hear that. Say yes again, or tap Continue."; };
+    mediaRecorder.onstop=async()=>{
+      if(token !== listeningToken || yesHeard || confirming) return;
+      try{
+        const blob=new Blob(chunks,{type:mimeType||"audio/webm"});
+        if(blob.size < 200){ throw new Error("empty recording"); }
+        fbHeard.textContent="Checking what you said…";
+        const form=new FormData();
+        form.append("file",blob,mimeType.includes("mp4")?"confirmation.m4a":"confirmation.webm");
+        const response=await fetch(API_BASE+"/stt/transcribe",{method:"POST",body:form});
+        if(!response.ok) throw new Error("transcription failed");
+        const result=await response.json();
+        handleConfirmationTranscript(result.text||"");
+      }catch(e){
+        fbHeard.textContent="I did not catch that. Say yes again, or tap Continue.";
+      }
+      if(token === listeningToken && !yesHeard && !confirming){
+        setTimeout(()=>void recordAndTranscribeConfirmation(token),350);
+      }
+    };
+    fbHeard.textContent="Listening… say yes when you are ready.";
+    mediaRecorder.start();
+    mediaStopTimer=setTimeout(()=>{
+      if(mediaRecorder&&mediaRecorder.state==="recording") mediaRecorder.stop();
+    },2800);
+  }catch(e){
+    fbHeard.textContent="Microphone unavailable. Tap Continue when ready.";
+  }
+}
 function startListening(){
-  yesHeard = false; understandHeard = false;
+  stopListening();
+  yesHeard = false;
+  confirming = false;
+  const token=listeningToken;
   checkYes.textContent = "○ Say \"yes\"";
-  // Second-check kept hidden; we ONLY require a single "yes" now — the long
-  // phrase confused users and the SpeechRecognition API often errors silently
-  // in WebViews.
+  checkYes.classList.remove("ok");
   checkUnderstand.textContent = "";
-  fbHeard.textContent = SR ? "Listening… or tap Continue when ready." : "Tap Continue when ready.";
-  if(!SR){ understandHeard = true; return; }
+  fbHeard.textContent = "Listening… or tap Continue when ready.";
+  if(!SR){ void recordAndTranscribeConfirmation(token); return; }
   try{
     recognition = new SR();
     recognition.continuous = true;
@@ -8891,32 +9438,34 @@ function startListening(){
       for(let i = e.resultIndex; i < e.results.length; i++){
         txt += e.results[i][0].transcript.toLowerCase();
       }
-      fbHeard.textContent = '"' + txt.slice(-60).trim() + '"';
-      if(!yesHeard && /\b(yes|yeah|yep|okay|ok|continue|next)\b/.test(txt)){
-        yesHeard = true;
-        checkYes.textContent = "✓ Heard you";
-        checkYes.classList.add("ok");
-        // Single confirmation is enough — proceed.
-        stopListening();
-        confirmAndContinue();
-      }
+      handleConfirmationTranscript(txt);
     };
-    recognition.onerror = (ev) => {
-      // Silently fall back — never alarm the user. The tap button always works.
-      fbHeard.textContent = "Tap Continue when ready.";
+    recognition.onerror = () => {
       try{ recognition.onend = null; }catch(e){}
+      recognition=null;
+      void recordAndTranscribeConfirmation(token);
     };
     recognition.onend = () => {
-      if(running && !yesHeard){
-        try{ recognition.start(); }catch(e){}
+      if(running && !yesHeard && !confirming && token === listeningToken){
+        try{ recognition.start(); }catch(e){ void recordAndTranscribeConfirmation(token); }
       }
     };
     recognition.start();
   }catch(e){
-    fbHeard.textContent = "Tap Continue when ready.";
+    recognition=null;
+    void recordAndTranscribeConfirmation(token);
   }
 }
 function stopListening(){
+  listeningToken+=1;
+  if(mediaStopTimer){ clearTimeout(mediaStopTimer); mediaStopTimer=null; }
+  if(mediaRecorder){
+    try{
+      mediaRecorder.onstop=null;
+      if(mediaRecorder.state==="recording") mediaRecorder.stop();
+    }catch(e){}
+    mediaRecorder=null;
+  }
   if(recognition){
     try{ recognition.onend = null; recognition.stop(); }catch(e){}
     recognition = null;
@@ -8924,22 +9473,29 @@ function stopListening(){
 }
 
 let lastFeedbackText = "";
-let lastRepScore = 0;
-
-// Score 0-100 for a single repetition. Deductions for compensations (trunk lean
-// past 5°, shoulder hike) and incomplete reach. Tuned to be encouraging — most
-// effortful reps land 70-95.
+let lastRepScore = null;
+function confirmedCompensations(){
+  return (STANDARD.compensations||[]).filter(rule=>{
+    const hits=Number(compensationHits[rule.id]||0);
+    const eligible=Math.max(1,Number(compensationEligible[rule.id]||0));
+    return hits >= Number(rule.min_frames||8) && hits/eligible >= Number(rule.min_ratio||.35);
+  });
+}
+function repRomDetails(){
+  return (STANDARD.rom_steps||[]).map(step=>{
+    const achieved=Math.round(Number(romBest[step.id]||0)*10)/10;
+    const target=Number(step.target_deg||0);
+    const score=target>0 ? Math.round(clamp(achieved/target,0,1)*100) : 0;
+    return {id:step.id,label:step.label,metric:step.metric,achieved_deg:achieved,target_deg:target,score,weight:Number(step.weight||0)};
+  });
+}
 function computeRepScore(){
-  let s = 100;
-  // Trunk lean: tolerate up to 5°, then deduct 1.5 per degree, capped at 30.
-  const leanPenalty = Math.min(30, Math.max(0, (trunkLeanMax - 5)) * 1.5);
-  s -= leanPenalty;
-  // Shoulder hike: 12 point deduction
-  if(shoulderHikeDetected) s -= 12;
-  // Incomplete reach: scale 0..30 deduction
-  s -= (1 - reachMax) * 30;
-  s = Math.max(0, Math.min(100, Math.round(s)));
-  return s;
+  if(trackingFrames < 8) return null;
+  const details=repRomDetails();
+  const totalWeight=details.reduce((sum,item)=>sum+item.weight,0)||1;
+  let score=details.reduce((sum,item)=>sum+item.score*item.weight,0)/totalWeight;
+  for(const rule of confirmedCompensations()) score-=Number(rule.penalty||0);
+  return Math.round(clamp(score,0,100));
 }
 
 function scoreLabel(s){
@@ -8951,10 +9507,12 @@ function scoreLabel(s){
 }
 
 async function showFeedback(){
+  if(feedbackPending || fbEl.classList.contains("show")) return;
+  feedbackPending = true;
   const feedback = pickFeedback();
   lastFeedbackText = feedback;
-  const cameraScored = CFG.pose_mode === "body";
-  lastRepScore = cameraScored ? computeRepScore() : null;
+  lastRepScore = computeRepScore();
+  const cameraScored = lastRepScore != null;
   const label = cameraScored ? scoreLabel(lastRepScore) : "Well done";
   fbStep.textContent = `Repetition ${currentRep+1} of ${CFG.reps} complete · ${label}`;
   fbTitle.textContent = cameraScored ? `Your score: ${lastRepScore}/100` : "Repetition complete";
@@ -8962,7 +9520,16 @@ async function showFeedback(){
   if(navigator.vibrate) navigator.vibrate([50, 30, 80]);
   fbEl.classList.remove("hidden");
   requestAnimationFrame(() => fbEl.classList.add("show"));
-  postRN({type:"rep_complete", rep: currentRep+1, total: CFG.reps, score: lastRepScore, feedback});
+  postRN({
+    type:"rep_complete",
+    rep:currentRep+1,
+    total:CFG.reps,
+    score:lastRepScore,
+    feedback,
+    rom_metrics:repRomDetails(),
+    compensations:confirmedCompensations().map(rule=>({id:rule.id,correction:rule.correction})),
+    tracking_quality:trackingFrames/Math.max(1,trackingFrames+lowQualityFrames),
+  });
 
   // Voice: feedback + ask for "yes"
   const feedbackVoice = cameraScored
@@ -8973,6 +9540,8 @@ async function showFeedback(){
 }
 
 async function confirmAndContinue(){
+  if(confirming) return;
+  confirming=true;
   stopListening();
   fbEl.classList.remove("show");
   setTimeout(()=> fbEl.classList.add("hidden"), 350);
@@ -8983,14 +9552,18 @@ async function confirmAndContinue(){
   }
   await playVoice("Wonderful. Here we go.");
   await startRep();
+  confirming=false;
 }
 
 async function finishExercise(){
   running = false;
+  stopListening();
   fbEl.classList.add("hidden");
   captionEl.textContent = "Exercise complete!";
   await playVoice("Magnificent work. You have finished this exercise. I'm so proud of you.");
   postRN({type:"exercise_complete", exercise_id: location.search, reps: CFG.reps});
+  if(cameraStream) cameraStream.getTracks().forEach(track=>track.stop());
+  if(confirmationAudioStream) confirmationAudioStream.getTracks().forEach(track=>track.stop());
 }
 
 function advanceSubStep(){
@@ -9027,19 +9600,33 @@ fbConfirmBtn.addEventListener("click", () => {
 
 fbReplay.addEventListener("click", async () => {
   if(!lastFeedbackText) return;
-  await playVoice(lastFeedbackText + " When you're ready, please say yes, then I understand my problem now.");
+  stopListening();
+  await playVoice(lastFeedbackText + " When you're ready, say yes or tap Continue.");
+  startListening();
 });
 
 function loop(){
   if(!running) return;
   const now = performance.now();
   let lm = null;
+  let handLm = null;
   try{
     const r = landmarker.detectForVideo(video, now);
     if(r && r.landmarks && r.landmarks[0]) lm = r.landmarks[0];
   }catch(e){}
-  if(lm) updateMetrics(lm);
-  drawOverlay(lm);
+  if(handLandmarker){
+    try{
+      const h=handLandmarker.detectForVideo(video,now);
+      if(h&&h.landmarks&&h.landmarks[0]) handLm=h.landmarks[0];
+    }catch(e){}
+  }
+  drawOverlay(lm,handLm);
+  if(calibrating){
+    updateCalibration(lm,handLm);
+    requestAnimationFrame(loop);
+    return;
+  }
+  if(!fbEl.classList.contains("show")) updateMetrics(lm,handLm);
 
   // Sub-step target detection (only while NOT showing feedback)
   if(CFG.pose_mode === "body" && !fbEl.classList.contains("show")){
@@ -9064,25 +9651,47 @@ function loop(){
 startBtn.addEventListener("click", async () => {
   const unlockPromise = unlockAudioPlayback();
   const setupVoicePromise = prefetchVoice(CFG.setup_voice);
+  const calibrationVoicePromise = prefetchVoice(STANDARD.calibration_instruction);
   CFG.cycle.forEach(step => prefetchVoice(step.voice));
   overlay.classList.add("hidden");
   startBtn.disabled = true;
   const camOk = await setupCamera();
   if(!camOk){ overlay.classList.remove("hidden"); return; }
   await setupPose();
-  await Promise.allSettled([unlockPromise, setupVoicePromise]);
+  await Promise.allSettled([unlockPromise, setupVoicePromise, calibrationVoicePromise]);
   running = true;
-  await playVoice(CFG.setup_voice);
-  await startRep();
+  calibrating = true;
+  calibrationInstructionFinished = false;
+  calibrationReady = false;
+  calibrationFinishing = false;
+  calibrationSamples = [];
+  calibrationAnchors = [];
+  calibrationInstruction.textContent = STANDARD.calibration_instruction;
+  calibrationStatus.textContent = "Looking for the required joints…";
+  calibrationFill.style.width = "0%";
+  calibrationEl.classList.remove("hidden");
   requestAnimationFrame(loop);
+  await playVoice(STANDARD.calibration_instruction);
+  calibrationInstructionFinished = true;
+  if(calibrationReady) void completeCalibration();
 });
 
 exitBtn.addEventListener("click", () => {
+  running=false;
   stopListening();
+  if(cameraStream) cameraStream.getTracks().forEach(track=>track.stop());
+  if(confirmationAudioStream) confirmationAudioStream.getTracks().forEach(track=>track.stop());
   postRN({type:"exit"});
 });
 
 postRN({type:"ready"});
+window.__rehynExerciseScoringTest={
+  isAdvancePhrase,
+  metricValue,
+  repRomDetails,
+  computeRepScore,
+  confirmedCompensations,
+};
 </script>
 </body>
 </html>
@@ -9212,6 +9821,7 @@ class AliraActivitySubmit(BaseModel):
     plan_id: str = Field(default="default", min_length=1, max_length=120)
     completed_reps: int = Field(default=0, ge=0, le=500)
     average_score: Optional[float] = Field(default=None, ge=0, le=100)
+    repetition_scores: List[float] = Field(default_factory=list, max_length=500)
     completed_at: Optional[str] = None
     # Caregiver-delivered routines: the carer's qualitative observation of how
     # much the patient joined in - the Tier 1 progress signal.
@@ -9515,6 +10125,7 @@ class UserSignup(BaseModel):
     email: str
     name: str
     role: str = "patient"  # "patient" | "therapist"
+    trial_code: str = ""
 
 
 class User(BaseModel):
@@ -9571,6 +10182,27 @@ async def get_or_create_user(email: str, name: str, role: str = "patient") -> Di
     return doc
 
 
+async def _grant_trial_access(user: Dict[str, Any]) -> Dict[str, Any]:
+    granted = {
+        **user,
+        "trial_access_granted": True,
+        "trial_access_granted_at": datetime.now(timezone.utc).isoformat(),
+    }
+    try:
+        await db.users.update_one(
+            {"id": granted["id"]},
+            {"$set": {
+                "trial_access_granted": True,
+                "trial_access_granted_at": granted["trial_access_granted_at"],
+            }},
+        )
+    except Exception as exc:
+        logger.warning(f"Mongo unavailable for trial-access update; using local fallback: {str(exc)[:120]}")
+        LOCAL_USERS[granted["id"]] = granted.copy()
+        _persist_local_dict(LOCAL_USERS_FILE, LOCAL_USERS)
+    return granted
+
+
 async def _user_from_header(request_headers: Dict[str, str]) -> Optional[Dict[str, Any]]:
     uid = request_headers.get("x-user-id") or request_headers.get("X-User-Id")
     if not uid:
@@ -9620,15 +10252,16 @@ async def consume_credits(user_id: str, kind: str) -> Dict[str, Any]:
 
 @api_router.post("/users/signup")
 async def signup(payload: UserSignup):
+    _require_trial_access_code(payload.trial_code)
     user = await get_or_create_user(payload.email, payload.name, payload.role)
-    return user
+    return await _grant_trial_access(user)
 
 
 @api_router.post("/users/login")
 async def login(payload: UserSignup):
-    # MVP: email-only sign-in. If user exists, return; else create.
+    _require_trial_access_code(payload.trial_code)
     user = await get_or_create_user(payload.email, payload.name or payload.email, payload.role)
-    return user
+    return await _grant_trial_access(user)
 
 
 class PatientOnboarding(BaseModel):
@@ -10365,6 +10998,14 @@ async def _persist_alira_check_in(user: Dict[str, Any], payload: AliraCheckInSub
     return {"ok": True, "check_in": check_in, "care_plan": care_plan}
 
 
+def _normalise_repetition_scores(scores: List[float]) -> List[float]:
+    return [round(max(0.0, min(100.0, float(score))), 1) for score in scores]
+
+
+def _average_repetition_scores(scores: List[float], fallback: Optional[float] = None) -> Optional[float]:
+    return round(sum(scores) / len(scores), 1) if scores else fallback
+
+
 async def _persist_alira_activity(user: Dict[str, Any], payload: AliraActivitySubmit) -> Dict[str, Any]:
     _require_health_data_consent(user)
     assessments = await _care_assessments_for_user(user["id"])
@@ -10395,13 +11036,16 @@ async def _persist_alira_activity(user: Dict[str, Any], payload: AliraActivitySu
         completed_at = datetime.fromisoformat(completed_at.replace("Z", "+00:00")).astimezone(timezone.utc).isoformat()
     except ValueError as exc:
         raise HTTPException(status_code=422, detail="completed_at must be an ISO-8601 timestamp") from exc
+    repetition_scores = _normalise_repetition_scores(payload.repetition_scores)
+    average_score = _average_repetition_scores(repetition_scores, payload.average_score)
     activity = {
         "id": "aca_" + uuid.uuid4().hex[:16],
         "user_id": user["id"],
         "exercise_id": payload.exercise_id,
         "plan_id": payload.plan_id,
         "completed_reps": payload.completed_reps,
-        "average_score": payload.average_score,
+        "average_score": average_score,
+        "repetition_scores": repetition_scores,
         "observed_response": payload.observed_response,
         "completed_at": completed_at,
         "created_at": datetime.now(timezone.utc).isoformat(),
@@ -10448,6 +11092,7 @@ async def _persist_alira_activity(user: Dict[str, Any], payload: AliraActivitySu
             "exercise_id": activity["exercise_id"],
             "completed_reps": activity["completed_reps"],
             "average_score": activity["average_score"],
+            "scored_repetitions": len(activity["repetition_scores"]),
         },
     )
     _record_alira_action(
@@ -10556,6 +11201,22 @@ async def list_alira_check_ins(request: Request, limit: int = 20):
     items = await _care_check_ins_for_user(user["id"])
     items.sort(key=lambda item: item.get("created_at", ""), reverse=True)
     return {"check_ins": items[:max(1, min(limit, 100))]}
+
+
+@api_router.get("/alira/activities")
+async def list_alira_activities(request: Request, limit: int = 100, exercise_id: Optional[str] = None):
+    user = await _user_from_header(dict(request.headers))
+    if not user:
+        raise HTTPException(status_code=401, detail="Sign in required")
+    _require_health_data_consent(user)
+    items = await _care_activities_for_user(user["id"])
+    if exercise_id:
+        items = [item for item in items if item.get("exercise_id") == exercise_id]
+    items.sort(key=lambda item: item.get("completed_at", item.get("created_at", "")), reverse=True)
+    return {
+        "activities": items[:max(1, min(limit, 500))],
+        "target_score": 80,
+    }
 
 
 @api_router.post("/alira/activities")
@@ -11739,6 +12400,7 @@ async def auth_google_session(request: Request):
     sid = body.get("session_id") or body.get("sessionId")
     if not sid:
         raise HTTPException(status_code=400, detail="session_id required")
+    _require_trial_access_code(body.get("trial_code"))
     async with _httpx.AsyncClient(timeout=10.0) as cx:
         try:
             r = await cx.get(
@@ -11766,7 +12428,7 @@ async def auth_google_session(request: Request):
             LOCAL_USERS[user["id"]] = local_user
             _persist_local_dict(LOCAL_USERS_FILE, LOCAL_USERS)
             user = local_user
-    return user
+    return await _grant_trial_access(user)
 
 
 # ============ Progress dashboard ============

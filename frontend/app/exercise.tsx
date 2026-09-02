@@ -19,13 +19,15 @@ type ExerciseProgress = {
   last_score: number | null;
   best_score: number | null;
   sessions: number;
+  last_session_scores?: number[];
+  score_history?: { completed_at: string; average_score: number; repetition_scores: number[] }[];
 };
 
 const PROGRESS_KEY = (planId: string, exId: string) => `ex_progress_v1:${planId}:${exId}`;
 
 export default function ExerciseScreen() {
   const router = useRouter();
-  const { exercise_id, name, plan_id, sets, reps, difficulty, variation, library_test } = useLocalSearchParams<{ exercise_id: string; name?: string; plan_id?: string; sets?: string; reps?: string; difficulty?: string; variation?: string; library_test?: string }>();
+  const { exercise_id, name, plan_id, sets, reps, difficulty, variation, affected_side, library_test } = useLocalSearchParams<{ exercise_id: string; name?: string; plan_id?: string; sets?: string; reps?: string; difficulty?: string; variation?: string; affected_side?: string; library_test?: string }>();
   const webRef = useRef<WebView>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -46,7 +48,8 @@ export default function ExerciseScreen() {
   const guidedReps = Math.max(1, Math.min(20, totalReps));
   const sessionDifficulty = difficulty === "easy" || difficulty === "difficult" ? difficulty : "medium";
   const sessionVariation = variation === "alternate" ? "alternate" : "standard";
-  const url = `${BASE}/api/rehab/runner?exercise_id=${encodeURIComponent(exercise_id || "ex_maintenance")}&reps=${guidedReps}&difficulty=${sessionDifficulty}&variation=${sessionVariation}&voice_guidance=${voiceGuidance ? "1" : "0"}`;
+  const affectedSide = affected_side === "left" ? "left" : "right";
+  const url = `${BASE}/api/rehab/runner?exercise_id=${encodeURIComponent(exercise_id || "ex_maintenance")}&reps=${guidedReps}&difficulty=${sessionDifficulty}&variation=${sessionVariation}&affected_side=${affectedSide}&voice_guidance=${voiceGuidance ? "1" : "0"}`;
 
   useEffect(() => {
     void loadUserPreferences().then((saved) => setVoiceGuidance(saved.voiceGuidance));
@@ -61,7 +64,7 @@ export default function ExerciseScreen() {
     ]).start(() => setRepToast(null));
   };
 
-  const saveProgress = async (newReps: number, score: number | null) => {
+  const saveRepProgress = async (newReps: number) => {
     if (isLibraryTest) return;
     if (!exercise_id) return;
     try {
@@ -72,9 +75,38 @@ export default function ExerciseScreen() {
       const updated: ExerciseProgress = {
         completed_reps: Math.min(totalAll, prev.completed_reps + newReps),
         total_reps: totalAll,
-        last_score: score != null ? score : prev.last_score,
-        best_score: score != null ? Math.max(prev.best_score ?? 0, score) : prev.best_score,
-        sessions: prev.sessions + (newReps > 0 ? 0 : 0),
+        last_score: prev.last_score,
+        best_score: prev.best_score,
+        sessions: prev.sessions,
+        last_session_scores: prev.last_session_scores,
+        score_history: prev.score_history,
+      };
+      await storage.setItem(PROGRESS_KEY(planId, exercise_id), JSON.stringify(updated));
+    } catch {/* */}
+  };
+
+  const saveSessionAverage = async (averageScore: number | null, repetitionScores: number[]) => {
+    if (isLibraryTest || !exercise_id) return;
+    try {
+      const raw = await storage.getItem(PROGRESS_KEY(planId, exercise_id), "");
+      const prev: ExerciseProgress = raw
+        ? JSON.parse(raw)
+        : { completed_reps: 0, total_reps: totalAll, last_score: null, best_score: null, sessions: 0 };
+      const completedAt = new Date().toISOString();
+      const scoreHistory = averageScore == null
+        ? prev.score_history || []
+        : [
+            ...(prev.score_history || []),
+            { completed_at: completedAt, average_score: averageScore, repetition_scores: repetitionScores },
+          ].slice(-60);
+      const updated: ExerciseProgress = {
+        ...prev,
+        total_reps: totalAll,
+        last_score: averageScore ?? prev.last_score,
+        best_score: averageScore != null ? Math.max(prev.best_score ?? 0, averageScore) : prev.best_score,
+        sessions: prev.sessions + 1,
+        last_session_scores: repetitionScores,
+        score_history: scoreHistory,
       };
       await storage.setItem(PROGRESS_KEY(planId, exercise_id), JSON.stringify(updated));
     } catch {/* */}
@@ -93,22 +125,14 @@ export default function ExerciseScreen() {
         }
         // Persist per-rep progress immediately so closing the screen mid-session
         // doesn't lose work.
-        await saveProgress(1, score);
+        await saveRepProgress(1);
       } else if (msg.type === "exercise_complete") {
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
         const arr = scoresThisSession.current;
         const avg = arr.length ? Math.round(arr.reduce((a, b) => a + b, 0) / arr.length) : null;
         setDoneInfo({ reps: msg.reps || 0, avgScore: avg });
         if (!isLibraryTest) {
-          // Mark this session complete — bump sessions counter
-          try {
-            const raw = await storage.getItem(PROGRESS_KEY(planId, exercise_id || ""), "");
-            if (raw) {
-              const p: ExerciseProgress = JSON.parse(raw);
-              p.sessions += 1;
-              await storage.setItem(PROGRESS_KEY(planId, exercise_id || ""), JSON.stringify(p));
-            }
-          } catch {/* */}
+          await saveSessionAverage(avg, [...arr]);
           try {
             await authedFetch("/api/alira/activities", {
               method: "POST",
@@ -117,6 +141,7 @@ export default function ExerciseScreen() {
                 plan_id: planId,
                 completed_reps: Number(msg.reps || arr.length || 0),
                 average_score: avg,
+                repetition_scores: arr,
                 completed_at: new Date().toISOString(),
               }),
             });

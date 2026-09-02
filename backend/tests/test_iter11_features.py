@@ -97,7 +97,8 @@ class TestRehabRunnerIter11:
         "computeRepScore",
         "lastRepScore",
         "repBarFill",
-        "t.r * 1.55",
+        "effectiveExerciseTargetRadius",
+        "targetEdgeWidth:6",
         "Heard you",
     ]
 

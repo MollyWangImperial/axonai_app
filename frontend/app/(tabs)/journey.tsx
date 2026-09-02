@@ -8,11 +8,13 @@ import { Assessment, fetchHistory } from "@/src/api";
 import { authedFetch } from "@/src/auth";
 import { addJournalEntry, JournalEntry, loadJournalEntries } from "@/src/journal";
 import { colors, radius, spacing } from "@/src/theme";
-import { DEMO_ASSESSMENT_ID } from "@/src/demoAssessment";
+import { DEMO_ASSESSMENT_ID, demoAssessment } from "@/src/demoAssessment";
 import { loadUserPreferences } from "@/src/userPreferences";
 import { getScreenCache, setScreenCache } from "@/src/screenCache";
 import { useDisplayPreferences } from "@/src/displayPreferences";
+import { JourneyExerciseScoresPanel } from "@/src/components/JourneyExerciseScoresPanel";
 import { JourneyProgressPanel } from "@/src/components/JourneyProgressPanel";
+import { estimateRehabMinutes } from "@/src/rehabTiming";
 
 const brainImage = require("@/assets/images/journey-stroke-brain.png");
 const familyImage = require("@/assets/images/journey-family-support.png");
@@ -23,6 +25,15 @@ type JourneyScreenCache = {
   demoMode: boolean;
   exercisesCompleted: number;
   sessionDays: number;
+  carePlan: JourneyCarePlan | null;
+};
+
+type JourneyCarePlan = {
+  exercise_plan?: { action?: string; approved_exercise_ids?: string[] };
+  daily_monitoring?: {
+    active_exercise_ids?: string[];
+    remaining_exercise_ids_today?: string[];
+  };
 };
 
 function assessmentPlanLabel(item: Assessment) {
@@ -49,17 +60,38 @@ export default function JourneyScreen() {
   const [demoMode, setDemoMode] = useState(cached?.demoMode ?? false);
   const [exercisesCompleted, setExercisesCompleted] = useState(cached?.exercisesCompleted ?? 0);
   const [sessionDays, setSessionDays] = useState(cached?.sessionDays ?? 0);
+  const [carePlan, setCarePlan] = useState<JourneyCarePlan | null>(cached?.carePlan ?? null);
   const initialAssessmentId = [...history].reverse().find((item) => item.assessment_package === "initial")?.id ?? history[history.length - 1]?.id;
+  const latestRehabAssessment = history.find((item) => item.rehab_plan?.length > 0) ?? null;
+  const todayAssessment = demoMode ? demoAssessment : latestRehabAssessment;
+  const scheduledExerciseIds = demoMode
+    ? []
+    : carePlan?.daily_monitoring?.remaining_exercise_ids_today?.length
+      ? carePlan.daily_monitoring.remaining_exercise_ids_today
+      : carePlan?.daily_monitoring?.active_exercise_ids?.length
+        ? carePlan.daily_monitoring.active_exercise_ids
+        : carePlan?.exercise_plan?.approved_exercise_ids ?? [];
+  const scheduledExercises = scheduledExerciseIds.length
+    ? todayAssessment?.rehab_plan.filter((exercise) => scheduledExerciseIds.includes(exercise.id)) ?? []
+    : [];
+  const todayExercises = scheduledExercises.length ? scheduledExercises : todayAssessment?.rehab_plan ?? [];
+  const todayExerciseCount = todayExercises.length;
+  const todayEstimatedMinutes = estimateRehabMinutes(todayExercises);
+  const todayPlanId = demoMode ? DEMO_ASSESSMENT_ID : latestRehabAssessment?.id;
+  const rehabPlanOnHold = !demoMode && carePlan?.exercise_plan?.action === "hold";
 
   const load = useCallback(async () => {
     // Stale-while-revalidate: refresh silently when cached data is on screen.
     if (!getScreenCache<JourneyScreenCache>("journey")) setLoading(true);
-    const [assessments, journal, preferences, rewards] = await Promise.all([
+    const [assessments, journal, preferences, rewards, carePlanPayload] = await Promise.all([
       fetchHistory().catch(() => []),
       loadJournalEntries(),
       loadUserPreferences(),
       authedFetch("/api/users/rewards")
         .then(async (response) => response.ok ? response.json() : null)
+        .catch(() => null),
+      authedFetch("/api/alira/care-plan")
+        .then(async (response) => response.ok ? response.json() as Promise<JourneyCarePlan> : null)
         .catch(() => null),
     ]);
     const nextExercisesCompleted = Number(rewards?.breakdown?.exercises_completed ?? 0);
@@ -69,7 +101,8 @@ export default function JourneyScreen() {
     setDemoMode(preferences.demoMode);
     setExercisesCompleted(nextExercisesCompleted);
     setSessionDays(nextSessionDays);
-    setScreenCache<JourneyScreenCache>("journey", { history: assessments, entries: journal, demoMode: preferences.demoMode, exercisesCompleted: nextExercisesCompleted, sessionDays: nextSessionDays });
+    setCarePlan(carePlanPayload);
+    setScreenCache<JourneyScreenCache>("journey", { history: assessments, entries: journal, demoMode: preferences.demoMode, exercisesCompleted: nextExercisesCompleted, sessionDays: nextSessionDays, carePlan: carePlanPayload });
     setLoading(false);
   }, []);
 
@@ -82,7 +115,7 @@ export default function JourneyScreen() {
     if (!draft.trim()) return;
     const nextEntries = await addJournalEntry(draft);
     setEntries(nextEntries);
-    setScreenCache<JourneyScreenCache>("journey", { history, entries: nextEntries, demoMode, exercisesCompleted, sessionDays });
+    setScreenCache<JourneyScreenCache>("journey", { history, entries: nextEntries, demoMode, exercisesCompleted, sessionDays, carePlan });
     setDraft("");
     setShowComposer(false);
   };
@@ -119,6 +152,37 @@ export default function JourneyScreen() {
               <Text style={[styles.completionLabel, { color: palette.muted }]}>{sessionDays === 1 ? "session day" : "session days"}</Text>
             </View>
           </View>
+
+          {todayPlanId && todayExerciseCount > 0 && !rehabPlanOnHold ? (
+            <View
+              testID="journey-todays-rehab"
+              style={[styles.todayRehabStrip, wide && styles.todayRehabStripWide, { backgroundColor: palette.soft, borderColor: palette.border }]}
+            >
+              <View style={styles.todayRehabSummary}>
+                <View style={[styles.todayRehabIcon, { backgroundColor: palette.surface }]}>
+                  <Ionicons name="walk" size={30} color={palette.brand} />
+                </View>
+                <View style={styles.todayRehabCopy}>
+                  <Text style={[styles.todayRehabTitle, { color: palette.text }]}>Today&apos;s rehab</Text>
+                  <Text style={[styles.todayRehabMeta, { color: palette.muted }]}>
+                    {todayExerciseCount} {todayExerciseCount === 1 ? "exercise" : "exercises"} · about {todayEstimatedMinutes} {todayEstimatedMinutes === 1 ? "minute" : "minutes"}
+                  </Text>
+                </View>
+              </View>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Start today's rehab"
+                testID="journey-start-rehab"
+                onPress={() => router.push({ pathname: "/rehab-plan" as never, params: { id: todayPlanId } })}
+                style={({ pressed }) => [styles.startRehabButton, wide && styles.startRehabButtonWide, pressed && styles.buttonPressed]}
+              >
+                <Ionicons name="play" size={22} color={colors.onBrandPrimary} />
+                <Text style={styles.startRehabButtonText}>Start rehab</Text>
+              </Pressable>
+            </View>
+          ) : null}
+
+          <JourneyExerciseScoresPanel demoMode={demoMode} />
 
           <JourneyProgressPanel demoMode={demoMode} />
 
@@ -219,6 +283,17 @@ const styles = StyleSheet.create({
   completionNumber: { fontSize: 26, lineHeight: 32, fontWeight: "900" },
   completionLabel: { fontSize: 11, lineHeight: 15, fontWeight: "700", textAlign: "center" },
   completionDivider: { width: 1, alignSelf: "stretch", marginVertical: 4 },
+  todayRehabStrip: { minHeight: 82, borderWidth: 1, borderRadius: radius.md, padding: spacing.md, gap: spacing.md },
+  todayRehabStripWide: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
+  todayRehabSummary: { flexDirection: "row", alignItems: "center", gap: spacing.md, flexShrink: 1 },
+  todayRehabIcon: { width: 52, height: 52, borderRadius: 26, alignItems: "center", justifyContent: "center" },
+  todayRehabCopy: { flexShrink: 1, gap: 2 },
+  todayRehabTitle: { fontSize: 18, lineHeight: 24, fontWeight: "900" },
+  todayRehabMeta: { fontSize: 14, lineHeight: 20, fontWeight: "600" },
+  startRehabButton: { width: "100%", minHeight: 54, paddingHorizontal: spacing.xl, borderRadius: radius.sm, backgroundColor: colors.brandPrimary, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: spacing.sm },
+  startRehabButtonWide: { width: "auto", minWidth: 240 },
+  startRehabButtonText: { color: colors.onBrandPrimary, fontSize: 17, lineHeight: 22, fontWeight: "900" },
+  buttonPressed: { opacity: 0.86 },
   title: { fontSize: 34, lineHeight: 40, fontWeight: "900", color: "#113126" },
   addButton: { flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: spacing.md, minHeight: 44, borderRadius: radius.pill, backgroundColor: "#26783A" },
   addButtonText: { color: colors.onBrandPrimary, fontWeight: "800" },

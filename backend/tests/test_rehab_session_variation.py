@@ -32,14 +32,29 @@ def _first_work_target(config):
     )
 
 
+def test_repetition_average_uses_every_scored_repetition():
+    scores = server._normalise_repetition_scores([72, 84, 90])
+
+    assert scores == [72.0, 84.0, 90.0]
+    assert server._average_repetition_scores(scores) == 82.0
+
+
 def test_every_guided_exercise_defines_three_levels_and_an_alternate_variation():
     assert set(server.REHAB_RUNNER_CONFIG).issubset(server.EXERCISE_SESSION_RULES)
+    assert set(server.REHAB_RUNNER_CONFIG) == set(server.EXERCISE_MOVEMENT_STANDARDS)
     for exercise_id in server.REHAB_RUNNER_CONFIG:
         exercise = server._exercise_by_id(exercise_id)
         assert exercise is not None
         levels = server._exercise_difficulty_levels(exercise)
         assert set(levels) == {"easy", "medium", "difficult"}
         assert server.EXERCISE_SESSION_RULES[exercise_id]["variation"]
+        standard = server.EXERCISE_MOVEMENT_STANDARDS[exercise_id]
+        assert standard["tracking_mode"] in {"pose", "hand"}
+        assert standard["rom_steps"]
+        assert standard["calibration_instruction"]
+        for step in standard["rom_steps"]:
+            assert set(step["targets"]) == {"easy", "medium", "difficult"}
+            assert all(float(value) > 0 for value in step["targets"].values())
 
 
 def test_reach_difficulty_changes_the_drawn_and_hit_test_target_geometry():
@@ -75,6 +90,52 @@ def test_runner_html_carries_the_selected_level_and_variation():
     assert '"difficulty": "difficult"' in html
     assert '"variation": "alternate"' in html
     assert '"reps": 7' in html
+    assert '"movement_standard"' in html
+    assert '"target_deg": 75.0' in html
+
+
+def test_runner_calibrates_scores_rom_and_uses_conservative_compensation_rules():
+    html = server._rehab_runner_html("ex_reach", prescribed_reps=3, difficulty="medium", variation="standard")
+
+    assert 'data-testid="exercise-calibration"' in html
+    assert "#calibration{position:absolute" in html
+    assert "updateCalibration" in html
+    assert "repRomDetails" in html
+    assert "achieved_deg" in html
+    assert "confirmedCompensations" in html
+    assert "hits/eligible" in html
+    assert "trackingFrames < 8" in html
+    assert 'AFFECTED_SIDE = URL_PARAMS.get("affected_side")' in html
+    assert "return ok(lm[ACTIVE.wrist])" in html
+    assert "NEEDS_LOWER_BODY_VIEW" in html
+    assert 'getUserMedia({video:responsiveVideoSettings(640, 480),audio:false})' in html
+
+
+def test_runner_pose_and_target_overlay_match_assessment_visual_geometry():
+    html = server._rehab_runner_html("ex_reach", prescribed_reps=3)
+
+    assert 'modelAssetPath:"/vendor/mediapipe/models/pose_landmarker_lite.task"' in html
+    assert 'landmarkRadius:3' in html
+    assert 'connectorWidth:4' in html
+    assert 'targetEdgeWidth:6' in html
+    assert 'targetInnerScale:.55' in html
+    assert 'holdRingScale:1.25' in html
+    assert 'holdRingWidth:8' in html
+    assert 'effectiveExerciseTargetRadius(sub,lm)' in html
+    assert 'const R = effectiveExerciseTargetRadius(sub,lm);' in html
+    assert 'const tr = effectiveExerciseTargetRadius(sub,lm)*Math.min(canvas.width,canvas.height);' in html
+    assert 'sub.target.r * 1.55' not in html
+
+
+def test_voice_confirmation_has_openai_transcription_fallback():
+    html = server._rehab_runner_html("ex_reach", prescribed_reps=2)
+
+    assert "window.SpeechRecognition || window.webkitSpeechRecognition" in html
+    assert "MediaRecorder" in html
+    assert 'API_BASE+"/stt/transcribe"' in html
+    assert "isAdvancePhrase" in html
+    assert "don t|do not|stop|wait" in html
+    assert "void confirmAndContinue()" in html
 
 
 def test_demo_exercises_use_the_same_real_runners_and_level_definitions():

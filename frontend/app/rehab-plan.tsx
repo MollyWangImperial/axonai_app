@@ -22,6 +22,7 @@ import { storage } from "@/src/utils/storage";
 import { authedFetch } from "@/src/auth";
 import PaywallModal from "@/src/components/PaywallModal";
 import { DEMO_ASSESSMENT_ID, demoAssessment } from "@/src/demoAssessment";
+import { estimateRehabMinutes } from "@/src/rehabTiming";
 
 type ExerciseProgress = {
   completed_reps: number;
@@ -29,6 +30,8 @@ type ExerciseProgress = {
   last_score: number | null;
   best_score: number | null;
   sessions: number;
+  last_session_scores?: number[];
+  score_history?: { completed_at: string; average_score: number; repetition_scores: number[] }[];
 };
 
 type AdaptiveCarePlan = {
@@ -89,6 +92,12 @@ const DIFFICULTY_COPY: Record<SessionDifficulty, { label: string; summary: strin
   medium: { label: "Medium", summary: "Your usual dose and target position.", icon: "options-outline" },
   difficult: { label: "Difficult", summary: "A small dose increase and a higher or more precise target.", icon: "trending-up-outline" },
 };
+
+function nextDifficulty(level: SessionDifficulty): SessionDifficulty {
+  if (level === "easy") return "medium";
+  if (level === "medium") return "difficult";
+  return "difficult";
+}
 
 function exerciseImage(exercise: RehabExercise): ImageSourcePropType {
   const text = `${exercise.name} ${exercise.description} ${exercise.targets_issue}`.toLowerCase();
@@ -269,140 +278,100 @@ function RehabPlanPreparation({
   );
 }
 
-function RehabSessionSetup({
-  plan,
-  options,
-  difficulty,
-  variation,
+function RehabSessionPrompt({
+  visible,
+  currentDifficulty,
+  switchExercises,
+  increaseDifficulty,
   switchRecommended,
-  onDifficultyChange,
-  onVariationChange,
+  onSwitchChange,
+  onIncreaseDifficultyChange,
   onConfirm,
   onBack,
-  topInset,
 }: {
-  plan: Assessment;
-  options: ExerciseSessionOption[];
-  difficulty: SessionDifficulty;
-  variation: SessionVariation;
+  visible: boolean;
+  currentDifficulty: SessionDifficulty;
+  switchExercises: boolean;
+  increaseDifficulty: boolean;
   switchRecommended: boolean;
-  onDifficultyChange: (value: SessionDifficulty) => void;
-  onVariationChange: (value: SessionVariation) => void;
+  onSwitchChange: (value: boolean) => void;
+  onIncreaseDifficultyChange: (value: boolean) => void;
   onConfirm: () => void;
   onBack: () => void;
-  topInset: number;
 }) {
-  const optionById = useMemo(() => new Map(options.map((option) => [option.exercise_id, option])), [options]);
+  const canIncrease = currentDifficulty !== "difficult";
+  const choice = (
+    value: boolean,
+    selected: boolean,
+    onChange: (value: boolean) => void,
+    testID: string,
+  ) => (
+    <Pressable
+      onPress={() => onChange(value)}
+      style={[styles.promptChoice, selected && styles.promptChoiceSelected]}
+      accessibilityRole="radio"
+      accessibilityState={{ checked: selected }}
+      testID={testID}
+    >
+      <Ionicons
+        name={selected ? "radio-button-on" : "radio-button-off"}
+        size={23}
+        color={selected ? colors.brandPrimary : "#748078"}
+      />
+      <Text style={[styles.promptChoiceText, selected && styles.promptChoiceTextSelected]}>{value ? "Yes" : "No"}</Text>
+    </Pressable>
+  );
 
   return (
-    <View style={styles.container} testID="rehab-session-setup">
-      <View style={[styles.header, { paddingTop: topInset + spacing.sm }]}>
-        <Pressable onPress={onBack} style={styles.backBtn} accessibilityLabel="Go back">
-          <Ionicons name="chevron-back" size={26} color={colors.brandPrimary} />
-        </Pressable>
-        <Text style={styles.headerTitle}>Rehab plan</Text>
-        <View style={styles.headerSpacer} />
-      </View>
-      <ScrollView contentContainerStyle={styles.sessionSetupScroll}>
-        <View style={styles.sessionSetupPage}>
-          <Text style={styles.sessionSetupEyebrow}>TODAY&apos;S SESSION</Text>
-          <Text style={styles.sessionSetupTitle}>Choose how today should feel</Text>
-          <Text style={styles.sessionSetupIntro}>
-            Your recovery goals stay the same. You can keep the familiar set or switch to alternate versions of the same movements, then choose a comfortable challenge for today.
-          </Text>
+    <Modal visible={visible} transparent animationType="fade" onRequestClose={onBack}>
+      <View style={styles.promptBackdrop} testID="rehab-session-popup">
+        <ScrollView contentContainerStyle={styles.promptScroll} bounces={false}>
+          <View style={styles.promptCard} accessibilityViewIsModal>
+            <View style={styles.promptHeader}>
+              <View style={styles.promptIcon}><Ionicons name="options-outline" size={26} color={colors.brandPrimary} /></View>
+              <Pressable onPress={onBack} style={styles.promptClose} accessibilityLabel="Close rehab plan">
+                <Ionicons name="close" size={25} color="#526057" />
+              </Pressable>
+            </View>
+            <Text style={styles.promptEyebrow}>BEFORE TODAY&apos;S PLAN</Text>
+            <Text style={styles.promptTitle}>Would you like a small change today?</Text>
+            <Text style={styles.promptIntro}>Your current level is <Text style={styles.promptIntroStrong}>{DIFFICULTY_COPY[currentDifficulty].label}</Text>. Changes apply only to today&apos;s session.</Text>
 
-          <Text style={styles.sessionSectionTitle}>Exercise set</Text>
-          <View style={styles.sessionChoiceRow}>
-            {([
-              { value: "standard" as const, icon: "repeat-outline" as const, label: "Keep familiar set", copy: "Use the movement pattern from your current plan." },
-              { value: "alternate" as const, icon: "shuffle-outline" as const, label: "Switch to a different set", copy: "Use alternate versions that train the same functional goals." },
-            ]).map((choice) => {
-              const selected = variation === choice.value;
-              return (
-                <Pressable
-                  key={choice.value}
-                  onPress={() => onVariationChange(choice.value)}
-                  style={[styles.sessionChoice, selected && styles.sessionChoiceSelected]}
-                  accessibilityRole="radio"
-                  accessibilityState={{ checked: selected }}
-                  testID={`session-variation-${choice.value}`}
-                >
-                  <View style={[styles.sessionChoiceIcon, selected && styles.sessionChoiceIconSelected]}>
-                    <Ionicons name={choice.icon} size={24} color={selected ? "#FFFFFF" : colors.brandPrimary} />
-                  </View>
-                  <View style={styles.sessionChoiceCopy}>
-                    <View style={styles.sessionChoiceHeading}>
-                      <Text style={styles.sessionChoiceLabel}>{choice.label}</Text>
-                      {choice.value === "alternate" && switchRecommended && (
-                        <View style={styles.recommendedTag}><Text style={styles.recommendedTagText}>Suggested today</Text></View>
-                      )}
-                    </View>
-                    <Text style={styles.sessionChoiceDescription}>{choice.copy}</Text>
-                  </View>
-                  <Ionicons name={selected ? "radio-button-on" : "radio-button-off"} size={24} color={selected ? colors.brandPrimary : "#78847C"} />
-                </Pressable>
-              );
-            })}
-          </View>
+            <View style={styles.promptQuestion}>
+              <View style={styles.promptQuestionHeading}>
+                <Text style={styles.promptQuestionTitle}>Switch to a different set of exercises?</Text>
+                {switchRecommended && <View style={styles.recommendedTag}><Text style={styles.recommendedTagText}>Suggested today</Text></View>}
+              </View>
+              <Text style={styles.promptQuestionCopy}>Train the same goals with alternate versions of your planned movements.</Text>
+              <View style={styles.promptChoiceRow}>
+                {choice(false, !switchExercises, onSwitchChange, "session-switch-no")}
+                {choice(true, switchExercises, onSwitchChange, "session-switch-yes")}
+              </View>
+            </View>
 
-          <Text style={styles.sessionSectionTitle}>Difficulty</Text>
-          <View style={styles.difficultyRow}>
-            {(Object.keys(DIFFICULTY_COPY) as SessionDifficulty[]).map((level) => {
-              const selected = difficulty === level;
-              const item = DIFFICULTY_COPY[level];
-              return (
-                <Pressable
-                  key={level}
-                  onPress={() => onDifficultyChange(level)}
-                  style={[styles.difficultyChoice, selected && styles.difficultyChoiceSelected]}
-                  accessibilityRole="radio"
-                  accessibilityState={{ checked: selected }}
-                  testID={`session-difficulty-${level}`}
-                >
-                  <Ionicons name={item.icon} size={25} color={selected ? colors.brandPrimary : "#6A756E"} />
-                  <Text style={styles.difficultyLabel}>{item.label}</Text>
-                  <Text style={styles.difficultySummary}>{item.summary}</Text>
-                </Pressable>
-              );
-            })}
-          </View>
-
-          <View style={styles.sessionPreview}>
-            <Text style={styles.sessionPreviewTitle}>What changes today</Text>
-            {plan.rehab_plan.map((exercise) => {
-              const option = optionById.get(exercise.id);
-              const dose = sessionDose(exercise, difficulty, Boolean(option?.requires_same_support_at_all_levels));
-              const adjustment = option?.levels?.[difficulty]?.adjustment || DIFFICULTY_COPY[difficulty].summary;
-              return (
-                <View key={exercise.id} style={styles.sessionPreviewItem} testID={`session-preview-${exercise.id}`}>
-                  <View style={styles.sessionPreviewIcon}><Ionicons name="fitness-outline" size={20} color={colors.brandPrimary} /></View>
-                  <View style={styles.sessionPreviewCopy}>
-                    <Text style={styles.sessionPreviewName}>{exercise.name}</Text>
-                    <Text style={styles.sessionPreviewDose}>{dose.sets} sets x {dose.reps} reps · {adjustment}</Text>
-                    {variation === "alternate" && option?.alternate_variation && (
-                      <Text style={styles.sessionPreviewVariation}>{option.alternate_variation}</Text>
-                    )}
-                    {option?.requires_same_support_at_all_levels && (
-                      <Text style={styles.sessionPreviewSafety}>Use the same support and guarding at every level.</Text>
-                    )}
-                  </View>
+            <View style={[styles.promptQuestion, !canIncrease && styles.promptQuestionDisabled]}>
+              <Text style={styles.promptQuestionTitle}>Increase the difficulty for today?</Text>
+              <Text style={styles.promptQuestionCopy}>{canIncrease ? `This moves one small step to ${DIFFICULTY_COPY[nextDifficulty(currentDifficulty)].label}, with a slightly higher target or dose.` : "You are already at today's highest available level."}</Text>
+              <View style={styles.promptChoiceRow}>
+                {choice(false, !increaseDifficulty, onIncreaseDifficultyChange, "session-increase-no")}
+                <View style={[styles.promptChoiceWrap, !canIncrease && styles.promptDisabledChoice]} pointerEvents={canIncrease ? "auto" : "none"}>
+                  {choice(true, increaseDifficulty && canIncrease, onIncreaseDifficultyChange, "session-increase-yes")}
                 </View>
-              );
-            })}
-          </View>
+              </View>
+            </View>
 
-          <View style={styles.sessionSafetyNote}>
-            <Ionicons name="shield-checkmark-outline" size={24} color="#A85006" />
-            <Text style={styles.sessionSafetyNoteText}>Choose easy if you feel unusually tired or less steady. Stop for new pain, dizziness, marked fatigue, or loss of balance.</Text>
+            <View style={styles.promptSafety}>
+              <Ionicons name="shield-checkmark-outline" size={21} color="#A85006" />
+              <Text style={styles.promptSafetyText}>Keep the same support or guarding. Stop for new pain, dizziness, marked fatigue, or loss of balance.</Text>
+            </View>
+            <Pressable onPress={onConfirm} style={styles.sessionConfirm} testID="session-show-plan">
+              <Text style={styles.sessionConfirmText}>Show today&apos;s plan</Text>
+              <Ionicons name="arrow-forward" size={22} color="#FFFFFF" />
+            </Pressable>
           </View>
-
-          <Pressable onPress={onConfirm} style={styles.sessionConfirm} testID="session-show-plan">
-            <Text style={styles.sessionConfirmText}>Show today&apos;s plan</Text>
-            <Ionicons name="arrow-forward" size={22} color="#FFFFFF" />
-          </Pressable>
-        </View>
-      </ScrollView>
-    </View>
+        </ScrollView>
+      </View>
+    </Modal>
   );
 }
 
@@ -423,6 +392,7 @@ export default function RehabPlanScreen() {
   const [sessionOptions, setSessionOptions] = useState<ExerciseSessionOption[]>([]);
   const [sessionDifficulty, setSessionDifficulty] = useState<SessionDifficulty>("medium");
   const [sessionVariation, setSessionVariation] = useState<SessionVariation>("standard");
+  const [increaseDifficulty, setIncreaseDifficulty] = useState(false);
   const [sessionConfirmed, setSessionConfirmed] = useState(false);
   const [switchRecommended, setSwitchRecommended] = useState(false);
 
@@ -456,6 +426,8 @@ export default function RehabPlanScreen() {
         if (id) {
           setSessionConfirmed(false);
           setSessionOptions([]);
+          setSessionVariation("standard");
+          setIncreaseDifficulty(false);
           setPreparationStage(0);
           let stageStartedAt = Date.now();
           const assessment = id === DEMO_ASSESSMENT_ID ? demoAssessment : await fetchAssessment(id);
@@ -499,7 +471,8 @@ export default function RehabPlanScreen() {
             const recommendSwitch = (visits + 1) % 3 === 0;
             if (!cancelled) {
               setSwitchRecommended(recommendSwitch);
-              setSessionVariation(recommendSwitch ? "alternate" : "standard");
+              setSessionVariation("standard");
+              setIncreaseDifficulty(false);
             }
           } catch {
             if (!cancelled) {
@@ -531,7 +504,7 @@ export default function RehabPlanScreen() {
   const totalExercises = data?.rehab_plan.length || 0;
   const planPercent = Math.round((completedCount / Math.max(1, totalExercises)) * 100);
   const allComplete = totalExercises > 0 && completedCount >= totalExercises;
-  const estimatedMinutes = Math.max(5, totalExercises * 5);
+  const estimatedMinutes = estimateRehabMinutes(data?.rehab_plan ?? []);
   const demonstrationExercise = useMemo(
     () => data?.rehab_plan.find((exercise) => exercise.id === demonstrationId) || null,
     [data, demonstrationId]
@@ -547,7 +520,9 @@ export default function RehabPlanScreen() {
 
   const confirmSessionChoice = async () => {
     if (!data) return;
-    const configuredPlan = configureSessionPlan(data, sessionDifficulty, sessionOptions);
+    const selectedDifficulty = increaseDifficulty ? nextDifficulty(sessionDifficulty) : sessionDifficulty;
+    const configuredPlan = configureSessionPlan(data, selectedDifficulty, sessionOptions);
+    setSessionDifficulty(selectedDifficulty);
     setData(configuredPlan);
     await loadProgress(configuredPlan);
     try {
@@ -587,6 +562,7 @@ export default function RehabPlanScreen() {
         reps: String(exercise.reps),
         difficulty: sessionDifficulty,
         variation: sessionVariation,
+        affected_side: data?.affected_side === "left" ? "left" : "right",
       },
     });
   };
@@ -645,25 +621,19 @@ export default function RehabPlanScreen() {
     );
   }
 
-  if (!sessionConfirmed) {
-    return (
-      <RehabSessionSetup
-        plan={data}
-        options={sessionOptions}
-        difficulty={sessionDifficulty}
-        variation={sessionVariation}
-        switchRecommended={switchRecommended}
-        onDifficultyChange={setSessionDifficulty}
-        onVariationChange={setSessionVariation}
-        onConfirm={confirmSessionChoice}
-        onBack={() => router.back()}
-        topInset={insets.top}
-      />
-    );
-  }
-
   return (
     <View style={styles.container}>
+      <RehabSessionPrompt
+        visible={!sessionConfirmed}
+        currentDifficulty={sessionDifficulty}
+        switchExercises={sessionVariation === "alternate"}
+        increaseDifficulty={increaseDifficulty}
+        switchRecommended={switchRecommended}
+        onSwitchChange={(value) => setSessionVariation(value ? "alternate" : "standard")}
+        onIncreaseDifficultyChange={setIncreaseDifficulty}
+        onConfirm={confirmSessionChoice}
+        onBack={() => router.back()}
+      />
       <View style={[styles.header, { paddingTop: insets.top + spacing.sm }]}>
         <Pressable onPress={() => router.back()} style={styles.backBtn} testID="plan-back" accessibilityLabel="Go back">
           <Ionicons name="chevron-back" size={26} color={colors.brandPrimary} />
@@ -884,6 +854,30 @@ const styles = StyleSheet.create({
   sessionSafetyNoteText: { flex: 1, fontSize: 14, lineHeight: 21, color: "#6D4A18" },
   sessionConfirm: { width: "100%", maxWidth: 390, minHeight: 58, marginTop: spacing.xl, alignSelf: "center", paddingHorizontal: spacing.lg, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: spacing.sm, borderRadius: radius.sm, backgroundColor: colors.brandPrimary },
   sessionConfirmText: { fontSize: 16, lineHeight: 22, fontWeight: "800", color: "#FFFFFF" },
+  promptBackdrop: { flex: 1, backgroundColor: "rgba(18, 36, 29, 0.58)" },
+  promptScroll: { flexGrow: 1, alignItems: "center", justifyContent: "center", padding: spacing.md },
+  promptCard: { width: "100%", maxWidth: 620, padding: spacing.lg, borderRadius: radius.sm, backgroundColor: "#FAFBF9", borderWidth: 1, borderColor: "#D3DBD4" },
+  promptHeader: { minHeight: 42, flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
+  promptIcon: { width: 44, height: 44, borderRadius: 22, alignItems: "center", justifyContent: "center", backgroundColor: "#E6EFE8" },
+  promptClose: { width: 44, height: 44, alignItems: "center", justifyContent: "center" },
+  promptEyebrow: { marginTop: spacing.sm, fontSize: 12, lineHeight: 17, fontWeight: "800", color: "#4E7C62", letterSpacing: 0 },
+  promptTitle: { marginTop: 4, fontSize: 28, lineHeight: 35, fontWeight: "800", color: "#123E2D", letterSpacing: 0 },
+  promptIntro: { marginTop: spacing.xs, fontSize: 15, lineHeight: 22, color: "#536159" },
+  promptIntroStrong: { fontWeight: "800", color: "#173F30" },
+  promptQuestion: { marginTop: spacing.md, paddingTop: spacing.md, borderTopWidth: 1, borderTopColor: "#DCE2DD" },
+  promptQuestionDisabled: { opacity: 0.68 },
+  promptQuestionHeading: { flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: spacing.xs },
+  promptQuestionTitle: { flexShrink: 1, fontSize: 18, lineHeight: 24, fontWeight: "800", color: "#173F30" },
+  promptQuestionCopy: { marginTop: 4, fontSize: 14, lineHeight: 20, color: "#5C6861" },
+  promptChoiceRow: { marginTop: spacing.sm, flexDirection: "row", gap: spacing.sm },
+  promptChoiceWrap: { flex: 1 },
+  promptChoice: { flex: 1, minHeight: 50, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: spacing.xs, borderWidth: 1, borderColor: "#C7D0C9", borderRadius: radius.sm, backgroundColor: "#FFFFFF" },
+  promptChoiceSelected: { borderWidth: 2, borderColor: colors.brandPrimary, backgroundColor: "#EDF5EF" },
+  promptChoiceText: { fontSize: 16, lineHeight: 22, fontWeight: "700", color: "#536159" },
+  promptChoiceTextSelected: { color: "#174D3A" },
+  promptDisabledChoice: { opacity: 0.45 },
+  promptSafety: { marginTop: spacing.md, flexDirection: "row", alignItems: "flex-start", gap: spacing.xs, padding: spacing.sm, borderRadius: radius.sm, backgroundColor: "#FFF8EC", borderWidth: 1, borderColor: "#E8C788" },
+  promptSafetyText: { flex: 1, fontSize: 13, lineHeight: 19, color: "#6D4A18" },
   scrollContent: { paddingHorizontal: spacing.md, paddingTop: spacing.lg },
   page: { width: "100%", maxWidth: 1100, alignSelf: "center" },
   interimBanner: { flexDirection: "row", alignItems: "flex-start", gap: spacing.xs, backgroundColor: "#FFF4DA", borderRadius: radius.sm, padding: spacing.sm, marginBottom: spacing.sm },
