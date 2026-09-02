@@ -20,6 +20,8 @@ import {
   authedFetch,
   cacheAssessmentActivity,
   cacheDailyCheckInActivity,
+  cacheInitialAssessmentCompletion,
+  completedTasksKey,
   getCachedPatientActivity,
   getCachedUser,
   preferredNameKey,
@@ -42,6 +44,18 @@ type CarePlanNextStep = {
   remaining_exercise_ids?: string[];
   secondary_action?: CarePlanNextStep | null;
 };
+
+const CURRENT_ACCOUNT_PLAN_ID = "account-current-plan";
+
+function completedTaskIdsFromCache(raw: string): string[] {
+  try {
+    const parsed = JSON.parse(raw || "{}");
+    if (!parsed || typeof parsed !== "object") return [];
+    return Object.keys(parsed).filter((taskId) => parsed[taskId] === true);
+  } catch {
+    return [];
+  }
+}
 
 type CarePlanAssessment = {
   due?: boolean;
@@ -372,16 +386,44 @@ export default function HomeScreen() {
     // the same render in which another request is restoring the account.
     if (user?.id) await authedFetch("/api/users/consent").catch(() => null);
     const cachedActivity = user?.id ? await getCachedPatientActivity(user.id) : {};
-    const [assessments, preferredName, carePlanPayload, onboarding, checkInPayload, rewardsPayload, progressPayload] = await Promise.all([
+    const [assessments, preferredName, initialTaskCache, initialCarePlanPayload, onboarding, checkInPayload, rewardsPayload, progressPayload] = await Promise.all([
       fetchHistory().catch(() => []),
       user?.id ? storage.getItem(preferredNameKey(user.id), "") : Promise.resolve(""),
+      user?.id ? storage.getItem(completedTasksKey(user.id, "initial"), "") : Promise.resolve(""),
       authedFetch("/api/alira/care-plan").then(async (response) => response.ok ? response.json() : null).catch(() => null),
       authedFetch("/api/users/onboarding").then(async (response) => response.ok ? response.json() : null).catch(() => null),
       authedFetch(`/api/users/daily-checkin?date=${encodeURIComponent(requestedDate)}`).then(async (response) => response.ok ? response.json() : null).catch(() => null),
       authedFetch("/api/users/rewards").then(async (response) => response.ok ? response.json() : null).catch(() => null),
       authedFetch("/api/progress/summary").then(async (response) => response.ok ? response.json() : null).catch(() => null),
     ]);
+    let carePlanPayload = initialCarePlanPayload;
     const nextHistory = Array.isArray(assessments) ? assessments : [];
+    const accountAlreadyCompleted = Boolean(
+      carePlanPayload?.account_state?.has_completed_initial_assessment || nextHistory.length,
+    );
+    const expectedInitialTaskIds = Array.isArray(carePlanPayload?.assessment?.task_ids)
+      ? carePlanPayload.assessment.task_ids.filter(Boolean)
+      : [];
+    const cachedInitialTaskIds = completedTaskIdsFromCache(initialTaskCache);
+    const completedInitialTaskSet = Boolean(
+      !accountAlreadyCompleted
+      && expectedInitialTaskIds.length
+      && expectedInitialTaskIds.every((taskId: string) => cachedInitialTaskIds.includes(taskId)),
+    );
+    if (user?.id && completedInitialTaskSet) {
+      const recovery = await authedFetch("/api/users/activity/recover-initial-assessment", {
+        method: "POST",
+        body: JSON.stringify({ completed_task_ids: cachedInitialTaskIds }),
+      }).catch(() => null);
+      if (recovery?.ok) {
+        const payload = await recovery.json().catch(() => null);
+        carePlanPayload = payload?.care_plan || carePlanPayload;
+        await cacheInitialAssessmentCompletion(
+          user.id,
+          carePlanPayload?.account_state?.initial_assessment_completed_at,
+        );
+      }
+    }
     const nextName = preferredName || user?.name?.split(" ")[0] || "there";
     const nextOwnGoal = String(onboarding?.profile?.primary_goal || "").trim();
     const nextDailyGoal = deriveFunctionalGoal(onboarding?.profile) || nextOwnGoal;
@@ -547,6 +589,7 @@ export default function HomeScreen() {
       case "assessment": startNextSession(); return;
       case "rehab_plan":
         if (latest?.id || latestAssessmentId) router.push({ pathname: "/rehab-plan" as never, params: { id: latest?.id || latestAssessmentId } });
+        else if (activeExerciseIds.length) router.push({ pathname: "/rehab-plan" as never, params: { id: CURRENT_ACCOUNT_PLAN_ID } });
         else router.push("/(tabs)/journey" as never);
         return;
       case "caregiver_plan": router.push("/caregiver-plan" as never); return;
@@ -556,7 +599,7 @@ export default function HomeScreen() {
       case "progress": router.push("/progress" as never); return;
       default: router.push("/progress" as never);
     }
-  }, [latest, latestAssessmentId, router, startNextSession]);
+  }, [activeExerciseIds.length, latest, latestAssessmentId, router, startNextSession]);
 
   const checkInForToday = useCallback(async () => {
     if (checkingIn || checkedInToday) return;
@@ -592,6 +635,7 @@ export default function HomeScreen() {
   const openExercisePlan = () => {
     if (nextStep?.destination === "caregiver_plan") openDestination("caregiver_plan");
     else if (latest?.id || latestAssessmentId) router.push({ pathname: "/rehab-plan" as never, params: { id: latest?.id || latestAssessmentId } });
+    else if (activeExerciseIds.length) router.push({ pathname: "/rehab-plan" as never, params: { id: CURRENT_ACCOUNT_PLAN_ID } });
     else openDestination(nextStep?.destination);
   };
 

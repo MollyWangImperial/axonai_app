@@ -124,10 +124,115 @@ def test_home_restores_account_activity_before_deciding_the_next_step():
     home = (server.ROOT_DIR.parent / "frontend" / "app" / "(tabs)" / "index.tsx").read_text(encoding="utf-8")
 
     session_restore = 'await authedFetch("/api/users/consent")'
-    history_load = "const [assessments, preferredName, carePlanPayload"
+    history_load = "const [assessments, preferredName, initialTaskCache, initialCarePlanPayload"
     assert home.index(session_restore) < home.index(history_load)
     assert "getCachedPatientActivity(user.id)" in home
     assert "cachedActivity.daily_check_ins?.[requestedDate]" in home
     assert "|| initialAssessmentCompletedAt" in home
     assert 'primaryTitle = isInitialAssessment' in home
     assert 'activeExerciseIds.length\n        ? "Today\'s exercises"' in home
+
+
+def test_completed_legacy_task_ledger_recovers_initial_assessment_account_state(monkeypatch):
+    user = {
+        "id": "u_legacy_resume",
+        "name": "Legacy Resume",
+        "consent": {"health_data_consent": True},
+        "profile": {
+            "sitting_ability": "independent",
+            "affected_arm_movement": "some_movement",
+            "affected_hand_movement": "some_finger_movement",
+            "mobility_level": "not_cleared",
+            "movement_pain": "mild",
+            "instruction_support": "independent",
+            "arm_activity_difficulties": ["reaching_forward"],
+            "hand_activity_difficulties": ["opening_hand"],
+        },
+    }
+
+    async def signed_in_user(_headers):
+        return user
+
+    async def no_assessments(_user_id):
+        return []
+
+    async def no_server_progress(_user_id):
+        return [], None
+
+    async def record_completion(record_user, completed_at, *, source="assessment_submission"):
+        record_user["initial_assessment_completed_at"] = completed_at
+        record_user["initial_assessment_completion_source"] = source
+        return completed_at
+
+    monkeypatch.setattr(server, "_user_from_header", signed_in_user)
+    monkeypatch.setattr(server, "_care_assessments_for_user", no_assessments)
+    monkeypatch.setattr(server, "_initial_task_progress_evidence", no_server_progress)
+    monkeypatch.setattr(server, "_record_initial_assessment_completion", record_completion)
+
+    expected = server.initial_assessment_recommendation(user["profile"])["task_ids"]
+    with TestClient(server.app) as client:
+        recovered = client.post(
+            "/api/users/activity/recover-initial-assessment",
+            json={"completed_task_ids": expected},
+        )
+        assert recovered.status_code == 200
+        payload = recovered.json()
+        assert payload["care_plan"]["account_state"]["has_completed_initial_assessment"] is True
+        assert payload["care_plan"]["daily_monitoring"]["active_exercise_ids"]
+        assert user["initial_assessment_completion_source"] == "device_task_progress_recovery"
+
+        current_plan = client.get("/api/rehab/current-plan")
+        assert current_plan.status_code == 200
+        assert current_plan.json()["id"] == "account-current-plan"
+        assert current_plan.json()["rehab_plan"]
+        assert current_plan.json()["task_results"] == []
+
+
+def test_incomplete_legacy_task_ledger_does_not_skip_initial_assessment(monkeypatch):
+    user = {
+        "id": "u_incomplete_resume",
+        "consent": {"health_data_consent": True},
+        "profile": {
+            "sitting_ability": "independent",
+            "affected_arm_movement": "some_movement",
+            "affected_hand_movement": "some_finger_movement",
+            "mobility_level": "not_cleared",
+            "movement_pain": "mild",
+            "instruction_support": "independent",
+        },
+    }
+
+    async def signed_in_user(_headers):
+        return user
+
+    async def no_assessments(_user_id):
+        return []
+
+    async def no_server_progress(_user_id):
+        return [], None
+
+    monkeypatch.setattr(server, "_user_from_header", signed_in_user)
+    monkeypatch.setattr(server, "_care_assessments_for_user", no_assessments)
+    monkeypatch.setattr(server, "_initial_task_progress_evidence", no_server_progress)
+
+    expected = server.initial_assessment_recommendation(user["profile"])["task_ids"]
+    with TestClient(server.app) as client:
+        response = client.post(
+            "/api/users/activity/recover-initial-assessment",
+            json={"completed_task_ids": expected[:-1]},
+        )
+    assert response.status_code == 409
+
+
+def test_frontend_recovers_legacy_account_identity_and_completed_task_state():
+    auth = (server.ROOT_DIR.parent / "frontend" / "src" / "auth.ts").read_text(encoding="utf-8")
+    home = (server.ROOT_DIR.parent / "frontend" / "app" / "(tabs)" / "index.tsx").read_text(encoding="utf-8")
+    rehab = (server.ROOT_DIR.parent / "frontend" / "app" / "rehab-plan.tsx").read_text(encoding="utf-8")
+
+    assert 'storage.getItem("active_user_obj_v1", "")' in auth
+    assert "patientActivityKey(previousUserId), patientActivityKey(nextUserId)" in auth
+    assert "legacy.id !== userId" in auth
+    assert "completedTaskIdsFromCache(initialTaskCache)" in home
+    assert 'authedFetch("/api/users/activity/recover-initial-assessment"' in home
+    assert 'id: CURRENT_ACCOUNT_PLAN_ID' in home
+    assert 'authedFetch("/api/rehab/current-plan")' in rehab

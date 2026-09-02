@@ -74,6 +74,14 @@ export async function cacheAssessmentActivity(
   }));
 }
 
+export async function cacheInitialAssessmentCompletion(userId: string, completedAt?: string) {
+  await updateCachedPatientActivity(userId, (current) => ({
+    ...current,
+    initial_assessment_completed_at:
+      current.initial_assessment_completed_at || completedAt || new Date().toISOString(),
+  }));
+}
+
 export async function cachePatientOnboarding(userId: string, profile: Record<string, any> | null = null) {
   await storage.setItem(onboardingCompleteKey(userId), "1");
   if (profile) await storage.setItem(patientProfileKey(userId), JSON.stringify(profile));
@@ -121,6 +129,10 @@ export async function getCachedUser(): Promise<Me | null> {
 }
 
 export async function signIn(email: string, name: string, role: "patient" | "therapist", trialCode?: string): Promise<Me> {
+  const [previousUserRaw, legacyUserRaw] = await Promise.all([
+    storage.getItem(USER_OBJ, ""),
+    storage.getItem("active_user_obj_v1", ""),
+  ]);
   const savedTrialCode = await storage.secureGet(TRIAL_ACCESS_KEY, "");
   const accessCode = (trialCode || savedTrialCode || "").trim();
   if (!accessCode) throw new Error("Enter your trial code to continue.");
@@ -134,6 +146,21 @@ export async function signIn(email: string, name: string, role: "patient" | "the
   }
   const u: Me = await r.json();
   if (u.trial_access_granted !== true) throw new Error("Trial access could not be confirmed.");
+  const normalizedEmail = email.trim().toLowerCase();
+  for (const raw of [previousUserRaw, legacyUserRaw]) {
+    try {
+      const previous = JSON.parse(raw || "{}");
+      if (
+        previous?.id
+        && previous.id !== u.id
+        && String(previous.email || "").trim().toLowerCase() === normalizedEmail
+      ) {
+        await migrateAccountCache(String(previous.id), u.id);
+      }
+    } catch {
+      // A malformed legacy session must not block a valid sign-in.
+    }
+  }
   await storage.setItem(USER_KEY, u.id);
   await storage.setItem(USER_OBJ, JSON.stringify(u));
   await storage.setItem(BACKEND_USER_KEY, u.id);
@@ -224,6 +251,7 @@ async function migrateAccountCache(previousUserId: string, nextUserId: string) {
     [preferredNameKey(previousUserId), preferredNameKey(nextUserId)],
     [affectedSideKey(previousUserId), affectedSideKey(nextUserId)],
     [patientProfileKey(previousUserId), patientProfileKey(nextUserId)],
+    [patientActivityKey(previousUserId), patientActivityKey(nextUserId)],
     [`rehyn_profile_photo_v2:${previousUserId}`, `rehyn_profile_photo_v2:${nextUserId}`],
     [`rehyn_care_facility_v2:${previousUserId}`, `rehyn_care_facility_v2:${nextUserId}`],
     [`rehyn_care_circle_v1:${previousUserId}`, `rehyn_care_circle_v1:${nextUserId}`],
@@ -239,6 +267,25 @@ async function migrateAccountCache(previousUserId: string, nextUserId: string) {
 }
 
 export async function recoverSingleAccountCache(userId: string) {
+  try {
+    const [currentRaw, legacyRaw] = await Promise.all([
+      storage.getItem(USER_OBJ, ""),
+      storage.getItem("active_user_obj_v1", ""),
+    ]);
+    const current = JSON.parse(currentRaw || "{}");
+    const legacy = JSON.parse(legacyRaw || "{}");
+    if (
+      current?.id === userId
+      && legacy?.id
+      && legacy.id !== userId
+      && String(current.email || "").trim().toLowerCase()
+        === String(legacy.email || "").trim().toLowerCase()
+    ) {
+      await migrateAccountCache(String(legacy.id), userId);
+    }
+  } catch {
+    // Identity-bound legacy recovery is best-effort.
+  }
   if (await storage.getItem(onboardingCompleteKey(userId), "")) return;
   try {
     const prefix = "onboarding_complete_v2:";

@@ -474,6 +474,7 @@ export default function RehabPlanScreen() {
 
   const planId = id || "default";
   const isDemo = id === DEMO_ASSESSMENT_ID;
+  const isCurrentAccountPlan = id === "account-current-plan";
   const enteredFromFreshAssessment = entry === "assessment_complete";
   const isWide = width >= 860;
 
@@ -509,8 +510,16 @@ export default function RehabPlanScreen() {
           setIncreaseDifficulty(false);
           setPreparationStage(0);
           setShowPreparation(false);
-          const assessment = id === DEMO_ASSESSMENT_ID ? demoAssessment : await fetchAssessment(id);
-          const firstAccess = id === DEMO_ASSESSMENT_ID ? false : await claimFirstPlanAccess(id);
+          const assessment = id === DEMO_ASSESSMENT_ID
+            ? demoAssessment
+            : isCurrentAccountPlan
+              ? await authedFetch("/api/rehab/current-plan").then(async (response) => {
+                  const body = await response.json().catch(() => null);
+                  if (!response.ok) throw new Error(body?.detail || "No current plan is available.");
+                  return body as Assessment;
+                })
+              : await fetchAssessment(id);
+          const firstAccess = id === DEMO_ASSESSMENT_ID || isCurrentAccountPlan ? false : await claimFirstPlanAccess(id);
           const shouldPrepare = enteredFromFreshAssessment && firstAccess;
           setShowPreparation(shouldPrepare);
           let stageStartedAt = Date.now();
@@ -586,7 +595,7 @@ export default function RehabPlanScreen() {
     return () => {
       cancelled = true;
     };
-  }, [enteredFromFreshAssessment, id, loadProgress, planId]);
+  }, [enteredFromFreshAssessment, id, isCurrentAccountPlan, loadProgress, planId]);
 
   useFocusEffect(
     React.useCallback(() => {

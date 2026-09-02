@@ -1706,28 +1706,40 @@ def build_adaptive_care_plan(
     activities = list(activities or [])
     issue_reports = list(issue_reports or [])
     latest_assessment = _latest(assessments)
+    persisted_initial_completed_at = str(profile.get("_initial_assessment_completed_at") or "")
+    recovered_rehab_plan = list(profile.get("_recovered_rehab_plan") or [])
+    recovered_baseline = bool(not latest_assessment and persisted_initial_completed_at and recovered_rehab_plan)
+    plan_assessment = latest_assessment
+    if recovered_baseline:
+        plan_assessment = {
+            "id": "account-current-plan",
+            "created_at": persisted_initial_completed_at,
+            "assessment_package": "initial",
+            "rehab_plan": recovered_rehab_plan,
+            "task_results": [],
+            "functional_issues": [],
+        }
     latest_check_in = _latest(check_ins)
-    pending_issue = _pending_issue_report(issue_reports) if latest_assessment else None
+    pending_issue = _pending_issue_report(issue_reports) if (latest_assessment or recovered_baseline) else None
     safety = _safety_status(latest_check_in)
-    stage = _stage(profile, assessments, check_ins, safety)
+    stage = _stage(profile, assessments or ([plan_assessment] if plan_assessment else []), check_ins, safety)
     cadence = _cadence(stage)
-    domains = _issue_domains(latest_assessment, profile)
+    domains = _issue_domains(plan_assessment, profile)
     pending_category = str((pending_issue or {}).get("category") or "")
     pending_domain = str(FUNCTIONAL_ISSUE_CATALOG.get(pending_category, {}).get("domain") or "")
     if pending_domain and pending_domain not in domains:
         domains.append(pending_domain)
-    survey_due_at = _due_at(latest_check_in or latest_assessment, cadence["survey_days"], now)
-    assessment_due_at = _due_at(latest_assessment, cadence["assessment_days"], now)
+    survey_due_at = _due_at(latest_check_in or plan_assessment, cadence["survey_days"], now)
+    assessment_due_at = _due_at(plan_assessment, cadence["assessment_days"], now)
     survey_due = now >= survey_due_at
     scheduled_assessment_due = now >= assessment_due_at
     assessment_due = (scheduled_assessment_due or bool(pending_issue)) and not safety["blocks_assessment"]
-    has_plan = bool((latest_assessment or {}).get("rehab_plan"))
+    has_plan = bool((plan_assessment or {}).get("rehab_plan"))
     explicitly_initial_assessments = [
         item for item in assessments
         if str(item.get("assessment_package") or "initial") == "initial"
         or str(item.get("assessment_trigger") or "") == "initial"
     ]
-    persisted_initial_completed_at = str(profile.get("_initial_assessment_completed_at") or "")
     # Assessments created before the unified Initial Assessment package used
     # domain package names. The first historical assessment is still durable
     # evidence that this account completed its baseline and must not be sent
@@ -1757,7 +1769,7 @@ def build_adaptive_care_plan(
 
     # Spec 1.2 / 5: an exercise round is one week of daily sessions. Completing
     # a round triggers the survey and reassessment sequence.
-    plan_issued_at = _as_utc((latest_assessment or {}).get("created_at"))
+    plan_issued_at = _as_utc((plan_assessment or {}).get("created_at"))
     session_days_this_round = {
         completed_at.date()
         for item in activities
@@ -1765,12 +1777,12 @@ def build_adaptive_care_plan(
         and (not plan_issued_at or completed_at >= plan_issued_at)
     }
     round_length_days = 7
-    week_round_complete = bool(latest_assessment and len(session_days_this_round) >= round_length_days)
+    week_round_complete = bool(plan_assessment and len(session_days_this_round) >= round_length_days)
 
     # Spec 2.2: a warm, no-guilt re-entry after several missed days.
     missed_days = (now.date() - latest_activity_at.date()).days if latest_activity_at else 0
 
-    exercise_plan = _exercise_action(latest_check_in, latest_assessment, safety, sessions_last_7_days)
+    exercise_plan = _exercise_action(latest_check_in, plan_assessment, safety, sessions_last_7_days)
     if week_round_complete or exercise_plan.get("early_reassessment_recommended"):
         survey_due = True
         if not safety["blocks_assessment"]:
@@ -1865,7 +1877,7 @@ def build_adaptive_care_plan(
     # patient deferred it today (a decline is context, never a failure).
     deferrals = dict(profile.get("_assessment_deferrals") or {})
     today_iso = now.date().isoformat()
-    missing_domains = [
+    missing_domains = [] if recovered_baseline else [
         domain for domain in missing_assessment_domains(latest_assessment, profile)
         if str((deferrals.get(domain) or {}).get("deferred_at") or "")[:10] != today_iso
     ]

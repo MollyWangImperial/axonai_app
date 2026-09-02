@@ -1038,7 +1038,7 @@ async def _assessment_access_plan(
     _require_health_data_consent(user)
     assessments = await _care_assessments_for_user(user["id"])
     if package_id == "initial":
-        if assessments:
+        if assessments or user.get("initial_assessment_completed_at"):
             raise HTTPException(
                 status_code=409,
                 detail="Your Initial Assessment is already complete. The next assessment opens only when Alira's schedule says it is due.",
@@ -11224,6 +11224,10 @@ class UserSignup(BaseModel):
     trial_code: str = ""
 
 
+class InitialAssessmentCompletionRecovery(BaseModel):
+    completed_task_ids: List[str] = Field(default_factory=list)
+
+
 class User(BaseModel):
     id: str
     email: str
@@ -11877,16 +11881,50 @@ async def _care_assessments_for_user(user_id: str) -> List[Dict[str, Any]]:
         return [item.copy() for item in LOCAL_ASSESSMENTS if item.get("user_id") == user_id]
 
 
-async def _record_initial_assessment_completion(user: Dict[str, Any], completed_at: str) -> str:
+async def _initial_task_progress_evidence(user_id: str) -> Tuple[List[str], Optional[str]]:
+    """Return completed Initial Assessment tasks without treating them as movement results."""
+    try:
+        records = await db.assessment_task_progress.find(
+            {"user_id": user_id, "package_id": "initial"},
+            {"_id": 0, "task_id": 1, "completed_at": 1},
+        ).to_list(200)
+    except Exception:
+        records = [
+            item.copy()
+            for item in LOCAL_TASK_PROGRESS.values()
+            if item.get("user_id") == user_id and item.get("package_id") == "initial"
+        ]
+    if any(str(item.get("task_id") or "") == "__reset__" for item in records):
+        return [], None
+    valid_ids = set(_valid_package_task_ids("initial"))
+    completed_ids = list(dict.fromkeys(
+        str(item.get("task_id") or "")
+        for item in records
+        if str(item.get("task_id") or "") in valid_ids
+    ))
+    timestamps = [str(item.get("completed_at") or "") for item in records if item.get("completed_at")]
+    return completed_ids, max(timestamps, default="") or None
+
+
+async def _record_initial_assessment_completion(
+    user: Dict[str, Any],
+    completed_at: str,
+    *,
+    source: str = "assessment_submission",
+) -> str:
     """Persist the baseline-completion marker on the patient account."""
     existing = str(user.get("initial_assessment_completed_at") or "")
     candidates = [value for value in (existing, str(completed_at or "")) if value]
     recorded_at = min(candidates) if candidates else datetime.now(timezone.utc).isoformat()
     user["initial_assessment_completed_at"] = recorded_at
+    user["initial_assessment_completion_source"] = source
     try:
         result = await db.users.update_one(
             {"id": user["id"]},
-            {"$set": {"initial_assessment_completed_at": recorded_at}},
+            {"$set": {
+                "initial_assessment_completed_at": recorded_at,
+                "initial_assessment_completion_source": source,
+            }},
         )
         if getattr(result, "matched_count", 0) == 0:
             raise RuntimeError("user record not found")
@@ -11895,6 +11933,7 @@ async def _record_initial_assessment_completion(user: Dict[str, Any], completed_
         LOCAL_USERS[user["id"]] = {
             **(LOCAL_USERS.get(user["id"]) or user),
             "initial_assessment_completed_at": recorded_at,
+            "initial_assessment_completion_source": source,
         }
         _persist_local_dict(LOCAL_USERS_FILE, LOCAL_USERS)
     return recorded_at
@@ -11945,6 +11984,15 @@ async def _adaptive_care_plan_for_user(
             default=datetime.now(timezone.utc).isoformat(),
         )
         await _record_initial_assessment_completion(user, earliest_assessment_at)
+    if not assessments and not user.get("initial_assessment_completed_at"):
+        completed_task_ids, completed_at = await _initial_task_progress_evidence(user["id"])
+        expected_task_ids = list(initial_assessment_recommendation(user.get("profile") or {}).get("task_ids") or [])
+        if expected_task_ids and set(expected_task_ids).issubset(set(completed_task_ids)):
+            await _record_initial_assessment_completion(
+                user,
+                completed_at or datetime.now(timezone.utc).isoformat(),
+                source="server_task_progress_recovery",
+            )
     if check_ins is None:
         check_ins = await _care_check_ins_for_user(user["id"])
     if activities is None:
@@ -11953,6 +12001,10 @@ async def _adaptive_care_plan_for_user(
         issue_reports = await _care_issue_reports_for_user(user["id"])
     profile = dict(user.get("profile") or {})
     profile["_initial_assessment_completed_at"] = user.get("initial_assessment_completed_at")
+    if user.get("initial_assessment_completed_at") and not assessments:
+        profile["_recovered_rehab_plan"] = [
+            exercise.model_dump() for exercise in survey_rehab_plan(profile)
+        ]
     profile["_assessment_deferrals"] = dict(user.get("assessment_deferrals") or {})
     profile["_survey_report_viewed_at"] = user.get("survey_report_viewed_at")
     return build_adaptive_care_plan(profile, assessments, check_ins, activities, issue_reports)
@@ -12253,6 +12305,101 @@ async def _persist_alira_activity(user: Dict[str, Any], payload: AliraActivitySu
         },
     )
     return {"ok": True, "activity": activity, "care_plan": care_plan}
+
+
+@api_router.post("/users/activity/recover-initial-assessment")
+async def recover_initial_assessment_completion(
+    payload: InitialAssessmentCompletionRecovery,
+    request: Request,
+):
+    """Repair an older account workflow marker from its completed task ledger.
+
+    This does not recreate movement metrics or an assessment result. It only
+    prevents a patient who finished every assigned task from being sent back
+    through the one-time Initial Assessment.
+    """
+    user = await _user_from_header(dict(request.headers))
+    if not user:
+        raise HTTPException(status_code=401, detail="Sign in required")
+    _require_health_data_consent(user)
+    assessments = await _care_assessments_for_user(user["id"])
+    if assessments:
+        earliest = min(
+            (str(item.get("created_at") or "") for item in assessments if item.get("created_at")),
+            default=datetime.now(timezone.utc).isoformat(),
+        )
+        await _record_initial_assessment_completion(user, earliest, source="assessment_history_recovery")
+    elif not user.get("initial_assessment_completed_at"):
+        recommendation = initial_assessment_recommendation(user.get("profile") or {})
+        expected_task_ids = list(recommendation.get("task_ids") or [])
+        valid_task_ids = set(_valid_package_task_ids("initial"))
+        provided_task_ids = {
+            str(task_id).strip()
+            for task_id in payload.completed_task_ids
+            if str(task_id).strip() in valid_task_ids
+        }
+        server_task_ids, server_completed_at = await _initial_task_progress_evidence(user["id"])
+        completion_evidence = provided_task_ids.union(server_task_ids)
+        if not expected_task_ids or not set(expected_task_ids).issubset(completion_evidence):
+            raise HTTPException(
+                status_code=409,
+                detail="The saved task ledger does not show every task assigned by the readiness survey.",
+            )
+        await _record_initial_assessment_completion(
+            user,
+            server_completed_at or datetime.now(timezone.utc).isoformat(),
+            source="device_task_progress_recovery",
+        )
+    care_plan = await _adaptive_care_plan_for_user(user, assessments=assessments)
+    _record_alira_action(
+        "initial_assessment_completion_recovered",
+        source="account_resume",
+        user_id=user["id"],
+        details={
+            "assessment_history_available": bool(assessments),
+            "movement_results_recreated": False,
+            "completion_source": user.get("initial_assessment_completion_source"),
+        },
+    )
+    return {"ok": True, "care_plan": care_plan}
+
+
+@api_router.get("/rehab/current-plan", response_model=Assessment)
+async def get_current_account_rehab_plan(request: Request):
+    user = await _user_from_header(dict(request.headers))
+    if not user:
+        raise HTTPException(status_code=401, detail="Sign in required")
+    _require_health_data_consent(user)
+    assessments = await _care_assessments_for_user(user["id"])
+    if assessments:
+        return Assessment(**assessments[0])
+    completed_at = str(user.get("initial_assessment_completed_at") or "")
+    if not completed_at:
+        raise HTTPException(status_code=409, detail="Complete the Initial Assessment before opening a rehab plan.")
+    profile = dict(user.get("profile") or {})
+    plan = survey_rehab_plan(profile)
+    if not plan:
+        raise HTTPException(status_code=409, detail="Your saved survey does not currently produce an exercise plan.")
+    return Assessment(
+        id="account-current-plan",
+        created_at=completed_at,
+        affected_side=str(profile.get("side_affected") or "right"),
+        assessment_package="initial",
+        patient_parameters=profile,
+        task_results=[],
+        functional_issues=[],
+        rehab_plan=plan,
+        clinical_review_gate={
+            "status": "recovered_account_plan",
+            "rehab_access": "allowed",
+            "rehab_plan_source": "survey_reported_problems",
+            "patient_title": "Your saved plan is ready",
+            "patient_message": (
+                "The completed-assessment marker was recovered from the task ledger. "
+                "This exercise plan uses your saved survey answers; missing movement results were not recreated."
+            ),
+        },
+    )
 
 
 @api_router.get("/alira/care-plan")
