@@ -595,6 +595,7 @@ def test_completed_initial_assessment_is_saved_in_account_history(monkeypatch):
         assert returning_plan.json()["account_state"] == {
             "has_completed_initial_assessment": True,
             "initial_assessment_completed_at": submitted.json()["created_at"],
+            "latest_assessment_id": assessment_id,
         }
 
         other_login = client.post(

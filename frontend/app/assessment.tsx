@@ -6,7 +6,7 @@ import { useLocalSearchParams, useRouter } from "expo-router";
 import * as Haptics from "expo-haptics";
 import { colors, spacing, radius } from "@/src/theme";
 import { AssessmentPackageId, POSE_RUNNER_URL } from "@/src/api";
-import { completedTasksKey, getUserId, savedTaskVideosKey } from "@/src/auth";
+import { cacheAssessmentActivity, completedTasksKey, getUserId, savedTaskVideosKey } from "@/src/auth";
 import { storage } from "@/src/utils/storage";
 import { SafetyStopStrip } from "@/src/components/SafetyStopStrip";
 import { loadUserPreferences } from "@/src/userPreferences";
@@ -71,7 +71,7 @@ export default function AssessmentScreen() {
     })();
   }, [packageParam, startTaskParam, completedTasksParam, affectedSideParam, assignedTaskIdsParam, isLibraryTest]);
 
-  const onMessage = (e: WebViewMessageEvent) => {
+  const onMessage = async (e: WebViewMessageEvent) => {
     try {
       const msg = JSON.parse(e.nativeEvent.data);
       if (msg.type === "ready") {
@@ -100,6 +100,15 @@ export default function AssessmentScreen() {
         router.back();
       } else if (msg.type === "assessment_complete") {
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        if (!isLibraryTest && userIdRef.current && msg.assessment?.id) {
+          const completedPackage = String(msg.assessment.assessment_package || packageParam || "initial");
+          await cacheAssessmentActivity(
+            userIdRef.current,
+            String(msg.assessment.id),
+            String(msg.assessment.created_at || new Date().toISOString()),
+            completedPackage === "initial",
+          );
+        }
         router.replace({ pathname: "/results", params: { id: msg.assessment.id, entry: "assessment_complete" } });
       } else if (msg.type === "library_test_complete") {
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);

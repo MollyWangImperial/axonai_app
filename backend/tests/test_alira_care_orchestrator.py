@@ -436,6 +436,7 @@ def test_completed_initial_assessment_is_exposed_as_account_state_and_routes_to_
     assert plan["account_state"] == {
         "has_completed_initial_assessment": True,
         "initial_assessment_completed_at": completed_initial["created_at"],
+        "latest_assessment_id": completed_initial["id"],
     }
     assert plan["next_step"]["action"] == "continue_exercises"
     assert plan["next_step"]["destination"] == "rehab_plan"
@@ -460,6 +461,7 @@ def test_legacy_domain_assessment_counts_as_the_accounts_completed_baseline():
     assert plan["account_state"] == {
         "has_completed_initial_assessment": True,
         "initial_assessment_completed_at": legacy_baseline["created_at"],
+        "latest_assessment_id": legacy_baseline["id"],
     }
     assert plan["next_step"]["action"] == "continue_exercises"
     assert plan["next_step"]["destination"] == "rehab_plan"

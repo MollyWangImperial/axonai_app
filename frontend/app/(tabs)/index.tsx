@@ -16,7 +16,14 @@ import Svg, { Circle, G, Line, Polyline, Text as SvgText } from "react-native-sv
 import * as Haptics from "expo-haptics";
 
 import { Assessment, fetchHistory } from "@/src/api";
-import { authedFetch, getCachedUser, preferredNameKey } from "@/src/auth";
+import {
+  authedFetch,
+  cacheAssessmentActivity,
+  cacheDailyCheckInActivity,
+  getCachedPatientActivity,
+  getCachedUser,
+  preferredNameKey,
+} from "@/src/auth";
 import { PointsCelebration, PointsCelebrationEvent, celebrationEvent } from "@/src/components/PointsCelebration";
 import { SurveyPrefaceModal } from "@/src/components/SurveyPrefaceModal";
 import { useDisplayPreferences } from "@/src/displayPreferences";
@@ -54,6 +61,7 @@ type HomeCarePlan = {
   account_state?: {
     has_completed_initial_assessment?: boolean;
     initial_assessment_completed_at?: string | null;
+    latest_assessment_id?: string | null;
   };
   assessment?: CarePlanAssessment;
   survey?: { due?: boolean; due_at?: string; patient_prompt_enabled?: boolean };
@@ -101,6 +109,9 @@ type HomeScreenCache = {
   checkIn: DailyCheckInState;
   rewards: RewardsSummary | null;
   progress: ProgressSummary;
+  initialAssessmentCompletedAt: string;
+  latestAssessmentId: string;
+  latestAssessmentCreatedAt: string;
 };
 
 type TrendDefinition = {
@@ -343,6 +354,9 @@ export default function HomeScreen() {
   const [checkIn, setCheckIn] = useState<DailyCheckInState>(cached?.checkIn ?? EMPTY_CHECK_IN);
   const [rewards, setRewards] = useState<RewardsSummary | null>(cached?.rewards ?? null);
   const [progress, setProgress] = useState<ProgressSummary>(cached?.progress ?? EMPTY_PROGRESS);
+  const [initialAssessmentCompletedAt, setInitialAssessmentCompletedAt] = useState(cached?.initialAssessmentCompletedAt ?? "");
+  const [latestAssessmentId, setLatestAssessmentId] = useState(cached?.latestAssessmentId ?? "");
+  const [latestAssessmentCreatedAt, setLatestAssessmentCreatedAt] = useState(cached?.latestAssessmentCreatedAt ?? "");
   const [loading, setLoading] = useState(!cached);
   const [checkingIn, setCheckingIn] = useState(false);
   const [showWeek, setShowWeek] = useState(false);
@@ -353,6 +367,11 @@ export default function HomeScreen() {
     if (!getScreenCache<HomeScreenCache>("home")) setLoading(true);
     const user = await getCachedUser();
     const requestedDate = localDateString();
+    // Rebind a cached account before parallel state requests. Without this,
+    // an expired backend fallback session can make history look empty during
+    // the same render in which another request is restoring the account.
+    if (user?.id) await authedFetch("/api/users/consent").catch(() => null);
+    const cachedActivity = user?.id ? await getCachedPatientActivity(user.id) : {};
     const [assessments, preferredName, carePlanPayload, onboarding, checkInPayload, rewardsPayload, progressPayload] = await Promise.all([
       fetchHistory().catch(() => []),
       user?.id ? storage.getItem(preferredNameKey(user.id), "") : Promise.resolve(""),
@@ -362,12 +381,57 @@ export default function HomeScreen() {
       authedFetch("/api/users/rewards").then(async (response) => response.ok ? response.json() : null).catch(() => null),
       authedFetch("/api/progress/summary").then(async (response) => response.ok ? response.json() : null).catch(() => null),
     ]);
+    const nextHistory = Array.isArray(assessments) ? assessments : [];
     const nextName = preferredName || user?.name?.split(" ")[0] || "there";
     const nextOwnGoal = String(onboarding?.profile?.primary_goal || "").trim();
     const nextDailyGoal = deriveFunctionalGoal(onboarding?.profile) || nextOwnGoal;
-    const nextCheckIn = checkInPayload
+    const serverCheckIn = checkInPayload
       ? { date: checkInPayload.date || requestedDate, status: checkInPayload.status || "not_checked_in", days: checkInPayload.days || [] }
       : EMPTY_CHECK_IN;
+    const cachedCheckInStatus = cachedActivity.daily_check_ins?.[requestedDate];
+    const nextCheckIn: DailyCheckInState = serverCheckIn.status !== "not_checked_in" || !cachedCheckInStatus
+      ? serverCheckIn
+      : {
+          date: requestedDate,
+          status: cachedCheckInStatus,
+          days: [
+            ...serverCheckIn.days.filter((day: { date: string }) => day.date !== requestedDate),
+            { date: requestedDate, status: cachedCheckInStatus },
+          ].sort((a: { date: string }, b: { date: string }) => a.date.localeCompare(b.date)),
+        };
+    if (user?.id && nextCheckIn.status !== "not_checked_in") {
+      await cacheDailyCheckInActivity(user.id, requestedDate, nextCheckIn.status);
+      if (serverCheckIn.status === "not_checked_in") {
+        const repairPath = nextCheckIn.status === "complete" ? "/api/users/daily-checkin/complete" : "/api/users/daily-checkin";
+        void authedFetch(repairPath, { method: "POST", body: JSON.stringify({ date: requestedDate }) });
+      }
+    }
+    const newestAssessment = nextHistory[0];
+    const nextInitialAssessmentCompletedAt = String(
+      carePlanPayload?.account_state?.initial_assessment_completed_at
+      || (nextHistory.length ? nextHistory[nextHistory.length - 1]?.created_at : "")
+      || cachedActivity.initial_assessment_completed_at
+      || "",
+    );
+    const nextLatestAssessmentId = String(
+      newestAssessment?.id
+      || carePlanPayload?.account_state?.latest_assessment_id
+      || cachedActivity.latest_assessment_id
+      || "",
+    );
+    const nextLatestAssessmentCreatedAt = String(
+      newestAssessment?.created_at
+      || cachedActivity.latest_assessment_created_at
+      || "",
+    );
+    if (user?.id && nextLatestAssessmentId) {
+      await cacheAssessmentActivity(
+        user.id,
+        nextLatestAssessmentId,
+        nextLatestAssessmentCreatedAt,
+        Boolean(nextInitialAssessmentCompletedAt || nextHistory.length),
+      );
+    }
     const nextProgress = progressPayload?.assessments ? progressPayload : EMPTY_PROGRESS;
     // Returning to Home after earning points (finishing the assessment or an
     // exercise elsewhere) pops a congratulation for the newly earned points;
@@ -379,7 +443,7 @@ export default function HomeScreen() {
       setScreenCache<number>("celebrated-points", nextPoints);
     } else if (nextPoints > lastCelebratedPoints) {
       const previousIds = new Set((previousHome?.history || []).map((item) => item.id));
-      const finishedAssessmentToday = assessments.some(
+      const finishedAssessmentToday = nextHistory.some(
         (item) => !previousIds.has(item.id) && String(item.created_at || "").slice(0, 10) === localDateString(),
       );
       setCelebration(celebrationEvent(
@@ -388,15 +452,18 @@ export default function HomeScreen() {
       ));
       setScreenCache<number>("celebrated-points", nextPoints);
     }
-    setHistory(assessments);
+    setHistory(nextHistory);
     setGreetName(nextName);
     setCarePlan(carePlanPayload);
     setDailyGoal(nextDailyGoal);
     setCheckIn(nextCheckIn);
     setRewards(rewardsPayload);
     setProgress(nextProgress);
+    setInitialAssessmentCompletedAt(nextInitialAssessmentCompletedAt);
+    setLatestAssessmentId(nextLatestAssessmentId);
+    setLatestAssessmentCreatedAt(nextLatestAssessmentCreatedAt);
     setScreenCache<HomeScreenCache>("home", {
-      history: assessments,
+      history: nextHistory,
       greetName: nextName,
       carePlan: carePlanPayload,
       dailyGoal: nextDailyGoal,
@@ -404,6 +471,9 @@ export default function HomeScreen() {
       checkIn: nextCheckIn,
       rewards: rewardsPayload,
       progress: nextProgress,
+      initialAssessmentCompletedAt: nextInitialAssessmentCompletedAt,
+      latestAssessmentId: nextLatestAssessmentId,
+      latestAssessmentCreatedAt: nextLatestAssessmentCreatedAt,
     });
     setLoading(false);
   }, []);
@@ -417,7 +487,8 @@ export default function HomeScreen() {
   const latest = history[0];
   const hasInitialAssessment = Boolean(
     carePlan?.account_state?.has_completed_initial_assessment
-    || history.length > 0,
+    || history.length > 0
+    || initialAssessmentCompletedAt,
   );
   const isInitialAssessment = !hasInitialAssessment;
   const carePlanAssessment = carePlan?.assessment || null;
@@ -475,7 +546,7 @@ export default function HomeScreen() {
       case "initial_assessment": startNextSession(); return;
       case "assessment": startNextSession(); return;
       case "rehab_plan":
-        if (latest) router.push({ pathname: "/rehab-plan" as never, params: { id: latest.id } });
+        if (latest?.id || latestAssessmentId) router.push({ pathname: "/rehab-plan" as never, params: { id: latest?.id || latestAssessmentId } });
         else router.push("/(tabs)/journey" as never);
         return;
       case "caregiver_plan": router.push("/caregiver-plan" as never); return;
@@ -485,7 +556,7 @@ export default function HomeScreen() {
       case "progress": router.push("/progress" as never); return;
       default: router.push("/progress" as never);
     }
-  }, [latest, router, startNextSession]);
+  }, [latest, latestAssessmentId, router, startNextSession]);
 
   const checkInForToday = useCallback(async () => {
     if (checkingIn || checkedInToday) return;
@@ -497,7 +568,12 @@ export default function HomeScreen() {
     }).catch(() => null);
     if (response?.ok) {
       const payload = await response.json().catch(() => null);
-      if (payload) setCheckIn({ date: payload.date || todayIso, status: payload.status || "in_progress", days: payload.days || [] });
+      if (payload) {
+        const status = payload.status === "complete" ? "complete" : "in_progress";
+        setCheckIn({ date: payload.date || todayIso, status, days: payload.days || [] });
+        const user = await getCachedUser();
+        if (user?.id) await cacheDailyCheckInActivity(user.id, todayIso, status);
+      }
       // Checking in earns points (2 per day): celebrate briefly, then the
       // toast fades out on its own, and the badge refreshes right away.
       setCelebration(celebrationEvent(2, "Checked in - great start to today!"));
@@ -515,14 +591,15 @@ export default function HomeScreen() {
 
   const openExercisePlan = () => {
     if (nextStep?.destination === "caregiver_plan") openDestination("caregiver_plan");
-    else if (latest) router.push({ pathname: "/rehab-plan" as never, params: { id: latest.id } });
+    else if (latest?.id || latestAssessmentId) router.push({ pathname: "/rehab-plan" as never, params: { id: latest?.id || latestAssessmentId } });
     else openDestination(nextStep?.destination);
   };
 
   // Once today's assessment is finished, the middle step celebrates it and
   // the third step becomes today's exercises.
   const assessmentCompletedToday = Boolean(
-    latest && String(latest.created_at || "").slice(0, 10) === localDateString(),
+    (latest?.created_at || latestAssessmentCreatedAt)
+    && String(latest?.created_at || latestAssessmentCreatedAt).slice(0, 10) === localDateString(),
   );
 
   // Progressive disclosure: the next step is revealed by checking in, and the

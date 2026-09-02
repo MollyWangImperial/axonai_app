@@ -26,6 +26,53 @@ export const affectedSideKey = (userId: string) => `affected_side_v2:${userId}`;
 export const patientProfileKey = (userId: string) => `patient_profile_v2:${userId}`;
 export const completedTasksKey = (userId: string, packageId: string) => `assessment_completed_tasks_v2:${userId}:${packageId}`;
 export const savedTaskVideosKey = (userId: string, packageId: string) => `assessment_saved_task_videos_v2:${userId}:${packageId}`;
+const patientActivityKey = (userId: string) => `patient_activity_v1:${userId}`;
+
+export type CachedPatientActivity = {
+  initial_assessment_completed_at?: string;
+  latest_assessment_id?: string;
+  latest_assessment_created_at?: string;
+  daily_check_ins?: Record<string, "in_progress" | "complete">;
+};
+
+export async function getCachedPatientActivity(userId: string): Promise<CachedPatientActivity> {
+  const raw = await storage.getItem(patientActivityKey(userId), "");
+  if (!raw) return {};
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+async function updateCachedPatientActivity(userId: string, update: (current: CachedPatientActivity) => CachedPatientActivity) {
+  const current = await getCachedPatientActivity(userId);
+  await storage.setItem(patientActivityKey(userId), JSON.stringify(update(current)));
+}
+
+export async function cacheDailyCheckInActivity(userId: string, date: string, status: "in_progress" | "complete") {
+  await updateCachedPatientActivity(userId, (current) => ({
+    ...current,
+    daily_check_ins: { ...(current.daily_check_ins || {}), [date]: status },
+  }));
+}
+
+export async function cacheAssessmentActivity(
+  userId: string,
+  assessmentId: string,
+  createdAt: string,
+  marksInitialAssessmentComplete = false,
+) {
+  await updateCachedPatientActivity(userId, (current) => ({
+    ...current,
+    latest_assessment_id: assessmentId || current.latest_assessment_id,
+    latest_assessment_created_at: createdAt || current.latest_assessment_created_at,
+    initial_assessment_completed_at: marksInitialAssessmentComplete
+      ? current.initial_assessment_completed_at || createdAt || new Date().toISOString()
+      : current.initial_assessment_completed_at,
+  }));
+}
 
 export async function cachePatientOnboarding(userId: string, profile: Record<string, any> | null = null) {
   await storage.setItem(onboardingCompleteKey(userId), "1");

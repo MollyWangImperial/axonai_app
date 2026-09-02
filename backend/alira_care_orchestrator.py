@@ -1896,6 +1896,7 @@ def build_adaptive_care_plan(
         "account_state": {
             "has_completed_initial_assessment": has_initial_assessment,
             "initial_assessment_completed_at": initial_assessment_completed_at,
+            "latest_assessment_id": str((latest_assessment or {}).get("id") or "") or None,
         },
         "stage": stage,
         "safety": safety,

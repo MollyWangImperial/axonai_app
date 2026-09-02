@@ -620,6 +620,42 @@ def test_home_uses_display_palette_for_green_and_supporting_text():
     assert 'fill="#155D3C"' not in home
 
 
+def test_object_exercises_draw_virtual_objects_on_screen():
+    """Exercises that used real props now draw the object on the canvas instead."""
+    cfg = server.REHAB_RUNNER_CONFIG
+    assert cfg["ex_grasp"]["virtual_object"] == {"type": "cup", "mode": "carry", "grab_step": 0, "place_step": 1}
+    assert cfg["ex_h2m"]["virtual_object"] == {"type": "cup", "mode": "held"}
+    assert cfg["ex_handopen"]["virtual_object"] == {"type": "ball", "mode": "hand_anchor"}
+    assert cfg["ex_pinch"]["virtual_object"]["mode"] == "pick_place"
+    assert set(cfg["ex_pinch"]["virtual_object"]["source"]) == {"x", "y"}
+    assert set(cfg["ex_pinch"]["virtual_object"]["container"]) == {"x", "y"}
+    assert cfg["ex_bilateral"]["virtual_object"] == {"type": "bar", "mode": "between_hands"}
+
+    source = (ROOT / "backend" / "server.py").read_text(encoding="utf-8")
+    # The runner renders the objects and moves the carried cup with the wrist.
+    for marker in (
+        "function drawVirtualObject(",
+        "function drawVirtualCup(",
+        "function drawVirtualBall(",
+        "function drawVirtualPeg(",
+        "function drawVirtualContainer(",
+        "function drawVirtualBar(",
+        "vobjOnStepCompleted(currentSubStep)",
+        "drawVirtualObject(lm, handLm);",
+        'vobjState = "carried"',
+    ):
+        assert marker in source, marker
+    # Patients are no longer told to fetch real objects for these exercises.
+    assert "Gather a few small objects" not in source
+    assert "Place it on a stable table" not in source
+    assert "Use a light cup." not in source
+    assert "Place the light object within a comfortable reach" not in source
+    # Each spoken setup makes clear the object is on the screen.
+    for ex in ("ex_grasp", "ex_h2m", "ex_handopen", "ex_pinch", "ex_bilateral"):
+        voice = cfg[ex]["setup_voice"].lower()
+        assert "screen" in voice, ex
+
+
 def test_earning_points_pops_a_fading_congratulations_toast():
     component = (ROOT / "frontend" / "src" / "components" / "PointsCelebration.tsx").read_text(encoding="utf-8")
     home = (ROOT / "frontend" / "app" / "(tabs)" / "index.tsx").read_text(encoding="utf-8")

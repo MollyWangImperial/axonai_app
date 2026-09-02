@@ -60,6 +60,20 @@ def test_local_account_survives_backend_restart_and_keeps_onboarding(monkeypatch
     assert second["profile"]["side_affected"] == "left"
 
 
+def test_local_assessment_fallback_survives_backend_restart(tmp_path):
+    assessments_file = tmp_path / "assessments.json"
+    records = [{
+        "id": "assessment_resume_test",
+        "user_id": "u_resume_test",
+        "assessment_package": "initial",
+        "created_at": "2026-09-02T09:30:00+00:00",
+    }]
+
+    server._persist_local_list(assessments_file, records)
+
+    assert server._load_local_list(assessments_file) == records
+
+
 def test_task_progress_is_account_scoped_and_can_be_reset(monkeypatch, tmp_path):
     async def signed_in_user(*_args, **_kwargs):
         return {"id": "u_resume_test", "name": "Resume Test"}
@@ -92,6 +106,9 @@ def test_frontend_resume_state_is_scoped_to_the_signed_in_account():
     assert "onboarding_complete_v2:${userId}" in auth
     assert "patient_profile_v2:${userId}" in auth
     assert "assessment_completed_tasks_v2:${userId}:${packageId}" in auth
+    assert "patient_activity_v1:${userId}" in auth
+    assert "cacheDailyCheckInActivity" in auth
+    assert "cacheAssessmentActivity" in auth
     assert 'authedFetch("/api/users/onboarding", {' in sign_in
     assert "JSON.stringify(cachedProfile)" in sign_in
     assert "fetchTaskProgress(packageId)" in intro
@@ -100,3 +117,17 @@ def test_frontend_resume_state_is_scoped_to_the_signed_in_account():
     assert "ignored_device_completed_task_ids: ignoredDeviceCompletedTaskIds" in intro
     assert 'testID="task-intro-start-over"' in intro
     assert 'query.set("completed_tasks", completedTasksParam)' in assessment
+    assert "cacheAssessmentActivity(" in assessment
+
+
+def test_home_restores_account_activity_before_deciding_the_next_step():
+    home = (server.ROOT_DIR.parent / "frontend" / "app" / "(tabs)" / "index.tsx").read_text(encoding="utf-8")
+
+    session_restore = 'await authedFetch("/api/users/consent")'
+    history_load = "const [assessments, preferredName, carePlanPayload"
+    assert home.index(session_restore) < home.index(history_load)
+    assert "getCachedPatientActivity(user.id)" in home
+    assert "cachedActivity.daily_check_ins?.[requestedDate]" in home
+    assert "|| initialAssessmentCompletedAt" in home
+    assert 'primaryTitle = isInitialAssessment' in home
+    assert 'activeExerciseIds.length\n        ? "Today\'s exercises"' in home

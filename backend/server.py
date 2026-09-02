@@ -147,6 +147,7 @@ LOCAL_STATE_DIR = ROOT_DIR / ".local_state"
 LOCAL_USERS_FILE = LOCAL_STATE_DIR / "users.json"
 LOCAL_TASK_PROGRESS_FILE = LOCAL_STATE_DIR / "task_progress.json"
 LOCAL_CARE_STATE_FILE = LOCAL_STATE_DIR / "alira_care_state.json"
+LOCAL_ASSESSMENTS_FILE = LOCAL_STATE_DIR / "assessments.json"
 _configured_action_log_dir = os.environ.get("ALIRA_ACTION_LOG_DIR")
 _action_log_dir = (
     _configured_action_log_dir
@@ -192,12 +193,27 @@ def _persist_local_dict(path: Path, data: Dict[str, Dict[str, Any]]) -> None:
     temporary.write_text(json.dumps(data, ensure_ascii=True, indent=2), encoding="utf-8")
     temporary.replace(path)
 
+
+def _load_local_list(path: Path) -> List[Dict[str, Any]]:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, list) else []
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return []
+
+
+def _persist_local_list(path: Path, data: List[Dict[str, Any]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(json.dumps(data, ensure_ascii=True, indent=2, default=str), encoding="utf-8")
+    temporary.replace(path)
+
 # Local development fallback: keeps Expo phone testing usable when Docker/Mongo
 # is not running. Mongo remains the source of truth whenever it is reachable.
 LOCAL_USERS: Dict[str, Dict[str, Any]] = _load_local_dict(LOCAL_USERS_FILE)
 LOCAL_TASK_PROGRESS: Dict[str, Dict[str, Any]] = _load_local_dict(LOCAL_TASK_PROGRESS_FILE)
 LOCAL_CARE_STATE: Dict[str, Dict[str, Any]] = _load_local_dict(LOCAL_CARE_STATE_FILE)
-LOCAL_ASSESSMENTS: List[Dict[str, Any]] = []
+LOCAL_ASSESSMENTS: List[Dict[str, Any]] = _load_local_list(LOCAL_ASSESSMENTS_FILE)
 LOCAL_CHAT_SESSIONS: Dict[str, Dict[str, Any]] = {}
 
 # OpenAI TTS: prefer direct OPENAI_API_KEY for local/dev, keep Emergent key as fallback.
@@ -1552,25 +1568,25 @@ EXERCISE_LIBRARY: Dict[str, RehabExercise] = {
     ),
     "H2M_IMPAIRED": RehabExercise(
         id="ex_h2m", name="Hand-to-Mouth ADL Practice",
-        description="Use a light cup. Practice bringing cup to mouth with affected hand, focusing on smooth elbow flexion.",
+        description="A virtual cup appears in your hand on screen - no real object is needed. Practice bringing it to your mouth with the affected hand, focusing on smooth elbow flexion.",
         sets=3, reps=10, frequency="Twice daily",
         targets_issue="H2M_IMPAIRED", source="Occupational Therapy ADL retraining",
     ),
     "GROSS_GRASP": RehabExercise(
         id="ex_grasp", name="Cylindrical Grasp & Transport",
-        description="Use a soft cup or cylinder. Grasp, lift, transport across midline, and release at a target.",
+        description="A virtual cup is shown on screen - no real object is needed. Reach to it, carry it across the midline with your hand, and set it down at the target.",
         sets=3, reps=10, frequency="Twice daily",
         targets_issue="GROSS_GRASP", source="ARAT-based functional retraining",
     ),
     "HAND_OPENING": RehabExercise(
         id="ex_handopen", name="Active Hand Opening and Release",
-        description="Support the forearm on a table. Practise opening the hand around a large light object, releasing it, and relaxing. Use assistance rather than resistance when active finger extension is limited.",
+        description="Support the forearm on a table. A virtual ball is shown on screen - practise opening the hand around it, releasing, and relaxing. Use assistance rather than resistance when active finger extension is limited.",
         sets=3, reps=10, frequency="Twice daily",
         targets_issue="HAND_OPENING", source="NICE NG236 repetitive task training; Fugl-Meyer UE hand task concepts",
     ),
     "PINCH_IMPAIRED": RehabExercise(
         id="ex_pinch", name="Pinch & Peg Placement",
-        description="Pinch small objects (coins, pegs, beads) and place them into a container. Practice all 5 finger oppositions.",
+        description="A virtual peg and container are shown on screen - no real objects are needed. Pinch as if lifting the peg and place it into the container. Practice all 5 finger oppositions.",
         sets=3, reps=10, frequency="Daily",
         targets_issue="PINCH_IMPAIRED", source="Jebsen Hand Function retraining",
     ),
@@ -3038,10 +3054,13 @@ async def submit_assessment(payload: AssessmentSubmit, request: Request):
     doc["assessment_trigger"] = access.get("trigger")
     doc["functional_issue_report_id"] = access.get("issue_report_id")
     try:
-        await db.assessments.insert_one(doc)
+        # Motor may add an ObjectId to the dictionary before a failed insert.
+        # Keep the patient-facing fallback copy JSON-safe and unchanged.
+        await db.assessments.insert_one(doc.copy())
     except Exception as e:
         logger.warning(f"Mongo unavailable for assessment insert; using local fallback: {str(e)[:120]}")
         LOCAL_ASSESSMENTS.append(doc.copy())
+        _persist_local_list(LOCAL_ASSESSMENTS_FILE, LOCAL_ASSESSMENTS)
     if access.get("trigger") == "initial":
         await _record_initial_assessment_completion(user, assessment.created_at)
     await _mark_functional_issue_assessed(user["id"], access.get("issue_report_id"), assessment_id)
@@ -8100,9 +8119,10 @@ REHAB_RUNNER_CONFIG: Dict[str, Dict[str, Any]] = {
         "name": "Hand-to-Mouth ADL Practice",
         "reps": 5,
         "pose_mode": "body",
-        "setup_voice": "We will practice hand-to-mouth, an essential daily activity. Start with your hand on your lap, then slowly bring it up to your mouth.",
+        "setup_voice": "We will practice hand-to-mouth, an essential daily activity. A cup is drawn in your hand on the screen, so you do not need a real one. Start with your hand on your lap, then slowly bring the cup up to your mouth.",
+        "virtual_object": {"type": "cup", "mode": "held"},
         "cycle": [
-            {"caption": "Hand to mouth", "voice": "Bring your hand up to your mouth, slowly and smoothly.", "target": {"x": 0.5, "y": 0.30, "r": 0.10}, "hold_ms": 1500},
+            {"caption": "Bring the cup to your mouth", "voice": "Bring the cup in your hand up to your mouth, slowly and smoothly.", "target": {"x": 0.5, "y": 0.30, "r": 0.10}, "hold_ms": 1500},
             {"caption": "Lower to lap", "voice": "Now gently lower your hand back to your lap.", "target": {"x": 0.5, "y": 0.78, "r": 0.10}, "hold_ms": 1500},
         ],
         "feedback_rules": [
@@ -8115,11 +8135,12 @@ REHAB_RUNNER_CONFIG: Dict[str, Dict[str, Any]] = {
         "name": "Cylindrical Grasp & Transport",
         "reps": 5,
         "pose_mode": "body",
-        "setup_voice": "We will practise grasping and transporting a soft, lightweight cup. Place it on a stable table within a comfortable reach. Do not use glass, hot liquid, or a heavy object.",
+        "setup_voice": "We will practise grasping and carrying a cup. The cup is drawn on your screen, so you do not need a real object. Reach to the cup with your affected hand, and it will follow your hand as you carry it.",
+        "virtual_object": {"type": "cup", "mode": "carry", "grab_step": 0, "place_step": 1},
         "cycle": [
-            {"caption": "Reach and grasp the cup", "voice": "Reach toward the cup, open your affected hand around it, and form a comfortable grasp.", "target": {"x": 0.30, "y": 0.55, "r": 0.10}, "hold_ms": 1200},
-            {"caption": "Transport the cup across", "voice": "Lift the cup only slightly and move it across the table with a slow, steady motion.", "target": {"x": 0.70, "y": 0.55, "r": 0.10}, "hold_ms": 1500},
-            {"caption": "Place, release, and return", "voice": "Place the cup securely, open your fingers to release it, then bring your empty hand back to your lap. Nicely done.", "target": {"x": 0.5, "y": 0.78, "r": 0.10}, "hold_ms": 1200},
+            {"caption": "Reach to the cup on screen and grasp it", "voice": "Reach toward the cup on your screen and close your affected hand around it, as if picking it up.", "target": {"x": 0.30, "y": 0.55, "r": 0.10}, "hold_ms": 1200},
+            {"caption": "Carry the cup across", "voice": "The cup is in your hand now. Carry it slowly across to the other side.", "target": {"x": 0.70, "y": 0.55, "r": 0.10}, "hold_ms": 1500},
+            {"caption": "Set it down, release, and return", "voice": "Open your fingers to set the cup down, then bring your empty hand back to your lap. Nicely done.", "target": {"x": 0.5, "y": 0.78, "r": 0.10}, "hold_ms": 1200},
         ],
         "feedback_rules": [
             {"if": "trunk_lean_deg > 18", "say": "I noticed your trunk twisted with the cup. On the next repetition, try keeping your shoulders square and let your arm cross the midline."},
@@ -8131,9 +8152,10 @@ REHAB_RUNNER_CONFIG: Dict[str, Dict[str, Any]] = {
         "name": "Active Hand Opening and Release",
         "reps": 8,
         "pose_mode": "tap",
-        "setup_voice": "We will practise opening and relaxing your affected hand with your forearm supported on a table. Do not add a resistance band unless your therapist has specifically recommended one. Use your other hand for gentle assistance if needed.",
+        "setup_voice": "We will practise opening and relaxing your affected hand with your forearm supported on a table. A soft ball is drawn on your screen - imagine opening your hand around it, no real object is needed. Use your other hand for gentle assistance if needed.",
+        "virtual_object": {"type": "ball", "mode": "hand_anchor"},
         "cycle": [
-            {"caption": "Open your hand, release, and relax", "voice": "Slowly open your affected hand as comfortably as you can, hold for a moment, then let the fingers relax. That effort counts even if the movement is small. Tap when you finish one repetition.", "target": None, "hold_ms": 0},
+            {"caption": "Open your hand around the ball on screen", "voice": "Slowly open your affected hand around the ball on your screen, as wide as is comfortable, hold for a moment, then let the fingers relax. That effort counts even if the movement is small. Tap when you finish one repetition.", "target": None, "hold_ms": 0},
         ],
         "feedback_rules": [
             {"default": "Wonderful finger extension. On the next repetition, try to open your hand a little wider and hold for a full second before relaxing."},
@@ -8143,9 +8165,10 @@ REHAB_RUNNER_CONFIG: Dict[str, Dict[str, Any]] = {
         "name": "Pinch & Peg Placement",
         "reps": 8,
         "pose_mode": "tap",
-        "setup_voice": "We will practice pinch. Gather a few small objects — coins, beads, or pegs. Pinch one between your thumb and index finger and place it into a container. Tap I did one repetition each time you place one.",
+        "setup_voice": "We will practice pinch. A small peg and a container are drawn on your screen, so you do not need real objects. Pinch your thumb and index finger together as if lifting the peg, move your hand toward the container, and release. Tap I did one repetition each time you place one.",
+        "virtual_object": {"type": "peg", "mode": "pick_place", "source": {"x": 0.32, "y": 0.62}, "container": {"x": 0.68, "y": 0.62}},
         "cycle": [
-            {"caption": "Pinch and place one object", "voice": "Pinch one object with your thumb and index finger, place it in the container, then tap when done.", "target": None, "hold_ms": 0},
+            {"caption": "Pinch the peg on screen and place it in the container", "voice": "Pinch as if lifting the peg with your thumb and index finger, carry it to the container on the screen, release, then tap when done.", "target": None, "hold_ms": 0},
         ],
         "feedback_rules": [
             {"default": "Lovely pinch control. On the next repetition, try a slightly smaller object or pinch with your thumb and middle finger for variety."},
@@ -8155,9 +8178,10 @@ REHAB_RUNNER_CONFIG: Dict[str, Dict[str, Any]] = {
         "name": "Bilateral Arm Training",
         "reps": 5,
         "pose_mode": "body",
-        "setup_voice": "We will use both arms together. Imagine folding a towel between both hands. Move both arms inward to meet, then outward — equally on both sides.",
+        "setup_voice": "We will use both arms together. A bar is drawn between your hands on the screen - hold it with both hands as you move. Move both arms inward to meet, then outward, equally on both sides.",
+        "virtual_object": {"type": "bar", "mode": "between_hands"},
         "cycle": [
-            {"caption": "Bring both hands together", "voice": "Bring both hands inward to meet in front of you, equally.", "target": {"x": 0.5, "y": 0.45, "r": 0.12}, "hold_ms": 1500},
+            {"caption": "Bring both hands together", "voice": "Holding the bar on your screen, bring both hands inward to meet in front of you, equally.", "target": {"x": 0.5, "y": 0.45, "r": 0.12}, "hold_ms": 1500},
             {"caption": "Open both arms outward", "voice": "Now open both hands outward, also equally.", "target": {"x": 0.5, "y": 0.45, "r": 0.30}, "hold_ms": 800},
         ],
         "feedback_rules": [
@@ -8574,7 +8598,7 @@ EXERCISE_MOVEMENT_STANDARDS: Dict[str, Dict[str, Any]] = {
     },
     "ex_grasp": {
         "tracking_mode": "pose", "posture": "seated",
-        "calibration_instruction": "Sit square to the camera with both shoulders, hips, elbows, and wrists visible. Place the light object within a comfortable reach and hold still.",
+        "calibration_instruction": "Sit square to the camera with both shoulders, hips, elbows, and wrists visible. The cup you will move is shown on the screen - no real object is needed. Rest your hands and hold still.",
         "rom_steps": [
             {"id": "shoulder_flexion", "label": "Reach to the object", "metric": "shoulder_flexion", "targets": {"easy": 30, "medium": 42, "difficult": 52}, "weight": 0.55},
             {"id": "shoulder_abduction", "label": "Controlled transport", "metric": "shoulder_abduction", "targets": {"easy": 25, "medium": 35, "difficult": 45}, "weight": 0.45},
@@ -10109,6 +10133,145 @@ function checkTarget(lm){
   return ok(lm[ACTIVE.wrist]);
 }
 
+// ==== Virtual exercise objects (drawn on screen instead of real props) ====
+// Object-based exercises no longer need a physical cup, peg, or towel: the
+// object is rendered on the canvas. In "carry" mode the object waits at the
+// grab target, attaches to the affected wrist once grasped, and is set down
+// at the place target; "held" keeps it in the hand for the whole repetition;
+// "hand_anchor" centres it on the tracked hand; "pick_place" draws a peg and
+// container that fills as repetitions complete; "between_hands" draws a bar
+// spanning both wrists.
+const VOBJ = CFG.virtual_object || null;
+let vobjState = "resting";      // resting -> carried -> placed (carry mode)
+let vobjPlacePos = null;
+let vobjPlacedCount = 0;        // pick_place: pegs shown inside the container
+
+function vobjSize(){ return 0.11 * Math.min(canvas.width, canvas.height); }
+
+function drawVirtualCup(x, y, s){
+  const w = s * 0.72;
+  ctx.save();
+  ctx.beginPath();
+  ctx.moveTo(x - w/2, y - s/2); ctx.lineTo(x + w/2, y - s/2);
+  ctx.lineTo(x + w*0.38, y + s/2); ctx.lineTo(x - w*0.38, y + s/2);
+  ctx.closePath();
+  ctx.fillStyle = "#E8C08A"; ctx.fill();
+  ctx.lineWidth = 3; ctx.strokeStyle = "#8A6B3F"; ctx.stroke();
+  ctx.beginPath(); ctx.ellipse(x, y - s/2, w/2, s*0.10, 0, 0, Math.PI*2);
+  ctx.fillStyle = "#F3DAB4"; ctx.fill(); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(x - w*0.26, y - s*0.28); ctx.lineTo(x - w*0.18, y + s*0.30);
+  ctx.lineWidth = 4; ctx.strokeStyle = "rgba(255,255,255,0.55)"; ctx.stroke();
+  ctx.restore();
+}
+
+function drawVirtualBall(x, y, s){
+  ctx.save();
+  const r = s * 0.55;
+  const g = ctx.createRadialGradient(x - r*0.35, y - r*0.35, r*0.15, x, y, r);
+  g.addColorStop(0, "#FBE7C4"); g.addColorStop(1, "#DBA75E");
+  ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI*2);
+  ctx.fillStyle = g; ctx.fill();
+  ctx.lineWidth = 3; ctx.strokeStyle = "#8A6B3F"; ctx.stroke();
+  ctx.restore();
+}
+
+function drawVirtualPeg(x, y, s){
+  ctx.save();
+  const w = s * 0.22, h = s * 0.6;
+  ctx.beginPath();
+  if(ctx.roundRect) ctx.roundRect(x - w/2, y - h/2, w, h, w*0.4); else ctx.rect(x - w/2, y - h/2, w, h);
+  ctx.fillStyle = "#D98B5F"; ctx.fill();
+  ctx.lineWidth = 2.5; ctx.strokeStyle = "#8A4F2D"; ctx.stroke();
+  ctx.restore();
+}
+
+function drawVirtualContainer(x, y, s, filled){
+  ctx.save();
+  const w = s * 1.05, h = s * 0.62;
+  ctx.beginPath();
+  ctx.moveTo(x - w/2, y - h/2); ctx.lineTo(x - w/2, y + h/2);
+  ctx.lineTo(x + w/2, y + h/2); ctx.lineTo(x + w/2, y - h/2);
+  ctx.lineWidth = 4; ctx.strokeStyle = "#5E6861"; ctx.stroke();
+  ctx.fillStyle = "rgba(94,104,97,0.14)"; ctx.fill();
+  for(let i = 0; i < Math.min(filled, 8); i++){
+    drawVirtualPeg(x - w*0.32 + (i % 4) * w*0.21, y + h*0.16 - Math.floor(i/4) * h*0.34, s*0.6);
+  }
+  ctx.restore();
+}
+
+function drawVirtualBar(x1, y1, x2, y2){
+  ctx.save();
+  ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2);
+  ctx.lineCap = "round";
+  ctx.lineWidth = Math.max(10, vobjSize() * 0.28);
+  ctx.strokeStyle = "#C89A6B"; ctx.stroke();
+  ctx.lineWidth = Math.max(4, vobjSize() * 0.10);
+  ctx.strokeStyle = "rgba(255,255,255,0.35)"; ctx.stroke();
+  ctx.restore();
+}
+
+function vobjWristPoint(lm){
+  const wrist = lm && lm[ACTIVE.wrist];
+  if(!wrist) return null;
+  return {x: wrist.x * canvas.width, y: wrist.y * canvas.height};
+}
+
+function drawVirtualObject(lm, handLm){
+  if(!VOBJ || calibrating) return;
+  const s = vobjSize();
+  if(VOBJ.mode === "carry"){
+    if(vobjState === "carried"){
+      const p = vobjWristPoint(lm);
+      if(p) drawVirtualCup(p.x, p.y - s*0.15, s);
+      return;
+    }
+    if(vobjState === "placed" && vobjPlacePos){
+      drawVirtualCup(vobjPlacePos.x * canvas.width, vobjPlacePos.y * canvas.height, s);
+      return;
+    }
+    const grab = CFG.cycle[VOBJ.grab_step];
+    if(grab && grab.target){
+      const t = effectiveExerciseTarget(grab);
+      drawVirtualCup(t.x * canvas.width, t.y * canvas.height, s);
+    }
+    return;
+  }
+  if(VOBJ.mode === "held"){
+    const p = vobjWristPoint(lm);
+    if(p) drawVirtualCup(p.x, p.y - s*0.15, s);
+    return;
+  }
+  if(VOBJ.mode === "hand_anchor"){
+    let x = canvas.width * 0.5, y = canvas.height * 0.55;
+    if(handLm && handLm.length){
+      let sx = 0, sy = 0;
+      for(const p of handLm){ sx += p.x; sy += p.y; }
+      x = (sx / handLm.length) * canvas.width; y = (sy / handLm.length) * canvas.height;
+    }
+    drawVirtualBall(x, y, s);
+    return;
+  }
+  if(VOBJ.mode === "pick_place"){
+    drawVirtualContainer(VOBJ.container.x * canvas.width, VOBJ.container.y * canvas.height, s, vobjPlacedCount);
+    if(vobjPlacedCount < CFG.reps) drawVirtualPeg(VOBJ.source.x * canvas.width, VOBJ.source.y * canvas.height, s);
+    return;
+  }
+  if(VOBJ.mode === "between_hands" && lm){
+    const Lw = lm[15], Rw = lm[16];
+    if(Lw && Rw) drawVirtualBar(Lw.x * canvas.width, Lw.y * canvas.height, Rw.x * canvas.width, Rw.y * canvas.height);
+  }
+}
+
+function vobjOnStepCompleted(completedStep){
+  if(!VOBJ || VOBJ.mode !== "carry") return;
+  if(completedStep === VOBJ.grab_step) vobjState = "carried";
+  if(completedStep === VOBJ.place_step && vobjState === "carried"){
+    vobjState = "placed";
+    const place = CFG.cycle[VOBJ.place_step];
+    vobjPlacePos = place && place.target ? effectiveExerciseTarget(place) : null;
+  }
+}
+
 function drawOverlay(lm,handLm){
   ctx.clearRect(0,0,canvas.width,canvas.height);
   if(lm){
@@ -10157,12 +10320,14 @@ function drawOverlay(lm,handLm){
       ctx.stroke();
     }
   }
+  drawVirtualObject(lm, handLm);
 }
 
 async function startRep(){
   currentSubStep = 0;
   feedbackPending = false;
   resetRepMetrics();
+  vobjState = "resting"; vobjPlacePos = null;
   repLabel.textContent = `Repetition ${currentRep+1} of ${CFG.reps}`;
   // Update the visual rep progress bar
   try{
@@ -10428,6 +10593,7 @@ async function finishExercise(){
 }
 
 function advanceSubStep(){
+  vobjOnStepCompleted(currentSubStep);
   currentSubStep += 1;
   if(currentSubStep >= CFG.cycle.length){
     // Rep complete → feedback
@@ -10441,6 +10607,7 @@ function advanceSubStep(){
 tapBtn.addEventListener("click", () => {
   if(!running) return;
   if(CFG.pose_mode === "tap"){
+    if(VOBJ && VOBJ.mode === "pick_place") vobjPlacedCount = Math.min(CFG.reps, vobjPlacedCount + 1);
     showFeedback();
     return;
   }
