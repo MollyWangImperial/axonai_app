@@ -57,6 +57,7 @@ try:
     from backend.alira_care_orchestrator import (
         QUESTION_BANK as ALIRA_CARE_QUESTION_BANK,
         FUNCTIONAL_ISSUE_CATALOG,
+        MOVEMENT_READINESS_VERSION,
         SURVEY_PREFACE,
         approved_functional_issue_categories,
         approved_question_ids,
@@ -101,6 +102,7 @@ except ImportError:
     from alira_care_orchestrator import (
         QUESTION_BANK as ALIRA_CARE_QUESTION_BANK,
         FUNCTIONAL_ISSUE_CATALOG,
+        MOVEMENT_READINESS_VERSION,
         SURVEY_PREFACE,
         approved_functional_issue_categories,
         approved_question_ids,
@@ -1643,48 +1645,351 @@ def _clinical_grade(patient_parameters: Optional[Dict[str, Any]], *keys: str) ->
     return int(match.group(1)) if match else None
 
 
-def survey_interim_rehab_plan(profile: Optional[Dict[str, Any]] = None) -> List[RehabExercise]:
-    """A starting rehab plan derived from the survey alone.
+SURVEY_PLAN_MIN_EXERCISES = 4
+SURVEY_PLAN_MAX_EXERCISES = 5
+SURVEY_SENTINEL_ANSWERS = {"none", "not_sure", "unsure"}
+SURVEY_STANDING_EXERCISE_CODES = {
+    "SIT_TO_STAND_IMPAIRED",
+    "SUPPORTED_STANDING_CONTROL",
+    "GAIT_INITIATION_IMPAIRED",
+    "WEIGHT_BEARING_ASYMMETRY",
+    "DYNAMIC_BALANCE_IMPAIRED",
+}
+SURVEY_ARM_EXERCISE_CODES = {
+    "REACH_INCOMPLETE",
+    "TRUNK_COMP",
+    "SHOULDER_FLEX_LIMITED",
+    "SHOULDER_HIKE",
+    "H2M_IMPAIRED",
+    "BILATERAL_NONUSE",
+}
+SURVEY_HAND_EXERCISE_CODES = {"GROSS_GRASP", "HAND_OPENING", "PINCH_IMPAIRED"}
+SURVEY_LOWER_SEATED_EXERCISE_CODES = {
+    "LOWER_LIMB_SELECTIVE_CONTROL",
+    "ANKLE_DORSIFLEXION_CONTROL",
+    "SITTING_BALANCE_IMPAIRED",
+}
 
-    The patient always has a plan: while the movement and musculoskeletal
-    analysis is still processing (or a task such as the walking video is not
-    recorded yet), gentle survey-derived exercises for the affected domains
-    are issued, and the plan is replaced automatically once observed findings
-    arrive.
-    """
-    profile = dict(profile or {})
+# Each option names one observable everyday problem and has one direct match.
+# Compensation exercises are never used as generic fillers: trunk lean and
+# shoulder hike must be explicitly reported before those exercises are added.
+SURVEY_PROBLEM_RULES: Dict[str, Tuple[Tuple[str, str, str], ...]] = {
+    "arm": (
+        ("reach_forward", "REACH_INCOMPLETE", "reaching forward is difficult"),
+        ("raise_arm", "SHOULDER_FLEX_LIMITED", "raising the affected arm is difficult"),
+        ("hand_to_mouth", "H2M_IMPAIRED", "bringing the hand to the mouth is difficult"),
+        ("trunk_lean", "TRUNK_COMP", "staying upright while reaching is difficult"),
+        ("shoulder_hike", "SHOULDER_HIKE", "keeping the shoulder down while lifting the arm is difficult"),
+        ("use_both_arms", "BILATERAL_NONUSE", "using both arms together is difficult"),
+    ),
+    "hand": (
+        ("open_release", "HAND_OPENING", "opening the hand or releasing an object is difficult"),
+        ("grasp_hold", "GROSS_GRASP", "grasping and holding a cup-sized object is difficult"),
+        ("pinch_small_objects", "PINCH_IMPAIRED", "pinching small objects is difficult"),
+    ),
+    "mobility": (
+        ("sitting_balance", "SITTING_BALANCE_IMPAIRED", "sitting upright without losing balance is difficult"),
+        ("knee_control", "LOWER_LIMB_SELECTIVE_CONTROL", "controlling the affected knee is difficult"),
+        ("foot_clearance", "ANKLE_DORSIFLEXION_CONTROL", "lifting the toes or clearing the foot is difficult"),
+        ("sit_to_stand", "SIT_TO_STAND_IMPAIRED", "standing up from or sitting down on a chair is difficult"),
+        ("standing_balance", "SUPPORTED_STANDING_CONTROL", "standing steadily is difficult"),
+        ("weight_affected_leg", "WEIGHT_BEARING_ASYMMETRY", "putting weight through the affected leg is difficult"),
+        ("start_step", "GAIT_INITIATION_IMPAIRED", "starting a step is difficult"),
+        ("step_balance", "DYNAMIC_BALANCE_IMPAIRED", "keeping balance in a step position is difficult"),
+    ),
+}
+
+SURVEY_SUPPORTING_EXERCISES: Dict[str, Tuple[str, ...]] = {
+    "arm": ("REACH_INCOMPLETE", "SHOULDER_FLEX_LIMITED", "H2M_IMPAIRED", "BILATERAL_NONUSE"),
+    "hand": ("HAND_OPENING", "GROSS_GRASP", "BILATERAL_NONUSE", "PINCH_IMPAIRED", "REACH_INCOMPLETE"),
+    "mobility": (
+        "LOWER_LIMB_SELECTIVE_CONTROL",
+        "ANKLE_DORSIFLEXION_CONTROL",
+        "SITTING_BALANCE_IMPAIRED",
+        "SIT_TO_STAND_IMPAIRED",
+        "SUPPORTED_STANDING_CONTROL",
+        "WEIGHT_BEARING_ASYMMETRY",
+        "GAIT_INITIATION_IMPAIRED",
+    ),
+}
+
+
+def _survey_selected_values(profile: Dict[str, Any], key: str) -> Tuple[set[str], bool]:
+    """Return normalized values and whether this version of the question was answered."""
+    if key not in profile or profile.get(key) is None:
+        return set(), False
+    raw = profile.get(key)
+    values = raw if isinstance(raw, (list, tuple, set)) else [raw]
+    selected = {str(value).strip().lower() for value in values if str(value).strip()}
+    # An ambiguous sentinel/positive combination is not treated as evidence.
+    if selected & SURVEY_SENTINEL_ANSWERS:
+        return set(), True
+    return selected, True
+
+
+def _survey_has_helper(profile: Dict[str, Any]) -> Optional[bool]:
+    value = profile.get("has_caregiver")
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"yes", "true", "1"}
+
+
+def _survey_candidate_is_eligible(code: str, profile: Dict[str, Any]) -> bool:
     sitting = str(profile.get("sitting_ability") or "").lower()
     arm = str(profile.get("affected_arm_movement") or "").lower()
     hand = str(profile.get("affected_hand_movement") or "").lower()
     mobility = str(profile.get("mobility_level") or "").lower()
-    issues: List[FunctionalIssue] = []
-    if sitting == "independent" and arm in {"most_movements", "some_movement", "help_only", "not_sure"}:
-        issues.append(FunctionalIssue(
-            code="REACH_INCOMPLETE",
-            label="Reaching may need support (reported in your survey)",
-            description="Derived from your movement-readiness answers, not a camera observation.",
-            source="survey", severity="mild", related_task="T1",
-        ))
-    if sitting == "independent" and hand in {"some_finger_movement", "very_little_movement", "not_sure"}:
-        issues.append(FunctionalIssue(
-            code="HAND_OPENING",
-            label="Hand opening may need support (reported in your survey)",
-            description="Derived from your movement-readiness answers, not a camera observation.",
-            source="survey", severity="mild", related_task="H1",
-        ))
-    if mobility in {"independent", "cane", "walker"}:
-        issues.append(FunctionalIssue(
-            code="SIT_TO_STAND_IMPAIRED",
-            label="Standing practice to support walking (reported in your survey)",
-            description="Derived from your movement-readiness answers, not a camera observation.",
-            source="survey", severity="mild", related_task="L2",
-        ))
-    plan = build_rehab_plan(issues, profile)
-    for exercise in plan:
-        exercise.selection_reason = (
-            "Starting plan from your survey answers - it is updated automatically once your movement analysis is complete."
+    clearance = str(profile.get("standing_exercise_clearance") or "").lower()
+    helper = _survey_has_helper(profile)
+
+    seated_safe = sitting == "independent" or (sitting == "needs_support" and helper is not False)
+    if code in SURVEY_ARM_EXERCISE_CODES:
+        if not seated_safe or arm in {"", "no_movement", "not_sure"}:
+            return False
+        if arm == "help_only" and helper is False:
+            return False
+    if code in SURVEY_HAND_EXERCISE_CODES:
+        if not seated_safe or hand in {"", "not_affected", "no_movement", "not_sure"}:
+            return False
+        if hand == "help_only" and helper is False:
+            return False
+        if code == "PINCH_IMPAIRED" and hand not in {"opens_and_moves", "some_finger_movement"}:
+            return False
+        if code == "GROSS_GRASP" and hand not in {"opens_and_moves", "some_finger_movement", "very_little_movement"}:
+            return False
+    if code in SURVEY_LOWER_SEATED_EXERCISE_CODES and not seated_safe:
+        return False
+    if code in SURVEY_STANDING_EXERCISE_CODES:
+        if mobility in {"", "wheelchair", "unable_walk", "not_cleared", "unsure"}:
+            return False
+        if clearance == "independent":
+            return code != "DYNAMIC_BALANCE_IMPAIRED" or mobility in {"independent", "cane", "walker"}
+        if clearance == "with_support" and helper is True:
+            return code != "DYNAMIC_BALANCE_IMPAIRED"
+        return False
+    return True
+
+
+def _round_robin_survey_candidates(
+    buckets: Dict[str, List[Tuple[str, str]]],
+) -> List[Tuple[str, str, str]]:
+    ordered: List[Tuple[str, str, str]] = []
+    offsets = {domain: 0 for domain in buckets}
+    while any(offsets[domain] < len(buckets[domain]) for domain in buckets):
+        for domain in ("arm", "hand", "mobility"):
+            if offsets[domain] >= len(buckets[domain]):
+                continue
+            code, reason = buckets[domain][offsets[domain]]
+            offsets[domain] += 1
+            ordered.append((code, domain, reason))
+    return ordered
+
+
+def survey_rehab_plan(profile: Optional[Dict[str, Any]] = None) -> List[RehabExercise]:
+    """Select up to five exercises using only patient-reported survey problems.
+
+    Exact problem matches are selected first and distributed across reported
+    domains. When fewer than four safe matches remain, only same-domain
+    foundation exercises may fill the plan. Safety filters can intentionally
+    leave fewer than four exercises; unrelated or unsafe exercises are never
+    added just to reach a count target.
+    """
+    profile = dict(profile or {})
+    if str(profile.get("movement_pain") or "").lower() == "severe_or_worsening":
+        return []
+
+    question_keys = {
+        "arm": "arm_activity_difficulties",
+        "hand": "hand_activity_difficulties",
+        "mobility": "mobility_activity_difficulties",
+    }
+    direct: Dict[str, List[Tuple[str, str]]] = {domain: [] for domain in question_keys}
+    active_domains: List[str] = []
+    for domain, question_key in question_keys.items():
+        selected, answered = _survey_selected_values(profile, question_key)
+        for option, code, problem in SURVEY_PROBLEM_RULES[domain]:
+            if option in selected and _survey_candidate_is_eligible(code, profile):
+                direct[domain].append((code, f"you reported that {problem}"))
+        if selected:
+            active_domains.append(domain)
+        if answered:
+            continue
+
+        # Backward compatibility for profiles saved before the decisive
+        # activity questions existed. These broad answers are not used once
+        # the patient has answered the new problem question.
+        if domain == "arm" and str(profile.get("affected_arm_movement") or "").lower() in {
+            "most_movements", "some_movement", "help_only",
+        }:
+            direct[domain].append(("REACH_INCOMPLETE", "your earlier survey reported reduced affected-arm movement"))
+            active_domains.append(domain)
+        elif domain == "hand" and str(profile.get("affected_hand_movement") or "").lower() in {
+            "opens_and_moves", "some_finger_movement", "very_little_movement", "help_only",
+        }:
+            direct[domain].append(("HAND_OPENING", "your earlier survey reported affected-hand movement difficulty"))
+            active_domains.append(domain)
+        elif domain == "mobility":
+            areas = {str(value).lower() for value in (profile.get("affected_areas") or [])}
+            mobility = str(profile.get("mobility_level") or "").lower()
+            if any(value.endswith("_lower") for value in areas) or mobility in {
+                "cane", "walker", "person_assist", "wheelchair", "unable_walk", "not_cleared",
+            }:
+                direct[domain].append(("LOWER_LIMB_SELECTIVE_CONTROL", "your earlier survey reported a lower-limb or mobility difficulty"))
+                active_domains.append(domain)
+
+    ordered_candidates = _round_robin_survey_candidates(direct)
+    seen_codes = {code for code, _, _ in ordered_candidates}
+
+    if len(seen_codes) < SURVEY_PLAN_MIN_EXERCISES:
+        support_buckets: Dict[str, List[Tuple[str, str]]] = {domain: [] for domain in question_keys}
+        for domain in dict.fromkeys(active_domains):
+            for code in SURVEY_SUPPORTING_EXERCISES[domain]:
+                if code in seen_codes or not _survey_candidate_is_eligible(code, profile):
+                    continue
+                support_buckets[domain].append((
+                    code,
+                    f"it is a foundation exercise for the {domain.replace('_', ' ')} difficulty reported in your survey",
+                ))
+                seen_codes.add(code)
+        ordered_candidates.extend(_round_robin_survey_candidates(support_buckets))
+
+    selected_candidates: List[Tuple[str, str, str]] = []
+    selected_codes: set[str] = set()
+    for code, domain, reason in ordered_candidates:
+        if code in selected_codes:
+            continue
+        selected_candidates.append((code, domain, reason))
+        selected_codes.add(code)
+        if len(selected_candidates) >= SURVEY_PLAN_MAX_EXERCISES:
+            break
+
+    issues = [
+        FunctionalIssue(
+            code=code,
+            label=f"{reason.capitalize()} (survey report)",
+            description="This match comes from the patient's survey answers, not camera or model findings.",
+            source="survey_reported_problem",
+            severity="mild",
+            related_task=f"SURVEY_{domain.upper()}",
         )
-    return plan
+        for code, domain, reason in selected_candidates
+    ]
+    plan = build_rehab_plan(issues, profile)
+    reason_by_code = {code: reason for code, _, reason in selected_candidates}
+    domain_by_code = {code: domain for code, domain, _ in selected_candidates}
+    supervised_ids = {
+        "ex_sit_to_stand", "ex_supported_stand", "ex_supported_step", "ex_weight_shift", "ex_step_stance",
+    }
+    assistance_reported = (
+        str(profile.get("sitting_ability") or "").lower() == "needs_support"
+        or str(profile.get("affected_arm_movement") or "").lower() == "help_only"
+        or str(profile.get("affected_hand_movement") or "").lower() == "help_only"
+        or str(profile.get("standing_exercise_clearance") or "").lower() == "with_support"
+    )
+    raw_priorities = profile.get("patient_priorities") or []
+    if isinstance(raw_priorities, str):
+        raw_priorities = [raw_priorities]
+    goal = str((raw_priorities or [profile.get("primary_goal") or ""])[0] or "").strip()
+    for index, exercise in enumerate(plan):
+        reason = reason_by_code.get(exercise.targets_issue, "it supports a difficulty reported in your survey")
+        exercise_domain = domain_by_code.get(exercise.targets_issue, "")
+        base_safety_note = (
+            "Use a stable support and stop for new pain, marked fatigue, dizziness, or any loss of balance."
+            if exercise_domain == "mobility"
+            else (exercise.safety_note or "")
+        )
+        safety_note = (
+            f"{base_safety_note} This exercise was selected from self-reported survey information; "
+            "stop if it feels unsafe and confirm suitability with your rehabilitation clinician."
+        ).strip()
+        if exercise.id in supervised_ids:
+            safety_note += " Use only the standing clearance, fixed support, and close supervision stated in your survey."
+        updates: Dict[str, Any] = {
+            "selection_reason": f"Starting plan from your survey answers - selected because {reason}.",
+            "safety_note": safety_note,
+            "linked_goal": goal or exercise.linked_goal,
+            "requires_clinician_confirmation": exercise.id in supervised_ids or assistance_reported,
+        }
+        if assistance_reported:
+            updates.update({
+                "sets": min(exercise.sets, 2),
+                "reps": min(exercise.reps, 8),
+                "frequency": (
+                    exercise.frequency if exercise.id in supervised_ids
+                    else "Daily with therapist-approved assistance"
+                ),
+            })
+        plan[index] = exercise.model_copy(update=updates)
+    return plan[:SURVEY_PLAN_MAX_EXERCISES]
+
+
+def survey_interim_rehab_plan(profile: Optional[Dict[str, Any]] = None) -> List[RehabExercise]:
+    """Backward-compatible name for callers that previously requested an interim plan."""
+    return survey_rehab_plan(profile)
+
+
+def _clinical_gate_with_survey_plan(
+    clinical_review_gate: Dict[str, Any],
+    plan: Sequence[RehabExercise],
+) -> Dict[str, Any]:
+    """Expose a survey plan without claiming that camera/model evidence selected it."""
+    awaiting_analysis = clinical_review_gate.get("status") == "awaiting_model_analysis"
+    count = len(plan)
+    return {
+        **clinical_review_gate,
+        "rehab_access": "interim" if awaiting_analysis else "allowed",
+        "rehab_plan_source": "survey_reported_problems",
+        "interim_plan_available": awaiting_analysis,
+        "patient_title": "Your survey-based plan is ready",
+        "patient_message": (
+            f"Your {count}-exercise plan was selected only from the functional difficulties you reported. "
+            "Camera and movement-model results do not add, remove, or replace exercises."
+        ),
+        "next_step": "Review the safety notes and use only the support or supervision stated in your plan.",
+    }
+
+
+def _clinical_gate_with_survey_hold(
+    clinical_review_gate: Dict[str, Any],
+    profile: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Explain why reported problems did not produce an automatic active plan."""
+    pain = str(profile.get("movement_pain") or "").lower()
+    selected_problems = set()
+    for key in (
+        "arm_activity_difficulties",
+        "hand_activity_difficulties",
+        "mobility_activity_difficulties",
+    ):
+        values, _ = _survey_selected_values(profile, key)
+        selected_problems.update(values)
+    if pain == "severe_or_worsening":
+        reason_code = "survey_severe_or_worsening_pain"
+        message = (
+            "You reported severe or worsening pain with movement, so automatic exercises are paused. "
+            "This plan should not start until you have clinical advice."
+        )
+    elif selected_problems:
+        reason_code = "survey_problem_has_no_safe_automatic_match"
+        message = (
+            "You reported a functional difficulty, but the sitting, movement, helper, or standing-clearance "
+            "answers do not support a safe automatic exercise match."
+        )
+    else:
+        return clinical_review_gate
+    return {
+        **clinical_review_gate,
+        "status": "therapist_confirmation_required",
+        "rehab_access": "blocked",
+        "reason_code": reason_code,
+        "therapist_confirmation_required": True,
+        "rehab_plan_source": "survey_reported_problems",
+        "patient_title": "Please check with your rehabilitation clinician",
+        "patient_message": message,
+        "next_step": "Ask your physiotherapist or rehabilitation clinician what movement is safe before starting exercises.",
+    }
 
 
 def build_rehab_plan(
@@ -2548,7 +2853,13 @@ def _assessment_patient_parameters(
     merged = dict(submitted or {})
     profile = user.get("profile") if isinstance(user, dict) and isinstance(user.get("profile"), dict) else {}
     if profile:
-        for key in ("age_band", "months_since_stroke", "side_affected", "affected_areas", "affected_areas_other", "dominant_hand", "mobility_level", "sitting_ability", "affected_arm_movement", "affected_hand_movement", "movement_pain", "instruction_support", "medical_conditions", "medical_conditions_other", "has_caregiver"):
+        for key in (
+            "age_band", "months_since_stroke", "side_affected", "affected_areas", "affected_areas_other",
+            "dominant_hand", "mobility_level", "sitting_ability", "affected_arm_movement",
+            "arm_activity_difficulties", "affected_hand_movement", "hand_activity_difficulties",
+            "mobility_activity_difficulties", "standing_exercise_clearance", "movement_pain",
+            "instruction_support", "medical_conditions", "medical_conditions_other", "has_caregiver",
+        ):
             if profile.get(key) is not None:
                 merged.setdefault(key, profile[key])
         if not merged.get("patient_priorities"):
@@ -2664,32 +2975,16 @@ async def submit_assessment(payload: AssessmentSubmit, request: Request):
         trusted_model_outputs,
         expected_task_count,
     )
-    if clinical_review_gate.get("rehab_access") == "allowed":
-        plan = build_rehab_plan(issues, patient_parameters)
-    elif clinical_review_gate.get("status") == "awaiting_model_analysis":
-        # The patient always has a plan: a survey-derived starting plan is
-        # issued while the analysis processes, then replaced by the observed
-        # plan when the validated results land.
-        plan = survey_interim_rehab_plan({**(user.get("profile") or {}), **(patient_parameters or {})})
-        if plan:
-            clinical_review_gate = {
-                **clinical_review_gate,
-                "rehab_access": "interim",
-                "rehab_plan_source": "survey_interim",
-                "interim_plan_available": True,
-                "patient_title": "Your starting plan is ready",
-                "patient_message": (
-                    "A starting plan built from your survey answers is active now. It will be updated "
-                    "automatically once the movement and musculoskeletal analysis is complete."
-                ),
-                "next_step": "Begin the gentle starting plan. Alira refreshes it when your analysis finishes.",
-            }
-    else:
+    survey_profile = {**(user.get("profile") or {}), **(patient_parameters or {})}
+    plan = survey_rehab_plan(survey_profile)
+    if clinical_review_gate.get("status") in {"awaiting_model_analysis", "clear"} and plan:
+        clinical_review_gate = _clinical_gate_with_survey_plan(clinical_review_gate, plan)
+    elif clinical_review_gate.get("status") in {"awaiting_model_analysis", "clear"}:
+        clinical_review_gate = _clinical_gate_with_survey_hold(clinical_review_gate, survey_profile)
+    elif clinical_review_gate.get("status") not in {"awaiting_model_analysis", "clear"}:
+        # A validated survey/objective mismatch remains a safety hold. The
+        # observed findings still never choose exercise IDs.
         plan = []
-    previous_assessments = await _care_assessments_for_user(user["id"])
-    latest_previous = max(previous_assessments, key=lambda item: item.get("created_at", ""), default=None)
-    if access.get("trigger") == "new_functional_issue":
-        plan = _merge_targeted_rehab_plan(plan, latest_previous)
     if plan and clinical_review_gate.get("rehab_access") == "allowed":
         await consume_credits(user["id"], "rehab_plan")
     _record_alira_action(
@@ -2698,8 +2993,7 @@ async def submit_assessment(payload: AssessmentSubmit, request: Request):
         user_id=user["id"],
         status="completed" if plan else "empty",
         details={
-            "plan_source": clinical_review_gate.get("rehab_plan_source")
-            or ("observed_findings" if clinical_review_gate.get("rehab_access") == "allowed" else "none"),
+            "plan_source": clinical_review_gate.get("rehab_plan_source") or "none",
             "rehab_access": clinical_review_gate.get("rehab_access"),
             "review_status": clinical_review_gate.get("status"),
             "exercises": [
@@ -3276,25 +3570,15 @@ async def save_model_results(assessment_id: str, payload: ModelResultSubmit, req
         outputs,
         expected_task_count,
     )
-    plan = build_rehab_plan(issues, patient_parameters)
-    if clinical_review_gate.get("rehab_access") != "allowed":
-        if clinical_review_gate.get("status") == "awaiting_model_analysis":
-            plan = survey_interim_rehab_plan(patient_parameters)
-            if plan:
-                clinical_review_gate = {
-                    **clinical_review_gate,
-                    "rehab_access": "interim",
-                    "rehab_plan_source": "survey_interim",
-                    "interim_plan_available": True,
-                    "patient_title": "Your starting plan is ready",
-                    "patient_message": (
-                        "A starting plan built from your survey answers is active now. It will be updated "
-                        "automatically once the movement and musculoskeletal analysis is complete."
-                    ),
-                    "next_step": "Begin the gentle starting plan. Alira refreshes it when your analysis finishes.",
-                }
-        else:
-            plan = []
+    # Model output remains available for the movement report and safety gate,
+    # but never selects or replaces exercise IDs in the current policy.
+    plan = survey_rehab_plan(patient_parameters)
+    if clinical_review_gate.get("status") in {"awaiting_model_analysis", "clear"} and plan:
+        clinical_review_gate = _clinical_gate_with_survey_plan(clinical_review_gate, plan)
+    elif clinical_review_gate.get("status") in {"awaiting_model_analysis", "clear"}:
+        clinical_review_gate = _clinical_gate_with_survey_hold(clinical_review_gate, patient_parameters)
+    elif clinical_review_gate.get("status") not in {"awaiting_model_analysis", "clear"}:
+        plan = []
     expected_summary_domains = _expected_domains_for_tasks(package_id, assigned_task_ids)
     body_function_summary = patient_body_function_summary(
         task_results,
@@ -7712,7 +7996,7 @@ REHAB_RUNNER_CONFIG: Dict[str, Dict[str, Any]] = {
         "setup_voice": "Welcome. We are going to practice the graded forward reach. Sit upright, with your back away from the chair. Place your affected hand on your lap. I'll guide you through each repetition.",
         "cycle": [
             {"caption": "Reach forward to the target", "voice": "Slowly reach your hand forward, as far as you comfortably can.", "target": {"x": 0.5, "y": 0.40, "r": 0.10}, "hold_ms": 1200},
-            {"caption": "Return to lap", "voice": "Now gently return your hand to your lap.", "target": {"x": 0.5, "y": 0.78, "r": 0.10}, "hold_ms": 1200},
+            {"caption": "Return to lap", "voice": "Now gently return your hand to the same calibrated place on your lap.", "target": {"x": 0.5, "y": 0.78, "r": 0.10, "landmark": "LAP_DYNAMIC"}, "hold_ms": 1200},
         ],
         "feedback_rules": [
             {"if": "trunk_lean_deg > 18", "say": "I noticed your back leaned forward. On the next repetition, try keeping your spine tall and let your arm do the work."},
@@ -7966,12 +8250,226 @@ REHAB_RUNNER_CONFIG: Dict[str, Dict[str, Any]] = {
 }
 
 
+# Every exercise uses the same automatic calibration, overlay geometry, and
+# auditable 0-100 scoring contract. Exercise-specific instructions and joints
+# differ, but the patient experience and calculation rules do not.
+EXERCISE_CALIBRATION_CONTRACT: Dict[str, Any] = {
+    "minimum_baseline_samples": 45,
+    "minimum_tracking_quality": 0.72,
+    "maximum_anchor_drift": 0.035,
+    "lap_minimum_samples": 8,
+    "lap_minimum_duration_ms": 650,
+    "lap_stable_sample_ratio": 0.70,
+}
+
+EXERCISE_OVERLAY_STYLE: Dict[str, Any] = {
+    "keypoint_color": "#D9E5DC",
+    "keypoint_radius_px": 3,
+    "connector_color": "#4A7856",
+    "connector_width_px": 4,
+    "target_color": "#E18E6D",
+    "target_edge_width_px": 6,
+    "target_inner_scale": 0.55,
+    "hold_ring_color": "#3C8255",
+    "hold_ring_scale": 1.25,
+    "hold_ring_width_px": 8,
+    "calibration_target_color": "#7FE5A3",
+    "calibration_target_fill": "rgba(74,120,86,.28)",
+}
+
+EXERCISE_SCORING_METHOD: Dict[str, Any] = {
+    "scale_min": 0,
+    "scale_max": 100,
+    "minimum_scored_frames": 8,
+    "formula": "weighted mean of capped ROM-attainment percentages minus confirmed compensation penalties",
+    "rom_cap_percent": 100,
+    "compensation_confirmation": "minimum frame count and minimum eligible-frame ratio must both be met",
+    "quality_boundary": "camera-derived coaching score; not a diagnosis or laboratory motion-capture measurement",
+}
+
+EXERCISE_COACHING_PROFILES: Dict[str, Dict[str, Any]] = {
+    "ex_reach": {
+        "training_focus": "Forward reach using shoulder flexion and elbow extension while the trunk and shoulder girdle remain controlled.",
+        "repetition_definition": "Affected hand leaves the calibrated lap point, reaches and holds the forward target, then returns to the same lap point.",
+        "rom_cues": {
+            "shoulder_flexion": "On the next repetition, let the affected arm travel a little farther forward while your chest stays tall.",
+            "elbow_extension": "On the next repetition, gently straighten the elbow a little more as the hand approaches the target.",
+        },
+        "compensation_labels": {"trunk_lean": "Excess trunk lean", "shoulder_hike": "Shoulder hiking"},
+        "measurement_limit": "The camera estimates joint angles and posture; it does not measure strength, pain, or shoulder loading.",
+    },
+    "ex_trunk": {
+        "training_focus": "Arm reach with reduced trunk substitution and maintained chair-back contact.",
+        "repetition_definition": "Reach to and hold the forward target without leaving the supported trunk position, then return to the calibrated start point.",
+        "rom_cues": {
+            "shoulder_flexion": "On the next repetition, keep your back settled and move the arm a little farther from the shoulder.",
+            "elbow_extension": "On the next repetition, keep chair-back contact and gently straighten the elbow toward the target.",
+        },
+        "compensation_labels": {"trunk_lean": "Loss of trunk restraint", "shoulder_hike": "Shoulder hiking"},
+        "measurement_limit": "Camera posture is a proxy for trunk restraint; the system cannot verify physical contact pressure against the chair.",
+    },
+    "ex_wallslide": {
+        "training_focus": "Pain-free supported shoulder elevation with a relaxed shoulder and centred trunk.",
+        "repetition_definition": "Slide the supported affected arm to the upper target, hold, then return to the calibrated supported start point.",
+        "rom_cues": {
+            "shoulder_flexion": "On the next repetition, let the support carry the arm while you slide slightly higher without pain.",
+            "elbow_extension": "On the next repetition, keep the forearm supported and the elbow gently lengthened rather than forcing it straight.",
+        },
+        "compensation_labels": {"shoulder_hike": "Shoulder hiking", "side_lean": "Trunk side lean"},
+        "measurement_limit": "The camera cannot detect pain or verify the amount of table or wall support.",
+    },
+    "ex_scapdepress": {
+        "training_focus": "Scapular depression and a short controlled reach without trunk substitution.",
+        "repetition_definition": "Set the affected shoulder away from the ear, reach to and hold the target, then return to the calibrated start point.",
+        "rom_cues": {
+            "shoulder_flexion": "Before the next repetition, settle the shoulder down, then reach a little farther without lifting it.",
+            "elbow_extension": "On the next repetition, lengthen through the elbow while the shoulder stays relaxed.",
+        },
+        "compensation_labels": {"shoulder_hike": "Shoulder hiking", "trunk_lean": "Trunk lean"},
+        "measurement_limit": "Shoulder-height asymmetry is a visual proxy and does not directly measure scapular muscle activation.",
+    },
+    "ex_h2m": {
+        "training_focus": "Coordinated elbow flexion and shoulder lift for hand-to-mouth activity without moving the trunk toward the hand.",
+        "repetition_definition": "Bring the affected hand to the mouth target, hold briefly, then return to the calibrated lap/start point.",
+        "rom_cues": {
+            "elbow_flexion": "On the next repetition, bend the elbow a little more so the hand comes to the mouth instead of the mouth moving forward.",
+            "shoulder_flexion": "On the next repetition, add only the small comfortable shoulder lift needed to guide the hand upward.",
+        },
+        "compensation_labels": {"trunk_forward": "Forward trunk substitution", "shoulder_hike": "Shoulder hiking"},
+        "measurement_limit": "The runner scores joint motion and posture; it does not verify swallowing safety or the contents of a cup.",
+    },
+    "ex_grasp": {
+        "training_focus": "Reach, cylindrical grasp, low lift, cross-table transport, controlled release, and return.",
+        "repetition_definition": "Reach to the light object, transport it across the table, place and release it, then return the empty hand to the calibrated start point.",
+        "rom_cues": {
+            "shoulder_flexion": "On the next repetition, bring the arm to the object without taking your chest with it.",
+            "shoulder_abduction": "On the next repetition, move the light object across with the arm while both shoulders stay square.",
+        },
+        "compensation_labels": {"trunk_lean": "Trunk lean or rotation", "shoulder_hike": "Shoulder hiking"},
+        "measurement_limit": "The current camera score reflects arm transport and posture; it cannot confirm grip force or reliable object coupling.",
+    },
+    "ex_handopen": {
+        "training_focus": "Active finger extension and controlled release with the forearm supported and wrist near neutral.",
+        "repetition_definition": "Open the affected fingers as far as comfortable, hold briefly, release/relax, then confirm the repetition.",
+        "rom_cues": {
+            "finger_extension": "On the next repetition, keep the wrist steady and open the fingers a little wider, then hold for one comfortable second.",
+        },
+        "compensation_labels": {"wrist_flexion": "Wrist flexion substitution"},
+        "measurement_limit": "Single-camera hand angles are coaching estimates and do not measure grip strength, tone, or passive range.",
+    },
+    "ex_pinch": {
+        "training_focus": "Thumb-to-finger opposition, controlled small-object placement, and release with a stable wrist.",
+        "repetition_definition": "Pinch one object, move it to the container, release it, then confirm the placement.",
+        "rom_cues": {
+            "pinch_flexion": "On the next repetition, keep the wrist quiet and bring the thumb and finger pads together with a smaller, slower motion.",
+        },
+        "compensation_labels": {"wrist_flexion": "Wrist flexion substitution"},
+        "measurement_limit": "The camera estimates finger motion but cannot verify pinch force or whether the object was securely placed.",
+    },
+    "ex_bilateral": {
+        "training_focus": "Synchronous two-arm motion with similar range and a centred trunk.",
+        "repetition_definition": "Bring both hands together at the target, then open both arms outward through a matched range.",
+        "rom_cues": {
+            "bilateral_shoulder_flexion": "On the next repetition, slow down and move both arms through the same comfortable height and distance.",
+        },
+        "compensation_labels": {"arm_asymmetry": "Unequal arm range", "trunk_lean": "Trunk lean"},
+        "measurement_limit": "The score compares visible joint motion; it does not measure force contribution from each arm.",
+    },
+    "ex_lower_selective": {
+        "training_focus": "Selective affected-knee extension and controlled lowering while the thigh, pelvis, and trunk remain stable.",
+        "repetition_definition": "Begin with both feet supported, straighten the affected knee within comfort, then lower the foot under control.",
+        "rom_cues": {
+            "knee_extension": "On the next repetition, keep the thigh supported and slowly straighten the knee a little farther before lowering.",
+        },
+        "compensation_labels": {"hip_hike": "Pelvic hiking", "trunk_lean": "Backward or side trunk lean"},
+        "measurement_limit": "The camera estimates knee angle; it does not measure quadriceps force or chair pressure.",
+    },
+    "ex_ankle_dorsiflexion": {
+        "training_focus": "Ankle dorsiflexion/toe lift with the heel planted and knee held steady.",
+        "repetition_definition": "Set the heel and knee, lift the toes and forefoot, hold briefly, then lower slowly to the floor.",
+        "rom_cues": {
+            "ankle_dorsiflexion": "On the next repetition, keep the heel heavy and lift the toes and forefoot a little higher before lowering slowly.",
+        },
+        "compensation_labels": {"heel_lift": "Heel lift", "knee_motion": "Knee substitution"},
+        "measurement_limit": "The toe-lift angle is a 2D camera estimate and can be affected by camera placement and footwear.",
+    },
+    "ex_sit_to_stand": {
+        "training_focus": "Sequenced forward translation, bilateral hip/knee extension, upright stabilization, and controlled sitting.",
+        "repetition_definition": "Prepare safely, rise to supported standing, stabilize, then lower to the chair with the same agreed assistance.",
+        "rom_cues": {
+            "hip_extension": "On the next repetition, bring your hips forward into the agreed supported upright position before you settle.",
+            "knee_extension": "On the next repetition, press through both feet and let both knees straighten together without locking them.",
+        },
+        "compensation_labels": {"uneven_loading": "Uneven limb loading proxy", "trunk_side_lean": "Lateral trunk lean"},
+        "measurement_limit": "Pose symmetry is not a force-plate measurement; support and hands-on guarding must not be reduced based on the score.",
+    },
+    "ex_supported_stand": {
+        "training_focus": "Supported upright hip/knee alignment, midline trunk control, and stable return to sitting.",
+        "repetition_definition": "Prepare with fixed support and guarding, stand in alignment, hold safely, then return to the chair.",
+        "rom_cues": {
+            "hip_extension": "On the next repetition, use the same support and bring the hips gently toward upright without leaning back.",
+            "knee_extension": "On the next repetition, keep both knees comfortably straight and pointing with the feet while you hold.",
+        },
+        "compensation_labels": {"trunk_side_lean": "Lateral trunk lean", "knee_collapse": "Knee alignment loss"},
+        "measurement_limit": "The camera cannot measure weight distribution, support force, or fall risk; guarding remains mandatory.",
+    },
+    "ex_supported_step": {
+        "training_focus": "Safe weight shift, affected-foot clearance and placement, then controlled return to stance.",
+        "repetition_definition": "Stabilize with support, advance and place the affected foot, then return it and regain the starting stance.",
+        "rom_cues": {
+            "hip_flexion": "On the next repetition, keep the pelvis level and make a small clear step from the hip.",
+            "knee_flexion": "On the next repetition, bend the affected knee enough for safe toe clearance without making the step larger.",
+        },
+        "compensation_labels": {"hip_hike": "Pelvic hiking", "trunk_lean": "Trunk lean"},
+        "measurement_limit": "The camera cannot confirm ground reaction forces or safety of the walking aid; close guarding remains unchanged.",
+    },
+    "ex_weight_shift": {
+        "training_focus": "Controlled pelvic translation toward the affected side with aligned knee and minimal shoulder-led lean.",
+        "repetition_definition": "Begin in supported midline, shift the pelvis toward the affected foot, pause, then return to the middle.",
+        "rom_cues": {
+            "pelvic_shift": "On the next repetition, keep the movement small and guide the pelvis a little farther toward the affected foot.",
+        },
+        "compensation_labels": {"shoulder_lean": "Shoulder-led lean", "knee_collapse": "Knee alignment loss"},
+        "measurement_limit": "Pelvic position is only a visual proxy for weight bearing; the camera does not measure force under either foot.",
+    },
+    "ex_sitting_balance": {
+        "training_focus": "Controlled seated lateral reach and accurate return to midline while both hips remain supported.",
+        "repetition_definition": "Establish upright midline, make a small guarded reach, then return fully to the calibrated middle.",
+        "rom_cues": {
+            "trunk_lateral_rom": "On the next repetition, make a small smooth reach, then finish with your chest precisely back in the middle.",
+        },
+        "compensation_labels": {"hip_lift": "Loss of hip contact", "rotation": "Trunk rotation"},
+        "measurement_limit": "The camera estimates trunk motion but cannot measure seat pressure or protective balance reactions.",
+    },
+    "ex_step_stance": {
+        "training_focus": "Short supported step placement, stance control, knee alignment, and controlled return.",
+        "repetition_definition": "Prepare with support, enter the therapist-approved short step stance, hold, then return to an even stance.",
+        "rom_cues": {
+            "hip_flexion": "On the next repetition, place the foot only as far forward as you can control with the same support.",
+            "knee_flexion": "On the next repetition, use a small comfortable knee bend so the step clears and lands softly.",
+        },
+        "compensation_labels": {"trunk_lean": "Trunk lean", "knee_collapse": "Front-knee alignment loss"},
+        "measurement_limit": "The camera cannot determine fall risk or support force; therapist-approved stance and guarding remain unchanged.",
+    },
+    "ex_maintenance": {
+        "training_focus": "Comfortable maintenance of shoulder and elbow range with smooth posture-controlled reaching.",
+        "repetition_definition": "Reach to and hold the target through a comfortable range, then return to the calibrated start point.",
+        "rom_cues": {
+            "shoulder_flexion": "On the next repetition, move through your full comfortable shoulder range while your chest stays tall.",
+            "elbow_extension": "On the next repetition, gently lengthen the elbow toward the target without forcing the joint.",
+        },
+        "compensation_labels": {"trunk_lean": "Trunk lean", "shoulder_hike": "Shoulder hiking"},
+        "measurement_limit": "This camera score tracks visible range and posture only; it does not measure resistance, strength, or fatigue.",
+    },
+}
+
+
 # Camera-derived movement guidance standards. Targets are conservative 2D ROM
 # goals for coaching and progress tracking, not diagnostic measurements.
 EXERCISE_MOVEMENT_STANDARDS: Dict[str, Dict[str, Any]] = {
     "ex_reach": {
         "tracking_mode": "pose", "posture": "seated",
-        "calibration_instruction": "Sit tall with your face, shoulders, hips, elbows, and wrists visible. Rest both hands comfortably and hold still while I set your starting position.",
+        "calibration_instruction": "Before we begin, sit still with your affected hand resting on the visible part of your lap. Keep your face, shoulders, affected arm, and the top of your affected thigh in view. You do not need to show your knees or your full lap. I will locate your lap target for this exercise.",
         "rom_steps": [
             {"id": "shoulder_flexion", "label": "Shoulder reach", "metric": "shoulder_flexion", "targets": {"easy": 45, "medium": 60, "difficult": 75}, "weight": 0.65},
             {"id": "elbow_extension", "label": "Elbow extension", "metric": "elbow_extension", "targets": {"easy": 130, "medium": 140, "difficult": 150}, "weight": 0.35},
@@ -8375,12 +8873,17 @@ def _configure_rehab_runner(exercise_id: str, difficulty: str, variation: str) -
         EXERCISE_MOVEMENT_STANDARDS.get(exercise_id)
         or EXERCISE_MOVEMENT_STANDARDS["ex_maintenance"]
     )
+    coaching_profile = _copy.deepcopy(
+        EXERCISE_COACHING_PROFILES.get(exercise_id)
+        or EXERCISE_COACHING_PROFILES["ex_maintenance"]
+    )
     preset = SESSION_DIFFICULTY_PRESETS[level]
     rules = EXERCISE_SESSION_RULES.get(exercise_id) or EXERCISE_SESSION_RULES["ex_maintenance"]
     target_steps = [step for step in cfg.get("cycle") or [] if isinstance(step.get("target"), dict)]
     for index, step in enumerate(target_steps):
         target = step["target"]
-        is_return_target = float(target.get("y", 0.5)) >= 0.70
+        is_calibrated_target = target.get("landmark") == "LAP_DYNAMIC"
+        is_return_target = is_calibrated_target or float(target.get("y", 0.5)) >= 0.70
         if not is_return_target:
             y = float(target.get("y", 0.5)) + preset["target_y_delta"]
             target["y"] = max(0.16, min(0.68, round(y, 3)))
@@ -8393,7 +8896,7 @@ def _configure_rehab_runner(exercise_id: str, difficulty: str, variation: str) -
             elif selected_variation == "alternate":
                 shift = 0.10 if index % 2 == 0 else -0.10
                 target["x"] = max(0.18, min(0.82, round(x + shift, 3)))
-        target["r"] = max(0.07, min(0.34, round(float(target.get("r", 0.10)) * preset["radius_scale"], 3)))
+        target["r"] = 0.10 if is_calibrated_target else max(0.07, min(0.34, round(float(target.get("r", 0.10)) * preset["radius_scale"], 3)))
         step["hold_ms"] = max(600, round(float(step.get("hold_ms") or 1000) * preset["hold_scale"]))
 
     variation_cue = rules["variation"] if selected_variation == "alternate" else "Use the familiar movement pattern today."
@@ -8409,7 +8912,21 @@ def _configure_rehab_runner(exercise_id: str, difficulty: str, variation: str) -
     for rom_step in movement_standard.get("rom_steps") or []:
         rom_step["target_deg"] = float((rom_step.get("targets") or {}).get(level) or 0)
         rom_step.pop("targets", None)
+        rom_step["coaching_cue"] = str((coaching_profile.get("rom_cues") or {}).get(rom_step.get("id")) or "")
+    for compensation in movement_standard.get("compensations") or []:
+        compensation["label"] = str(
+            (coaching_profile.get("compensation_labels") or {}).get(compensation.get("id"))
+            or str(compensation.get("id") or "Compensation").replace("_", " ").title()
+        )
+    movement_standard.update({
+        "training_focus": coaching_profile["training_focus"],
+        "repetition_definition": coaching_profile["repetition_definition"],
+        "measurement_limit": coaching_profile["measurement_limit"],
+    })
     cfg["movement_standard"] = movement_standard
+    cfg["calibration_contract"] = _copy.deepcopy(EXERCISE_CALIBRATION_CONTRACT)
+    cfg["overlay_style"] = _copy.deepcopy(EXERCISE_OVERLAY_STYLE)
+    cfg["scoring_method"] = _copy.deepcopy(EXERCISE_SCORING_METHOD)
     return cfg
 
 
@@ -8538,6 +9055,8 @@ async def get_testing_library(request: Request):
             exercise.description,
             str(runner.get("setup_voice") or ""),
         ]).lower()
+        configured_runner = _configure_rehab_runner(exercise.id, "medium", "standard")
+        movement_standard = configured_runner["movement_standard"]
         exercises.append({
             **exercise.model_dump(),
             "guided_reps": int(runner.get("reps") or exercise.reps),
@@ -8545,6 +9064,15 @@ async def get_testing_library(request: Request):
             "support_required": any(term in support_text for term in ("therapist", "carer", "caregiver", "guarding", "supervised")),
             "difficulty_levels": _exercise_difficulty_levels(exercise),
             "alternate_variation": (EXERCISE_SESSION_RULES.get(exercise.id) or EXERCISE_SESSION_RULES["ex_maintenance"])["variation"],
+            "calibration_instruction": movement_standard["calibration_instruction"],
+            "calibration_contract": configured_runner["calibration_contract"],
+            "training_focus": movement_standard["training_focus"],
+            "repetition_definition": movement_standard["repetition_definition"],
+            "rom_metrics": movement_standard["rom_steps"],
+            "compensation_metrics": movement_standard["compensations"],
+            "measurement_limit": movement_standard["measurement_limit"],
+            "scoring_method": configured_runner["scoring_method"],
+            "overlay_style": configured_runner["overlay_style"],
         })
 
     return {
@@ -8640,6 +9168,11 @@ REHAB_RUNNER_HTML_TEMPLATE = r"""<!DOCTYPE html>
   #fb{position:absolute;inset:0;background:linear-gradient(180deg, rgba(74,120,86,0.92), rgba(28,32,29,0.95));padding:24px;display:flex;flex-direction:column;justify-content:center;gap:16px;text-align:center;pointer-events:auto;z-index:9;opacity:0;transition:opacity .35s}
   #fb.show{opacity:1}
   #fb .step{font-size:13px;color:#D9E5DC;letter-spacing:1px;text-transform:uppercase;font-weight:700}
+  #fb .reward{width:min(320px,100%);margin:0 auto;display:flex;align-items:center;justify-content:center;gap:12px;background:#FFF8DE;color:#155D3C;border:1px solid #F0D472;border-radius:14px;padding:12px 18px;box-shadow:0 12px 32px rgba(0,0,0,.18)}
+  #fb .rewardStar{font-size:30px;line-height:1}
+  #fb .rewardCopy{display:flex;flex-direction:column;align-items:flex-start;line-height:1.2}
+  #fb .rewardCopy strong{font-size:20px;font-weight:900}
+  #fb .rewardCopy span{font-size:13px;font-weight:750;color:#486151}
   #fb .title{font-size:22px;font-weight:800;color:#fff;line-height:1.3}
   #fb .body{font-size:16px;color:#FDFDFD;line-height:1.5;background:rgba(255,255,255,0.08);padding:14px;border-radius:14px}
   #fb .prompt{font-size:15px;color:#D9E5DC;font-style:italic}
@@ -8695,6 +9228,10 @@ REHAB_RUNNER_HTML_TEMPLATE = r"""<!DOCTYPE html>
   </div>
   <div id="fb" class="hidden">
     <div class="step" id="fbStep">Rep 1 complete</div>
+    <div class="reward" id="fbReward" role="status" aria-live="polite">
+      <span class="rewardStar" aria-hidden="true">&#11088;</span>
+      <span class="rewardCopy"><strong>+1 point</strong><span>Great repetition!</span></span>
+    </div>
     <div class="title" id="fbTitle">Here's what I noticed</div>
     <div class="body" id="fbBody">…</div>
     <div class="prompt" id="fbPrompt">When you're ready, please say <b>"Yes"</b>.</div>
@@ -8743,6 +9280,9 @@ const fbEl = document.getElementById("fb");
 const fbStep = document.getElementById("fbStep");
 const fbTitle = document.getElementById("fbTitle");
 const fbBody = document.getElementById("fbBody");
+const fbPrompt = document.getElementById("fbPrompt");
+const fbMic = document.getElementById("fbMic");
+const fbChecks = document.getElementById("fbChecks");
 const fbHeard = document.getElementById("fbHeard");
 const fbConfirmBtn = document.getElementById("fbConfirmBtn");
 const fbReplay = document.getElementById("fbReplay");
@@ -8751,19 +9291,34 @@ const checkUnderstand = document.getElementById("checkUnderstand");
 const URL_PARAMS = new URLSearchParams(window.location.search);
 const VOICE_GUIDANCE_ENABLED = URL_PARAMS.get("voice_guidance") !== "0";
 const AFFECTED_SIDE = URL_PARAMS.get("affected_side") === "left" ? "left" : "right";
+const REHAB_SESSION_ID = (URL_PARAMS.get("rehab_session_id")||"").replace(/[^a-zA-Z0-9_-]/g,"").slice(0,96);
+const REHAB_CALIBRATION_VERSION = 1;
 const STANDARD = CFG.movement_standard || {tracking_mode:"pose", posture:"seated", rom_steps:[], compensations:[]};
+const CALIBRATION_CONTRACT = CFG.calibration_contract || {};
+const SCORING_METHOD = CFG.scoring_method || {};
+const OVERLAY_STYLE = CFG.overlay_style || {};
+const HAS_DYNAMIC_LAP_TARGET = (CFG.cycle||[]).some(step=>step && step.target && step.target.landmark === "LAP_DYNAMIC");
+const LAP_CALIBRATION_MIN_SAMPLES = Number(CALIBRATION_CONTRACT.lap_minimum_samples)||8;
+const LAP_CALIBRATION_MIN_MS = Number(CALIBRATION_CONTRACT.lap_minimum_duration_ms)||650;
+const LAP_CALIBRATION_STABLE_RATIO = Number(CALIBRATION_CONTRACT.lap_stable_sample_ratio)||.70;
+const CALIBRATION_MIN_SAMPLES = Number(CALIBRATION_CONTRACT.minimum_baseline_samples)||45;
+const CALIBRATION_MIN_TRACKING_QUALITY = Number(CALIBRATION_CONTRACT.minimum_tracking_quality)||.72;
+const CALIBRATION_MAX_ANCHOR_DRIFT = Number(CALIBRATION_CONTRACT.maximum_anchor_drift)||.035;
+const SCORING_MIN_FRAMES = Number(SCORING_METHOD.minimum_scored_frames)||8;
 const NEEDS_LOWER_BODY_VIEW = (STANDARD.rom_steps||[]).some(step=>/knee|hip|ankle|pelvic|weight|step/.test(step.metric));
 const ASSESSMENT_OVERLAY_STYLE = Object.freeze({
-  landmarkColor:"#D9E5DC",
-  landmarkRadius:3,
-  connectorColor:"#4A7856",
-  connectorWidth:4,
-  targetColor:"#E18E6D",
-  targetEdgeWidth:6,
-  targetInnerScale:.55,
-  holdRingColor:"#3C8255",
-  holdRingScale:1.25,
-  holdRingWidth:8,
+  landmarkColor:OVERLAY_STYLE.keypoint_color||"#D9E5DC",
+  landmarkRadius:Number(OVERLAY_STYLE.keypoint_radius_px)||3,
+  connectorColor:OVERLAY_STYLE.connector_color||"#4A7856",
+  connectorWidth:Number(OVERLAY_STYLE.connector_width_px)||4,
+  targetColor:OVERLAY_STYLE.target_color||"#E18E6D",
+  targetEdgeWidth:Number(OVERLAY_STYLE.target_edge_width_px)||6,
+  targetInnerScale:Number(OVERLAY_STYLE.target_inner_scale)||.55,
+  holdRingColor:OVERLAY_STYLE.hold_ring_color||"#3C8255",
+  holdRingScale:Number(OVERLAY_STYLE.hold_ring_scale)||1.25,
+  holdRingWidth:Number(OVERLAY_STYLE.hold_ring_width_px)||8,
+  calibrationTargetColor:OVERLAY_STYLE.calibration_target_color||"#7FE5A3",
+  calibrationTargetFill:OVERLAY_STYLE.calibration_target_fill||"rgba(74,120,86,.28)",
 });
 
 function classifyCameraDevice({
@@ -8874,12 +9429,55 @@ let compensationEligible = {};
 let trackingFrames = 0;
 let lowQualityFrames = 0;
 let feedbackPending = false;
+let latestExercisePoseLandmarks = null;
+let exerciseLapTarget = null;
+let exerciseLapTargetRadius = null;
+function newExerciseLapTargetCalibration(){
+  return {samples:[], target:null, ready:false, announced:false, lastCandidateAt:0};
+}
+let exerciseLapTargetCalibration = newExerciseLapTargetCalibration();
+let exerciseLapCalibrationDiagnostic = {
+  reason:"waiting_for_pose",
+  guidance:"Keep your affected hand relaxed on the top of your same-side thigh.",
+};
 
 exName.textContent = CFG.name;
 overlayTitle.textContent = CFG.name;
 overlayBody.textContent = CFG.setup_voice;
 
 function postRN(d){ if(window.ReactNativeWebView) window.ReactNativeWebView.postMessage(JSON.stringify(d)); }
+
+function rehabCalibrationStorageKey(){
+  return REHAB_SESSION_ID ? `rehab-calibration-v${REHAB_CALIBRATION_VERSION}:${REHAB_SESSION_ID}` : "";
+}
+function loadSessionCalibration(){
+  const key=rehabCalibrationStorageKey();
+  if(!key) return null;
+  try{
+    const saved=JSON.parse(localStorage.getItem(key)||"null");
+    if(!saved || saved.version !== REHAB_CALIBRATION_VERSION || saved.affected_side !== AFFECTED_SIDE) return null;
+    if(!saved.baseline_metrics || typeof saved.baseline_metrics !== "object") return null;
+    return saved;
+  }catch(e){ return null; }
+}
+function saveSessionCalibration(){
+  const key=rehabCalibrationStorageKey();
+  if(!key) return;
+  try{
+    localStorage.setItem(key,JSON.stringify({
+      version:REHAB_CALIBRATION_VERSION,
+      affected_side:AFFECTED_SIDE,
+      baseline_metrics:baselineMetrics,
+      lap_target:exerciseLapTarget,
+      lap_target_radius:exerciseLapTargetRadius,
+      source_tracking_mode:STANDARD.tracking_mode,
+      source_posture:STANDARD.posture,
+      captured_at:new Date().toISOString(),
+    }));
+  }catch(e){
+    postRN({type:"exercise_calibration_storage_error",message:String(e)});
+  }
+}
 
 function createSilentWavUrl(){
   const sampleRate = 8000;
@@ -9069,6 +9667,155 @@ function sideIndexes(side){
 const ACTIVE = sideIndexes(AFFECTED_SIDE);
 const OTHER = sideIndexes(AFFECTED_SIDE === "left" ? "right" : "left");
 
+function isExerciseLapTarget(step){
+  return !!step && !!step.target && step.target.landmark === "LAP_DYNAMIC";
+}
+function exercisePoseDistance(a,b){
+  return Math.hypot(a.x-b.x,a.y-b.y);
+}
+function exerciseLandmarkIsUsable(point,minVisibility=.45){
+  return !!point
+    && Number.isFinite(point.x)
+    && Number.isFinite(point.y)
+    && (point.visibility == null || point.visibility >= minVisibility);
+}
+function exerciseLandmarkIsInFrame(point,minVisibility=.45,margin=.025){
+  return exerciseLandmarkIsUsable(point,minVisibility)
+    && point.x >= margin && point.x <= 1-margin
+    && point.y >= margin && point.y <= 1-margin;
+}
+function exerciseLapWristZoneReason(wrist,hip,midShoulder,torsoLength){
+  const wristBelowHip=wrist.y-hip.y;
+  const wristFromHipX=Math.abs(wrist.x-hip.x);
+  const wristBelowShoulders=wrist.y-midShoulder.y;
+  if(wristBelowShoulders < torsoLength*.55 || wristBelowHip < -torsoLength*.12) return "hand_too_high";
+  if(wristBelowHip > torsoLength*.95) return "hand_too_low";
+  if(wristFromHipX > torsoLength*.90) return "hand_too_far_side";
+  return null;
+}
+function exerciseLapTargetCandidateStatus(lm){
+  const sideLabel=AFFECTED_SIDE === "left" ? "left" : "right";
+  if(!lm || lm.length < 33) return {
+    candidate:null,
+    reason:"pose_missing",
+    guidance:"Sit facing the camera and keep your face, shoulders, affected arm, and upper thigh visible.",
+  };
+  const affected={shoulder:lm[ACTIVE.shoulder],elbow:lm[ACTIVE.elbow],wrist:lm[ACTIVE.wrist],hip:lm[ACTIVE.hip]};
+  const unaffected={shoulder:lm[OTHER.shoulder],elbow:lm[OTHER.elbow],wrist:lm[OTHER.wrist],hip:lm[OTHER.hip]};
+  const leftShoulder=lm[11];
+  const rightShoulder=lm[12];
+  const lapVisibility=.35;
+  if(!exerciseLandmarkIsInFrame(leftShoulder,lapVisibility) || !exerciseLandmarkIsInFrame(rightShoulder,lapVisibility)) return {
+    candidate:null,
+    reason:"shoulders_not_visible",
+    guidance:"Move the camera until both shoulders are clearly visible.",
+  };
+  if(!exerciseLandmarkIsInFrame(affected.hip,lapVisibility) || !exerciseLandmarkIsInFrame(affected.wrist,lapVisibility)) return {
+    candidate:null,
+    reason:"affected_lap_not_visible",
+    guidance:`Tilt the camera down slightly so your ${sideLabel} hand and the top of your ${sideLabel} thigh are visible.`,
+  };
+  const midShoulder=midpoint(leftShoulder,rightShoulder);
+  const torsoLength=exercisePoseDistance(midShoulder,affected.hip);
+  if(torsoLength < .07) return {
+    candidate:null,
+    reason:"body_too_small",
+    guidance:"Move slightly closer to the camera while keeping your face and upper thigh visible.",
+  };
+  const zoneReason=exerciseLapWristZoneReason(affected.wrist,affected.hip,midShoulder,torsoLength);
+  if(zoneReason){
+    const unaffectedVisible=exerciseLandmarkIsInFrame(unaffected.hip,lapVisibility)
+      && exerciseLandmarkIsInFrame(unaffected.wrist,lapVisibility);
+    const unaffectedTorsoLength=unaffectedVisible ? exercisePoseDistance(midShoulder,unaffected.hip) : 0;
+    const otherHandOnLap=unaffectedVisible && unaffectedTorsoLength >= .07
+      && !exerciseLapWristZoneReason(unaffected.wrist,unaffected.hip,midShoulder,unaffectedTorsoLength);
+    if(otherHandOnLap) return {
+      candidate:null,
+      reason:"wrong_hand_on_lap",
+      guidance:`Your other hand is on your lap. Place your ${sideLabel} hand on the top of your ${sideLabel} thigh.`,
+    };
+    const guidanceByReason={
+      hand_too_high:`Lower your ${sideLabel} hand from your chest or face and rest it on top of your ${sideLabel} thigh.`,
+      hand_too_low:`Place your ${sideLabel} hand on top of your upper thigh rather than beside the chair.`,
+      hand_too_far_side:`Move your ${sideLabel} hand inward so it rests on top of your ${sideLabel} thigh.`,
+    };
+    return {candidate:null,reason:zoneReason,guidance:guidanceByReason[zoneReason]};
+  }
+  return {
+    candidate:{
+      x:Math.max(.10,Math.min(.90,affected.wrist.x)),
+      y:Math.max(.50,Math.min(.90,affected.wrist.y)),
+      shoulderWidth:Math.max(.03,exercisePoseDistance(leftShoulder,rightShoulder)),
+      bodyX:(midShoulder.x+affected.hip.x)/2,
+      bodyY:(midShoulder.y+affected.hip.y)/2,
+    },
+    reason:"stabilizing",
+    guidance:`Keep your ${sideLabel} hand relaxed and still on your upper thigh for one moment.`,
+  };
+}
+function updateExerciseLapTargetCalibration(lm,now){
+  if(!HAS_DYNAMIC_LAP_TARGET || exerciseLapTargetCalibration.ready) return;
+  const status=exerciseLapTargetCandidateStatus(lm);
+  exerciseLapCalibrationDiagnostic={reason:status.reason,guidance:status.guidance};
+  const candidate=status.candidate;
+  if(!candidate){
+    if(exerciseLapTargetCalibration.lastCandidateAt && now-exerciseLapTargetCalibration.lastCandidateAt <= 900) return;
+    exerciseLapTargetCalibration.samples=[];
+    exerciseLapTargetCalibration.target=null;
+    return;
+  }
+  exerciseLapTargetCalibration.lastCandidateAt=now;
+  const samples=exerciseLapTargetCalibration.samples;
+  samples.push({
+    x:candidate.x,
+    y:candidate.y,
+    bodyX:candidate.bodyX,
+    bodyY:candidate.bodyY,
+    t:now,
+    shoulderWidth:candidate.shoulderWidth,
+  });
+  while(samples.length > 24 || (samples.length && now-samples[0].t > 1200)) samples.shift();
+  let center={x:median(samples.map(sample=>sample.x)),y:median(samples.map(sample=>sample.y))};
+  exerciseLapTargetCalibration.target=center;
+  if(samples.length < LAP_CALIBRATION_MIN_SAMPLES) return;
+  const width=median(samples.map(sample=>sample.shoulderWidth))||.03;
+  const maxJitter=Math.max(.028,width*.18);
+  const maxBodyJitter=Math.max(.035,width*.22);
+  const bodyCenter={
+    x:median(samples.map(sample=>sample.bodyX)),
+    y:median(samples.map(sample=>sample.bodyY)),
+  };
+  const stableSamples=samples.filter(sample=>
+    Math.hypot(sample.x-center.x,sample.y-center.y) <= maxJitter
+    && Math.hypot(sample.bodyX-bodyCenter.x,sample.bodyY-bodyCenter.y) <= maxBodyJitter
+  );
+  const requiredStableSamples=Math.max(LAP_CALIBRATION_MIN_SAMPLES,Math.ceil(samples.length*LAP_CALIBRATION_STABLE_RATIO));
+  if(stableSamples.length < requiredStableSamples) return;
+  const stableDuration=stableSamples[stableSamples.length-1].t-stableSamples[0].t;
+  if(stableDuration < LAP_CALIBRATION_MIN_MS) return;
+  center={x:median(stableSamples.map(sample=>sample.x)),y:median(stableSamples.map(sample=>sample.y))};
+  exerciseLapTargetCalibration.ready=true;
+  exerciseLapTargetCalibration.target=center;
+  exerciseLapTarget={...center};
+  exerciseLapTargetRadius=Math.min(Math.max(.10,exerciseShoulderWidth(lm)*.55),.18);
+  if(!exerciseLapTargetCalibration.announced){
+    exerciseLapTargetCalibration.announced=true;
+    postRN({
+      type:"exercise_lap_target_calibrated",
+      exercise_id:CFG.name,
+      affected_side:AFFECTED_SIDE,
+      x:+center.x.toFixed(4),
+      y:+center.y.toFixed(4),
+      radius:+exerciseLapTargetRadius.toFixed(4),
+      sample_count:samples.length,
+    });
+  }
+}
+function effectiveExerciseTarget(sub){
+  if(isExerciseLapTarget(sub)) return exerciseLapTarget || exerciseLapTargetCalibration.target || sub.target;
+  return sub.target;
+}
+
 function poseTrackingQuality(lm){
   if(!lm) return 0;
   const metrics=(STANDARD.rom_steps||[]).map(step=>step.metric);
@@ -9126,6 +9873,8 @@ function rawMovementMetrics(lm, handLm){
     raw.knee_x=lm[ACTIVE.knee].x;
     raw.knee_y=lm[ACTIVE.knee].y;
     raw.torso_length=Math.max(.04,Math.hypot(midShoulder.x-midHip.x,midShoulder.y-midHip.y));
+    raw.active_wrist_x=lm[ACTIVE.wrist].x;
+    raw.active_wrist_y=lm[ACTIVE.wrist].y;
   }
   if(handLm){
     const fingerAngles=[
@@ -9174,21 +9923,37 @@ function anchorDistance(a,b){
   return Math.sqrt(sum/Math.max(1,a.length));
 }
 function updateCalibration(lm,handLm){
+  // Locate the lap with the same affected-wrist/affected-hip gate used by the
+  // initial assessment. Baseline scoring can keep collecting the wider pose
+  // independently, so an unseen knee or opposite arm cannot move the lap.
+  updateExerciseLapTargetCalibration(lm,performance.now());
   const quality=trackingQuality(lm,handLm);
-  if(quality < .72){
+  if(quality < CALIBRATION_MIN_TRACKING_QUALITY){
     calibrationSamples=[];
     calibrationAnchors=[];
     calibrationReady=false;
     calibrationFill.style.width="0%";
-    calibrationStatus.textContent=STANDARD.tracking_mode === "hand"
-      ? "Keep your whole hand and fingertips inside the camera view."
-      : "Move back until the joints named above are visible.";
+    if(HAS_DYNAMIC_LAP_TARGET){
+      const lapStatus=exerciseLapTargetCandidateStatus(lm);
+      exerciseLapCalibrationDiagnostic={reason:lapStatus.reason,guidance:lapStatus.guidance};
+    }
+    calibrationStatus.textContent=HAS_DYNAMIC_LAP_TARGET && !exerciseLapTargetCalibration.ready
+      ? exerciseLapCalibrationDiagnostic.guidance
+      : STANDARD.tracking_mode === "hand"
+        ? "Keep your whole hand and fingertips inside the camera view."
+        : "Move back until the joints named above are visible.";
     return;
   }
+  latestExercisePoseLandmarks=lm || latestExercisePoseLandmarks;
   const anchor=movementAnchor(lm,handLm);
-  if(calibrationAnchors.length && anchorDistance(anchor,calibrationAnchors[0]) > .035){
+  if(calibrationAnchors.length && anchorDistance(anchor,calibrationAnchors[0]) > CALIBRATION_MAX_ANCHOR_DRIFT){
     calibrationSamples=[];
     calibrationAnchors=[];
+    if(HAS_DYNAMIC_LAP_TARGET && !exerciseLapTargetCalibration.ready){
+      exerciseLapTargetCalibration=newExerciseLapTargetCalibration();
+      exerciseLapTarget=null;
+      exerciseLapTargetRadius=null;
+    }
     calibrationStatus.textContent="Almost there. Hold your starting position still.";
   }
   calibrationAnchors.push(anchor);
@@ -9197,10 +9962,18 @@ function updateCalibration(lm,handLm){
     calibrationSamples.shift();
     calibrationAnchors.shift();
   }
-  const progress=Math.min(100,Math.round(calibrationSamples.length/45*100));
+  const baselineProgress=Math.min(100,Math.round(calibrationSamples.length/CALIBRATION_MIN_SAMPLES*100));
+  const lapProgress=!HAS_DYNAMIC_LAP_TARGET || exerciseLapTargetCalibration.ready
+    ? 100
+    : Math.min(99,Math.round(exerciseLapTargetCalibration.samples.length/LAP_CALIBRATION_MIN_SAMPLES*100));
+  const progress=Math.min(baselineProgress,lapProgress);
   calibrationFill.style.width=progress+"%";
-  calibrationStatus.textContent=progress < 100 ? "Position found. Keep still for "+Math.max(1,Math.ceil((45-calibrationSamples.length)/15))+" more seconds." : "Calibration complete.";
-  calibrationReady=calibrationSamples.length >= 45;
+  calibrationReady=calibrationSamples.length >= CALIBRATION_MIN_SAMPLES && (!HAS_DYNAMIC_LAP_TARGET || exerciseLapTargetCalibration.ready);
+  calibrationStatus.textContent=!calibrationReady && HAS_DYNAMIC_LAP_TARGET && !exerciseLapTargetCalibration.ready
+    ? exerciseLapCalibrationDiagnostic.guidance
+    : progress < 100
+      ? "Position found. Keep still for "+Math.max(1,Math.ceil((CALIBRATION_MIN_SAMPLES-calibrationSamples.length)/15))+" more seconds."
+      : "Calibration complete.";
   if(calibrationReady && calibrationInstructionFinished) void completeCalibration();
 }
 async function completeCalibration(){
@@ -9208,9 +9981,25 @@ async function completeCalibration(){
   calibrationFinishing=true;
   const keys=Object.keys(calibrationSamples[0]||{});
   baselineMetrics=Object.fromEntries(keys.map(key=>[key,median(calibrationSamples.map(sample=>Number(sample[key])))]));
+  if(HAS_DYNAMIC_LAP_TARGET){
+    exerciseLapTarget=exerciseLapTargetCalibration.target ? {...exerciseLapTargetCalibration.target} : null;
+    exerciseLapTargetRadius=Number.isFinite(exerciseLapTargetRadius)
+      ? exerciseLapTargetRadius
+      : Math.min(Math.max(.10,exerciseShoulderWidth(latestExercisePoseLandmarks)*.55),.18);
+  }
+  saveSessionCalibration();
   calibrating=false;
   calibrationEl.classList.add("hidden");
-  postRN({type:"exercise_calibrated",exercise_id:CFG.name,tracking_mode:STANDARD.tracking_mode,posture:STANDARD.posture});
+  postRN({
+    type:"exercise_calibrated",
+    exercise_id:CFG.name,
+    tracking_mode:STANDARD.tracking_mode,
+    posture:STANDARD.posture,
+    affected_side:AFFECTED_SIDE,
+    rehab_session_id:REHAB_SESSION_ID,
+    lap_target:exerciseLapTarget,
+    lap_target_radius:exerciseLapTargetRadius,
+  });
   await playVoice(CFG.setup_voice);
   await startRep();
 }
@@ -9223,7 +10012,7 @@ function resetRepMetrics(){
 }
 function updateMetrics(lm,handLm){
   const quality=trackingQuality(lm,handLm);
-  if(quality < .72){ lowQualityFrames+=1; return; }
+  if(quality < CALIBRATION_MIN_TRACKING_QUALITY){ lowQualityFrames+=1; return; }
   const raw=rawMovementMetrics(lm,handLm);
   trackingFrames+=1;
   for(const step of STANDARD.rom_steps||[]){
@@ -9247,6 +10036,12 @@ function exerciseShoulderWidth(lm){
 
 function effectiveExerciseTargetRadius(sub,lm){
   const baseR=Number(sub && sub.target && sub.target.r)||0.10;
+  if(isExerciseLapTarget(sub)){
+    if(Number.isFinite(exerciseLapTargetRadius)) return exerciseLapTargetRadius;
+    const radius=Math.min(Math.max(.10,exerciseShoulderWidth(lm)*.55),.18);
+    if(exerciseLapTargetCalibration.ready) exerciseLapTargetRadius=radius;
+    return radius;
+  }
   // The bilateral outward target intentionally represents a wide movement zone.
   if(baseR > 0.18) return baseR;
   return Math.min(Math.max(baseR,exerciseShoulderWidth(lm)*0.55),0.18);
@@ -9255,9 +10050,14 @@ function effectiveExerciseTargetRadius(sub,lm){
 function checkTarget(lm){
   const sub = CFG.cycle[currentSubStep];
   if(!sub || !sub.target || !lm) return false;
-  const t = sub.target;
+  const t = effectiveExerciseTarget(sub);
   const R = effectiveExerciseTargetRadius(sub,lm);
   const Lw=lm[15], Rw=lm[16];
+  if(isExerciseLapTarget(sub)){
+    const affectedWrist=lm[ACTIVE.wrist];
+    return exerciseLandmarkIsUsable(affectedWrist,.35)
+      && Math.hypot(affectedWrist.x-t.x,affectedWrist.y-t.y) < R;
+  }
   const ok = (p) => p && Math.hypot((1-p.x)-t.x, p.y-t.y) < R;
   const bilateral=(STANDARD.rom_steps||[]).some(step=>String(step.metric||"").startsWith("bilateral_"));
   if(bilateral) return ok(Lw) && ok(Rw);
@@ -9271,14 +10071,30 @@ function drawOverlay(lm,handLm){
     drawingUtils.drawConnectors(lm,PoseLandmarker.POSE_CONNECTIONS,{color:ASSESSMENT_OVERLAY_STYLE.connectorColor,lineWidth:ASSESSMENT_OVERLAY_STYLE.connectorWidth});
   }
   if(handLm){
-    drawingUtils.drawLandmarks(handLm,{color:"#FDFDFD",radius:4});
-    drawingUtils.drawConnectors(handLm,HandLandmarker.HAND_CONNECTIONS,{color:"#4A7856",lineWidth:4});
+    drawingUtils.drawLandmarks(handLm,{color:ASSESSMENT_OVERLAY_STYLE.landmarkColor,radius:ASSESSMENT_OVERLAY_STYLE.landmarkRadius});
+    drawingUtils.drawConnectors(handLm,HandLandmarker.HAND_CONNECTIONS,{color:ASSESSMENT_OVERLAY_STYLE.connectorColor,lineWidth:ASSESSMENT_OVERLAY_STYLE.connectorWidth});
   }
-  if(calibrating) return;
+  if(calibrating){
+    if(HAS_DYNAMIC_LAP_TARGET && exerciseLapTargetCalibration.ready && exerciseLapTargetCalibration.target){
+      const tx=exerciseLapTargetCalibration.target.x*canvas.width;
+      const ty=exerciseLapTargetCalibration.target.y*canvas.height;
+      const tr=.075*Math.min(canvas.width,canvas.height);
+      ctx.save();
+      ctx.beginPath(); ctx.arc(tx,ty,tr,0,Math.PI*2);
+      ctx.fillStyle=ASSESSMENT_OVERLAY_STYLE.calibrationTargetFill; ctx.fill();
+      ctx.lineWidth=ASSESSMENT_OVERLAY_STYLE.targetEdgeWidth;
+      ctx.strokeStyle=ASSESSMENT_OVERLAY_STYLE.calibrationTargetColor; ctx.stroke();
+      ctx.beginPath(); ctx.arc(tx,ty,Math.max(5,tr*.16),0,Math.PI*2);
+      ctx.fillStyle="#FDFDFD"; ctx.fill();
+      ctx.restore();
+    }
+    return;
+  }
   const sub = CFG.cycle[currentSubStep];
   if(sub && sub.target){
-    const tx = sub.target.x*canvas.width;
-    const ty = sub.target.y*canvas.height;
+    const target=effectiveExerciseTarget(sub);
+    const tx = target.x*canvas.width;
+    const ty = target.y*canvas.height;
     const tr = effectiveExerciseTargetRadius(sub,lm)*Math.min(canvas.width,canvas.height);
     const pulse = 1 + 0.08*Math.sin(performance.now()/250);
     ctx.beginPath(); ctx.arc(tx,ty,tr*pulse,0,Math.PI*2);
@@ -9330,7 +10146,7 @@ async function startSubStep(){
 }
 
 function pickFeedback(){
-  if(trackingFrames < 8) return "I could not see enough of that repetition to score it reliably. Check your camera position, then try again at a comfortable pace.";
+  if(trackingFrames < SCORING_MIN_FRAMES) return "I could not see enough of that repetition to score it reliably. Check your camera position, then try again at a comfortable pace.";
   const compensation=confirmedCompensations()[0];
   if(compensation) return compensation.correction;
   let lowest=null;
@@ -9341,7 +10157,7 @@ function pickFeedback(){
     if(!lowest || ratio<lowest.ratio) lowest={step,achieved,ratio};
   }
   if(lowest && lowest.ratio < .9){
-    return "For the next repetition, gently work toward "+Math.round(lowest.step.target_deg)+" degrees of "+lowest.step.label.toLowerCase()+". Stay within a comfortable range.";
+    return lowest.step.coaching_cue || "On the next repetition, move a little farther within a comfortable range while keeping the same safe setup.";
   }
   return "That movement stayed close to today’s target. Keep the same smooth control on the next repetition.";
 }
@@ -9490,7 +10306,7 @@ function repRomDetails(){
   });
 }
 function computeRepScore(){
-  if(trackingFrames < 8) return null;
+  if(trackingFrames < SCORING_MIN_FRAMES) return null;
   const details=repRomDetails();
   const totalWeight=details.reduce((sum,item)=>sum+item.weight,0)||1;
   let score=details.reduce((sum,item)=>sum+item.score*item.weight,0)/totalWeight;
@@ -9533,8 +10349,8 @@ async function showFeedback(){
 
   // Voice: feedback + ask for "yes"
   const feedbackVoice = cameraScored
-    ? `Your score is ${lastRepScore} out of 100. ${label}. ${feedback} When you're ready, tap continue, or say yes to keep going.`
-    : `${label}. ${feedback} When you're ready, tap continue, or say yes to keep going.`;
+    ? `Great repetition. You earned one point. Your score is ${lastRepScore} out of 100. ${label}. ${feedback} When you're ready, tap continue, or say yes to keep going.`
+    : `Great repetition. You earned one point. ${label}. ${feedback} When you're ready, tap continue, or say yes to keep going.`;
   await playVoice(feedbackVoice);
   startListening();
 }
@@ -9660,12 +10476,46 @@ startBtn.addEventListener("click", async () => {
   await setupPose();
   await Promise.allSettled([unlockPromise, setupVoicePromise, calibrationVoicePromise]);
   running = true;
+  const sessionCalibration = loadSessionCalibration();
+  if(sessionCalibration){
+    baselineMetrics={...sessionCalibration.baseline_metrics};
+    exerciseLapTarget=sessionCalibration.lap_target ? {...sessionCalibration.lap_target} : null;
+    if(HAS_DYNAMIC_LAP_TARGET && !exerciseLapTarget
+      && Number.isFinite(Number(baselineMetrics.active_wrist_x))
+      && Number.isFinite(Number(baselineMetrics.active_wrist_y))){
+      exerciseLapTarget={x:Number(baselineMetrics.active_wrist_x),y:Number(baselineMetrics.active_wrist_y)};
+    }
+    exerciseLapTargetRadius=Number.isFinite(Number(sessionCalibration.lap_target_radius))
+      ? Number(sessionCalibration.lap_target_radius)
+      : null;
+    calibrating=false;
+    calibrationEl.classList.add("hidden");
+    postRN({
+      type:"exercise_calibration_reused",
+      exercise_id:CFG.name,
+      rehab_session_id:REHAB_SESSION_ID,
+      source_tracking_mode:sessionCalibration.source_tracking_mode,
+      source_posture:sessionCalibration.source_posture,
+    });
+    requestAnimationFrame(loop);
+    await playVoice(CFG.setup_voice);
+    await startRep();
+    return;
+  }
   calibrating = true;
   calibrationInstructionFinished = false;
   calibrationReady = false;
   calibrationFinishing = false;
   calibrationSamples = [];
   calibrationAnchors = [];
+  latestExercisePoseLandmarks = null;
+  exerciseLapTarget = null;
+  exerciseLapTargetRadius = null;
+  exerciseLapTargetCalibration = newExerciseLapTargetCalibration();
+  exerciseLapCalibrationDiagnostic = {
+    reason:"waiting_for_pose",
+    guidance:"Keep your affected hand relaxed on the top of your same-side thigh.",
+  };
   calibrationInstruction.textContent = STANDARD.calibration_instruction;
   calibrationStatus.textContent = "Looking for the required joints…";
   calibrationFill.style.width = "0%";
@@ -9685,12 +10535,46 @@ exitBtn.addEventListener("click", () => {
 });
 
 postRN({type:"ready"});
+if(URL_PARAMS.get("test_mode") === "rep_feedback"){
+  overlay.classList.add("hidden");
+  fbStep.textContent = `Repetition 1 of ${CFG.reps} complete · Great work`;
+  fbTitle.textContent = "Your score: 84/100";
+  fbBody.textContent = "Beautiful repetition. Keep the same smooth, steady movement on the next one.";
+  fbPrompt.innerHTML = 'When you are ready, please say <b>"Yes"</b>.';
+  fbMic.classList.add("hidden");
+  fbChecks.classList.add("hidden");
+  fbEl.classList.remove("hidden");
+  requestAnimationFrame(() => fbEl.classList.add("show"));
+}
 window.__rehynExerciseScoringTest={
   isAdvancePhrase,
   metricValue,
   repRomDetails,
   computeRepScore,
   confirmedCompensations,
+};
+window.__rehynExerciseLapCalibrationTest={
+  diagnose:(landmarks)=>exerciseLapTargetCandidateStatus(landmarks),
+  runSequence:(frames,frameMs=100)=>{
+    const savedCalibration=exerciseLapTargetCalibration;
+    const savedTarget=exerciseLapTarget;
+    const savedRadius=exerciseLapTargetRadius;
+    exerciseLapTargetCalibration=newExerciseLapTargetCalibration();
+    exerciseLapTarget=null;
+    exerciseLapTargetRadius=null;
+    frames.forEach((landmarks,index)=>updateExerciseLapTargetCalibration(landmarks,index*frameMs));
+    const result={
+      ready:exerciseLapTargetCalibration.ready,
+      target:exerciseLapTargetCalibration.target,
+      radius:exerciseLapTargetRadius,
+      sampleCount:exerciseLapTargetCalibration.samples.length,
+    };
+    exerciseLapTargetCalibration=savedCalibration;
+    exerciseLapTarget=savedTarget;
+    exerciseLapTargetRadius=savedRadius;
+    return result;
+  },
+  effectiveTarget:(step)=>effectiveExerciseTarget(step),
 };
 </script>
 </body>
@@ -10276,10 +11160,15 @@ class PatientOnboarding(BaseModel):
     dominant_hand: Optional[str] = None    # "left" | "right" | "ambidextrous"
     sitting_ability: Optional[str] = None
     affected_arm_movement: Optional[str] = None
+    arm_activity_difficulties: Optional[List[str]] = None
     affected_hand_movement: Optional[str] = None
+    hand_activity_difficulties: Optional[List[str]] = None
     mobility_level: Optional[str] = None
+    mobility_activity_difficulties: Optional[List[str]] = None
+    standing_exercise_clearance: Optional[str] = None
     movement_pain: Optional[str] = None
     instruction_support: Optional[str] = None
+    movement_readiness_version: Optional[str] = None
     primary_goal: Optional[str] = None     # free text
     secondary_goals: Optional[List[str]] = None
     secondary_goals_other: Optional[str] = None
@@ -10457,7 +11346,22 @@ async def submit_patient_onboarding(payload: PatientOnboarding, request: Request
     user = await _user_from_header(dict(request.headers))
     if not user:
         raise HTTPException(status_code=401, detail="Sign in required")
-    update = {k: v for k, v in payload.dict().items() if v is not None}
+    existing_profile = user.get("profile") if isinstance(user.get("profile"), dict) else {}
+    submitted_profile = {k: v for k, v in payload.model_dump().items() if v is not None}
+    # This endpoint also powers small profile edits. Merge them so changing a
+    # display name cannot erase safety/readiness answers used by the plan.
+    update = {**existing_profile, **submitted_profile}
+    exercise_selection_fields = (
+        "arm_activity_difficulties",
+        "hand_activity_difficulties",
+        "mobility_activity_difficulties",
+    )
+    if all(isinstance(update.get(key), list) and bool(update[key]) for key in exercise_selection_fields):
+        update["movement_readiness_version"] = MOVEMENT_READINESS_VERSION
+    elif existing_profile.get("movement_readiness_version"):
+        update["movement_readiness_version"] = existing_profile["movement_readiness_version"]
+    else:
+        update.pop("movement_readiness_version", None)
     update["onboarded_at"] = datetime.now(timezone.utc).isoformat()
     update["onboarding_complete"] = True
     try:

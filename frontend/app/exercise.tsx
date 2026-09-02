@@ -1,11 +1,10 @@
 import { useEffect, useRef, useState } from "react";
-import { View, Text, StyleSheet, Pressable, ActivityIndicator, Platform, Animated } from "react-native";
+import { View, Text, StyleSheet, Pressable, ActivityIndicator, Platform } from "react-native";
 import { WebView, WebViewMessageEvent } from "react-native-webview";
 import { Ionicons } from "@expo/vector-icons";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import * as Haptics from "expo-haptics";
 import { colors, spacing, radius } from "@/src/theme";
-import { PointsCelebration, PointsCelebrationEvent, celebrationEvent } from "@/src/components/PointsCelebration";
 import { storage } from "@/src/utils/storage";
 import { SafetyStopStrip } from "@/src/components/SafetyStopStrip";
 import { localDateString } from "@/src/components/DailyCheckInCalendar";
@@ -27,16 +26,12 @@ const PROGRESS_KEY = (planId: string, exId: string) => `ex_progress_v1:${planId}
 
 export default function ExerciseScreen() {
   const router = useRouter();
-  const { exercise_id, name, plan_id, sets, reps, difficulty, variation, affected_side, library_test } = useLocalSearchParams<{ exercise_id: string; name?: string; plan_id?: string; sets?: string; reps?: string; difficulty?: string; variation?: string; affected_side?: string; library_test?: string }>();
+  const { exercise_id, name, plan_id, sets, reps, difficulty, variation, affected_side, rehab_session_id, library_test } = useLocalSearchParams<{ exercise_id: string; name?: string; plan_id?: string; sets?: string; reps?: string; difficulty?: string; variation?: string; affected_side?: string; rehab_session_id?: string; library_test?: string }>();
   const webRef = useRef<WebView>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [celebration, setCelebration] = useState<PointsCelebrationEvent | null>(null);
   const [doneInfo, setDoneInfo] = useState<{ reps: number; avgScore: number | null } | null>(null);
   const [voiceGuidance, setVoiceGuidance] = useState(true);
-  // Per-rep toast state
-  const [repToast, setRepToast] = useState<{ rep: number; total: number; score: number } | null>(null);
-  const toastOpacity = useRef(new Animated.Value(0)).current;
   const scoresThisSession = useRef<number[]>([]);
 
   const totalSets = parseInt(sets || "3", 10);
@@ -49,20 +44,12 @@ export default function ExerciseScreen() {
   const sessionDifficulty = difficulty === "easy" || difficulty === "difficult" ? difficulty : "medium";
   const sessionVariation = variation === "alternate" ? "alternate" : "standard";
   const affectedSide = affected_side === "left" ? "left" : "right";
-  const url = `${BASE}/api/rehab/runner?exercise_id=${encodeURIComponent(exercise_id || "ex_maintenance")}&reps=${guidedReps}&difficulty=${sessionDifficulty}&variation=${sessionVariation}&affected_side=${affectedSide}&voice_guidance=${voiceGuidance ? "1" : "0"}`;
+  const rehabSessionId = typeof rehab_session_id === "string" ? rehab_session_id : "";
+  const url = `${BASE}/api/rehab/runner?exercise_id=${encodeURIComponent(exercise_id || "ex_maintenance")}&reps=${guidedReps}&difficulty=${sessionDifficulty}&variation=${sessionVariation}&affected_side=${affectedSide}&rehab_session_id=${encodeURIComponent(rehabSessionId)}&voice_guidance=${voiceGuidance ? "1" : "0"}`;
 
   useEffect(() => {
     void loadUserPreferences().then((saved) => setVoiceGuidance(saved.voiceGuidance));
   }, []);
-
-  const showRepToast = (rep: number, total: number, score: number) => {
-    setRepToast({ rep, total, score });
-    Animated.sequence([
-      Animated.timing(toastOpacity, { toValue: 1, duration: 220, useNativeDriver: true }),
-      Animated.delay(2200),
-      Animated.timing(toastOpacity, { toValue: 0, duration: 320, useNativeDriver: true }),
-    ]).start(() => setRepToast(null));
-  };
 
   const saveRepProgress = async (newReps: number) => {
     if (isLibraryTest) return;
@@ -121,7 +108,6 @@ export default function ExerciseScreen() {
         const score = typeof msg.score === "number" ? msg.score : null;
         if (score != null) {
           scoresThisSession.current.push(score);
-          showRepToast(msg.rep, msg.total, score);
         }
         // Persist per-rep progress immediately so closing the screen mid-session
         // doesn't lose work.
@@ -145,8 +131,6 @@ export default function ExerciseScreen() {
                 completed_at: new Date().toISOString(),
               }),
             });
-            // Every completed exercise earns points - celebrate, then fade out.
-            setCelebration(celebrationEvent(5, "Exercise complete - great work!"));
           } catch {
             // Local exercise progress remains available and can sync on a later session.
           }
@@ -193,15 +177,6 @@ export default function ExerciseScreen() {
           <Text style={styles.overlayText}>Preparing {name || "exercise"}…</Text>
         </View>
       )}
-      {repToast && (
-        <Animated.View style={[styles.repToast, { opacity: toastOpacity }]} testID="rep-score-toast" pointerEvents="none">
-          <View style={styles.repToastInner}>
-            <Text style={styles.repToastRep}>Rep {repToast.rep} / {repToast.total}</Text>
-            <Text style={styles.repToastScore}>{repToast.score}<Text style={styles.repToastSlash}>/100</Text></Text>
-            <Text style={styles.repToastLabel}>{labelFor(repToast.score)}</Text>
-          </View>
-        </Animated.View>
-      )}
       {doneInfo && (
         <View style={styles.overlay} testID="exercise-done-overlay">
           <Ionicons name="checkmark-circle" size={56} color={colors.success} />
@@ -222,17 +197,8 @@ export default function ExerciseScreen() {
         </View>
       )}
       <SafetyStopStrip />
-      <PointsCelebration event={celebration} onDone={() => setCelebration(null)} />
     </View>
   );
-}
-
-function labelFor(s: number): string {
-  if (s >= 90) return "Excellent form";
-  if (s >= 75) return "Great work";
-  if (s >= 60) return "Good effort";
-  if (s >= 45) return "Keep practicing";
-  return "Take it gently";
 }
 
 const styles = StyleSheet.create({
@@ -243,13 +209,6 @@ const styles = StyleSheet.create({
   doneTitle: { color: colors.onSurfaceInverse, fontSize: 22, fontWeight: "800" },
   doneScore: { color: colors.brandSecondary, fontSize: 18, fontWeight: "700" },
   doneSub: { color: colors.onSurfaceTertiary, fontSize: 15 },
-  // Per-rep score toast
-  repToast: { position: "absolute", top: "30%", left: 0, right: 0, alignItems: "center", pointerEvents: "none" },
-  repToastInner: { backgroundColor: "rgba(28,32,29,0.92)", borderRadius: radius.lg, paddingHorizontal: 28, paddingVertical: 18, alignItems: "center", gap: 4, minWidth: 200 },
-  repToastRep: { color: "#D9E5DC", fontSize: 13, fontWeight: "700", letterSpacing: 1, textTransform: "uppercase" },
-  repToastScore: { color: "#fff", fontSize: 44, fontWeight: "800" },
-  repToastSlash: { color: "#D9E5DC", fontSize: 18, fontWeight: "600" },
-  repToastLabel: { color: "#7FE5A3", fontSize: 15, fontWeight: "700" },
   errorWrap: { ...StyleSheet.absoluteFillObject, alignItems: "center", justifyContent: "center", padding: spacing.lg, gap: spacing.md, backgroundColor: "#0c100eEE" },
   errorTitle: { color: colors.onSurfaceInverse, fontSize: 16, textAlign: "center", lineHeight: 22 },
   errorBtn: { backgroundColor: colors.brandPrimary, paddingHorizontal: spacing.lg, paddingVertical: spacing.md, borderRadius: radius.lg },

@@ -46,9 +46,15 @@ type CarePlanAssessment = {
   trigger?: string;
   missing_domains?: string[];
   missing_task_ids?: string[];
+  requires_helper?: boolean;
+  helper_confirmation_required?: boolean;
 };
 
 type HomeCarePlan = {
+  account_state?: {
+    has_completed_initial_assessment?: boolean;
+    initial_assessment_completed_at?: string | null;
+  };
   assessment?: CarePlanAssessment;
   survey?: { due?: boolean; due_at?: string; patient_prompt_enabled?: boolean };
   exercise_plan?: { action?: string; approved_exercise_ids?: string[] };
@@ -290,14 +296,15 @@ type DayStepProps = {
 };
 
 function DayStep({ icon, title, badge, description, active, progress, button }: DayStepProps) {
-  const { palette } = useDisplayPreferences();
+  const { palette, preferences } = useDisplayPreferences();
   const percentage = progress?.total ? Math.min(100, Math.round((progress.completed / progress.total) * 100)) : 0;
+  const titleColor = preferences.darkMode ? palette.brand : palette.text;
   return (
     <View style={styles.dayStep}>
       <View style={[styles.dayStepIcon, active && styles.dayStepIconActive]}>
         <Ionicons name={icon} size={28} color={active ? palette.brand : palette.muted} />
       </View>
-      <Text style={[styles.dayStepTitle, { color: palette.brand }]}>{title}</Text>
+      <Text style={[styles.dayStepTitle, { color: titleColor }]}>{title}</Text>
       {badge}
       <Text style={[styles.dayStepDescription, { color: palette.muted }]}>{description}</Text>
       {progress ? (
@@ -332,7 +339,6 @@ export default function HomeScreen() {
   const [greetName, setGreetName] = useState(cached?.greetName ?? "");
   const [carePlan, setCarePlan] = useState<HomeCarePlan | null>(cached?.carePlan ?? null);
   const [dailyGoal, setDailyGoal] = useState(cached?.dailyGoal ?? "");
-  const [ownGoal, setOwnGoal] = useState(cached?.ownGoal ?? "");
   const [checkIn, setCheckIn] = useState<DailyCheckInState>(cached?.checkIn ?? EMPTY_CHECK_IN);
   const [rewards, setRewards] = useState<RewardsSummary | null>(cached?.rewards ?? null);
   const [progress, setProgress] = useState<ProgressSummary>(cached?.progress ?? EMPTY_PROGRESS);
@@ -384,7 +390,6 @@ export default function HomeScreen() {
     setGreetName(nextName);
     setCarePlan(carePlanPayload);
     setDailyGoal(nextDailyGoal);
-    setOwnGoal(nextOwnGoal);
     setCheckIn(nextCheckIn);
     setRewards(rewardsPayload);
     setProgress(nextProgress);
@@ -408,12 +413,19 @@ export default function HomeScreen() {
   }, [carePlan]);
 
   const latest = history[0];
-  const hasInitialAssessment = history.some((item) => item.assessment_package === "initial");
+  const hasInitialAssessment = Boolean(
+    carePlan?.account_state?.has_completed_initial_assessment
+    || history.some((item) => item.assessment_package === "initial"),
+  );
   const isInitialAssessment = !hasInitialAssessment;
   const carePlanAssessment = carePlan?.assessment || null;
   const followUpDue = Boolean(carePlanAssessment?.due && carePlanAssessment?.can_start);
   const nextStep = carePlan?.next_step || null;
-  const activeExerciseIds = carePlan?.daily_monitoring?.active_exercise_ids || carePlan?.exercise_plan?.approved_exercise_ids || [];
+  const savedExerciseIds = (latest?.rehab_plan || []).map((exercise) => exercise.id).filter(Boolean);
+  const carePlanExerciseIds = carePlan?.daily_monitoring?.active_exercise_ids?.length
+    ? carePlan.daily_monitoring.active_exercise_ids
+    : carePlan?.exercise_plan?.approved_exercise_ids || [];
+  const activeExerciseIds = carePlanExerciseIds.length ? carePlanExerciseIds : savedExerciseIds;
   const completedExerciseIds = carePlan?.daily_monitoring?.completed_exercise_ids_today || [];
   const remainingExerciseIds = carePlan?.daily_monitoring?.remaining_exercise_ids_today || nextStep?.remaining_exercise_ids || [];
   const missingDomains = carePlanAssessment?.missing_domains || nextStep?.missing_domains || [];
@@ -522,7 +534,9 @@ export default function HomeScreen() {
         ? "Today's exercises"
         : nextStep?.title || "Your next step";
   const primaryDescription = isInitialAssessment
-    ? "Alira selected suitable tasks from your readiness answers."
+    ? carePlanAssessment?.requires_helper
+      ? "Alira selected suitable tasks. Please start with a carer or family member nearby."
+      : "Alira selected suitable tasks from your readiness answers."
     : activeExerciseIds.length
       ? remainingExerciseIds.length
         ? "Continue the plan Alira selected for this recovery stage."
@@ -611,14 +625,6 @@ export default function HomeScreen() {
                     badge={<StatusPill icon="lock-closed-outline" label="Locked" tone="grey" />}
                     description="Check in first to see today's next step."
                   />
-                ) : assessmentCompletedToday ? (
-                  <DayStep
-                    icon="checkmark"
-                    title="Today's assessment"
-                    active
-                    badge={<StatusPill icon="checkmark-circle-outline" label="Completed" />}
-                    description={hasInitialAssessment && history.length === 1 ? "Initial assessment completed today." : "Today's assessment is completed."}
-                  />
                 ) : (
                   <DayStep
                     icon={isInitialAssessment ? "clipboard-outline" : primaryComplete ? "checkmark" : "fitness-outline"}
@@ -638,16 +644,6 @@ export default function HomeScreen() {
                     description={!checkedInToday
                       ? "Check in to unlock your day."
                       : "Complete the initial assessment to see what comes next."}
-                  />
-                ) : assessmentCompletedToday ? (
-                  <DayStep
-                    icon={primaryComplete ? "checkmark" : "fitness-outline"}
-                    title="Today's exercises"
-                    active
-                    badge={<StatusPill icon={primaryComplete ? "checkmark-circle-outline" : "ellipse-outline"} label={primaryComplete ? "Complete" : "In progress"} />}
-                    description={remainingExerciseIds.length ? "Continue the plan Alira selected for this recovery stage." : activeExerciseIds.length ? "Today's planned activities are complete." : "Your plan is being prepared."}
-                    progress={activeExerciseIds.length ? { completed: completedExerciseIds.length, total: activeExerciseIds.length } : undefined}
-                    button={{ label: primaryComplete ? "Review exercises" : "Continue exercises", icon: "arrow-forward-circle-outline", onPress: openExercisePlan, primary: true, testID: "home-primary-action" }}
                   />
                 ) : (
                 <DayStep

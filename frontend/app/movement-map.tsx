@@ -156,6 +156,7 @@ export default function MovementMapScreen() {
   const reviewGate = data?.clinical_review_gate;
   const planAccessAllowed = reviewGate?.rehab_access === "allowed" || reviewGate?.rehab_access === "interim";
   const interimPlan = reviewGate?.rehab_access === "interim";
+  const surveyBasedPlan = reviewGate?.rehab_plan_source === "survey_reported_problems";
   const canViewPlan = data?.rehab_plan_ready === true && planAccessAllowed;
   const noRehabNeeded = reviewGate?.rehab_access === "not_needed" || reviewGate?.status === "no_rehab_needed";
   const ageBand = assessment?.patient_parameters?.age_band || profileAgeBand || (isDemo ? "70-79" : null);
@@ -298,8 +299,8 @@ export default function MovementMapScreen() {
                 <View style={[styles.planSummary, !isWide && styles.planSummaryNarrow]}>
                   <View style={styles.planSummaryCopy}>
                     <Text style={styles.planEyebrow}>NEXT STEP</Text>
-                    <Text style={styles.planTitle}>{canViewPlan ? (interimPlan ? "Your starting plan is ready" : "Your rehab plan is ready") : noRehabNeeded ? "No rehab plan is needed" : "Your plan is waiting for review"}</Text>
-                    <Text style={styles.planText}>{canViewPlan ? (interimPlan ? "Built from your survey answers while your movement analysis completes." : "Your plan focuses on the movement areas that need support.") : reviewGate?.patient_message}</Text>
+                    <Text style={styles.planTitle}>{canViewPlan ? (surveyBasedPlan ? "Your survey-based plan is ready" : "Your rehab plan is ready") : noRehabNeeded ? "No rehab plan is needed" : "Your plan is waiting for review"}</Text>
+                    <Text style={styles.planText}>{canViewPlan ? (surveyBasedPlan ? "Selected only from the functional difficulties you reported; movement analysis will not replace the exercises." : "Your plan focuses on the movement areas that need support.") : reviewGate?.patient_message}</Text>
                   </View>
                   <Pressable onPress={openPlan} style={styles.planButton} testID={canViewPlan ? "movement-map-view-plan" : "movement-map-return-home"}>
                     <Ionicons name={canViewPlan ? "clipboard-outline" : "home-outline"} size={20} color="#FFFFFF" />

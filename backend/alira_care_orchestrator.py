@@ -12,6 +12,7 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 
 CARE_POLICY_VERSION = "alira-care-v2"
+MOVEMENT_READINESS_VERSION = "survey-exercise-v3"
 MAX_CHECK_IN_QUESTIONS = 8
 SURVEY_PREFACE = (
     "A few short questions about how you have been getting on. Your answers help Rehyn adjust your plan to suit you better.\n\n"
@@ -33,6 +34,18 @@ ASSESSMENT_READINESS_FIELDS = (
     "movement_pain",
     "instruction_support",
 )
+EXERCISE_SELECTION_SURVEY_FIELDS = (
+    "arm_activity_difficulties",
+    "hand_activity_difficulties",
+    "mobility_activity_difficulties",
+)
+STANDING_OR_STEPPING_DIFFICULTIES = {
+    "sit_to_stand",
+    "standing_balance",
+    "weight_affected_leg",
+    "start_step",
+    "step_balance",
+}
 
 
 # Six-level assistance scale (spec section 6.2), used consistently everywhere a
@@ -69,6 +82,24 @@ def classify_functional_rehab_profile(profile: Optional[Dict[str, Any]]) -> Dict
         for key in ASSESSMENT_READINESS_FIELDS
         if profile.get(key) is None or str(profile.get(key)).strip() == ""
     ]
+    if str(profile.get("movement_readiness_version") or "") == MOVEMENT_READINESS_VERSION:
+        missing.extend(
+            key
+            for key in EXERCISE_SELECTION_SURVEY_FIELDS
+            if profile.get(key) is None or str(profile.get(key)).strip() == ""
+        )
+    mobility_difficulties = {
+        str(value).strip().lower()
+        for value in (profile.get("mobility_activity_difficulties") or [])
+        if str(value).strip()
+    }
+    if mobility_difficulties & STANDING_OR_STEPPING_DIFFICULTIES:
+        if not str(profile.get("standing_exercise_clearance") or "").strip():
+            missing.append("standing_exercise_clearance")
+    if str(profile.get("movement_readiness_version") or "") != MOVEMENT_READINESS_VERSION:
+        for key in ("affected_arm_movement", "affected_hand_movement"):
+            if str(profile.get(key) or "").lower() == "no_movement" and key not in missing:
+                missing.append(key)
     arm = str(profile.get("affected_arm_movement") or "").lower()
     hand = str(profile.get("affected_hand_movement") or "").lower()
     mobility = str(profile.get("mobility_level") or "").lower()
@@ -147,6 +178,7 @@ def classify_functional_rehab_profile(profile: Optional[Dict[str, Any]]) -> Dict
         sitting == "needs_support"
         or instruction_support in {"helper_preferred", "helper_required"}
         or arm in {"help_only", "not_sure"}
+        or hand in {"help_only", "not_sure"}
         or mobility == "person_assist"
     )
     communication_support = "face_speech" in affected_areas and instruction_support in {"helper_preferred", "helper_required"}
@@ -199,7 +231,7 @@ def classify_functional_rehab_profile(profile: Optional[Dict[str, Any]]) -> Dict
             ["A lower-limb or mobility effect was reported while arm and hand were marked not affected."],
         )
     if has_upper:
-        if arm in {"most_movements", "not_affected"} and hand in {"some_finger_movement", "very_little_movement", "no_movement", "not_sure"}:
+        if arm in {"most_movements", "not_affected"} and hand in {"some_finger_movement", "very_little_movement", "help_only", "no_movement", "not_sure"}:
             return result(
                 "hand_dominant_difficulty",
                 "Hand-control dominant difficulty",
@@ -247,7 +279,7 @@ def functional_tiers(profile: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     elif arm in {"help_only"}:
         upper = tier(2, "Arm movement was reported as possible only with help.")
     elif arm in {"no_movement"}:
-        upper = tier(1, "No unassisted arm movement was reported, so camera tasks are not assigned for this domain.")
+        upper = tier(1, "No arm movement was reported even with help, so camera tasks are not assigned for this domain.")
     else:
         upper = tier(2, "Arm movement could not be confirmed, so assisted-level tasks are assumed until assessed.")
 
@@ -255,8 +287,10 @@ def functional_tiers(profile: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         hand_tier = tier(3, "Independent hand movement was reported; quality and dexterity are assessed.")
     elif hand in {"some_finger_movement", "very_little_movement"}:
         hand_tier = tier(2, "Partial finger movement was reported.")
+    elif hand in {"help_only"}:
+        hand_tier = tier(2, "Hand or finger movement was reported as possible only with help.")
     elif hand in {"no_movement"}:
-        hand_tier = tier(1, "No unassisted finger movement was reported, so camera tasks are not assigned for this domain.")
+        hand_tier = tier(1, "No hand or finger movement was reported even with help, so camera tasks are not assigned for this domain.")
     else:
         hand_tier = tier(2, "Hand movement could not be confirmed, so assisted-level tasks are assumed until assessed.")
 
@@ -729,13 +763,15 @@ def initial_assessment_recommendation(profile: Optional[Dict[str, Any]]) -> Dict
     active_arm = arm in {"most_movements", "some_movement"}
     helper_capable_arm = arm in {"help_only", "not_sure"}
     active_hand = hand in {"opens_and_moves", "some_finger_movement", "very_little_movement"}
-    helper_capable_hand = hand == "not_sure"
-    independent_sitting = sitting == "independent"
+    helper_capable_hand = hand in {"help_only", "not_sure"}
+    seated_task_possible = sitting in {"independent", "needs_support"}
+    seated_support_needed = sitting == "needs_support"
     helper_assisted_task_ids: List[str] = []
 
     # An unaffected arm can position an affected hand, but it is not itself a
     # reason to assign upper-limb assessment tasks.
-    arm_positioning_possible = independent_sitting and (active_arm or helper_capable_arm or arm == "not_affected")
+    arm_positioning_possible = seated_task_possible and (active_arm or helper_capable_arm or arm == "not_affected")
+    hand_positioning_possible = seated_task_possible and (active_hand or helper_capable_hand or hand == "not_affected")
     upper_profile_tasks = [task_id for task_id in INITIAL_TASKS_BY_DOMAIN["upper_limb"] if task_id in candidate_task_ids]
     skipped_upper_tasks = [task_id for task_id in INITIAL_TASKS_BY_DOMAIN["upper_limb"] if task_id not in candidate_task_ids]
     if skipped_upper_tasks and "upper_limb" in assessment_domains:
@@ -750,12 +786,12 @@ def initial_assessment_recommendation(profile: Optional[Dict[str, Any]]) -> Dict
         })
     elif arm_positioning_possible:
         task_ids.extend(upper_profile_tasks)
-        if helper_capable_arm:
+        if helper_capable_arm or seated_support_needed:
             helper_assisted_task_ids.extend(upper_profile_tasks)
     else:
         reason = (
             "These seated reaching tasks need the patient to sit upright safely without being held."
-            if not independent_sitting
+            if not seated_task_possible
             else "No affected-arm movement was reported, even with help, so an active reaching task cannot be measured yet."
         )
         excluded.append({"task_ids": upper_profile_tasks, "reason": reason})
@@ -772,14 +808,14 @@ def initial_assessment_recommendation(profile: Optional[Dict[str, Any]]) -> Dict
             "task_ids": ["H1", "H3", "H4"],
             "reason": "No current affected-hand difficulty was reported, so hand-control camera tasks are not needed for this profile.",
         })
-    elif arm_positioning_possible and (active_hand or helper_capable_hand or hand == "not_affected"):
+    elif hand_positioning_possible:
         task_ids.extend(hand_profile_tasks)
-        if helper_capable_hand or helper_capable_arm:
+        if helper_capable_hand or seated_support_needed or arm in {"help_only", "no_movement", "not_sure"}:
             helper_assisted_task_ids.extend(hand_profile_tasks)
     else:
         reason = (
             "These hand tasks require the affected hand to be raised safely in front of the camera."
-            if not arm_positioning_possible
+            if not seated_task_possible
             else "No affected-finger movement was reported, even with help, so an active hand task cannot be measured yet."
         )
         excluded.append({"task_ids": hand_profile_tasks, "reason": reason})
@@ -865,8 +901,8 @@ def initial_assessment_recommendation(profile: Optional[Dict[str, Any]]) -> Dict
         f"Your answers fit the {functional_profile['label'].lower()} functional profile. "
         f"Alira selected {len(task_ids)} suitable task{'s' if len(task_ids) != 1 else ''} from the approved initial assessment."
     )
-    if helper_assisted_task_ids:
-        message += " Your carer should stay close to support the assisted tasks."
+    if requires_helper:
+        message += " Please begin the assessment with a carer or family member nearby."
 
     return {
         **base,
@@ -1686,10 +1722,15 @@ def build_adaptive_care_plan(
     scheduled_assessment_due = now >= assessment_due_at
     assessment_due = (scheduled_assessment_due or bool(pending_issue)) and not safety["blocks_assessment"]
     has_plan = bool((latest_assessment or {}).get("rehab_plan"))
-    has_initial_assessment = any(
-        str(item.get("assessment_package") or "initial") == "initial"
-        for item in assessments
-    )
+    initial_assessments = [
+        item for item in assessments
+        if str(item.get("assessment_package") or "initial") == "initial"
+    ]
+    has_initial_assessment = bool(initial_assessments)
+    initial_assessment_completed_at = max(
+        (str(item.get("created_at") or "") for item in initial_assessments),
+        default="",
+    ) or None
     initial_readiness = initial_assessment_recommendation(profile) if not latest_assessment else None
     selection = _selected_assessment(domains, bool(latest_assessment), pending_issue, initial_readiness)
     if pending_issue:
@@ -1841,6 +1882,10 @@ def build_adaptive_care_plan(
     return {
         "version": CARE_POLICY_VERSION,
         "generated_at": now.isoformat(),
+        "account_state": {
+            "has_completed_initial_assessment": has_initial_assessment,
+            "initial_assessment_completed_at": initial_assessment_completed_at,
+        },
         "stage": stage,
         "safety": safety,
         "survey": {
@@ -1872,6 +1917,8 @@ def build_adaptive_care_plan(
             "can_start": bool((initial_readiness or {}).get("can_start", True)) and not safety["blocks_assessment"],
             "missing_answers": (initial_readiness or {}).get("missing_answers", []),
             "selection_message": (initial_readiness or {}).get("message"),
+            "requires_helper": bool((initial_readiness or {}).get("requires_helper")),
+            "helper_confirmation_required": bool((initial_readiness or {}).get("helper_confirmation_required")),
             "missing_domains": missing_domains,
             "missing_task_ids": [task for domain in missing_domains for task in MISSING_DOMAIN_TASKS.get(domain, [])],
             "blocked_by_safety": safety["blocks_assessment"],

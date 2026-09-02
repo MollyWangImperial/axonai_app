@@ -61,8 +61,12 @@ def check_in(days_ago=0, **answers):
     return {"id": "c1", "created_at": (NOW - timedelta(days=days_ago)).isoformat(), "answers": answers}
 
 
-def activity(days_ago, exercise_id="EX1"):
-    return {"exercise_id": exercise_id, "completed_at": (NOW - timedelta(days=days_ago)).isoformat()}
+def activity(days_ago, exercise_id="EX1", completed_reps=5):
+    return {
+        "exercise_id": exercise_id,
+        "completed_reps": completed_reps,
+        "completed_at": (NOW - timedelta(days=days_ago)).isoformat(),
+    }
 
 
 # ---------- Tiers and assistance scale (spec 1.3 / 6.2) ----------
@@ -237,11 +241,28 @@ def test_assessment_deferral_endpoint_requires_sign_in():
 def test_points_reward_effort_and_rounds():
     activities = [activity(days_ago) for days_ago in range(1, 8)]
     rewards = compute_rewards(activities, [], {}, now=NOW)
+    assert rewards["breakdown"]["repetitions_completed"] == 35
+    assert rewards["breakdown"]["points_per_repetition"] == 1
     assert rewards["breakdown"]["session_days"] == 7
     assert rewards["breakdown"]["rounds_completed"] == 1
     assert rewards["points"] == 7 * 5 + 7 * 20 + 50
     assert rewards["effort_based"] is True
     assert rewards["reduced_intensity_counts"] is True
+
+
+def test_each_completed_repetition_earns_one_point():
+    activities = [activity(1, completed_reps=3), activity(2, completed_reps=8)]
+    rewards = compute_rewards(activities, [], {}, now=NOW)
+    assert rewards["breakdown"]["exercises_completed"] == 2
+    assert rewards["breakdown"]["repetitions_completed"] == 11
+    assert rewards["points"] == 11 + 2 * 20
+
+
+def test_caregiver_routine_keeps_its_flat_five_point_reward():
+    rewards = compute_rewards([activity(1, exercise_id="CG_UPPER_LIMB", completed_reps=1)], [], {}, now=NOW)
+    assert rewards["breakdown"]["caregiver_routines_completed"] == 1
+    assert rewards["breakdown"]["points_per_caregiver_routine"] == 5
+    assert rewards["points"] == 5 + 20
 
 
 def test_streak_freeze_for_chosen_rest_day():
@@ -366,7 +387,7 @@ def test_survey_interim_rehab_plan_always_gives_a_starting_plan():
     assert all("Starting plan from your survey answers" in (exercise.selection_reason or "") for exercise in plan)
 
 
-def test_interim_plan_surfaces_instead_of_the_waiting_for_review_dead_end():
+def test_survey_plan_surfaces_instead_of_the_waiting_for_review_dead_end():
     from pathlib import Path
     root = Path(__file__).resolve().parents[2]
     server_source = (root / "backend" / "server.py").read_text(encoding="utf-8")
@@ -375,14 +396,15 @@ def test_interim_plan_surfaces_instead_of_the_waiting_for_review_dead_end():
     results = (root / "frontend" / "app" / "results.tsx").read_text(encoding="utf-8")
     home = (root / "frontend" / "app" / "(tabs)" / "index.tsx").read_text(encoding="utf-8")
 
-    # While the movement analysis processes, a survey-derived starting plan is
-    # issued (rehab_access "interim") and replaced automatically on completion.
+    # While movement analysis processes, the survey-derived plan is viewable;
+    # camera/model results do not select or replace exercise IDs.
     assert '"rehab_access": "interim"' in server_source
-    assert '"rehab_plan_source": "survey_interim"' in server_source
+    assert '"rehab_plan_source": "survey_reported_problems"' in server_source
     assert 'in ("allowed", "interim")' in server_source
-    assert 'testID="plan-interim-banner"' in rehab_plan_screen
+    assert 'testID="plan-survey-source-banner"' in rehab_plan_screen
     assert 'reviewGate?.rehab_access === "interim"' in movement_map
-    assert '"Your starting plan is ready"' in movement_map
+    assert '"Your survey-based plan is ready"' in movement_map
+    assert "Camera and model findings do not replace them" in rehab_plan_screen
     assert 'reviewGate?.rehab_access === "interim"' in results
 
     # The Home goal is derived from the survey's functional problems and stays
@@ -589,7 +611,8 @@ def test_home_uses_display_palette_for_green_and_supporting_text():
     # every dark-mode depth while secondary copy uses the accessible muted tone.
     assert "function DayStep" in home and "const { palette } = useDisplayPreferences();" in home
     assert "styles.goalStrong, { color: palette.brand }" in home
-    assert "styles.dayStepTitle, { color: palette.brand }" in home
+    assert "const titleColor = preferences.darkMode ? palette.brand : palette.text" in home
+    assert "styles.dayStepTitle, { color: titleColor }" in home
     assert "styles.dayStepDescription, { color: palette.muted }" in home
     assert "styles.stepProgressLabel, { color: palette.brand }" in home
     assert "styles.progressLinkText, { color: palette.brand }" in home
@@ -608,12 +631,14 @@ def test_earning_points_pops_a_fading_congratulations_toast():
     assert "Animated.delay(1400)" in component
     assert "toValue: 0, duration: 450" in component
     assert 'pointerEvents="none"' in component
-    # Every points-earning moment celebrates: check-in (+2), a delivered
-    # caregiver routine (+5), and a completed exercise (+5).
+    # App-level point moments celebrate on Home and in caregiver delivery.
+    # Exercise repetitions use the runner's feedback window so the score,
+    # correction, and one-point reward remain in one place.
     assert "celebrationEvent(2" in home
     assert "celebrationEvent(5" in caregiver
-    assert "celebrationEvent(5" in exercise
-    for source in (home, caregiver, exercise):
+    assert "celebrationEvent(5" not in exercise
+    assert 'msg.type === "rep_complete"' in exercise
+    for source in (home, caregiver):
         assert "<PointsCelebration event={celebration} onDone={() => setCelebration(null)} />" in source
 
 
@@ -649,7 +674,7 @@ def test_rehab_plan_loading_tracks_real_plan_preparation_stages():
     assert "setPreparationStage(1);" in rehab
     assert 'authedFetch("/api/alira/care-plan")' in rehab
     assert "setPreparationStage(2);" in rehab
-    assert "await loadProgress(adjustedAssessment);" in rehab
+    assert "await loadProgress(sessionPlan);" in rehab
 
 
 def test_journey_demo_opens_the_completed_movement_snapshot():

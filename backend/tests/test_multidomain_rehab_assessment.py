@@ -374,7 +374,7 @@ def test_rehab_runner_prefetches_voice_and_uses_prescribed_repetitions():
     assert "CFG.cycle.forEach(step => prefetchVoice(step.voice))" in source
     assert 'CFG.pose_mode === "tap" || CFG.pose_mode === "guided"' in source
     assert 'tapBtn.textContent = CFG.pose_mode === "guided" ? "I completed this step"' in source
-    assert 'const cameraScored = CFG.pose_mode === "body"' in source
+    assert "const cameraScored = lastRepScore != null" in source
     html = server._rehab_runner_html("ex_sit_to_stand", 7)
     assert '"name": "Assisted Sit-to-Stand Practice"' in html
     assert '"reps": 7' in html
@@ -527,7 +527,8 @@ def test_initial_package_keeps_an_approved_catalog_and_serves_the_survey_selecti
         assert all(step.get("voice") and step.get("target") for task in payload["tasks"] for step in task["steps"])
 
 
-def test_completed_initial_assessment_is_saved_in_account_history():
+def test_completed_initial_assessment_is_saved_in_account_history(monkeypatch):
+    monkeypatch.setattr(server, "REHYN_TRIAL_ACCESS_CODE", "test-trial-code")
     with TestClient(server.app) as client:
         login = client.post(
             "/api/users/login",
@@ -535,6 +536,7 @@ def test_completed_initial_assessment_is_saved_in_account_history():
                 "email": f"history-{uuid.uuid4().hex}@example.com",
                 "name": "History Patient",
                 "role": "patient",
+                "trial_code": "test-trial-code",
             },
         )
         assert login.status_code == 200
@@ -588,6 +590,47 @@ def test_completed_initial_assessment_is_saved_in_account_history():
         assert records[0]["id"] == assessment_id
         assert records[0]["assessment_package"] == "initial"
 
+        returning_plan = client.get("/api/alira/care-plan", headers=headers)
+        assert returning_plan.status_code == 200
+        assert returning_plan.json()["account_state"] == {
+            "has_completed_initial_assessment": True,
+            "initial_assessment_completed_at": submitted.json()["created_at"],
+        }
+
+        other_login = client.post(
+            "/api/users/login",
+            json={
+                "email": f"history-other-{uuid.uuid4().hex}@example.com",
+                "name": "New Patient",
+                "role": "patient",
+                "trial_code": "test-trial-code",
+            },
+        )
+        assert other_login.status_code == 200
+        other_headers = {"X-User-Id": other_login.json()["id"]}
+        other_consent = client.post(
+            "/api/users/consent",
+            headers=other_headers,
+            json={"terms_version": server.CURRENT_TERMS_VERSION, "terms_accepted": True, "health_data_consent": True},
+        )
+        assert other_consent.status_code == 200
+        new_account_plan = client.get("/api/alira/care-plan", headers=other_headers)
+        assert new_account_plan.status_code == 200
+        assert new_account_plan.json()["account_state"]["has_completed_initial_assessment"] is False
+
+
+def test_supported_sitting_and_assisted_hand_movement_receive_a_starting_plan():
+    plan = server.survey_interim_rehab_plan({
+        "sitting_ability": "needs_support",
+        "affected_arm_movement": "some_movement",
+        "affected_hand_movement": "help_only",
+        "mobility_level": "not_cleared",
+    })
+
+    exercise_ids = {exercise.id for exercise in plan}
+    assert "ex_reach" in exercise_ids
+    assert "ex_handopen" in exercise_ids
+
 
 def test_completed_initial_collection_returns_domain_metrics_without_a_normal_rehab_plan(monkeypatch):
     task_ids = ["T1", "T2", "T3", "H1", "H3", "H4", "L6"]
@@ -640,7 +683,7 @@ def test_completed_initial_collection_returns_domain_metrics_without_a_normal_re
         # "interim"; the observed plan replaces it automatically.
         assert assessment["clinical_review_gate"]["status"] == "awaiting_model_analysis"
         assert assessment["clinical_review_gate"]["rehab_access"] == "interim"
-        assert assessment["clinical_review_gate"]["rehab_plan_source"] == "survey_interim"
+        assert assessment["clinical_review_gate"]["rehab_plan_source"] == "survey_reported_problems"
         assert assessment["rehab_plan"], "a survey-derived starting plan is expected"
         assert all(
             "Starting plan from your survey answers" in (exercise.get("selection_reason") or "")

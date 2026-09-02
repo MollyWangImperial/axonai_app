@@ -25,18 +25,21 @@ def test_terms_gate_requires_two_separate_acknowledgements():
     assert 'testID="consent-health-checkbox"' in consent
     assert "const ready = termsChecked && healthChecked" in consent
     assert 'pathname: "/data-permissions"' in consent
-    assert "setPendingConsentAccepted" in consent
+    assert "setPendingConsentAccepted" not in consent
+    assert "if (!user?.id)" in consent
+    assert 'router.replace("/")' in consent
 
 
-def test_fresh_app_launch_routes_to_terms_before_sign_in():
+def test_fresh_app_launch_routes_to_sign_in_before_terms():
     layout = read("frontend/app/_layout.tsx")
     sign_in = read("frontend/app/sign-in.tsx")
 
-    assert 'router.replace("/consent")' in layout
-    assert '"sign-in", "consent", "privacy-policy"' in layout
+    assert 'const unauthenticatedRoutes = ["sign-in", "privacy-policy"]' in layout
+    assert 'if (!u && !unauthenticatedRoutes.includes(seg0))' in layout
+    assert 'router.replace("/sign-in")' in layout
     assert "hasPendingConsent" in layout
-    assert "await setConsentAccepted(user.id)" in sign_in
-    assert "await clearPendingConsent()" in sign_in
+    assert "if (!(await hasAcceptedConsent(user.id)))" in sign_in
+    assert 'router.replace("/consent")' in sign_in
 
 
 def test_settings_open_full_legal_screens_and_removed_care_circle_sharing():

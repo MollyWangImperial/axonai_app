@@ -19,12 +19,16 @@ NOW = datetime(2026, 8, 29, 12, 0, tzinfo=timezone.utc)
 
 def ready_profile(**overrides):
     profile = {
+        "movement_readiness_version": "survey-exercise-v3",
         "months_since_stroke": 6,
         "affected_areas": ["right_upper", "right_lower"],
         "sitting_ability": "independent",
         "affected_arm_movement": "some_movement",
+        "arm_activity_difficulties": ["reach_forward"],
         "affected_hand_movement": "some_finger_movement",
+        "hand_activity_difficulties": ["open_release"],
         "mobility_level": "walker",
+        "mobility_activity_difficulties": ["foot_clearance"],
         "movement_pain": "mild",
         "instruction_support": "independent",
         "has_caregiver": False,
@@ -149,6 +153,20 @@ def test_profile_classification_waits_for_complete_readiness_answers():
     assert set(functional_profile["missing_fields"]) == set(ASSESSMENT_READINESS_FIELDS) - {"sitting_ability"}
 
 
+def test_legacy_no_movement_answer_is_reasked_before_it_is_treated_as_complete_inability():
+    profile = ready_profile(
+        affected_arm_movement="no_movement",
+        affected_hand_movement="no_movement",
+    )
+    profile.pop("movement_readiness_version")
+
+    recommendation = initial_assessment_recommendation(profile)
+
+    assert recommendation["status"] == "needs_answers"
+    assert recommendation["can_start"] is False
+    assert recommendation["missing_answers"] == ["affected_arm_movement", "affected_hand_movement"]
+
+
 def test_communication_supported_profile_gets_a_short_baseline_with_a_helper():
     recommendation = initial_assessment_recommendation(ready_profile(
         affected_areas=["face_speech"],
@@ -202,6 +220,44 @@ def test_seated_tasks_stay_assigned_with_carer_support_when_arm_moves_only_with_
     assert recommendation["helper_assisted_task_ids"] == ["T1", "T2", "T3", "H1", "H3", "H4"]
     assert any("carer" in note.lower() for note in recommendation["safety_notes"])
     assert "carer" in recommendation["message"].lower()
+
+
+def test_supported_sitting_keeps_arm_and_hand_tasks_with_a_carer():
+    recommendation = initial_assessment_recommendation(ready_profile(
+        sitting_ability="needs_support",
+        mobility_level="not_cleared",
+        has_caregiver="yes",
+    ))
+
+    assert recommendation["can_start"] is True
+    assert recommendation["task_ids"] == ["T1", "T2", "T3", "H1", "H3", "H4"]
+    assert recommendation["helper_assisted_task_ids"] == ["T1", "T2", "T3", "H1", "H3", "H4"]
+    assert recommendation["requires_helper"] is True
+
+
+def test_hand_movement_with_help_is_assessed_instead_of_treated_as_no_movement():
+    recommendation = initial_assessment_recommendation(ready_profile(
+        affected_arm_movement="not_affected",
+        affected_hand_movement="help_only",
+        mobility_level="not_cleared",
+        has_caregiver="yes",
+    ))
+
+    assert recommendation["functional_profile"]["id"] == "helper_dependent"
+    assert recommendation["can_start"] is True
+    assert recommendation["task_ids"] == ["H1", "H3", "H4"]
+    assert recommendation["helper_assisted_task_ids"] == ["H1", "H3", "H4"]
+
+
+def test_preferred_instruction_support_reminds_patient_to_bring_someone_nearby():
+    recommendation = initial_assessment_recommendation(ready_profile(
+        instruction_support="helper_preferred",
+        has_caregiver="no",
+    ))
+
+    assert recommendation["can_start"] is True
+    assert recommendation["requires_helper"] is True
+    assert "carer or family member nearby" in recommendation["message"].lower()
 
 
 def test_help_only_arm_without_a_carer_keeps_tasks_but_pauses_start_for_helper_confirmation():
@@ -337,26 +393,52 @@ def test_survey_functional_problems_pin_every_domain_with_survey_reasons():
     assert all(pin["problem"] for pin in problems["pins"])
 
 
-def test_no_arm_movement_is_excluded_even_with_a_carer_available():
+def test_no_arm_movement_excludes_reaching_but_keeps_measurable_hand_tasks():
     recommendation = initial_assessment_recommendation(ready_profile(
         affected_arm_movement="no_movement",
         has_caregiver="yes",
     ))
 
-    assert all(task_id not in recommendation["task_ids"] for task_id in ("T1", "T2", "T3", "H1", "H3", "H4"))
+    assert all(task_id not in recommendation["task_ids"] for task_id in ("T1", "T2", "T3"))
+    assert all(task_id in recommendation["task_ids"] for task_id in ("H1", "H3", "H4"))
+    assert all(task_id in recommendation["helper_assisted_task_ids"] for task_id in ("H1", "H3", "H4"))
     assert any("even with help" in item["reason"] for item in recommendation["excluded"])
 
 
-def test_initial_assessment_does_not_assign_active_arm_or_hand_tasks_without_active_arm_movement():
+def test_initial_assessment_excludes_arm_and_hand_only_when_both_are_completely_unavailable():
     recommendation = initial_assessment_recommendation(ready_profile(
         affected_arm_movement="no_movement",
-        affected_hand_movement="some_finger_movement",
+        affected_hand_movement="no_movement",
         mobility_level="wheelchair",
     ))
 
     assert recommendation["can_start"] is False
     assert recommendation["requires_clinician_review"] is True
     assert recommendation["task_ids"] == []
+
+
+def test_completed_initial_assessment_is_exposed_as_account_state_and_routes_to_exercises():
+    completed_initial = assessment(days_ago=1, plan=[{
+        "id": "ex_reach",
+        "sets": 2,
+        "reps": 8,
+        "frequency": "5 days per week",
+    }])
+    completed_initial["assessment_package"] = "initial"
+
+    plan = build_adaptive_care_plan(
+        ready_profile(),
+        [completed_initial],
+        [check_in(days_ago=0, sudden_change="no", function_change="about_the_same")],
+        now=NOW,
+    )
+
+    assert plan["account_state"] == {
+        "has_completed_initial_assessment": True,
+        "initial_assessment_completed_at": completed_initial["created_at"],
+    }
+    assert plan["next_step"]["action"] == "continue_exercises"
+    assert plan["next_step"]["destination"] == "rehab_plan"
 
 
 def test_initial_assessment_does_not_assign_unaffected_arm_and_hand_tasks():

@@ -37,6 +37,8 @@ def test_home_becomes_next_assessment_after_initial_completion():
     home = read("frontend/app/(tabs)/index.tsx")
     journey = read("frontend/app/(tabs)/journey.tsx")
     assert 'history.some((item) => item.assessment_package === "initial")' in home
+    assert "carePlan?.account_state?.has_completed_initial_assessment" in home
+    assert 'activeExerciseIds.length\n        ? "Today\'s exercises"' in home
     assert "followUpDue" in home
     assert 'testID: "home-assessment-action"' in home
     assert 'testID="home-see-full-progress"' in home
@@ -45,6 +47,27 @@ def test_home_becomes_next_assessment_after_initial_completion():
     assert 'item.id === initialAssessmentId ? "Initial Assessment" : "Movement check-in"' in journey
     assert 'return "No rehab plan recommended"' in journey
     assert 'return "Movement analysis in progress"' in journey
+
+
+def test_home_day_titles_are_dark_in_light_mode_and_lighter_only_in_dark_mode():
+    home = read("frontend/app/(tabs)/index.tsx")
+
+    assert "const titleColor = preferences.darkMode ? palette.brand : palette.text" in home
+    assert "styles.dayStepTitle, { color: titleColor }" in home
+
+
+def test_readiness_survey_separates_assisted_movement_from_complete_inability():
+    survey = read("frontend/src/patientSurvey.ts")
+    onboarding = read("frontend/app/onboarding.tsx")
+    server = read("backend/server.py")
+
+    assert 'value: "help_only", label: "I can move it only with help"' in survey
+    assert 'value: "help_only", label: "I can move my hand or fingers only with help"' in survey
+    assert survey.count("even with help") >= 2
+    assert 'MOVEMENT_READINESS_VERSION = "survey-exercise-v3"' in survey
+    assert "usesLegacyMovementMeaning" in onboarding
+    assert 'update["movement_readiness_version"] = MOVEMENT_READINESS_VERSION' in server
+    assert "exercise_selection_fields" in server
 
 
 def test_initial_assessment_is_automatically_selected_without_a_manual_task_choice():

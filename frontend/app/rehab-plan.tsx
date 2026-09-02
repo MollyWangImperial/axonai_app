@@ -19,8 +19,9 @@ import * as Haptics from "expo-haptics";
 import { colors, spacing, radius } from "@/src/theme";
 import { fetchAssessment, Assessment, RehabExercise } from "@/src/api";
 import { storage } from "@/src/utils/storage";
-import { authedFetch } from "@/src/auth";
+import { authedFetch, getUserId } from "@/src/auth";
 import PaywallModal from "@/src/components/PaywallModal";
+import { localDateString } from "@/src/components/DailyCheckInCalendar";
 import { DEMO_ASSESSMENT_ID, demoAssessment } from "@/src/demoAssessment";
 import { estimateRehabMinutes } from "@/src/rehabTiming";
 
@@ -54,6 +55,12 @@ type PlanPreparationStage = 0 | 1 | 2;
 type SessionDifficulty = "easy" | "medium" | "difficult";
 type SessionVariation = "standard" | "alternate";
 
+type DailySessionChoice = {
+  date: string;
+  difficulty: SessionDifficulty;
+  variation: SessionVariation;
+};
+
 type ExerciseSessionOption = {
   exercise_id: string;
   name: string;
@@ -86,6 +93,43 @@ const SUPPORTED_REACH_IMAGE = require("../assets/images/rehab-supported-forward-
 const HAND_OPENING_IMAGE = require("../assets/images/rehab-relaxed-hand-opening.png") as ImageSourcePropType;
 const PROGRESS_KEY = (planId: string, exId: string) => `ex_progress_v1:${planId}:${exId}`;
 const SESSION_VISITS_KEY = (planId: string) => `rehab_session_visits_v1:${planId}`;
+const DAILY_SESSION_CHOICE_KEY = (accountId: string) => `rehab_daily_session_choice_v1:${accountId}`;
+
+function isSessionDifficulty(value: unknown): value is SessionDifficulty {
+  return value === "easy" || value === "medium" || value === "difficult";
+}
+
+function isSessionVariation(value: unknown): value is SessionVariation {
+  return value === "standard" || value === "alternate";
+}
+
+async function dailySessionChoiceKey(planId: string): Promise<string> {
+  const userId = await getUserId();
+  return DAILY_SESSION_CHOICE_KEY(userId || `plan:${planId}`);
+}
+
+async function loadTodaySessionChoice(planId: string): Promise<DailySessionChoice | null> {
+  const raw = await storage.getItem(await dailySessionChoiceKey(planId), "");
+  if (typeof raw !== "string" || !raw) return null;
+  try {
+    const saved = JSON.parse(raw) as Partial<DailySessionChoice>;
+    if (
+      saved.date !== localDateString()
+      || !isSessionDifficulty(saved.difficulty)
+      || !isSessionVariation(saved.variation)
+    ) return null;
+    return saved as DailySessionChoice;
+  } catch {
+    return null;
+  }
+}
+
+async function saveTodaySessionChoice(planId: string, choice: Omit<DailySessionChoice, "date">): Promise<void> {
+  await storage.setItem(
+    await dailySessionChoiceKey(planId),
+    JSON.stringify({ ...choice, date: localDateString() } satisfies DailySessionChoice),
+  );
+}
 
 const DIFFICULTY_COPY: Record<SessionDifficulty, { label: string; summary: string; icon: keyof typeof Ionicons.glyphMap }> = {
   easy: { label: "Easy", summary: "Fewer repetitions and a more reachable target.", icon: "leaf-outline" },
@@ -395,6 +439,14 @@ export default function RehabPlanScreen() {
   const [increaseDifficulty, setIncreaseDifficulty] = useState(false);
   const [sessionConfirmed, setSessionConfirmed] = useState(false);
   const [switchRecommended, setSwitchRecommended] = useState(false);
+  const baseSessionPlanRef = React.useRef<Assessment | null>(null);
+  const baseSessionDifficultyRef = React.useRef<SessionDifficulty>("medium");
+  // A new ID is created whenever this rehab-plan screen is entered. The first
+  // exercise calibrates against it; later exercises reuse that calibration.
+  // Leaving the plan and starting rehab again mounts a new screen and ID.
+  const rehabSessionIdRef = React.useRef(
+    `rehab-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
+  );
 
   const planId = id || "default";
   const isDemo = id === DEMO_ASSESSMENT_ID;
@@ -451,16 +503,15 @@ export default function RehabPlanScreen() {
           setPreparationStage(2);
           stageStartedAt = Date.now();
           const adjustedAssessment = applyAdaptiveDose(assessment, carePlan);
-          setAdaptiveCarePlan(carePlan);
-          setData(adjustedAssessment);
           const doseChange = Number(carePlan?.exercise_plan?.dose_change_percent || 0);
-          setSessionDifficulty(doseChange < 0 ? "easy" : doseChange > 0 ? "difficult" : "medium");
+          const baseDifficulty: SessionDifficulty = doseChange < 0 ? "easy" : doseChange > 0 ? "difficult" : "medium";
+          let loadedSessionOptions: ExerciseSessionOption[] = [];
           try {
             const exerciseIds = adjustedAssessment.rehab_plan.map((exercise) => exercise.id).join(",");
             const response = await authedFetch(`/api/rehab/session-options?exercise_ids=${encodeURIComponent(exerciseIds)}`);
             if (response.ok) {
               const sessionResponse = await response.json() as SessionOptionsResponse;
-              if (!cancelled) setSessionOptions(sessionResponse.exercises || []);
+              loadedSessionOptions = sessionResponse.exercises || [];
             }
           } catch {
             // The plan remains usable with the generic difficulty descriptions.
@@ -471,16 +522,30 @@ export default function RehabPlanScreen() {
             const recommendSwitch = (visits + 1) % 3 === 0;
             if (!cancelled) {
               setSwitchRecommended(recommendSwitch);
-              setSessionVariation("standard");
-              setIncreaseDifficulty(false);
             }
           } catch {
             if (!cancelled) {
               setSwitchRecommended(false);
-              setSessionVariation("standard");
             }
           }
-          await loadProgress(adjustedAssessment);
+
+          const savedChoice = await loadTodaySessionChoice(planId);
+          const selectedDifficulty = savedChoice?.difficulty || baseDifficulty;
+          const selectedVariation = savedChoice?.variation || "standard";
+          const sessionPlan = savedChoice
+            ? configureSessionPlan(adjustedAssessment, selectedDifficulty, loadedSessionOptions)
+            : adjustedAssessment;
+          if (cancelled) return;
+          baseSessionPlanRef.current = adjustedAssessment;
+          baseSessionDifficultyRef.current = baseDifficulty;
+          setAdaptiveCarePlan(carePlan);
+          setSessionOptions(loadedSessionOptions);
+          setSessionDifficulty(selectedDifficulty);
+          setSessionVariation(selectedVariation);
+          setIncreaseDifficulty(false);
+          setSessionConfirmed(Boolean(savedChoice));
+          setData(sessionPlan);
+          await loadProgress(sessionPlan);
           await waitForMinimumStageTime(stageStartedAt);
         }
       } finally {
@@ -498,6 +563,29 @@ export default function RehabPlanScreen() {
         loadProgress(data);
       }
     }, [data, loadProgress])
+  );
+
+  useFocusEffect(
+    React.useCallback(() => {
+      let active = true;
+      void (async () => {
+        const savedChoice = await loadTodaySessionChoice(planId);
+        const basePlan = baseSessionPlanRef.current;
+        if (!active || savedChoice || !basePlan) return;
+        setSessionDifficulty(baseSessionDifficultyRef.current);
+        setSessionVariation("standard");
+        setIncreaseDifficulty(false);
+        setSessionConfirmed(false);
+        setData(basePlan);
+        const rawVisits = await storage.getItem(SESSION_VISITS_KEY(planId), "0");
+        const visits = Math.max(0, Number.parseInt(String(rawVisits || "0"), 10) || 0);
+        setSwitchRecommended((visits + 1) % 3 === 0);
+        await loadProgress(basePlan);
+      })();
+      return () => {
+        active = false;
+      };
+    }, [loadProgress, planId])
   );
 
   const completedCount = Object.values(progress).filter((item) => item.completed_reps >= item.total_reps).length;
@@ -522,6 +610,10 @@ export default function RehabPlanScreen() {
     if (!data) return;
     const selectedDifficulty = increaseDifficulty ? nextDifficulty(sessionDifficulty) : sessionDifficulty;
     const configuredPlan = configureSessionPlan(data, selectedDifficulty, sessionOptions);
+    await saveTodaySessionChoice(planId, {
+      difficulty: selectedDifficulty,
+      variation: sessionVariation,
+    });
     setSessionDifficulty(selectedDifficulty);
     setData(configuredPlan);
     await loadProgress(configuredPlan);
@@ -563,6 +655,7 @@ export default function RehabPlanScreen() {
         difficulty: sessionDifficulty,
         variation: sessionVariation,
         affected_side: data?.affected_side === "left" ? "left" : "right",
+        rehab_session_id: rehabSessionIdRef.current,
       },
     });
   };
@@ -584,6 +677,7 @@ export default function RehabPlanScreen() {
 
   const planAccess = data.clinical_review_gate?.rehab_access || "allowed";
   const interimPlan = planAccess === "interim" && data.rehab_plan.length > 0;
+  const surveyBasedPlan = data.clinical_review_gate?.rehab_plan_source === "survey_reported_problems";
   if (adaptiveCarePlan?.safety?.blocks_exercise || (planAccess !== "allowed" && !interimPlan) || data.rehab_plan.length === 0) {
     const gate = data.clinical_review_gate;
     const adaptiveHold = Boolean(adaptiveCarePlan?.safety?.blocks_exercise);
@@ -644,11 +738,11 @@ export default function RehabPlanScreen() {
 
       <ScrollView contentContainerStyle={[styles.scrollContent, { paddingBottom: Math.max(insets.bottom, spacing.xl) }]}>
         <View style={styles.page}>
-          {interimPlan && (
-            <View style={styles.interimBanner} testID="plan-interim-banner">
-              <Ionicons name="time-outline" size={18} color="#6B4A0B" />
+          {surveyBasedPlan && (
+            <View style={styles.interimBanner} testID="plan-survey-source-banner">
+              <Ionicons name="document-text-outline" size={18} color="#6B4A0B" />
               <Text style={styles.interimBannerText}>
-                Starting plan from your survey answers. It will be updated automatically once your movement analysis is complete.
+                Survey-based plan: these exercises come only from the functional difficulties you reported. Camera and model findings do not replace them.
               </Text>
             </View>
           )}

@@ -18,7 +18,7 @@ import Svg, { Circle, G, Line, Polyline, Text as SvgText } from "react-native-sv
 import { useRouter } from "expo-router";
 import * as Haptics from "expo-haptics";
 import { colors, spacing, radius } from "@/src/theme";
-import { signIn, authedFetch, cachePatientOnboarding, getCachedPatientProfile, hasPendingConsent, setConsentAccepted, clearPendingConsent } from "@/src/auth";
+import { signIn, authedFetch, cachePatientOnboarding, getCachedPatientProfile, hasAcceptedConsent } from "@/src/auth";
 
 const DEEP_GREEN = "#07563A";
 const INK = "#063C2C";
@@ -97,9 +97,9 @@ export default function SignInScreen() {
   const [err, setErr] = useState<string | null>(null);
 
   const routePatientAfterLogin = async (user: { id: string }) => {
-    if (await hasPendingConsent()) {
-      await setConsentAccepted(user.id);
-      await clearPendingConsent();
+    if (!(await hasAcceptedConsent(user.id))) {
+      router.replace("/consent");
+      return;
     }
     const cachedProfile = await getCachedPatientProfile(user.id);
     try {

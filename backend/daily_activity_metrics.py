@@ -43,6 +43,7 @@ _HAND_TO_ASSISTANCE = {
     "opens_and_moves": "supervision_only",
     "some_finger_movement": "minimum_assistance",
     "very_little_movement": "moderate_assistance",
+    "help_only": "moderate_assistance",
     "no_movement": "maximum_assistance",
 }
 

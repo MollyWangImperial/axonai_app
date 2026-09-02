@@ -63,6 +63,22 @@ def test_testing_library_exposes_every_unique_task_and_guided_exercise(monkeypat
     assert {exercise["id"] for exercise in exercises} == expected_exercise_ids
     assert expected_exercise_ids == set(server.REHAB_RUNNER_CONFIG)
     assert all(exercise["guided_reps"] > 0 for exercise in exercises)
+    assert all(exercise["calibration_instruction"] for exercise in exercises)
+    assert all(exercise["training_focus"] for exercise in exercises)
+    assert all(exercise["repetition_definition"] for exercise in exercises)
+    assert all(exercise["rom_metrics"] for exercise in exercises)
+    assert all(exercise["scoring_method"] == server.EXERCISE_SCORING_METHOD for exercise in exercises)
+    assert all(exercise["overlay_style"] == server.EXERCISE_OVERLAY_STYLE for exercise in exercises)
+    assert all(
+        metric["coaching_cue"]
+        for exercise in exercises
+        for metric in exercise["rom_metrics"]
+    )
+    assert all(
+        metric["label"] and metric["correction"]
+        for exercise in exercises
+        for metric in exercise["compensation_metrics"]
+    )
 
 
 def test_library_task_launch_bypasses_schedule_only_for_one_explicit_task(monkeypatch):

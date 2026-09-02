@@ -23,11 +23,11 @@ function AuthGate() {
   useEffect(() => {
     (async () => {
       const u = await getCachedUser();
-      // Public routes that should be reachable without auth (e.g., legal pages linked from sign-in footer).
-      const publicRoutes = ["sign-in", "consent", "privacy-policy", "terms-of-use", "data-permissions", "movement-videos"];
-      // If not signed in and not on a public route, redirect
-      if (!u && !publicRoutes.includes(seg0)) {
-        router.replace("/consent");
+      // Only the sign-in screen and its privacy notice are available before authentication.
+      const unauthenticatedRoutes = ["sign-in", "privacy-policy"];
+      const signedInLegalRoutes = ["sign-in", "consent", "privacy-policy", "terms-of-use", "data-permissions", "movement-videos"];
+      if (!u && !unauthenticatedRoutes.includes(seg0)) {
+        router.replace("/sign-in");
         return;
       }
       if (!u) return;
@@ -35,7 +35,7 @@ function AuthGate() {
         void preloadAssessmentMediaPipe();
       }
       // Therapist role → therapist portal
-      if (u.role === "therapist" && seg0 !== "therapist" && !publicRoutes.includes(seg0)) {
+      if (u.role === "therapist" && seg0 !== "therapist" && !signedInLegalRoutes.includes(seg0)) {
         router.replace("/therapist");
         return;
       }
@@ -55,12 +55,12 @@ function AuthGate() {
             consentOk = false;
           }
         }
-        if (!consentOk && seg0 !== "consent" && !publicRoutes.includes(seg0)) {
+        if (!consentOk && seg0 !== "consent" && !signedInLegalRoutes.includes(seg0)) {
           router.replace("/consent");
           return;
         }
         const localFlag = await storage.getItem(onboardingCompleteKey(u.id), "");
-        const allowedDuringOnboarding = ["onboarding", "sign-in", "consent", "privacy-policy", "terms-of-use", "data-permissions", "movement-videos"];
+        const allowedDuringOnboarding = ["onboarding", ...signedInLegalRoutes];
         if (!localFlag && !allowedDuringOnboarding.includes(seg0)) {
           // double-check with backend (in case user signed in on a fresh device)
           try {

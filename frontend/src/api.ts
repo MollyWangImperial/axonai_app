@@ -269,6 +269,8 @@ export type ClinicalReviewGate = {
   version?: string;
   status: "clear" | "awaiting_model_analysis" | "therapist_confirmation_required" | "no_rehab_needed";
   rehab_access: "allowed" | "interim" | "blocked" | "not_needed";
+  rehab_plan_source?: "survey_reported_problems" | string;
+  interim_plan_available?: boolean;
   reason_code?: string;
   therapist_confirmation_required?: boolean;
   patient_title?: string;

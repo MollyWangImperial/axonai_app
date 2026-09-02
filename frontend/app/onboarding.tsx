@@ -6,11 +6,27 @@ import { useLocalSearchParams, useRouter } from "expo-router";
 import * as Haptics from "expo-haptics";
 import { colors, spacing, radius } from "@/src/theme";
 import { authedFetch, cachePatientOnboarding, getCachedUser, signIn } from "@/src/auth";
-import { ASSESSMENT_READINESS_KEYS, PATIENT_SURVEY_STEPS } from "@/src/patientSurvey";
+import { ASSESSMENT_READINESS_KEYS, PATIENT_SURVEY_STEPS, MOVEMENT_READINESS_VERSION } from "@/src/patientSurvey";
 
 const READINESS_SURVEY_STEPS = PATIENT_SURVEY_STEPS.filter((item) =>
   ASSESSMENT_READINESS_KEYS.includes(item.key as typeof ASSESSMENT_READINESS_KEYS[number]),
 );
+
+const STANDING_OR_STEPPING_DIFFICULTIES = new Set([
+  "sit_to_stand",
+  "standing_balance",
+  "weight_affected_leg",
+  "start_step",
+  "step_balance",
+]);
+
+const surveyStepApplies = (key: string, answers: Record<string, any>) => {
+  if (key !== "standing_exercise_clearance") return true;
+  const mobilityDifficulties = Array.isArray(answers.mobility_activity_difficulties)
+    ? answers.mobility_activity_difficulties
+    : [];
+  return mobilityDifficulties.some((value: string) => STANDING_OR_STEPPING_DIFFICULTIES.has(value));
+};
 
 // "Any other goals?" shows a picture for each option instead of a symbol:
 // large pictograms on tinted cards, with a check mark when selected.
@@ -34,11 +50,12 @@ export default function OnboardingScreen() {
   // Never re-ask what the survey already answered: readiness mode only shows
   // the still-missing questions, and skips itself entirely when none remain.
   const [readinessSteps, setReadinessSteps] = useState<typeof READINESS_SURVEY_STEPS | null>(null);
-  const steps = isReadinessUpdate
-    ? (readinessSteps ?? READINESS_SURVEY_STEPS)
-    : PATIENT_SURVEY_STEPS;
   const [idx, setIdx] = useState(0);
   const [values, setValues] = useState<Record<string, any>>({});
+  const baseSteps = isReadinessUpdate
+    ? (readinessSteps ?? READINESS_SURVEY_STEPS)
+    : PATIENT_SURVEY_STEPS;
+  const steps = baseSteps.filter((item) => surveyStepApplies(item.key, values));
   const [textInput, setTextInput] = useState("");
   const [otherAreaText, setOtherAreaText] = useState("");
   const [showOtherArea, setShowOtherArea] = useState(false);
@@ -71,8 +88,14 @@ export default function OnboardingScreen() {
           if (Array.isArray(value)) return value.length > 0;
           return String(value).trim() !== "";
         };
-        const missingSteps = READINESS_SURVEY_STEPS.filter((item) => !answered(savedProfile[item.key]));
-        if (missingSteps.length === 0) {
+        const usesLegacyMovementMeaning = savedProfile.movement_readiness_version !== MOVEMENT_READINESS_VERSION;
+        const missingSteps = READINESS_SURVEY_STEPS.filter((item) => {
+          if (!answered(savedProfile[item.key])) return true;
+          return usesLegacyMovementMeaning
+            && ["affected_arm_movement", "affected_hand_movement"].includes(item.key)
+            && savedProfile[item.key] === "no_movement";
+        });
+        if (missingSteps.filter((item) => surveyStepApplies(item.key, savedProfile)).length === 0) {
           // The survey already covers every readiness question - go straight
           // to task selection instead of repeating them.
           router.replace("/task-intro?mode=initial" as never);
@@ -113,6 +136,7 @@ export default function OnboardingScreen() {
       setSaving(true);
       try {
         const payload: any = { ...next };
+        payload.movement_readiness_version = MOVEMENT_READINESS_VERSION;
         const areas: string[] = payload.affected_areas || [];
         const hasLeft = areas.some((area) => area.startsWith("left_"));
         const hasRight = areas.some((area) => area.startsWith("right_"));
@@ -253,12 +277,18 @@ export default function OnboardingScreen() {
                     return;
                   }
                   let next: string[];
-                  if (o.value === "none") {
+                  const isExclusiveAnswer = ["none", "not_sure", "unsure"].includes(o.value);
+                  if (isExclusiveAnswer) {
                     next = active ? [] : ["none"];
-                    setVal("medical_conditions_other", undefined);
-                    setOtherConditionText("");
+                    if (o.value !== "none") next = active ? [] : [o.value];
+                    if (step.key === "medical_conditions") {
+                      setVal("medical_conditions_other", undefined);
+                      setOtherConditionText("");
+                    }
                   }
-                  else next = active ? selected.filter((s) => s !== o.value) : [...selected.filter((s) => s !== "none"), o.value];
+                  else next = active
+                    ? selected.filter((s) => s !== o.value)
+                    : [...selected.filter((s) => !["none", "not_sure", "unsure"].includes(s)), o.value];
                   setVal(step.key, next);
                 }}
                 style={step.key === "secondary_goals"

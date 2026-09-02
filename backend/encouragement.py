@@ -1,9 +1,8 @@
 """Encouragement mechanism (spec section 10).
 
 Points reward effort, safe participation, and personal progress - never only
-perfect completion. A session at reduced intensity, or one completed with a
-caregiver's help, earns exactly the same points as any other session, because
-the recorded activity does not and should not distinguish "how well" it went.
+perfect completion. Every safely completed repetition earns one point whether
+it is performed independently, at reduced intensity, or with caregiver help.
 
 Streaks include streak freezes: a day is never counted as broken when the
 patient chose a rest or recovery day, reported heavy fatigue, or reported
@@ -16,9 +15,11 @@ from __future__ import annotations
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, List, Mapping, Optional, Sequence
 
-ENCOURAGEMENT_VERSION = "rehyn-encouragement-1.0"
+ENCOURAGEMENT_VERSION = "rehyn-encouragement-1.1"
 
-POINTS_PER_EXERCISE = 5
+POINTS_PER_REPETITION = 1
+POINTS_PER_CAREGIVER_ROUTINE = 5
+LEGACY_REPETITIONS_PER_EXERCISE = 5
 POINTS_PER_SESSION_DAY = 20
 POINTS_PER_ROUND = 50
 POINTS_PER_CHECKIN_TAP = 2
@@ -79,11 +80,28 @@ def compute_rewards(
 
     session_days: set = set()
     exercise_count = 0
+    repetition_count = 0
+    caregiver_routine_count = 0
+    activity_points = 0
     for activity in activities:
         completed = _as_utc(activity.get("completed_at"))
         if not completed:
             continue
         exercise_count += 1
+        raw_repetitions = activity.get("completed_reps")
+        if raw_repetitions is None:
+            completed_repetitions = LEGACY_REPETITIONS_PER_EXERCISE
+        else:
+            try:
+                completed_repetitions = max(0, int(raw_repetitions))
+            except (TypeError, ValueError):
+                completed_repetitions = 0
+        repetition_count += completed_repetitions
+        if str(activity.get("exercise_id") or "").startswith("CG_"):
+            caregiver_routine_count += 1
+            activity_points += POINTS_PER_CAREGIVER_ROUTINE
+        else:
+            activity_points += completed_repetitions * POINTS_PER_REPETITION
         session_days.add(completed.date())
 
     tap_days = 0
@@ -97,7 +115,7 @@ def compute_rewards(
 
     rounds_completed = len(session_days) // ROUND_LENGTH_DAYS
     points = (
-        exercise_count * POINTS_PER_EXERCISE
+        activity_points
         + len(session_days) * POINTS_PER_SESSION_DAY
         + rounds_completed * POINTS_PER_ROUND
         + tap_days * POINTS_PER_CHECKIN_TAP
@@ -139,10 +157,13 @@ def compute_rewards(
         "points": points,
         "breakdown": {
             "exercises_completed": exercise_count,
+            "repetitions_completed": repetition_count,
+            "caregiver_routines_completed": caregiver_routine_count,
             "session_days": len(session_days),
             "rounds_completed": rounds_completed,
             "check_in_days": tap_days,
-            "points_per_exercise": POINTS_PER_EXERCISE,
+            "points_per_repetition": POINTS_PER_REPETITION,
+            "points_per_caregiver_routine": POINTS_PER_CAREGIVER_ROUTINE,
             "points_per_session_day": POINTS_PER_SESSION_DAY,
             "points_per_round": POINTS_PER_ROUND,
             "points_per_check_in": POINTS_PER_CHECKIN_TAP,

@@ -7,7 +7,7 @@ import * as Haptics from "expo-haptics";
 
 import { LegalDocument } from "@/src/components/LegalDocument";
 import { useDisplayPreferences } from "@/src/displayPreferences";
-import { getCachedUser, setConsentAccepted, setPendingConsentAccepted } from "@/src/auth";
+import { getCachedUser, setConsentAccepted } from "@/src/auth";
 import { LEGAL_EFFECTIVE_DATE, LEGAL_VERSION, TERMS_INTRO, TERMS_SECTIONS } from "@/src/legalContent";
 import { colors, radius, spacing } from "@/src/theme";
 
@@ -27,10 +27,13 @@ export default function ConsentScreen() {
     setError("");
     try {
       const user = await getCachedUser();
-      if (user?.id) await setConsentAccepted(user.id);
-      else await setPendingConsentAccepted();
+      if (!user?.id) {
+        router.replace("/sign-in");
+        return;
+      }
+      await setConsentAccepted(user.id);
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      router.replace(user?.id ? "/onboarding" : "/sign-in");
+      router.replace("/");
     } catch {
       setError("We could not save your choices. Check your connection and try again.");
       setSaving(false);
