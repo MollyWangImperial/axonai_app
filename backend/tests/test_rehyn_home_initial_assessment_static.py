@@ -36,7 +36,7 @@ def test_home_launches_standardized_initial_assessment():
 def test_home_becomes_next_assessment_after_initial_completion():
     home = read("frontend/app/(tabs)/index.tsx")
     journey = read("frontend/app/(tabs)/journey.tsx")
-    assert 'history.some((item) => item.assessment_package === "initial")' in home
+    assert "history.length > 0" in home
     assert "carePlan?.account_state?.has_completed_initial_assessment" in home
     assert 'activeExerciseIds.length\n        ? "Today\'s exercises"' in home
     assert "followUpDue" in home

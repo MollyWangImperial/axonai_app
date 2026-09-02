@@ -48,6 +48,17 @@ def test_check_in_marks_day_in_progress_and_completion_earns_check_mark(monkeypa
             # Idempotent: a second tap does not reset the day.
             again = client.post("/api/users/daily-checkin", json={"date": "2026-08-30"})
             assert again.json()["status"] == "in_progress"
+            sync_user()
+
+            # A fresh login on the same local day reads the account record and
+            # does not ask the patient to check in a second time.
+            same_day = client.get("/api/users/daily-checkin?date=2026-08-30")
+            assert same_day.status_code == 200
+            assert same_day.json()["date"] == "2026-08-30"
+            assert same_day.json()["status"] == "in_progress"
+
+            next_day = client.get("/api/users/daily-checkin?date=2026-08-31")
+            assert next_day.json()["status"] == "not_checked_in"
 
             done = client.post("/api/users/daily-checkin/complete", json={"date": "2026-08-30"})
             assert done.status_code == 200
@@ -86,6 +97,8 @@ def test_invalid_dates_are_rejected(monkeypatch):
             for bad in ("2026-13-01", "2026-00-10", "20260830", "2026-08-32", "not-a-date"):
                 response = client.post("/api/users/daily-checkin", json={"date": bad})
                 assert response.status_code == 422, bad
+                response = client.get(f"/api/users/daily-checkin?date={bad}")
+                assert response.status_code == 422, bad
     finally:
         if original is None:
             server.LOCAL_USERS.pop("u_daily_checkin", None)
@@ -99,7 +112,8 @@ def test_home_screen_wires_the_calendar_and_exercise_completion_earns_the_mark()
     root = Path(__file__).resolve().parents[2]
     home = (root / "frontend" / "app" / "(tabs)" / "index.tsx").read_text(encoding="utf-8")
     exercise = (root / "frontend" / "app" / "exercise.tsx").read_text(encoding="utf-8")
-    assert 'authedFetch("/api/users/daily-checkin")' in home
+    assert 'authedFetch(`/api/users/daily-checkin?date=${encodeURIComponent(requestedDate)}`)' in home
+    assert 'checkIn.date === todayIso' in home
     assert 'testID: "daily-checkin-button"' in home
     assert 'testID="home-week-toggle"' in home
     assert 'authedFetch("/api/users/daily-checkin/complete"' in exercise

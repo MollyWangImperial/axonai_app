@@ -114,13 +114,13 @@ export function DailyCheckInCalendar() {
 
   const load = useCallback(async () => {
     if (!getScreenCache<CheckInState>("daily-checkin")) setLoading(true);
-    const response = await authedFetch("/api/users/daily-checkin").catch(() => null);
+    const today = localDateString();
+    const response = await authedFetch(`/api/users/daily-checkin?date=${encodeURIComponent(today)}`).catch(() => null);
     const payload = response?.ok ? await response.json().catch(() => null) : null;
     if (payload) applyResponse(payload);
     setLoading(false);
     // Spec 2/3: the session starts with Alira routing the patient - the next
     // step appears automatically once per day, without waiting for a tap.
-    const today = localDateString();
     const alreadyPrompted = getScreenCache<string>("daily-checkin-prompted") === today;
     if (payload && !alreadyPrompted) {
       if (payload.status === "not_checked_in") void checkIn(true);

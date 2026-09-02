@@ -3042,6 +3042,8 @@ async def submit_assessment(payload: AssessmentSubmit, request: Request):
     except Exception as e:
         logger.warning(f"Mongo unavailable for assessment insert; using local fallback: {str(e)[:120]}")
         LOCAL_ASSESSMENTS.append(doc.copy())
+    if access.get("trigger") == "initial":
+        await _record_initial_assessment_completion(user, assessment.created_at)
     await _mark_functional_issue_assessed(user["id"], access.get("issue_report_id"), assessment_id)
     _record_alira_action(
         "movement_snapshot_generated",
@@ -11665,6 +11667,29 @@ async def _care_assessments_for_user(user_id: str) -> List[Dict[str, Any]]:
         return [item.copy() for item in LOCAL_ASSESSMENTS if item.get("user_id") == user_id]
 
 
+async def _record_initial_assessment_completion(user: Dict[str, Any], completed_at: str) -> str:
+    """Persist the baseline-completion marker on the patient account."""
+    existing = str(user.get("initial_assessment_completed_at") or "")
+    candidates = [value for value in (existing, str(completed_at or "")) if value]
+    recorded_at = min(candidates) if candidates else datetime.now(timezone.utc).isoformat()
+    user["initial_assessment_completed_at"] = recorded_at
+    try:
+        result = await db.users.update_one(
+            {"id": user["id"]},
+            {"$set": {"initial_assessment_completed_at": recorded_at}},
+        )
+        if getattr(result, "matched_count", 0) == 0:
+            raise RuntimeError("user record not found")
+    except Exception as exc:
+        logger.warning(f"Mongo unavailable for initial-assessment account marker; using local fallback: {str(exc)[:120]}")
+        LOCAL_USERS[user["id"]] = {
+            **(LOCAL_USERS.get(user["id"]) or user),
+            "initial_assessment_completed_at": recorded_at,
+        }
+        _persist_local_dict(LOCAL_USERS_FILE, LOCAL_USERS)
+    return recorded_at
+
+
 async def _care_check_ins_for_user(user_id: str) -> List[Dict[str, Any]]:
     try:
         return await db.alira_check_ins.find(
@@ -11704,6 +11729,12 @@ async def _adaptive_care_plan_for_user(
 ) -> Dict[str, Any]:
     if assessments is None:
         assessments = await _care_assessments_for_user(user["id"])
+    if assessments and not user.get("initial_assessment_completed_at"):
+        earliest_assessment_at = min(
+            (str(item.get("created_at") or "") for item in assessments if item.get("created_at")),
+            default=datetime.now(timezone.utc).isoformat(),
+        )
+        await _record_initial_assessment_completion(user, earliest_assessment_at)
     if check_ins is None:
         check_ins = await _care_check_ins_for_user(user["id"])
     if activities is None:
@@ -11711,6 +11742,7 @@ async def _adaptive_care_plan_for_user(
     if issue_reports is None:
         issue_reports = await _care_issue_reports_for_user(user["id"])
     profile = dict(user.get("profile") or {})
+    profile["_initial_assessment_completed_at"] = user.get("initial_assessment_completed_at")
     profile["_assessment_deferrals"] = dict(user.get("assessment_deferrals") or {})
     profile["_survey_report_viewed_at"] = user.get("survey_report_viewed_at")
     return build_adaptive_care_plan(profile, assessments, check_ins, activities, issue_reports)
@@ -12189,8 +12221,8 @@ async def _save_daily_checkins(user: Dict[str, Any], checkins: Dict[str, Dict[st
         checkins = dict(sorted(checkins.items())[-DAILY_CHECKIN_HISTORY_LIMIT:])
     try:
         result = await db.users.update_one({"id": user["id"]}, {"$set": {"daily_checkins": checkins}})
-        if getattr(result, "matched_count", 0) == 0 and user["id"] in LOCAL_USERS:
-            raise RuntimeError("local user")
+        if getattr(result, "matched_count", 0) == 0:
+            raise RuntimeError("user record not found")
     except Exception as e:
         logger.warning(f"Mongo unavailable for daily check-in; using local fallback: {str(e)[:120]}")
         LOCAL_USERS[user["id"]] = {**user, "daily_checkins": checkins}
@@ -12211,12 +12243,12 @@ def _daily_checkin_response(date: str, checkins: Dict[str, Dict[str, Any]]) -> D
 
 
 @api_router.get("/users/daily-checkin")
-async def get_daily_checkins(request: Request):
+async def get_daily_checkins(request: Request, date: Optional[str] = None):
     user = await _user_from_header(dict(request.headers))
     if not user:
         raise HTTPException(status_code=401, detail="Sign in required")
-    today = datetime.now(timezone.utc).date().isoformat()
-    return _daily_checkin_response(today, dict(user.get("daily_checkins") or {}))
+    requested_date = _validated_checkin_date(date) if date else datetime.now(timezone.utc).date().isoformat()
+    return _daily_checkin_response(requested_date, dict(user.get("daily_checkins") or {}))
 
 
 @api_router.post("/users/daily-checkin")

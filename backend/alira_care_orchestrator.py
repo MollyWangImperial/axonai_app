@@ -1722,17 +1722,28 @@ def build_adaptive_care_plan(
     scheduled_assessment_due = now >= assessment_due_at
     assessment_due = (scheduled_assessment_due or bool(pending_issue)) and not safety["blocks_assessment"]
     has_plan = bool((latest_assessment or {}).get("rehab_plan"))
-    initial_assessments = [
+    explicitly_initial_assessments = [
         item for item in assessments
         if str(item.get("assessment_package") or "initial") == "initial"
+        or str(item.get("assessment_trigger") or "") == "initial"
     ]
-    has_initial_assessment = bool(initial_assessments)
-    initial_assessment_completed_at = max(
-        (str(item.get("created_at") or "") for item in initial_assessments),
-        default="",
-    ) or None
-    initial_readiness = initial_assessment_recommendation(profile) if not latest_assessment else None
-    selection = _selected_assessment(domains, bool(latest_assessment), pending_issue, initial_readiness)
+    persisted_initial_completed_at = str(profile.get("_initial_assessment_completed_at") or "")
+    # Assessments created before the unified Initial Assessment package used
+    # domain package names. The first historical assessment is still durable
+    # evidence that this account completed its baseline and must not be sent
+    # through onboarding again.
+    has_initial_assessment = bool(assessments or persisted_initial_completed_at)
+    completion_sources = explicitly_initial_assessments or assessments
+    completion_dates = [
+        str(item.get("created_at") or "")
+        for item in completion_sources
+        if str(item.get("created_at") or "")
+    ]
+    if persisted_initial_completed_at:
+        completion_dates.append(persisted_initial_completed_at)
+    initial_assessment_completed_at = min(completion_dates, default="") or None
+    initial_readiness = initial_assessment_recommendation(profile) if not has_initial_assessment else None
+    selection = _selected_assessment(domains, has_initial_assessment, pending_issue, initial_readiness)
     if pending_issue:
         assessment_due_at = now
     latest_activity = _latest(activities, key="completed_at")

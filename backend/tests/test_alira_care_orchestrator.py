@@ -441,6 +441,30 @@ def test_completed_initial_assessment_is_exposed_as_account_state_and_routes_to_
     assert plan["next_step"]["destination"] == "rehab_plan"
 
 
+def test_legacy_domain_assessment_counts_as_the_accounts_completed_baseline():
+    legacy_baseline = assessment(days_ago=2, plan=[{
+        "id": "ex_reach",
+        "sets": 2,
+        "reps": 8,
+        "frequency": "5 days per week",
+    }])
+    legacy_baseline["assessment_package"] = "upper_limb"
+
+    plan = build_adaptive_care_plan(
+        ready_profile(),
+        [legacy_baseline],
+        [check_in(days_ago=0, sudden_change="no", function_change="about_the_same")],
+        now=NOW,
+    )
+
+    assert plan["account_state"] == {
+        "has_completed_initial_assessment": True,
+        "initial_assessment_completed_at": legacy_baseline["created_at"],
+    }
+    assert plan["next_step"]["action"] == "continue_exercises"
+    assert plan["next_step"]["destination"] == "rehab_plan"
+
+
 def test_initial_assessment_does_not_assign_unaffected_arm_and_hand_tasks():
     recommendation = initial_assessment_recommendation(ready_profile(
         affected_arm_movement="not_affected",

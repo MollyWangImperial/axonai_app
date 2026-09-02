@@ -69,6 +69,7 @@ type HomeCarePlan = {
 };
 
 type DailyCheckInState = {
+  date: string;
   status: "not_checked_in" | "in_progress" | "complete";
   days: { date: string; status: string }[];
 };
@@ -111,7 +112,7 @@ type TrendDefinition = {
   message: string;
 };
 
-const EMPTY_CHECK_IN: DailyCheckInState = { status: "not_checked_in", days: [] };
+const EMPTY_CHECK_IN: DailyCheckInState = { date: "", status: "not_checked_in", days: [] };
 const EMPTY_PROGRESS: ProgressSummary = { assessments: [] };
 
 function localDateString(date = new Date()) {
@@ -351,12 +352,13 @@ export default function HomeScreen() {
   const load = useCallback(async () => {
     if (!getScreenCache<HomeScreenCache>("home")) setLoading(true);
     const user = await getCachedUser();
+    const requestedDate = localDateString();
     const [assessments, preferredName, carePlanPayload, onboarding, checkInPayload, rewardsPayload, progressPayload] = await Promise.all([
       fetchHistory().catch(() => []),
       user?.id ? storage.getItem(preferredNameKey(user.id), "") : Promise.resolve(""),
       authedFetch("/api/alira/care-plan").then(async (response) => response.ok ? response.json() : null).catch(() => null),
       authedFetch("/api/users/onboarding").then(async (response) => response.ok ? response.json() : null).catch(() => null),
-      authedFetch("/api/users/daily-checkin").then(async (response) => response.ok ? response.json() : null).catch(() => null),
+      authedFetch(`/api/users/daily-checkin?date=${encodeURIComponent(requestedDate)}`).then(async (response) => response.ok ? response.json() : null).catch(() => null),
       authedFetch("/api/users/rewards").then(async (response) => response.ok ? response.json() : null).catch(() => null),
       authedFetch("/api/progress/summary").then(async (response) => response.ok ? response.json() : null).catch(() => null),
     ]);
@@ -364,7 +366,7 @@ export default function HomeScreen() {
     const nextOwnGoal = String(onboarding?.profile?.primary_goal || "").trim();
     const nextDailyGoal = deriveFunctionalGoal(onboarding?.profile) || nextOwnGoal;
     const nextCheckIn = checkInPayload
-      ? { status: checkInPayload.status || "not_checked_in", days: checkInPayload.days || [] }
+      ? { date: checkInPayload.date || requestedDate, status: checkInPayload.status || "not_checked_in", days: checkInPayload.days || [] }
       : EMPTY_CHECK_IN;
     const nextProgress = progressPayload?.assessments ? progressPayload : EMPTY_PROGRESS;
     // Returning to Home after earning points (finishing the assessment or an
@@ -415,7 +417,7 @@ export default function HomeScreen() {
   const latest = history[0];
   const hasInitialAssessment = Boolean(
     carePlan?.account_state?.has_completed_initial_assessment
-    || history.some((item) => item.assessment_package === "initial"),
+    || history.length > 0,
   );
   const isInitialAssessment = !hasInitialAssessment;
   const carePlanAssessment = carePlan?.assessment || null;
@@ -441,6 +443,9 @@ export default function HomeScreen() {
   const greeting = hour < 12 ? "Good morning" : hour < 18 ? "Good afternoon" : "Good evening";
   const todayLabel = new Date().toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long", year: "numeric" });
   const recentCheckIns = checkIn.days.slice(-7);
+  const todayIso = localDateString();
+  const checkedInToday = checkIn.date === todayIso && checkIn.status !== "not_checked_in";
+  const todayCheckInStatus = checkedInToday ? checkIn.status : "not_checked_in";
 
   const startNextSession = useCallback((taskIds?: string[]) => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
@@ -483,16 +488,16 @@ export default function HomeScreen() {
   }, [latest, router, startNextSession]);
 
   const checkInForToday = useCallback(async () => {
-    if (checkingIn || checkIn.status !== "not_checked_in") return;
+    if (checkingIn || checkedInToday) return;
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     setCheckingIn(true);
     const response = await authedFetch("/api/users/daily-checkin", {
       method: "POST",
-      body: JSON.stringify({ date: localDateString() }),
+      body: JSON.stringify({ date: todayIso }),
     }).catch(() => null);
     if (response?.ok) {
       const payload = await response.json().catch(() => null);
-      if (payload) setCheckIn({ status: payload.status || "in_progress", days: payload.days || [] });
+      if (payload) setCheckIn({ date: payload.date || todayIso, status: payload.status || "in_progress", days: payload.days || [] });
       // Checking in earns points (2 per day): celebrate briefly, then the
       // toast fades out on its own, and the badge refreshes right away.
       setCelebration(celebrationEvent(2, "Checked in - great start to today!"));
@@ -506,7 +511,7 @@ export default function HomeScreen() {
       }
     }
     setCheckingIn(false);
-  }, [checkIn.status, checkingIn]);
+  }, [checkedInToday, checkingIn, todayIso]);
 
   const openExercisePlan = () => {
     if (nextStep?.destination === "caregiver_plan") openDestination("caregiver_plan");
@@ -522,7 +527,6 @@ export default function HomeScreen() {
 
   // Progressive disclosure: the next step is revealed by checking in, and the
   // third step only after the initial assessment exists.
-  const checkedInToday = checkIn.status !== "not_checked_in";
   const stepTwoRevealed = checkedInToday;
   const stepThreeRevealed = checkedInToday && (assessmentCompletedToday || !isInitialAssessment);
 
@@ -611,12 +615,12 @@ export default function HomeScreen() {
                   </>
                 ) : null}
                 <DayStep
-                  icon={checkIn.status === "not_checked_in" ? "sunny-outline" : "checkmark"}
+                  icon={todayCheckInStatus === "not_checked_in" ? "sunny-outline" : "checkmark"}
                   title="Check in"
-                  active={checkIn.status !== "not_checked_in"}
-                  badge={checkIn.status === "not_checked_in" ? <StatusPill icon="ellipse-outline" label="Ready" tone="grey" /> : <StatusPill icon="checkmark-circle-outline" label={checkIn.status === "complete" ? "Complete" : "Checked in"} />}
-                  description={checkIn.status === "not_checked_in" ? "Start today's recovery plan. Checking in earns 2 points." : checkIn.status === "complete" ? "Today's plan is complete." : "Daily check-in complete. +2 points earned."}
-                  button={checkIn.status === "not_checked_in" ? { label: checkingIn ? "Checking in..." : "Check in", icon: "hand-right-outline", onPress: checkInForToday, testID: "daily-checkin-button" } : undefined}
+                  active={todayCheckInStatus !== "not_checked_in"}
+                  badge={todayCheckInStatus === "not_checked_in" ? <StatusPill icon="ellipse-outline" label="Ready" tone="grey" /> : <StatusPill icon="checkmark-circle-outline" label={todayCheckInStatus === "complete" ? "Complete" : "Checked in"} />}
+                  description={todayCheckInStatus === "not_checked_in" ? "Start today's recovery plan. Checking in earns 2 points." : todayCheckInStatus === "complete" ? "Today's plan is complete." : "Daily check-in complete. +2 points earned."}
+                  button={todayCheckInStatus === "not_checked_in" ? { label: checkingIn ? "Checking in..." : "Check in", icon: "hand-right-outline", onPress: checkInForToday, testID: "daily-checkin-button" } : undefined}
                 />
                 {!stepTwoRevealed ? (
                   <DayStep
@@ -714,7 +718,7 @@ export default function HomeScreen() {
                   <View style={[styles.weekIcon, { backgroundColor: palette.soft }]}><Ionicons name="calendar-outline" size={21} color={palette.brand} /></View>
                   <Text style={[styles.weekTitle, { color: palette.text }]}>Your week</Text>
                   <Text style={[styles.weekSummary, { color: palette.muted }]}>
-                    {checkIn.status === "complete" ? "Daily plan complete" : checkIn.status === "in_progress" ? "Daily check-in complete" : "Check in when ready"}
+                    {todayCheckInStatus === "complete" ? "Daily plan complete" : todayCheckInStatus === "in_progress" ? "Daily check-in complete" : "Check in when ready"}
                     {isInitialAssessment ? "   •   Initial assessment ready" : assessmentDueLabel ? `   •   Next assessment ${assessmentDueLabel}` : ""}
                   </Text>
                   <Pressable testID="home-week-toggle" onPress={() => setShowWeek((value) => !value)} style={styles.weekToggle}>
