@@ -3,7 +3,22 @@ import { clearScreenCache } from "@/src/screenCache";
 import { API_BASE as BASE } from "@/src/config";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
-export type Me = { id: string; email: string; name: string; role: "patient" | "therapist"; credits: number; trial_access_granted: boolean };
+export type Me = {
+  id: string;
+  email: string;
+  name: string;
+  role: "patient" | "therapist";
+  credits: number;
+  trial_access_granted: boolean;
+  // Account state stored in MongoDB, returned by /api/users/login and /api/users/me.
+  // A returning account arrives with consent_accepted/onboarding_complete already
+  // true, so the Terms and the initial survey are only shown to new accounts.
+  is_new_account?: boolean;
+  consent_accepted?: boolean;
+  consent_required?: boolean;
+  onboarding_complete?: boolean;
+  profile?: Record<string, any> | null;
+};
 
 export const USER_KEY = "active_user_id_v2";
 export const USER_OBJ = "active_user_obj_v2";
@@ -165,8 +180,23 @@ export async function signIn(email: string, name: string, role: "patient" | "the
   await storage.setItem(USER_OBJ, JSON.stringify(u));
   await storage.setItem(BACKEND_USER_KEY, u.id);
   await storage.secureSet(TRIAL_ACCESS_KEY, accessCode);
+  await hydrateAccountStateFromServer(u);
   notifyAuthStateChanged();
   return u;
+}
+
+// The sign-in response carries the account state saved in MongoDB. Seeding the
+// device caches from it means a returning patient is never asked to accept the
+// Terms or repeat the initial survey - even on a new device or after clearing
+// browser storage - and the routing gates keep working if a later request fails.
+export async function hydrateAccountStateFromServer(user: Me) {
+  if (!user?.id || user.role === "therapist") return;
+  if (user.consent_accepted === true) {
+    await storage.setItem(consentAcceptedKey(user.id), "1");
+  }
+  if (user.onboarding_complete === true) {
+    await cachePatientOnboarding(user.id, user.profile && typeof user.profile === "object" ? user.profile : null);
+  }
 }
 
 export async function signOut() {
@@ -206,7 +236,10 @@ export async function hasAcceptedConsent(userId: string): Promise<boolean> {
   const locallyAccepted = value === "1";
   try {
     const response = await authedFetch("/api/users/consent");
-    if (!response.ok) return false;
+    // Only an authentication failure means "not accepted". A server hiccup
+    // (cold start, 5xx) must not send an existing patient back to the Terms.
+    if (response.status === 401 || response.status === 403) return false;
+    if (!response.ok) return locallyAccepted;
     const result = await response.json();
     if (result.accepted) {
       await storage.setItem(consentAcceptedKey(userId), "1");
@@ -335,7 +368,8 @@ export async function authedFetch(path: string, init: RequestInit = {}): Promise
     await storage.setItem(USER_KEY, rebound.id);
     await storage.setItem(USER_OBJ, JSON.stringify(rebound));
     await storage.setItem(BACKEND_USER_KEY, rebound.id);
-    if (onboardingComplete && cachedProfile) {
+    await hydrateAccountStateFromServer(rebound);
+    if (onboardingComplete && cachedProfile && rebound.onboarding_complete !== true) {
       await fetch(`${BASE}/api/users/onboarding`, {
         method: "POST",
         headers: { "Content-Type": "application/json", "X-User-Id": rebound.id },

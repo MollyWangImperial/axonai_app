@@ -138,7 +138,35 @@ def _require_trial_access_code(candidate: Optional[str]) -> None:
 
 # MongoDB
 mongo_url = os.environ["MONGO_URL"]
-client = AsyncIOMotorClient(mongo_url, serverSelectionTimeoutMS=1000, connectTimeoutMS=1000)
+
+
+def _mongo_timeout_ms(env_name: str, default_ms: int) -> int:
+    raw = os.environ.get(env_name, "").strip()
+    try:
+        value = int(raw) if raw else default_ms
+    except ValueError:
+        value = default_ms
+    return max(250, value)
+
+
+# Hosted deployments (Render + MongoDB Atlas) routinely need more than one
+# second to resolve the SRV record and finish the TLS handshake after a cold
+# start. With a 1s server-selection timeout those first requests silently
+# "failed over" to the local JSON fallback, so Terms acceptance and survey
+# answers were written to a file that disappears on the next deploy - and the
+# patient was asked to accept the Terms and repeat the survey. Local development
+# against localhost keeps the short timeout so phone testing without Docker or
+# Mongo stays responsive. Both values can be tuned per environment.
+_MONGO_IS_LOCAL = any(host in mongo_url for host in ("localhost", "127.0.0.1", "host.docker.internal"))
+MONGO_SERVER_SELECTION_TIMEOUT_MS = _mongo_timeout_ms(
+    "MONGO_SERVER_SELECTION_TIMEOUT_MS", 1000 if _MONGO_IS_LOCAL else 10000
+)
+MONGO_CONNECT_TIMEOUT_MS = _mongo_timeout_ms("MONGO_CONNECT_TIMEOUT_MS", 1000 if _MONGO_IS_LOCAL else 10000)
+client = AsyncIOMotorClient(
+    mongo_url,
+    serverSelectionTimeoutMS=MONGO_SERVER_SELECTION_TIMEOUT_MS,
+    connectTimeoutMS=MONGO_CONNECT_TIMEOUT_MS,
+)
 db = client[os.environ["DB_NAME"]]
 task_video_bucket = AsyncIOMotorGridFSBucket(db, bucket_name="task_videos")
 TASK_VIDEO_MAX_BYTES = 35 * 1024 * 1024
@@ -8367,6 +8395,9 @@ EXERCISE_SCORING_METHOD: Dict[str, Any] = {
     "formula": "weighted mean of capped ROM-attainment percentages minus confirmed compensation penalties",
     "rom_cap_percent": 100,
     "compensation_confirmation": "minimum frame count and minimum eligible-frame ratio must both be met",
+    # A repetition completed through a confirmed compensatory pattern (trunk
+    # lean, shoulder hiking, ...) never scores above this, whatever the ROM says.
+    "compensation_score_cap": 80,
     "quality_boundary": "camera-derived coaching score; not a diagnosis or laboratory motion-capture measurement",
 }
 
@@ -9417,7 +9448,8 @@ const URL_PARAMS = new URLSearchParams(window.location.search);
 const VOICE_GUIDANCE_ENABLED = URL_PARAMS.get("voice_guidance") !== "0";
 const AFFECTED_SIDE = URL_PARAMS.get("affected_side") === "left" ? "left" : "right";
 const REHAB_SESSION_ID = (URL_PARAMS.get("rehab_session_id")||"").replace(/[^a-zA-Z0-9_-]/g,"").slice(0,96);
-const REHAB_CALIBRATION_VERSION = 1;
+const REHAB_CALIBRATION_VERSION = 2;  // v2: forward-lean, neck-gap and shoulder-height baselines
+const REHAB_BASELINE_REQUIRED_KEYS = ["trunk_angle","shoulder_width","ear_width","neck_gap","active_shoulder_y","torso_shoulder_ratio","shoulder_flexion"];
 const STANDARD = CFG.movement_standard || {tracking_mode:"pose", posture:"seated", rom_steps:[], compensations:[]};
 const CALIBRATION_CONTRACT = CFG.calibration_contract || {};
 const SCORING_METHOD = CFG.scoring_method || {};
@@ -9582,6 +9614,7 @@ function loadSessionCalibration(){
     const saved=JSON.parse(localStorage.getItem(key)||"null");
     if(!saved || saved.version !== REHAB_CALIBRATION_VERSION || saved.affected_side !== AFFECTED_SIDE) return null;
     if(!saved.baseline_metrics || typeof saved.baseline_metrics !== "object") return null;
+    if(REHAB_BASELINE_REQUIRED_KEYS.some(key=>!Number.isFinite(Number(saved.baseline_metrics[key])))) return null;
     return saved;
   }catch(e){ return null; }
 }
@@ -10006,6 +10039,15 @@ function rawMovementMetrics(lm, handLm){
     // Leaning toward a front-facing camera foreshortens the trunk while the
     // shoulders appear wider, so this ratio drops with forward lean.
     raw.torso_shoulder_ratio=raw.torso_length/shoulderWidth;
+    // Face approach: leaning toward the camera enlarges the ear-to-ear distance.
+    const earL=lm[7], earR=lm[8];
+    raw.ear_width=(earL&&earR) ? Math.max(.01,Math.hypot(earL.x-earR.x,earL.y-earR.y)) : NaN;
+    // Neck gap on the affected side: a shrug shortens ear-to-shoulder distance.
+    const activeEar=lm[ACTIVE.shoulder===11 ? 7 : 8];
+    raw.neck_gap=activeEar ? Math.max(.01,lm[ACTIVE.shoulder].y-activeEar.y) : NaN;
+    // Depth tilt from the pose model's relative z: shoulders nearer than hips.
+    const dz=(midHip.z||0)-(midShoulder.z||0);
+    raw.trunk_depth_tilt=rad2deg(Math.asin(clamp(dz/Math.max(.05,raw.torso_length),-1,1)));
     raw.active_wrist_x=lm[ACTIVE.wrist].x;
     raw.active_wrist_y=lm[ACTIVE.wrist].y;
   }
@@ -10022,6 +10064,45 @@ function rawMovementMetrics(lm, handLm){
   }
   return raw;
 }
+// Forward trunk lean from a front-facing camera. Leaning forward by an angle
+// theta about the hips moves the shoulders ~L*sin(theta) toward the camera and
+// the head a little farther; perspective then enlarges shoulder width and
+// ear-to-ear width by D/(D-delta). Inverting that with a typical camera
+// distance of ~2 torso lengths gives theta ~= asin(2*(1-w0/w)). The shoulder
+// and ear estimates are averaged (robust to single-signal jitter) and compared
+// with the calibrated upright baseline; the 12-degree workbook threshold then
+// applies. Depth tilt and trunk foreshortening are fallbacks.
+function forwardLeanDegrees(raw){
+  const base=baselineMetrics;
+  const estimates=[];
+  const w0=Number(base.shoulder_width), w=Number(raw.shoulder_width);
+  if(Number.isFinite(w0)&&Number.isFinite(w)&&w0>0&&w>0) estimates.push(rad2deg(Math.asin(clamp(2*(1-w0/w),0,1))));
+  const e0=Number(base.ear_width), e=Number(raw.ear_width);
+  if(Number.isFinite(e0)&&Number.isFinite(e)&&e0>0&&e>0) estimates.push(rad2deg(Math.asin(clamp(1.5*(1-e0/e),0,1))));
+  if(estimates.length) return estimates.reduce((sum,value)=>sum+value,0)/estimates.length;
+  // Fallbacks when the face or shoulders are not both visible: the pose
+  // model's relative depth tilt, then trunk foreshortening.
+  const z0=Number(base.trunk_depth_tilt), z=Number(raw.trunk_depth_tilt);
+  if(Number.isFinite(z0)&&Number.isFinite(z)) return Math.max(0,z-z0);
+  const baseRatio=Number(base.torso_shoulder_ratio)||raw.torso_shoulder_ratio;
+  return (Number.isFinite(baseRatio)&&baseRatio>0&&Number.isFinite(raw.torso_shoulder_ratio))
+    ? rad2deg(Math.acos(clamp(raw.torso_shoulder_ratio/baseRatio,0,1))) : 0;
+}
+// Shoulder hiking on the affected side, in degrees, as the largest of: rise
+// relative to the other shoulder (asymmetry), rise above the shoulder's own
+// calibrated height, and neck shortening (ear-to-shoulder gap closing) - so a
+// one-sided shrug and a two-shoulder shrug are both caught.
+function shoulderHikeDegrees(raw){
+  const base=baselineMetrics;
+  const asymmetry=Math.max(0,raw.shoulder_hike-(Number(base.shoulder_hike)||0));
+  const baseY=Number(base.active_shoulder_y);
+  const rise=Number.isFinite(baseY)
+    ? rad2deg(Math.atan2(Math.max(0,baseY-raw.active_shoulder_y),raw.shoulder_width||.18)) : 0;
+  const g0=Number(base.neck_gap), g=Number(raw.neck_gap);
+  const neck=(Number.isFinite(g0)&&Number.isFinite(g)&&g0>0)
+    ? rad2deg(Math.atan2(Math.max(0,g0-g),g0)) : 0;
+  return Math.max(asymmetry,rise,neck);
+}
 function metricValue(metric,raw){
   const base=baselineMetrics;
   if(metric === "shoulder_flexion" || metric === "shoulder_abduction" || metric === "elbow_extension" || metric === "knee_extension" || metric === "hip_extension" || metric === "finger_extension" || metric === "pinch_flexion") return raw[metric];
@@ -10033,26 +10114,8 @@ function metricValue(metric,raw){
   if(metric === "ankle_dorsiflexion") return Math.abs(raw.ankle_angle-(base.ankle_angle||raw.ankle_angle));
   if(metric === "pelvic_shift") return Math.abs(raw.pelvic_shift-(base.pelvic_shift||raw.pelvic_shift));
   if(metric === "trunk_lateral_rom") return Math.abs(raw.trunk_angle-(base.trunk_angle||0));
-  if(metric === "trunk_lean_delta"){
-    const lateral=Math.abs(raw.trunk_angle-(base.trunk_angle||0));
-    // Forward lean is invisible to the lateral formula on a front-facing
-    // camera; recover it from trunk foreshortening against the calibrated ratio.
-    const baseRatio=Number(base.torso_shoulder_ratio)||raw.torso_shoulder_ratio;
-    const forward=(Number.isFinite(baseRatio)&&baseRatio>0&&Number.isFinite(raw.torso_shoulder_ratio))
-      ? rad2deg(Math.acos(clamp(raw.torso_shoulder_ratio/baseRatio,0,1)))
-      : 0;
-    return Math.max(lateral,forward);
-  }
-  if(metric === "shoulder_hike_delta"){
-    const asymmetry=Math.max(0,raw.shoulder_hike-(base.shoulder_hike||0));
-    // A bilateral shrug shows no asymmetry, so also measure the affected
-    // shoulder rising above its own calibrated position.
-    const baseY=Number(base.active_shoulder_y);
-    const rise=Number.isFinite(baseY)
-      ? rad2deg(Math.atan2(Math.max(0,baseY-raw.active_shoulder_y),raw.shoulder_width||.18))
-      : 0;
-    return Math.max(asymmetry,rise);
-  }
+  if(metric === "trunk_lean_delta") return Math.max(Math.abs(raw.trunk_angle-(base.trunk_angle||0)),forwardLeanDegrees(raw));
+  if(metric === "shoulder_hike_delta") return shoulderHikeDegrees(raw);
   if(metric === "hip_hike_delta") return Math.abs(raw.hip_hike-(base.hip_hike||0));
   if(metric === "arm_asymmetry") return Math.abs(raw.shoulder_flexion-raw.other_shoulder_flexion);
   if(metric === "body_asymmetry") return (Math.abs(raw.hip_extension-raw.other_hip_extension)+Math.abs(raw.knee_extension-raw.other_knee_extension))/2;
@@ -10173,11 +10236,15 @@ function resetRepMetrics(){
   activeFrames=0;
   peakReachExtent=-1;
   peakReachElbow=NaN;
+  peakCompensationDegrees={};
 }
+let peakCompensationDegrees={};
+let lastRawMetrics=null;     // most recent frame's raw metrics, for the live degree readout
 function updateMetrics(lm,handLm){
   const quality=trackingQuality(lm,handLm);
   if(quality < CALIBRATION_MIN_TRACKING_QUALITY){ lowQualityFrames+=1; return; }
   const raw=rawMovementMetrics(lm,handLm);
+  lastRawMetrics=raw;
   trackingFrames+=1;
   // Return-to-rest frames are never scored: they cannot earn ROM credit and
   // they do not count toward the compensation denominator.
@@ -10203,6 +10270,7 @@ function updateMetrics(lm,handLm){
     const value=metricValue(rule.metric,raw);
     if(!Number.isFinite(value)) continue;
     compensationEligible[rule.id]=(compensationEligible[rule.id]||0)+1;
+    peakCompensationDegrees[rule.id]=Math.max(Number(peakCompensationDegrees[rule.id]||0),value);
     if(value >= Number(rule.threshold_deg||0)) compensationHits[rule.id]=(compensationHits[rule.id]||0)+1;
   }
 }
@@ -10432,6 +10500,49 @@ function drawOverlay(lm,handLm){
     }
   }
   drawVirtualObject(lm, handLm);
+  drawLiveDegrees(lm);
+}
+
+// Live readout so the patient can see the numbers being graded: the elbow
+// angle at the elbow joint (green once it meets today's target), shoulder
+// lift at the shoulder, and trunk lean at the chest when either is present.
+function drawDegreeLabel(x, y, text, color){
+  ctx.save();
+  const size=Math.max(13,Math.round(Math.min(canvas.width,canvas.height)*0.036));
+  ctx.font=`700 ${size}px system-ui, -apple-system, sans-serif`;
+  const padding=size*0.45, width=ctx.measureText(text).width+padding*2, height=size*1.5;
+  ctx.fillStyle="rgba(28,32,29,0.78)";
+  ctx.beginPath();
+  if(ctx.roundRect) ctx.roundRect(x, y-height/2, width, height, height/2); else ctx.rect(x, y-height/2, width, height);
+  ctx.fill();
+  ctx.fillStyle=color; ctx.textBaseline="middle";
+  ctx.fillText(text, x+padding, y);
+  ctx.restore();
+}
+function drawLiveDegrees(lm){
+  if(!lm || calibrating || !lastRawMetrics || STANDARD.tracking_mode==="hand") return;
+  const raw=lastRawMetrics;
+  const elbowStep=(STANDARD.rom_steps||[]).find(step=>step.metric==="elbow_extension");
+  const elbow=lm[ACTIVE.elbow];
+  if(elbowStep && elbow && Number.isFinite(raw.elbow_extension)){
+    const target=Number(elbowStep.target_deg||0);
+    const ok=raw.elbow_extension>=target;
+    drawDegreeLabel(elbow.x*canvas.width+14, elbow.y*canvas.height, `Elbow ${Math.round(raw.elbow_extension)}°${target?` / ${target}°`:""}`, ok?"#9EE8B5":"#FFD27A");
+  }
+  const shoulder=lm[ACTIVE.shoulder];
+  const hike=shoulderHikeDegrees(raw);
+  if(shoulder && Number.isFinite(hike) && hike>=2){
+    const rule=(STANDARD.compensations||[]).find(item=>item.metric==="shoulder_hike_delta");
+    const over=rule && hike>=Number(rule.threshold_deg||8);
+    drawDegreeLabel(shoulder.x*canvas.width+14, shoulder.y*canvas.height-22, `Shoulder lift ${Math.round(hike)}°`, over?"#FF9B8A":"#FFD27A");
+  }
+  const lean=Math.max(Math.abs(raw.trunk_angle-(Number(baselineMetrics.trunk_angle)||0)),forwardLeanDegrees(raw));
+  if(Number.isFinite(lean) && lean>=4){
+    const rule=(STANDARD.compensations||[]).find(item=>item.metric==="trunk_lean_delta");
+    const over=rule && lean>=Number(rule.threshold_deg||12);
+    const mid={x:(lm[11].x+lm[12].x)/2,y:(lm[11].y+lm[12].y)/2};
+    drawDegreeLabel(mid.x*canvas.width-40, mid.y*canvas.height+34, `Trunk lean ${Math.round(lean)}°`, over?"#FF9B8A":"#FFD27A");
+  }
 }
 
 async function startRep(){
@@ -10466,10 +10577,38 @@ async function startSubStep(){
   tapBtn.disabled = false;
 }
 
+function compensationProblemText(rule){
+  const degrees=Math.round(peakCompensationDegrees[rule.id]||0);
+  const metric=String(rule.metric||"");
+  if(metric==="trunk_lean_delta") return `your trunk leaned forward (${degrees} degrees)`;
+  if(metric==="shoulder_hike_delta") return `your shoulder lifted toward your ear (${degrees} degrees)`;
+  if(metric==="arm_asymmetry") return `your arms moved unevenly (${degrees} degrees apart)`;
+  if(metric==="hip_hike_delta") return `your hip lifted (${degrees} degrees)`;
+  if(metric==="wrist_flexion_delta") return `your wrist bent instead of your fingers (${degrees} degrees)`;
+  return `${String(rule.id||"a compensation").replace(/_/g," ")} (${degrees} degrees)`;
+}
+function joinProblems(items){
+  if(items.length<=1) return items[0]||"";
+  return items.slice(0,-1).join(", ")+" and "+items[items.length-1];
+}
 function pickFeedback(){
   if(trackingFrames < SCORING_MIN_FRAMES) return "I could not see enough of that repetition to score it reliably. Check your camera position, then try again at a comfortable pace.";
-  const compensation=confirmedCompensations()[0];
-  if(compensation) return compensation.correction;
+  const confirmed=confirmedCompensations();
+  if(confirmed.length){
+    // 1) name every pattern noticed, with the measured degrees;
+    // 2) give one clear correction for the next repetition.
+    const problems=confirmed.map(rule=>compensationProblemText(rule));
+    const elbowStep=(STANDARD.rom_steps||[]).find(step=>step.metric==="elbow_extension");
+    if(elbowStep){
+      const achieved=Math.round(Number(romBest[elbowStep.id]||0));
+      const target=Number(elbowStep.target_deg||0);
+      if(target>0 && achieved < target*0.9) problems.push(`your elbow stayed bent at ${achieved} of ${target} degrees`);
+    }
+    const correction=elbowStep
+      ? "Next time, keep your trunk and shoulder still and simply extend your elbow to reach the target."
+      : confirmed.map(rule=>rule.correction).join(" ");
+    return `I noticed ${joinProblems(problems)}. ${correction}`;
+  }
   let lowest=null;
   for(const step of STANDARD.rom_steps||[]){
     const achieved=Number(romBest[step.id]||0);
@@ -10631,7 +10770,11 @@ function computeRepScore(){
   const details=repRomDetails();
   const totalWeight=details.reduce((sum,item)=>sum+item.weight,0)||1;
   let score=details.reduce((sum,item)=>sum+item.score*item.weight,0)/totalWeight;
-  for(const rule of confirmedCompensations()) score-=Number(rule.penalty||0);
+  const confirmed=confirmedCompensations();
+  for(const rule of confirmed) score-=Number(rule.penalty||0);
+  // A repetition completed through a compensatory pattern is capped: the
+  // patient is told what went wrong and how to fix it, never rewarded above it.
+  if(confirmed.length) score=Math.min(score,Number(SCORING_METHOD.compensation_score_cap)||80);
   return Math.round(clamp(score,0,100));
 }
 
@@ -11383,55 +11526,191 @@ CREDIT_COSTS = {
 SUBSCRIPTION_UNLIMITED_ACTIONS = {"assessment", "rehab_plan", "guided_exercise"}
 
 
-async def get_or_create_user(email: str, name: str, role: str = "patient") -> Dict[str, Any]:
+# ============ Account persistence (MongoDB is the source of truth) ============
+# Every piece of account state the app relies on between sign-ins - Terms
+# acceptance, the initial survey (profile), data permissions, check-ins and
+# assessment markers - is written to the MongoDB `users` document keyed by the
+# stable account id. The local JSON file remains a mirror for development
+# without Mongo and for short outages, and anything recorded there while Mongo
+# was unreachable is promoted into MongoDB the next time the account is read.
+
+# Account fields that must never be lost between sign-ins. Used to promote
+# local-fallback records into MongoDB after an outage.
+ACCOUNT_STATE_FIELDS = (
+    "consent",
+    "consent_audit",
+    "data_permissions",
+    "onboarding_complete",
+    "profile",
+    "trial_access_granted",
+    "trial_access_granted_at",
+    "initial_assessment_completed_at",
+    "initial_assessment_completion_source",
+    "assessment_deferrals",
+    "daily_checkins",
+    "survey_report_viewed_at",
+    "deleted_at",
+    "google",
+)
+
+
+def _stable_user_id(email: str) -> str:
+    return "u_" + uuid.uuid5(uuid.NAMESPACE_URL, f"rehyn:{email}").hex[:12]
+
+
+def _user_identity_on_insert(user: Dict[str, Any]) -> Dict[str, Any]:
+    """Identity fields written only when a write has to create the account document."""
+    identity = {
+        "id": user.get("id"),
+        "email": user.get("email"),
+        "name": user.get("name") or user.get("email"),
+        "role": user.get("role") or "patient",
+        "credits": user.get("credits", 100),
+        "created_at": user.get("created_at") or datetime.now(timezone.utc).isoformat(),
+    }
+    return {key: value for key, value in identity.items() if value is not None}
+
+
+def _remember_local_user(user: Dict[str, Any]) -> None:
+    """Mirror the newest account document into the local fallback store (best effort)."""
+    user_id = user.get("id")
+    if not user_id:
+        return
+    LOCAL_USERS[user_id] = {key: value for key, value in user.items() if key != "_id"}
+    try:
+        _persist_local_dict(LOCAL_USERS_FILE, LOCAL_USERS)
+    except Exception as exc:
+        logger.warning(f"Could not persist local user fallback: {str(exc)[:120]}")
+
+
+def _local_user_by_email(email: str) -> Optional[Dict[str, Any]]:
+    for doc in LOCAL_USERS.values():
+        if doc.get("email") == email:
+            return doc
+    return None
+
+
+def _local_only_account_fields(
+    mongo_user: Dict[str, Any], local_user: Optional[Dict[str, Any]]
+) -> Dict[str, Any]:
+    """Account state that reached the local fallback but never reached MongoDB."""
+    if not local_user or local_user.get("id") != mongo_user.get("id"):
+        return {}
+    return {
+        key: local_user[key]
+        for key in ACCOUNT_STATE_FIELDS
+        if key in local_user and key not in mongo_user
+    }
+
+
+async def _save_user_fields(
+    user: Dict[str, Any],
+    fields: Dict[str, Any],
+    *,
+    push: Optional[Dict[str, Any]] = None,
+    context: str = "account update",
+) -> Dict[str, Any]:
+    """Persist account fields to MongoDB and mirror the merged document locally.
+
+    If the account document is missing from MongoDB (it was first created while
+    Mongo was unreachable, or by an older build), it is created with its identity
+    fields so the update is never silently dropped. Returns the merged account.
+    """
+    if not user.get("id"):
+        raise HTTPException(status_code=401, detail="Sign in required")
+    merged = {key: value for key, value in user.items() if key != "_id"}
+    merged.update(fields)
+    for key, value in (push or {}).items():
+        merged[key] = [*(user.get(key) or []), value]
+    update: Dict[str, Any] = {"$set": dict(fields)}
+    if push:
+        update["$push"] = dict(push)
+    try:
+        result = await db.users.update_one({"id": user["id"]}, update)
+        if getattr(result, "matched_count", None) == 0:
+            # The filter already supplies "id" for the inserted document.
+            on_insert = {
+                key: value
+                for key, value in _user_identity_on_insert(merged).items()
+                if key not in fields and key != "id"
+            }
+            await db.users.update_one(
+                {"id": user["id"]},
+                {**update, "$setOnInsert": on_insert} if on_insert else update,
+                upsert=True,
+            )
+    except Exception as exc:
+        logger.warning(f"Mongo unavailable for {context}; using local fallback: {str(exc)[:120]}")
+    _remember_local_user(merged)
+    return merged
+
+
+async def _find_or_create_user_account(email: str, name: str, role: str = "patient") -> Tuple[Dict[str, Any], bool]:
+    """Return (account, created). Existing accounts keep their consent and survey."""
     email = email.strip().lower()
     name = name.strip() or email
+    local_match = _local_user_by_email(email)
+    mongo_available = True
     try:
         doc = await db.users.find_one({"email": email}, {"_id": 0})
-        if doc:
-            return doc
     except Exception as e:
         logger.warning(f"Mongo unavailable for user lookup; using local fallback: {str(e)[:120]}")
-        for doc in LOCAL_USERS.values():
-            if doc.get("email") == email:
-                return doc
+        mongo_available = False
+        doc = None
+        if local_match:
+            return dict(local_match), False
+    if doc:
+        recovered = _local_only_account_fields(doc, local_match)
+        if recovered:
+            # Consent or survey answers were saved locally during an outage:
+            # promote them so the patient is never asked again.
+            doc = await _save_user_fields(doc, recovered, context="local account recovery")
+        else:
+            _remember_local_user(doc)
+        return doc, False
+    if mongo_available and local_match:
+        # The account only exists in the local fallback (created while Mongo was
+        # unreachable). Promote the whole record into MongoDB.
+        promoted_fields = {key: value for key, value in local_match.items() if key not in ("id", "_id")}
+        doc = await _save_user_fields(dict(local_match), promoted_fields, context="local account promotion")
+        return doc, False
     doc = {
-        "id": "u_" + uuid.uuid5(uuid.NAMESPACE_URL, f"rehyn:{email}").hex[:12],
+        "id": _stable_user_id(email),
         "email": email,
         "name": name,
         "role": role,
         "credits": 100,
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
-    try:
-        await db.users.insert_one(doc.copy())
-    except Exception as e:
-        logger.warning(f"Mongo unavailable for user insert; using local fallback: {str(e)[:120]}")
-        LOCAL_USERS[doc["id"]] = doc.copy()
-        _persist_local_dict(LOCAL_USERS_FILE, LOCAL_USERS)
-    doc.pop("_id", None)
-    return doc
+    if mongo_available:
+        try:
+            # Idempotent create: two first sign-ins racing each other cannot
+            # produce duplicate account documents ("id" comes from the filter).
+            await db.users.update_one(
+                {"id": doc["id"]},
+                {"$setOnInsert": {key: value for key, value in doc.items() if key != "id"}},
+                upsert=True,
+            )
+        except Exception as e:
+            logger.warning(f"Mongo unavailable for user insert; using local fallback: {str(e)[:120]}")
+    _remember_local_user(doc)
+    return doc, True
+
+
+async def get_or_create_user(email: str, name: str, role: str = "patient") -> Dict[str, Any]:
+    user, _created = await _find_or_create_user_account(email, name, role)
+    return user
 
 
 async def _grant_trial_access(user: Dict[str, Any]) -> Dict[str, Any]:
-    granted = {
-        **user,
-        "trial_access_granted": True,
-        "trial_access_granted_at": datetime.now(timezone.utc).isoformat(),
-    }
-    try:
-        await db.users.update_one(
-            {"id": granted["id"]},
-            {"$set": {
-                "trial_access_granted": True,
-                "trial_access_granted_at": granted["trial_access_granted_at"],
-            }},
-        )
-    except Exception as exc:
-        logger.warning(f"Mongo unavailable for trial-access update; using local fallback: {str(exc)[:120]}")
-        LOCAL_USERS[granted["id"]] = granted.copy()
-        _persist_local_dict(LOCAL_USERS_FILE, LOCAL_USERS)
-    return granted
+    return await _save_user_fields(
+        user,
+        {
+            "trial_access_granted": True,
+            "trial_access_granted_at": datetime.now(timezone.utc).isoformat(),
+        },
+        context="trial-access update",
+    )
 
 
 async def _user_from_header(request_headers: Dict[str, str]) -> Optional[Dict[str, Any]]:
@@ -11440,10 +11719,21 @@ async def _user_from_header(request_headers: Dict[str, str]) -> Optional[Dict[st
         return None
     try:
         user = await db.users.find_one({"id": uid}, {"_id": 0})
-        return user or LOCAL_USERS.get(uid)
     except Exception as e:
         logger.warning(f"Mongo unavailable for user header lookup; using local fallback: {str(e)[:120]}")
         return LOCAL_USERS.get(uid)
+    local_user = LOCAL_USERS.get(uid)
+    if not user:
+        if not local_user:
+            return None
+        # Known only to the local fallback (created during an outage): promote
+        # the whole record into MongoDB so it survives the next restart.
+        promoted_fields = {key: value for key, value in local_user.items() if key not in ("id", "_id")}
+        return await _save_user_fields(dict(local_user), promoted_fields, context="local account promotion")
+    recovered = _local_only_account_fields(user, local_user)
+    if recovered:
+        user = await _save_user_fields(user, recovered, context="local account recovery")
+    return user
 
 
 async def consume_credits(user_id: str, kind: str) -> Dict[str, Any]:
@@ -11481,18 +11771,52 @@ async def consume_credits(user_id: str, kind: str) -> Dict[str, Any]:
     return {"credits": new_credits, "spent": cost}
 
 
+def _consent_is_current(user: Dict[str, Any]) -> bool:
+    consent = user.get("consent") or {}
+    return (
+        consent.get("terms_version") == CURRENT_TERMS_VERSION
+        and consent.get("terms_accepted") is True
+        and consent.get("health_data_consent") is True
+    )
+
+
+def _account_state(user: Dict[str, Any], *, is_new_account: bool) -> Dict[str, Any]:
+    """Sign-in payload the app uses to decide what a patient still has to do.
+
+    A brand-new account must accept the Terms and complete the initial survey.
+    A returning account whose acceptance and survey are stored in MongoDB is
+    taken straight to the app - neither is shown again.
+    """
+    consent_accepted = _consent_is_current(user)
+    profile = user.get("profile") if isinstance(user.get("profile"), dict) else None
+    return {
+        "is_new_account": is_new_account,
+        "consent_accepted": consent_accepted,
+        "consent_required": not consent_accepted,
+        "required_terms_version": CURRENT_TERMS_VERSION,
+        "onboarding_complete": bool(user.get("onboarding_complete")),
+        "profile": profile,
+    }
+
+
+async def _sign_in(payload: UserSignup) -> Dict[str, Any]:
+    _require_trial_access_code(payload.trial_code)
+    user = await get_or_create_user(payload.email, payload.name or payload.email, payload.role)
+    # Trial access is granted on the first successful sign-in, so an account
+    # without it has never signed in before.
+    is_new_account = not bool(user.get("trial_access_granted"))
+    granted = await _grant_trial_access(user)
+    return {**granted, **_account_state(granted, is_new_account=is_new_account)}
+
+
 @api_router.post("/users/signup")
 async def signup(payload: UserSignup):
-    _require_trial_access_code(payload.trial_code)
-    user = await get_or_create_user(payload.email, payload.name, payload.role)
-    return await _grant_trial_access(user)
+    return await _sign_in(payload)
 
 
 @api_router.post("/users/login")
 async def login(payload: UserSignup):
-    _require_trial_access_code(payload.trial_code)
-    user = await get_or_create_user(payload.email, payload.name or payload.email, payload.role)
-    return await _grant_trial_access(user)
+    return await _sign_in(payload)
 
 
 class PatientOnboarding(BaseModel):
@@ -11567,11 +11891,7 @@ async def get_user_consent(request: Request):
     if not user:
         raise HTTPException(status_code=401, detail="Sign in required")
     consent = user.get("consent") or {}
-    accepted = (
-        consent.get("terms_version") == CURRENT_TERMS_VERSION
-        and consent.get("terms_accepted") is True
-        and consent.get("health_data_consent") is True
-    )
+    accepted = _consent_is_current(user)
     return {"accepted": accepted, "consent": consent, "required_terms_version": CURRENT_TERMS_VERSION}
 
 
@@ -11586,6 +11906,11 @@ async def accept_user_consent(payload: ConsentAcceptance, request: Request):
         raise HTTPException(status_code=400, detail="Both required acknowledgements must be accepted")
     audit = _consent_audit_entry("required_consent", True)
     accepted_at = audit["changed_at"]
+    existing = user.get("consent") or {}
+    if _consent_is_current(user) and existing.get("accepted_at"):
+        # Already accepted this version of the Terms: keep the original
+        # acceptance record instead of overwriting it with a later date.
+        return {"ok": True, "accepted": True, "consent": existing, "already_accepted": True}
     consent = {
         "terms_version": CURRENT_TERMS_VERSION,
         "privacy_version": CURRENT_PRIVACY_VERSION,
@@ -11593,18 +11918,7 @@ async def accept_user_consent(payload: ConsentAcceptance, request: Request):
         "health_data_consent": True,
         "accepted_at": accepted_at,
     }
-    try:
-        result = await db.users.update_one(
-            {"id": user["id"]},
-            {"$set": {"consent": consent}, "$push": {"consent_audit": audit}},
-        )
-        if getattr(result, "matched_count", 0) == 0 and user["id"] in LOCAL_USERS:
-            raise RuntimeError("local user")
-    except Exception as e:
-        logger.warning(f"Mongo unavailable for consent update; using local fallback: {str(e)[:120]}")
-        local_user = {**user, "consent": consent, "consent_audit": [*(user.get("consent_audit") or []), audit]}
-        LOCAL_USERS[user["id"]] = local_user
-        _persist_local_dict(LOCAL_USERS_FILE, LOCAL_USERS)
+    await _save_user_fields(user, {"consent": consent}, push={"consent_audit": audit}, context="consent update")
     return {"ok": True, "accepted": True, "consent": consent}
 
 
@@ -11636,18 +11950,7 @@ async def update_health_consent(payload: HealthConsentUpdate, request: Request):
         consent.pop("health_consent_withdrawn_at", None)
     else:
         consent["health_consent_withdrawn_at"] = audit["changed_at"]
-    try:
-        result = await db.users.update_one(
-            {"id": user["id"]},
-            {"$set": {"consent": consent}, "$push": {"consent_audit": audit}},
-        )
-        if getattr(result, "matched_count", 0) == 0 and user["id"] in LOCAL_USERS:
-            raise RuntimeError("local user")
-    except Exception as e:
-        logger.warning(f"Mongo unavailable for health-consent update; using local fallback: {str(e)[:120]}")
-        local_user = {**user, "consent": consent, "consent_audit": [*(user.get("consent_audit") or []), audit]}
-        LOCAL_USERS[user["id"]] = local_user
-        _persist_local_dict(LOCAL_USERS_FILE, LOCAL_USERS)
+    await _save_user_fields(user, {"consent": consent}, push={"consent_audit": audit}, context="health-consent update")
     return {"ok": True, "health_data_consent": payload.enabled, "consent": consent, "changed_at": audit["changed_at"]}
 
 
@@ -11673,18 +11976,12 @@ async def update_data_permission(payload: DataPermissionUpdate, request: Request
     audit = _consent_audit_entry(payload.key, payload.enabled)
     changed_at = audit["changed_at"]
     next_permissions = {**(user.get("data_permissions") or {}), payload.key: payload.enabled}
-    try:
-        result = await db.users.update_one(
-            {"id": user["id"]},
-            {"$set": {f"data_permissions.{payload.key}": payload.enabled}, "$push": {"consent_audit": audit}},
-        )
-        if getattr(result, "matched_count", 0) == 0 and user["id"] in LOCAL_USERS:
-            raise RuntimeError("local user")
-    except Exception as e:
-        logger.warning(f"Mongo unavailable for data-permission update; using local fallback: {str(e)[:120]}")
-        local_user = {**user, "data_permissions": next_permissions, "consent_audit": [*(user.get("consent_audit") or []), audit]}
-        LOCAL_USERS[user["id"]] = local_user
-        _persist_local_dict(LOCAL_USERS_FILE, LOCAL_USERS)
+    await _save_user_fields(
+        user,
+        {"data_permissions": next_permissions},
+        push={"consent_audit": audit},
+        context="data-permission update",
+    )
     return {"ok": True, payload.key: bool(next_permissions[payload.key]), "model_improvement": bool(next_permissions.get("model_improvement", False)), "changed_at": changed_at}
 
 
@@ -11709,23 +12006,25 @@ async def submit_patient_onboarding(payload: PatientOnboarding, request: Request
         update["movement_readiness_version"] = existing_profile["movement_readiness_version"]
     else:
         update.pop("movement_readiness_version", None)
-    update["onboarded_at"] = datetime.now(timezone.utc).isoformat()
+    # The first completion date is kept: later profile edits must not make the
+    # survey look like it was only just completed.
+    update["onboarded_at"] = existing_profile.get("onboarded_at") or datetime.now(timezone.utc).isoformat()
     update["onboarding_complete"] = True
-    try:
-        await db.users.update_one({"id": user["id"]}, {"$set": {"profile": update, "onboarding_complete": True}})
-    except Exception as e:
-        logger.warning(f"Mongo unavailable for onboarding update; using local fallback: {str(e)[:120]}")
-        local_user = {**user, "profile": update, "onboarding_complete": True}
-        LOCAL_USERS[user["id"]] = local_user
-        _persist_local_dict(LOCAL_USERS_FILE, LOCAL_USERS)
-    return {"ok": True, "profile": update}
+    await _save_user_fields(
+        user,
+        {"profile": update, "onboarding_complete": True},
+        context="onboarding update",
+    )
+    return {"ok": True, "profile": update, "onboarding_complete": True}
 
 
 @api_router.get("/users/onboarding")
 async def get_patient_onboarding(request: Request):
     user = await _user_from_header(dict(request.headers))
     if not user:
-        return {"onboarding_complete": False, "profile": None}
+        # Distinguish "no account for this header" from "account not onboarded":
+        # the app must not restart the survey because a request was unauthenticated.
+        raise HTTPException(status_code=401, detail="Sign in required")
     return {
         "onboarding_complete": bool(user.get("onboarding_complete")),
         "profile": user.get("profile"),
@@ -11788,22 +12087,17 @@ async def delete_account(request: Request):
     if not user:
         raise HTTPException(status_code=401, detail="Sign in required")
     deleted_at = datetime.now(timezone.utc).isoformat()
+    await _save_user_fields(
+        user,
+        {"deleted_at": deleted_at, "onboarding_complete": False},
+        context="account deletion",
+    )
     try:
-        await db.users.update_one(
-            {"id": user["id"]},
-            {"$set": {"deleted_at": deleted_at, "onboarding_complete": False}},
+        await db.assessments.update_many(
+            {"user_id": user["id"]}, {"$set": {"deleted_at": deleted_at}}
         )
-        try:
-            await db.assessments.update_many(
-                {"user_id": user["id"]}, {"$set": {"deleted_at": deleted_at}}
-            )
-        except Exception:
-            pass
-    except Exception as e:
-        logger.warning(f"Mongo unavailable for account deletion; using local fallback: {str(e)[:120]}")
-        local_user = {**user, "deleted_at": deleted_at, "onboarding_complete": False}
-        LOCAL_USERS[user["id"]] = local_user
-        _persist_local_dict(LOCAL_USERS_FILE, LOCAL_USERS)
+    except Exception:
+        pass
     return {"ok": True, "deleted_at": deleted_at}
 
 
@@ -11813,7 +12107,7 @@ async def me(request: Request):
     user = await _user_from_header(dict(request.headers))
     if not user:
         raise HTTPException(status_code=401, detail="Sign in required")
-    return user
+    return {**user, **_account_state(user, is_new_account=False)}
 
 
 @api_router.get("/credits/balance")
@@ -12049,24 +12343,14 @@ async def _record_initial_assessment_completion(
     recorded_at = min(candidates) if candidates else datetime.now(timezone.utc).isoformat()
     user["initial_assessment_completed_at"] = recorded_at
     user["initial_assessment_completion_source"] = source
-    try:
-        result = await db.users.update_one(
-            {"id": user["id"]},
-            {"$set": {
-                "initial_assessment_completed_at": recorded_at,
-                "initial_assessment_completion_source": source,
-            }},
-        )
-        if getattr(result, "matched_count", 0) == 0:
-            raise RuntimeError("user record not found")
-    except Exception as exc:
-        logger.warning(f"Mongo unavailable for initial-assessment account marker; using local fallback: {str(exc)[:120]}")
-        LOCAL_USERS[user["id"]] = {
-            **(LOCAL_USERS.get(user["id"]) or user),
+    await _save_user_fields(
+        {**(LOCAL_USERS.get(user["id"]) or {}), **user},
+        {
             "initial_assessment_completed_at": recorded_at,
             "initial_assessment_completion_source": source,
-        }
-        _persist_local_dict(LOCAL_USERS_FILE, LOCAL_USERS)
+        },
+        context="initial-assessment account marker",
+    )
     return recorded_at
 
 
@@ -12702,14 +12986,7 @@ async def defer_missing_assessment(payload: AssessmentDeferral, request: Request
         "deferred_at": datetime.now(timezone.utc).isoformat(),
         "reason": payload.reason or "not_possible_today",
     }
-    try:
-        result = await db.users.update_one({"id": user["id"]}, {"$set": {"assessment_deferrals": deferrals}})
-        if getattr(result, "matched_count", 0) == 0 and user["id"] in LOCAL_USERS:
-            raise RuntimeError("local user")
-    except Exception as e:
-        logger.warning(f"Mongo unavailable for assessment deferral; using local fallback: {str(e)[:120]}")
-        LOCAL_USERS[user["id"]] = {**user, "assessment_deferrals": deferrals}
-        _persist_local_dict(LOCAL_USERS_FILE, LOCAL_USERS)
+    await _save_user_fields(user, {"assessment_deferrals": deferrals}, context="assessment deferral")
     return {"ok": True, "domain": payload.domain, "recorded_as": "context_not_failure"}
 
 
@@ -12737,14 +13014,7 @@ def _validated_checkin_date(value: str) -> str:
 async def _save_daily_checkins(user: Dict[str, Any], checkins: Dict[str, Dict[str, Any]]) -> None:
     if len(checkins) > DAILY_CHECKIN_HISTORY_LIMIT:
         checkins = dict(sorted(checkins.items())[-DAILY_CHECKIN_HISTORY_LIMIT:])
-    try:
-        result = await db.users.update_one({"id": user["id"]}, {"$set": {"daily_checkins": checkins}})
-        if getattr(result, "matched_count", 0) == 0:
-            raise RuntimeError("user record not found")
-    except Exception as e:
-        logger.warning(f"Mongo unavailable for daily check-in; using local fallback: {str(e)[:120]}")
-        LOCAL_USERS[user["id"]] = {**user, "daily_checkins": checkins}
-        _persist_local_dict(LOCAL_USERS_FILE, LOCAL_USERS)
+    await _save_user_fields(user, {"daily_checkins": checkins}, context="daily check-in")
 
 
 def _daily_checkin_response(date: str, checkins: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
@@ -13874,15 +14144,10 @@ async def auth_google_session(request: Request):
     # Stash picture/google_id for the profile
     extras = {k: data.get(k) for k in ("picture", "id") if data.get(k)}
     if extras:
-        try:
-            await db.users.update_one({"id": user["id"]}, {"$set": {"google": extras}})
-        except Exception as exc:
-            logger.warning(f"Mongo unavailable for Google profile update; using local fallback: {str(exc)[:120]}")
-            local_user = {**user, "google": extras}
-            LOCAL_USERS[user["id"]] = local_user
-            _persist_local_dict(LOCAL_USERS_FILE, LOCAL_USERS)
-            user = local_user
-    return await _grant_trial_access(user)
+        user = await _save_user_fields(user, {"google": extras}, context="Google profile update")
+    is_new_account = not bool(user.get("trial_access_granted"))
+    granted = await _grant_trial_access(user)
+    return {**granted, **_account_state(granted, is_new_account=is_new_account)}
 
 
 # ============ Progress dashboard ============
@@ -13986,14 +14251,7 @@ async def mark_survey_report_viewed(request: Request):
     if not user:
         raise HTTPException(status_code=401, detail="Sign in required")
     viewed_at = datetime.now(timezone.utc).isoformat()
-    try:
-        result = await db.users.update_one({"id": user["id"]}, {"$set": {"survey_report_viewed_at": viewed_at}})
-        if getattr(result, "matched_count", 0) == 0 and user["id"] in LOCAL_USERS:
-            raise RuntimeError("local user")
-    except Exception as e:
-        logger.warning(f"Mongo unavailable for survey report view; using local fallback: {str(e)[:120]}")
-        LOCAL_USERS[user["id"]] = {**user, "survey_report_viewed_at": viewed_at}
-        _persist_local_dict(LOCAL_USERS_FILE, LOCAL_USERS)
+    await _save_user_fields(user, {"survey_report_viewed_at": viewed_at}, context="survey report view")
     _record_alira_action(
         "survey_report_viewed",
         source="survey_report",
@@ -14023,6 +14281,27 @@ async def progress_summary(request: Request):
         # honest complete / estimated / not-assessed labels.
         "daily_activities": build_daily_activity_metrics(series, user.get("profile") or {}),
     }
+
+
+async def _ensure_user_indexes() -> None:
+    """Index the account collection so sign-in lookups by id/email stay fast.
+
+    Best effort: a missing Mongo at startup must not stop the API (the local
+    fallback still serves development), and existing duplicate documents must
+    not break deployment, so the email index is not made unique here.
+    """
+    try:
+        await db.users.create_index("id", name="users_id")
+        await db.users.create_index("email", name="users_email")
+    except Exception as exc:
+        logger.warning(f"Could not create user indexes: {str(exc)[:120]}")
+
+
+@app.on_event("startup")
+async def startup_db_indexes():
+    if "pytest" in sys.modules:
+        return
+    await _ensure_user_indexes()
 
 
 @app.on_event("shutdown")

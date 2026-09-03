@@ -18,7 +18,7 @@ import Svg, { Circle, G, Line, Polyline, Text as SvgText } from "react-native-sv
 import { useRouter } from "expo-router";
 import * as Haptics from "expo-haptics";
 import { colors, spacing, radius } from "@/src/theme";
-import { signIn, authedFetch, cachePatientOnboarding, getCachedPatientProfile, hasAcceptedConsent } from "@/src/auth";
+import { signIn, authedFetch, cachePatientOnboarding, getCachedPatientProfile, hasAcceptedConsent, type Me } from "@/src/auth";
 
 const DEEP_GREEN = "#07563A";
 const INK = "#063C2C";
@@ -96,16 +96,26 @@ export default function SignInScreen() {
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
-  const routePatientAfterLogin = async (user: { id: string }) => {
-    if (!(await hasAcceptedConsent(user.id))) {
-      router.replace("/consent");
+  const routePatientAfterLogin = async (user: Me) => {
+    // The sign-in response carries the account state saved in MongoDB:
+    // consent_accepted and onboarding_complete are true for a returning
+    // account, so the Terms and the initial survey are shown only to a new
+    // account (or one that never finished them).
+    if (user.consent_accepted !== true) {
+      if (!(await hasAcceptedConsent(user.id))) {
+        router.replace("/consent");
+        return;
+      }
+    }
+    if (user.onboarding_complete === true) {
+      router.replace("/");
       return;
     }
     const cachedProfile = await getCachedPatientProfile(user.id);
     try {
       const response = await authedFetch("/api/users/onboarding");
-      const onboarding = await response.json();
-      if (onboarding.onboarding_complete) {
+      const onboarding = response.ok ? await response.json() : null;
+      if (onboarding?.onboarding_complete) {
         await cachePatientOnboarding(user.id, onboarding.profile);
         router.replace("/");
         return;

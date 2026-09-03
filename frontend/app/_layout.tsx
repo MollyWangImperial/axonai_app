@@ -42,7 +42,10 @@ function AuthGate() {
       // Patient role → ensure onboarding is complete before entering main app
       if (u.role !== "therapist") {
         await recoverSingleAccountCache(u.id);
-        // Safety/consent gate: new patients must accept the disclaimer first.
+        // Terms gate: only an account that has not yet accepted the current
+        // Terms (a new account) is sent to the consent screen. Acceptance is
+        // stored on the account in MongoDB and seeded locally at sign-in, so a
+        // returning patient is never shown the Terms again.
         let consentOk = await hasAcceptedConsent(u.id);
         if (consentOk) {
           await clearPendingConsent();
@@ -59,20 +62,30 @@ function AuthGate() {
           router.replace("/consent");
           return;
         }
+        if (consentOk && seg0 === "consent") {
+          // Already accepted (e.g. restored from the account record): skip the screen.
+          router.replace("/");
+          return;
+        }
+        // Initial survey gate: the device flag is seeded from the account record
+        // at sign-in; if it is missing, ask the backend and only start the survey
+        // when the account really has not completed it. A failed request never
+        // restarts the survey for a patient who already answered it.
         const localFlag = await storage.getItem(onboardingCompleteKey(u.id), "");
         const allowedDuringOnboarding = ["onboarding", ...signedInLegalRoutes];
         if (!localFlag && !allowedDuringOnboarding.includes(seg0)) {
-          // double-check with backend (in case user signed in on a fresh device)
           try {
             const r = await authedFetch("/api/users/onboarding");
-            const j = await r.json();
-            if (j.onboarding_complete) {
-              await cachePatientOnboarding(u.id, j.profile);
-            } else {
-              router.replace("/onboarding");
+            if (r.ok) {
+              const j = await r.json();
+              if (j.onboarding_complete) {
+                await cachePatientOnboarding(u.id, j.profile);
+              } else {
+                router.replace("/onboarding");
+              }
             }
           } catch {
-            router.replace("/onboarding");
+            // Backend unreachable: keep the current screen; the next navigation re-checks.
           }
         }
       }

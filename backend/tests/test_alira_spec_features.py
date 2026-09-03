@@ -706,11 +706,32 @@ def test_forward_reach_grading_is_phase_gated_and_catches_forward_lean_and_shrug
     assert 'if(step.metric === "elbow_extension")' in source
     assert ">= 15;" in source  # arm-raised guard against a resting straight arm
 
-    # Forward lean toward a front-facing camera and bilateral shrugs are measured.
-    assert "raw.torso_shoulder_ratio=raw.torso_length/shoulderWidth;" in source
-    assert "Math.acos(clamp(raw.torso_shoulder_ratio/baseRatio,0,1))" in source
-    assert "raw.active_shoulder_y=lm[ACTIVE.shoulder].y;" in source
-    assert "Math.max(0,baseY-raw.active_shoulder_y)" in source
+    # Forward lean toward a front-facing camera: perspective growth of the
+    # shoulder and ear widths against the calibrated baseline (z as fallback).
+    assert "function forwardLeanDegrees(raw)" in source
+    assert "Math.asin(clamp(2*(1-w0/w),0,1))" in source
+    assert "Math.asin(clamp(1.5*(1-e0/e),0,1))" in source
+    assert "raw.ear_width=" in source and "raw.neck_gap=" in source
+    # Shoulder hiking: asymmetry, own-height rise, or neck shortening.
+    assert "function shoulderHikeDegrees(raw)" in source
+    assert "Math.atan2(Math.max(0,g0-g),g0)" in source
+    # Stale calibrations from older builds are never reused.
+    assert "const REHAB_CALIBRATION_VERSION = 2;" in source
+    assert "REHAB_BASELINE_REQUIRED_KEYS.some(" in source
+
+    # A confirmed compensation caps the repetition at 80 and the feedback names
+    # the problem with its degrees before giving the correction.
+    assert server.EXERCISE_SCORING_METHOD["compensation_score_cap"] == 80
+    assert "score=Math.min(score,Number(SCORING_METHOD.compensation_score_cap)||80);" in source
+    assert "your trunk leaned forward (${degrees} degrees)" in source
+    assert "your shoulder lifted toward your ear (${degrees} degrees)" in source
+    assert "your elbow stayed bent at ${achieved} of ${target} degrees" in source
+    assert "Next time, keep your trunk and shoulder still and simply extend your elbow to reach the target." in source
+    # Live on-screen degrees: elbow angle vs target, shoulder lift, trunk lean.
+    assert "function drawLiveDegrees(lm)" in source
+    assert "`Elbow ${Math.round(raw.elbow_extension)}°" in source
+    assert "`Shoulder lift ${Math.round(hike)}°`" in source
+    assert "`Trunk lean ${Math.round(lean)}°`" in source
 
 
 def test_earning_points_pops_a_fading_congratulations_toast():
