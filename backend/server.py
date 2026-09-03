@@ -8182,7 +8182,7 @@ REHAB_RUNNER_CONFIG: Dict[str, Dict[str, Any]] = {
             "trunk_lean": "your chest leaned toward the cup",
             "trunk_side_lean": "your body leaned to the side to carry the cup",
             "shoulder_hike": "your shoulder lifted toward your ear",
-            "wrist_flexion": "your wrist dropped as you gripped the cup",
+            "wrist_flexion": "your wrist bent downward instead of staying in line with your forearm while you gripped the cup",
         },
         "cycle": [
             {"caption": "Reach to the cup", "voice": "Reach toward the cup on your screen with your affected hand.", "target": {"x": 0.30, "y": 0.55, "r": 0.10}, "hold_ms": 900},
@@ -8715,7 +8715,9 @@ EXERCISE_MOVEMENT_STANDARDS: Dict[str, Dict[str, Any]] = {
             # a fraction of the repetition, so a fifth of the movement frames is enough.
             {"id": "trunk_side_lean", "metric": "trunk_side_lean_delta", "threshold_deg": 10, "min_frames": 8, "min_ratio": 0.2, "penalty": 8, "correction": "Keep your body upright and carry the cup across with your arm."},
             {"id": "shoulder_hike", "metric": "shoulder_hike_delta", "threshold_deg": 9, "min_frames": 8, "min_ratio": 0.35, "penalty": 7, "correction": "Set the shoulder down before lifting the object again."},
-            {"id": "wrist_flexion", "metric": "wrist_flexion_delta", "threshold_deg": 18, "min_frames": 8, "min_ratio": 0.3, "penalty": 6, "correction": "Keep your wrist straight as you grip and carry the cup."},
+            # A dropped (flexed) wrist while gripping: the hand bends well away from
+            # the forearm line. Measured only when the forearm is side-on to the camera.
+            {"id": "wrist_flexion", "metric": "wrist_flexion_delta", "threshold_deg": 25, "min_frames": 8, "min_ratio": 0.3, "penalty": 6, "correction": "Keep your wrist straight, in line with your forearm, as you grip and carry the cup."},
         ],
     },
     "ex_handopen": {
@@ -9618,6 +9620,7 @@ let currentRep = 0;
 let currentSubStep = 0;
 let stepStartTime = 0;
 let inTargetSince = null;
+let lastInTargetTs = 0;
 let stepCompleted = false;
 let running = false;
 let cameraStream = null;
@@ -9893,6 +9896,19 @@ async function setupCamera(){
   }
 }
 
+// The movement models are created as soon as the page opens (their files are
+// already cached by the app at sign-in), so by the time the patient taps Start
+// they are usually ready and the camera can begin at once.
+let modelSetupPromise = null;
+function warmUpModels(){
+  if(!modelSetupPromise){
+    modelSetupPromise = setupPose().catch(error => {
+      modelSetupPromise = null;   // a failed warm-up is retried on Start
+      throw error;
+    });
+  }
+  return modelSetupPromise;
+}
 async function setupPose(){
   const fr = await FilesetResolver.forVisionTasks("/vendor/mediapipe/wasm");
   landmarker = await PoseLandmarker.createFromOptions(fr,{
@@ -9900,9 +9916,15 @@ async function setupPose(){
     runningMode:"VIDEO", numPoses:1
   });
   if(NEEDS_HAND_TRACKING){
+    // Same hand model and confidence settings as the initial assessment
+    // (hand-to-mouth, hand opening, pinch): a hand has to be seen and tracked
+    // confidently before it counts, which is what keeps the tracking steady.
     handLandmarker = await HandLandmarker.createFromOptions(fr,{
       baseOptions:{modelAssetPath:"/vendor/mediapipe/models/hand_landmarker.task"},
-      runningMode:"VIDEO", numHands:4
+      runningMode:"VIDEO", numHands:4,
+      minHandDetectionConfidence:0.65,
+      minHandPresenceConfidence:0.65,
+      minTrackingConfidence:0.7,
     });
   }
   drawingUtils = new DrawingUtils(ctx);
@@ -10230,10 +10252,17 @@ function rawMovementMetrics(lm, handLm){
     raw.hand_axis=rad2deg(Math.atan2(handLm[9].y-handLm[0].y,handLm[9].x-handLm[0].x));
     // Wrist bend relative to the forearm (0 = hand in line with the forearm):
     // unlike the hand axis alone, this does not change when the whole arm
-    // swings across, so it can flag a dropped wrist during a reach or carry.
-    if(lm && lm[ACTIVE.elbow] && pointVisible(lm[ACTIVE.elbow])){
-      const straight=angle(lm[ACTIVE.elbow],handLm[0],handLm[9]);
-      raw.wrist_bend=Number.isFinite(straight) ? 180-straight : NaN;
+    // swings across, so it can flag a dropped (flexed) wrist during a carry.
+    // Measured in the image plane only - pose depth and hand depth are on
+    // different scales - and only when the forearm and hand lie in that plane
+    // (a forearm pointing at the camera foreshortens and reads nonsense).
+    if(lm && lm[ACTIVE.elbow] && pointVisible(lm[ACTIVE.elbow]) && lm[11] && lm[12]){
+      const sw=Math.max(.03,Math.hypot(lm[11].x-lm[12].x,lm[11].y-lm[12].y));
+      const forearm={x:handLm[0].x-lm[ACTIVE.elbow].x,y:handLm[0].y-lm[ACTIVE.elbow].y};
+      const hand={x:handLm[9].x-handLm[0].x,y:handLm[9].y-handLm[0].y};
+      const fl=Math.hypot(forearm.x,forearm.y), hl=Math.hypot(hand.x,hand.y);
+      raw.wrist_bend=(fl >= sw*0.45 && hl >= sw*0.12)
+        ? rad2deg(Math.acos(clamp((forearm.x*hand.x+forearm.y*hand.y)/(fl*hl),-1,1))) : NaN;
     }
   }
   return raw;
@@ -10522,11 +10551,55 @@ function effectiveExerciseTargetRadius(sub,lm){
 }
 
 let latestHandLandmarks=null;   // the affected hand in the latest frame (when hand tracking is on)
+let latestHandSeenAt=0;         // when it was last detected (a brief gap keeps the previous hand)
 let handGateNearSince=null;     // when the wrist first arrived at the cup for a hand-opening / grasp step
-const HAND_CLOSED_DEGREES=110;  // fingers curled around the cup
-function handGateOpenDegrees(){
-  const step=(STANDARD.rom_steps||[]).find(item=>item.metric==="finger_extension");
-  return step && Number(step.target_deg) > 0 ? Number(step.target_deg)*ROM_COMPLETE_RATIO : 120;
+const HAND_LANDMARK_FRESH_MS=350;   // same freshness window as the assessment
+// When pose + hands together drag the frame rate under 15 fps, the hand model
+// runs every 180 ms instead of every frame and the last hand is kept longer,
+// so the skeleton and the carried object keep moving smoothly (as in the
+// assessment).
+const HAND_BACKOFF_SCAN_INTERVAL_MS=180, HAND_BACKOFF_FRESH_MS=2600, MIN_SMOOTH_FPS=15;
+let frameIntervalMs=33, lastLoopTs=0, lastHandScanTs=0;
+function handBackoffActive(){ return frameIntervalMs > 1000/MIN_SMOOTH_FPS; }
+function handFreshWindowMs(){ return handBackoffActive() ? HAND_BACKOFF_FRESH_MS : HAND_LANDMARK_FRESH_MS; }
+const TARGET_HOLD_GRACE_MS=350;     // same hold grace as the assessment
+// Hand-opening and fist-closure scores, computed and smoothed exactly like the
+// initial assessment (finger straightness, fingertip spread, thumb-index
+// spread; fingertip-to-palm distance), and decayed when the hand is lost.
+const HAND_OPEN_SCORE=0.45, HAND_CLOSED_SCORE=0.30;
+let handOpenScore=0, fistClosureScore=0, handOpenDegreesSmoothed=NaN;
+function updateRehabHandScores(h){
+  if(!h || h.length < 21){
+    handOpenScore=Math.max(0,handOpenScore-0.15);
+    fistClosureScore=Math.max(0,fistClosureScore-0.15);
+    return;
+  }
+  const clamp01=v=>Math.max(0,Math.min(1,v));
+  const dist=(a,b)=>Math.hypot(a.x-b.x,a.y-b.y);
+  const palmWidth=Math.max(.01,dist(h[5],h[17]));
+  const palmHeight=Math.max(.01,dist(h[0],h[9]));
+  const handScale=Math.max(.01,palmWidth,palmHeight*0.9);
+  const fingerDefs=[[5,6,7,8],[9,10,11,12],[13,14,15,16],[17,18,19,20]];
+  const fingerSpread=(dist(h[0],h[8])+dist(h[0],h[12])+dist(h[0],h[16])+dist(h[0],h[20]))/4;
+  const straightness=fingerDefs.reduce((sum,[mcp,pip,dip,tip])=>{
+    const pipStraight=clamp01((angle(h[mcp],h[pip],h[dip])-110)/60);
+    const dipStraight=clamp01((angle(h[pip],h[dip],h[tip])-120)/55);
+    const reach=clamp01((dist(h[mcp],h[tip])/handScale-0.55)/0.65);
+    return sum+(pipStraight*0.45+dipStraight*0.35+reach*0.20);
+  },0)/fingerDefs.length;
+  const fingertipDistanceScore=clamp01((fingerSpread/handScale-1.15)/1.15);
+  const thumbIndexSpreadScore=clamp01((dist(h[4],h[8])/handScale-0.35)/0.95);
+  const open=clamp01(straightness*0.62+fingertipDistanceScore*0.28+thumbIndexSpreadScore*0.10);
+  handOpenScore=handOpenScore*0.6+open*0.4;
+  const palmCenter={x:(h[0].x+h[5].x+h[9].x+h[13].x+h[17].x)/5,y:(h[0].y+h[5].y+h[9].y+h[13].y+h[17].y)/5};
+  const tipPalmDist=(dist(h[8],palmCenter)+dist(h[12],palmCenter)+dist(h[16],palmCenter)+dist(h[20],palmCenter))/4;
+  const closure=clamp01((2.15-tipPalmDist/palmWidth)/0.85);
+  fistClosureScore=fistClosureScore*0.6+closure*0.4;
+  const degrees=handOpeningDegrees(h);
+  if(Number.isFinite(degrees)) handOpenDegreesSmoothed=Number.isFinite(handOpenDegreesSmoothed) ? handOpenDegreesSmoothed*0.6+degrees*0.4 : degrees;
+}
+function handIsFresh(now){
+  return !!latestHandLandmarks && (now-latestHandSeenAt) <= handFreshWindowMs();
 }
 function checkTarget(lm){
   const sub = CFG.cycle[currentSubStep];
@@ -10553,11 +10626,11 @@ function checkTarget(lm){
     if(!ok(wrist)){ handGateNearSince=null; return false; }
     const now=performance.now();
     if(handGateNearSince == null) handGateNearSince=now;
-    const opening=handOpeningDegrees(latestHandLandmarks);
     const waitedLongEnough = now-handGateNearSince >= Number(sub.max_wait_ms||6000);
-    if(!Number.isFinite(opening)) return waitedLongEnough;
-    return which === "HAND_OPEN" ? opening >= handGateOpenDegrees() || waitedLongEnough
-      : opening <= HAND_CLOSED_DEGREES || waitedLongEnough;
+    if(!handIsFresh(now)) return waitedLongEnough;
+    // Same gesture thresholds as the assessment's HAND_OPEN / HAND_CLOSED targets.
+    return which === "HAND_OPEN" ? handOpenScore > HAND_OPEN_SCORE || waitedLongEnough
+      : (fistClosureScore > HAND_CLOSED_SCORE && handOpenScore < 0.62) || waitedLongEnough;
   }
   const bilateral=(STANDARD.rom_steps||[]).some(step=>String(step.metric||"").startsWith("bilateral_"));
   if(bilateral) return ok(Lw) && ok(Rw);
@@ -10641,10 +10714,27 @@ function drawVirtualBar(x1, y1, x2, y2){
   ctx.restore();
 }
 
+// The carried object sits in the palm of the tracked hand (palm centre of the
+// hand landmarks, which are steadier than the pose wrist) and its position is
+// smoothed frame to frame so it glides with the hand instead of jittering.
+let vobjAnchor = null;
 function vobjWristPoint(lm){
-  const wrist = lm && lm[ACTIVE.wrist];
-  if(!wrist) return null;
-  return {x: wrist.x * canvas.width, y: wrist.y * canvas.height};
+  let target = null;
+  if(handIsFresh(performance.now()) && latestHandLandmarks.length >= 21){
+    const h = latestHandLandmarks;
+    target = {x:(h[0].x + h[5].x + h[9].x + h[13].x + h[17].x) / 5, y:(h[0].y + h[5].y + h[9].y + h[13].y + h[17].y) / 5};
+  }else{
+    const wrist = lm && lm[ACTIVE.wrist];
+    if(wrist && pointVisible(wrist)) target = {x: wrist.x, y: wrist.y};
+  }
+  if(!target) return vobjAnchor ? {x: vobjAnchor.x * canvas.width, y: vobjAnchor.y * canvas.height} : null;
+  // Exponential smoothing; a large jump (re-detection) snaps instead of trailing.
+  if(!vobjAnchor || Math.hypot(target.x - vobjAnchor.x, target.y - vobjAnchor.y) > 0.12){
+    vobjAnchor = {x: target.x, y: target.y};
+  }else{
+    vobjAnchor = {x: vobjAnchor.x * 0.55 + target.x * 0.45, y: vobjAnchor.y * 0.55 + target.y * 0.45};
+  }
+  return {x: vobjAnchor.x * canvas.width, y: vobjAnchor.y * canvas.height};
 }
 
 function drawVirtualObject(lm, handLm){
@@ -10815,7 +10905,9 @@ function drawLiveDegrees(lm){
   for(const step of STANDARD.rom_steps||[]){
     const spec=LIVE_METRIC_LABELS[step.metric];
     if(!spec) continue;
-    const value=step.metric==="finger_extension" ? handOpeningDegrees(latestHandLandmarks) : metricValue(step.metric,raw);
+    const value=step.metric==="finger_extension"
+      ? (handIsFresh(performance.now()) ? handOpenDegreesSmoothed : NaN)
+      : metricValue(step.metric,raw);
     if(!Number.isFinite(value)) continue;
     const target=Number(step.target_deg||0);
     place(spec.joint, `${spec.text} ${Math.round(value)}°${target?` / ${Math.round(target)}°`:""}`, value>=target?"#9EE8B5":"#FFD27A");
@@ -10848,7 +10940,7 @@ async function startRep(){
   currentSubStep = 0;
   feedbackPending = false;
   resetRepMetrics();
-  vobjState = "resting"; vobjPlacePos = null;
+  vobjState = "resting"; vobjPlacePos = null; vobjAnchor = null;
   repLabel.textContent = `Repetition ${currentRep+1} of ${CFG.reps}`;
   // Update the visual rep progress bar
   try{
@@ -11284,13 +11376,27 @@ function loop(){
     const r = landmarker.detectForVideo(video, now);
     if(r && r.landmarks && r.landmarks[0]) lm = r.landmarks[0];
   }catch(e){}
+  if(lastLoopTs) frameIntervalMs = frameIntervalMs * 0.9 + Math.min(500, now - lastLoopTs) * 0.1;
+  lastLoopTs = now;
   if(handLandmarker){
-    try{
-      const h=handLandmarker.detectForVideo(video,now);
-      handLm=selectRehabAffectedHand(h, lm, now);
-    }catch(e){}
+    const scanInterval = handBackoffActive() ? HAND_BACKOFF_SCAN_INTERVAL_MS : 0;
+    if(now - lastHandScanTs >= scanInterval){
+      lastHandScanTs = now;
+      try{
+        const h=handLandmarker.detectForVideo(video,now);
+        handLm=selectRehabAffectedHand(h, lm, now);
+      }catch(e){}
+    }
+    if(handLm){
+      latestHandLandmarks=handLm;
+      latestHandSeenAt=now;
+    }else if(handIsFresh(now)){
+      handLm=latestHandLandmarks;   // a brief detection gap keeps the previous hand
+    }else{
+      latestHandLandmarks=null;
+    }
+    updateRehabHandScores(handLm);
   }
-  latestHandLandmarks=handLm;
   // A single bad frame must never stop the camera loop (the target circle,
   // live degrees and step detection all depend on it), so the frame work is
   // guarded and the next frame is always scheduled.
@@ -11310,12 +11416,14 @@ function loop(){
         const ok = checkTarget(lm);
         if(ok){
           if(inTargetSince == null) inTargetSince = now;
+          lastInTargetTs = now;
           if(!stepCompleted && (now - inTargetSince) >= sub.hold_ms){
             stepCompleted = true;
             if(navigator.vibrate) navigator.vibrate(60);
             setTimeout(() => advanceSubStep(), 250);
           }
-        }else{
+        }else if(inTargetSince != null && (now - lastInTargetTs) > TARGET_HOLD_GRACE_MS){
+          // Grace: brief tracking jitter outside the circle does not reset the hold.
           inTargetSince = null;
         }
       }
@@ -11336,7 +11444,17 @@ startBtn.addEventListener("click", async () => {
   startBtn.disabled = true;
   const camOk = await setupCamera();
   if(!camOk){ overlay.classList.remove("hidden"); return; }
-  await setupPose();
+  captionEl.textContent = "Loading the movement model…";
+  try{
+    await warmUpModels();
+  }catch(error){
+    captionEl.textContent = "The movement model could not load. Check your connection and try again.";
+    overlay.classList.remove("hidden");
+    startBtn.disabled = false;
+    postRN({type:"model_setup_error", message:String(error)});
+    return;
+  }
+  captionEl.textContent = "Preparing…";
   await Promise.allSettled([unlockPromise, setupVoicePromise, calibrationVoicePromise]);
   running = true;
   const sessionCalibration = loadSessionCalibration();
@@ -11417,6 +11535,9 @@ exitBtn.addEventListener("click", () => {
 });
 
 postRN({type:"ready"});
+if(URL_PARAMS.get("test_mode") !== "rep_feedback"){
+  warmUpModels().catch(() => {});
+}
 if(URL_PARAMS.get("test_mode") === "rep_feedback"){
   overlay.classList.add("hidden");
   fbStep.textContent = `Repetition 1 of ${CFG.reps} complete · Great work`;

@@ -889,9 +889,10 @@ def test_cylindrical_grasp_reach_open_close_carry_release_flow_and_compensations
         "trunk_lean": "your chest leaned toward the cup",
         "trunk_side_lean": "your body leaned to the side to carry the cup",
         "shoulder_hike": "your shoulder lifted toward your ear",
-        "wrist_flexion": "your wrist dropped as you gripped the cup",
+        "wrist_flexion": "your wrist bent downward instead of staying in line with your forearm while you gripped the cup",
     }
     assert "straight wrist" in grasp["correct_form_cue"]
+    assert next(rule for rule in standard["compensations"] if rule["id"] == "wrist_flexion")["threshold_deg"] == 25
 
     # Runner: the hit test uses the same image coordinates the circle is drawn
     # in (the old mirrored comparison put the live circle on the wrong side for
@@ -906,12 +907,30 @@ def test_cylindrical_grasp_reach_open_close_carry_release_flow_and_compensations
     assert "function selectRehabAffectedHand(result, lm, now)" in source
     assert "handLm=selectRehabAffectedHand(h, lm, now);" in source
     assert "function handOpeningDegrees(handLm)" in source
-    assert "const HAND_CLOSED_DEGREES=110;" in source
-    assert 'return which === "HAND_OPEN" ? opening >= handGateOpenDegrees() || waitedLongEnough' in source
+    # Same hand model settings, gesture scores (smoothed) and thresholds as the
+    # initial assessment, a brief detection gap keeps the previous hand, and a
+    # 350 ms grace keeps the hold ring from restarting on one jittery frame.
+    assert "minHandDetectionConfidence:0.65," in source and "minTrackingConfidence:0.7," in source
+    assert "function updateRehabHandScores(h)" in source
+    assert "handOpenScore=handOpenScore*0.6+open*0.4;" in source
+    assert "fistClosureScore=fistClosureScore*0.6+closure*0.4;" in source
+    assert "const HAND_OPEN_SCORE=0.45, HAND_CLOSED_SCORE=0.30;" in source
+    assert 'return which === "HAND_OPEN" ? handOpenScore > HAND_OPEN_SCORE || waitedLongEnough' in source
+    assert "const HAND_LANDMARK_FRESH_MS=350;" in source
+    assert "const TARGET_HOLD_GRACE_MS=350;" in source
+    assert "}else if(inTargetSince != null && (now - lastInTargetTs) > TARGET_HOLD_GRACE_MS){" in source
+    assert "const HAND_BACKOFF_SCAN_INTERVAL_MS=180, HAND_BACKOFF_FRESH_MS=2600, MIN_SMOOTH_FPS=15;" in source
+    # The carried cup rides the palm of the tracked hand with smoothing.
+    assert "let vobjAnchor = null;" in source
+    assert "vobjAnchor = {x: vobjAnchor.x * 0.55 + target.x * 0.45, y: vobjAnchor.y * 0.55 + target.y * 0.45};" in source
+    # Models are created as soon as the runner page opens, not on Start.
+    assert "function warmUpModels(){" in source
+    assert "warmUpModels().catch(() => {});" in source
+    assert 'captionEl.textContent = "Loading the movement model…";' in source
     # Side lean and wrist drop are measured in ways that do not fire just because
     # the arm swings across: lateral trunk angle, and wrist bend against the forearm.
     assert 'if(metric === "trunk_side_lean_delta") return Math.abs(raw.trunk_angle-(base.trunk_angle||0));' in source
-    assert "raw.wrist_bend=Number.isFinite(straight) ? 180-straight : NaN;" in source
+    assert "raw.wrist_bend=(fl >= sw*0.45 && hl >= sw*0.12)" in source  # image-plane only, foreshortening-guarded
     assert 'if(STANDARD.tracking_mode !== "hand" && Number.isFinite(raw.wrist_bend)){' in source
     # Live numbers the patient sees: Reach / Arm across / Hand open against target,
     # plus Shoulder lift, Trunk lean, Side lean and Wrist bend as they appear.
