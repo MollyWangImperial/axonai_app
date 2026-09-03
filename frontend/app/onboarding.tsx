@@ -28,6 +28,14 @@ const surveyStepApplies = (key: string, answers: Record<string, any>) => {
   return mobilityDifficulties.some((value: string) => STANDING_OR_STEPPING_DIFFICULTIES.has(value));
 };
 
+// The saved profile keeps the caregiver answer as a boolean, while the survey
+// option values are "yes" / "no". Every other answer is stored as it was chosen.
+const surveyAnswersFromProfile = (profile: Record<string, any>) => {
+  const answers = { ...profile };
+  if (typeof profile.has_caregiver === "boolean") answers.has_caregiver = profile.has_caregiver ? "yes" : "no";
+  return answers;
+};
+
 // "Any other goals?" shows a picture for each option instead of a symbol:
 // large pictograms on tinted cards, with a check mark when selected.
 const GOAL_PICTURES: Record<string, { icon: keyof typeof MaterialCommunityIcons.glyphMap; tint: string; background: string }> = {
@@ -47,6 +55,12 @@ export default function OnboardingScreen() {
   const router = useRouter();
   const params = useLocalSearchParams<{ mode?: string }>();
   const isReadinessUpdate = params.mode === "assessment-readiness";
+  // Refill mode (Settings → Survey questions → "Re-fill the survey") runs the
+  // whole setup survey again for a patient who has already completed it. It
+  // starts from the saved answers so only what has changed needs a new answer,
+  // and nothing is written until the last step is saved.
+  const isRefill = params.mode === "refill";
+  const startsFromSavedProfile = isReadinessUpdate || isRefill;
   // Never re-ask what the survey already answered: readiness mode only shows
   // the still-missing questions, and skips itself entirely when none remain.
   const [readinessSteps, setReadinessSteps] = useState<typeof READINESS_SURVEY_STEPS | null>(null);
@@ -66,14 +80,14 @@ export default function OnboardingScreen() {
   const [genderDescription, setGenderDescription] = useState("");
   const [showGenderDescription, setShowGenderDescription] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [loadingProfile, setLoadingProfile] = useState(isReadinessUpdate);
+  const [loadingProfile, setLoadingProfile] = useState(startsFromSavedProfile);
   const [saveError, setSaveError] = useState<string | null>(null);
 
   const step = steps[idx];
   const progress = ((idx + 1) / steps.length) * 100;
 
   useEffect(() => {
-    if (!isReadinessUpdate) return;
+    if (!startsFromSavedProfile) return;
     let active = true;
     (async () => {
       try {
@@ -82,6 +96,11 @@ export default function OnboardingScreen() {
         const body = await response.json();
         if (!active) return;
         const savedProfile = body?.profile || {};
+        if (isRefill) {
+          // Every question is asked again, pre-filled with the saved answer.
+          setValues(surveyAnswersFromProfile(savedProfile));
+          return;
+        }
         setValues(savedProfile);
         const answered = (value: any) => {
           if (value == null) return false;
@@ -109,7 +128,18 @@ export default function OnboardingScreen() {
       }
     })();
     return () => { active = false; };
-  }, [isReadinessUpdate, router]);
+  }, [startsFromSavedProfile, isRefill, router]);
+
+  // Typed answers live in their own text box. Seed it from the current answer
+  // whenever the question changes (and once the saved profile has loaded) so a
+  // re-fill, or stepping back to an earlier question, shows what was answered
+  // before instead of silently replacing it with an empty answer.
+  useEffect(() => {
+    if (!step || (step.type !== "text" && step.type !== "number")) return;
+    const current = values[step.key];
+    setTextInput(current == null ? "" : String(current));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [step?.key, loadingProfile]);
 
   const setVal = (k: string, v: any) => setValues((prev) => ({ ...prev, [k]: v }));
 
@@ -169,7 +199,15 @@ export default function OnboardingScreen() {
         if (savedUser?.id) await cachePatientOnboarding(savedUser.id, payload);
 
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-        router.replace(isReadinessUpdate ? "/task-intro?mode=initial" : "/");
+        if (isReadinessUpdate) {
+          router.replace("/task-intro?mode=initial" as never);
+        } else if (isRefill) {
+          // A re-fill is pushed on top of Settings → Survey questions; unwind
+          // that stack back to Home, which reloads the updated profile on focus.
+          router.dismissTo("/");
+        } else {
+          router.replace("/");
+        }
       } catch (error) {
         const message = error instanceof Error ? error.message : "";
         setSaveError(
@@ -329,8 +367,14 @@ export default function OnboardingScreen() {
   return (
     <View style={[styles.container, { paddingTop: insets.top + spacing.sm }]}>
       <View style={styles.topBar}>
-        <Pressable onPress={() => idx > 0 ? setIdx(idx - 1) : isReadinessUpdate ? router.back() : undefined} disabled={idx === 0 && !isReadinessUpdate} hitSlop={12}>
-          <Ionicons name="chevron-back" size={26} color={idx === 0 && !isReadinessUpdate ? colors.onSurfaceTertiary : colors.onSurface} />
+        <Pressable
+          testID="onb-back"
+          accessibilityLabel={idx > 0 ? "Previous question" : "Leave without changing your answers"}
+          onPress={() => idx > 0 ? setIdx(idx - 1) : startsFromSavedProfile ? router.back() : undefined}
+          disabled={idx === 0 && !startsFromSavedProfile}
+          hitSlop={12}
+        >
+          <Ionicons name="chevron-back" size={26} color={idx === 0 && !startsFromSavedProfile ? colors.onSurfaceTertiary : colors.onSurface} />
         </Pressable>
         <Text style={styles.stepCounter}>{isReadinessUpdate ? "Assessment readiness" : `${idx + 1} of ${steps.length}`}</Text>
         {step.optional ? (
