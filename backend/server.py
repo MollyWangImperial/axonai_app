@@ -19,6 +19,7 @@ import asyncio
 import httpx
 import json
 import hashlib
+from collections import OrderedDict
 import hmac
 import sys
 import tempfile
@@ -2777,31 +2778,103 @@ async def get_task_video_for_worker(video_id: str, request: Request):
     )
 
 
+# Spoken instructions are generated once and reused. The runner asks for the
+# same lines at the start of every exercise (setup voice, calibration
+# instruction, every step's voice, "Wonderful, here we go"), so each line is
+# kept in memory and on disk keyed by model, voice and text. The OpenAI call
+# itself runs in a worker thread: it used to run inline inside the async
+# handler, which stalled the whole server for the duration of every voice line
+# and made an exercise start wait for six or seven of them in a row.
+TTS_CACHE_DIR = LOCAL_STATE_DIR / "tts_cache"
+TTS_MEMORY_CACHE_LIMIT = 400
+_tts_memory_cache: "OrderedDict[str, str]" = OrderedDict()
+_tts_inflight: Dict[str, "asyncio.Future[str]"] = {}
+
+
+def _tts_cache_key(text: str, voice: str) -> str:
+    return hashlib.sha256(f"{TTS_MODEL}|{voice}|{text}".encode("utf-8")).hexdigest()
+
+
+def _tts_cache_get(key: str) -> Optional[str]:
+    cached = _tts_memory_cache.get(key)
+    if cached is not None:
+        _tts_memory_cache.move_to_end(key)
+        return cached
+    path = TTS_CACHE_DIR / f"{key}.b64"
+    try:
+        if path.is_file():
+            cached = path.read_text(encoding="ascii")
+            if cached:
+                _tts_cache_put(key, cached, persist=False)
+                return cached
+    except OSError:
+        pass
+    return None
+
+
+def _tts_cache_put(key: str, audio_b64: str, persist: bool = True) -> None:
+    _tts_memory_cache[key] = audio_b64
+    _tts_memory_cache.move_to_end(key)
+    while len(_tts_memory_cache) > TTS_MEMORY_CACHE_LIMIT:
+        _tts_memory_cache.popitem(last=False)
+    if persist:
+        try:
+            TTS_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+            (TTS_CACHE_DIR / f"{key}.b64").write_text(audio_b64, encoding="ascii")
+        except OSError:
+            pass
+
+
+def _synthesize_tts_audio_bytes(text: str, voice: str) -> bytes:
+    """Blocking OpenAI call - always run through asyncio.to_thread."""
+    response = openai_tts_client.audio.speech.create(
+        model=TTS_MODEL,
+        voice=voice,
+        input=text,
+        response_format="mp3",
+    )
+    if hasattr(response, "read"):
+        return response.read()
+    if hasattr(response, "content"):
+        return response.content
+    return bytes(response)
+
+
 async def _generate_tts_audio_base64(text: str, voice: str) -> str:
-    if openai_tts_client:
-        response = openai_tts_client.audio.speech.create(
-            model=TTS_MODEL,
-            voice=voice,
-            input=text,
-            response_format="mp3",
-        )
-        if hasattr(response, "read"):
-            audio_bytes = response.read()
-        elif hasattr(response, "content"):
-            audio_bytes = response.content
+    if not openai_tts_client and not tts_client:
+        raise HTTPException(status_code=503, detail="Voice service unavailable: OPENAI_API_KEY is not configured.")
+    key = _tts_cache_key(text, voice)
+    cached = _tts_cache_get(key)
+    if cached is not None:
+        return cached
+    # Several runner prefetches for the same line arrive together: generate once.
+    inflight = _tts_inflight.get(key)
+    if inflight is not None:
+        return await asyncio.shield(inflight)
+    loop = asyncio.get_running_loop()
+    future: "asyncio.Future[str]" = loop.create_future()
+    _tts_inflight[key] = future
+    try:
+        if openai_tts_client:
+            audio_bytes = await asyncio.to_thread(_synthesize_tts_audio_bytes, text, voice)
+            audio_b64 = base64.b64encode(audio_bytes).decode("ascii")
         else:
-            audio_bytes = bytes(response)
-        return base64.b64encode(audio_bytes).decode("ascii")
-
-    if tts_client:
-        return await tts_client.generate_speech_base64(
-            text=text,
-            model=TTS_MODEL,
-            voice=voice,
-            response_format="mp3",
-        )
-
-    raise HTTPException(status_code=503, detail="Voice service unavailable: OPENAI_API_KEY is not configured.")
+            audio_b64 = await tts_client.generate_speech_base64(
+                text=text,
+                model=TTS_MODEL,
+                voice=voice,
+                response_format="mp3",
+            )
+        _tts_cache_put(key, audio_b64)
+        if not future.done():
+            future.set_result(audio_b64)
+        return audio_b64
+    except BaseException as error:
+        if not future.done():
+            future.set_exception(error)
+        raise
+    finally:
+        _tts_inflight.pop(key, None)
 
 
 @api_router.post("/tts/generate", response_model=TTSResponse)
@@ -8177,12 +8250,13 @@ REHAB_RUNNER_CONFIG: Dict[str, Dict[str, Any]] = {
         "mirror_for_left": True,
         "setup_voice": "We will practise reaching for a cup, opening your hand, grasping it, and carrying it across. The cup is drawn on your screen, so you do not need a real object. Reach to the cup with your affected hand, open your hand wide, close your fingers around the cup, carry it across, open your hand to set it down, then return to your lap.",
         "virtual_object": {"type": "cup", "mode": "carry", "grab_step": 2, "place_step": 4},
-        "correct_form_cue": "Next time, keep your chest still and both shoulders level: reach with your arm, open your hand wide, close it around the cup, and carry it across with your arm and a straight wrist.",
+        "correct_form_cue": "Next time, keep your chest still and both shoulders level: reach forward and straighten your elbow to the cup, open your hand wide, close it around the cup, and carry it across with your arm and a straight wrist.",
         "compensation_problems": {
             "trunk_lean": "your chest leaned toward the cup",
             "trunk_side_lean": "your body leaned to the side to carry the cup",
             "shoulder_hike": "your shoulder lifted toward your ear",
-            "wrist_flexion": "your wrist bent downward instead of staying in line with your forearm while you gripped the cup",
+            "elbow_flare": "your elbow flared out and up instead of reaching forward",
+            "wrist_flexion": "your wrist bent inward instead of staying in line with your forearm while you gripped the cup",
         },
         "cycle": [
             {"caption": "Reach to the cup", "voice": "Reach toward the cup on your screen with your affected hand.", "target": {"x": 0.30, "y": 0.55, "r": 0.10}, "hold_ms": 900},
@@ -8514,11 +8588,12 @@ EXERCISE_COACHING_PROFILES: Dict[str, Dict[str, Any]] = {
         "training_focus": "Reach, cylindrical grasp, low lift, cross-table transport, controlled release, and return.",
         "repetition_definition": "Reach to the light object, transport it across the table, place and release it, then return the empty hand to the calibrated start point.",
         "rom_cues": {
+            "elbow_extension": "On the next repetition, straighten your elbow as your hand arrives at the cup.",
             "shoulder_flexion": "On the next repetition, bring the arm to the object without taking your chest with it.",
             "shoulder_abduction": "On the next repetition, move the light object across with the arm while both shoulders stay square.",
             "hand_opening": "On the next repetition, open your fingers a little wider before you take the cup.",
         },
-        "compensation_labels": {"trunk_lean": "Trunk lean", "trunk_side_lean": "Trunk side lean", "shoulder_hike": "Shoulder hiking", "wrist_flexion": "Wrist drop while gripping"},
+        "compensation_labels": {"trunk_lean": "Trunk lean", "trunk_side_lean": "Trunk side lean", "shoulder_hike": "Shoulder hiking", "elbow_flare": "Elbow flare (arm abduction)", "wrist_flexion": "Wrist flexion while gripping"},
         "measurement_limit": "The camera score reflects arm transport, posture, and how far the fingers open and close around the on-screen cup; it cannot confirm grip force.",
     },
     "ex_handopen": {
@@ -8704,20 +8779,31 @@ EXERCISE_MOVEMENT_STANDARDS: Dict[str, Dict[str, Any]] = {
         "tracking_mode": "pose", "posture": "seated",
         "calibration_instruction": "Sit square to the camera with both shoulders, hips, elbows, and wrists visible. The cup you will move is shown on the screen - no real object is needed. Rest your hands and hold still.",
         "rom_steps": [
-            {"id": "shoulder_flexion", "label": "Reach to the object", "metric": "shoulder_flexion", "targets": {"easy": 30, "medium": 42, "difficult": 52}, "weight": 0.45},
-            {"id": "shoulder_abduction", "label": "Controlled transport", "metric": "shoulder_abduction", "targets": {"easy": 25, "medium": 35, "difficult": 45}, "weight": 0.35},
+            # Each metric is measured only in the steps where it matters ("steps" are
+            # cycle indices: 0 reach, 1 open, 2 close, 3 carry, 4 release, 5 return).
+            # Reaching the cup: the elbow must straighten (the classic post-stroke
+            # shortfall - the arm stays flexed and the trunk is used instead), judged at
+            # the top of the reach.
+            {"id": "elbow_extension", "label": "Elbow extension at the cup", "metric": "elbow_extension", "targets": {"easy": 118, "medium": 130, "difficult": 142}, "weight": 0.30, "steps": [0, 1, 2]},
+            {"id": "shoulder_flexion", "label": "Reach to the object", "metric": "shoulder_flexion", "targets": {"easy": 30, "medium": 42, "difficult": 52}, "weight": 0.20, "steps": [0, 1, 2]},
             # Hand opening around the on-screen cup (median finger angle, 180 = straight).
-            {"id": "hand_opening", "label": "Hand opening", "metric": "finger_extension", "targets": {"easy": 115, "medium": 130, "difficult": 145}, "weight": 0.20},
+            {"id": "hand_opening", "label": "Hand opening", "metric": "finger_extension", "targets": {"easy": 115, "medium": 130, "difficult": 145}, "weight": 0.25, "steps": [1]},
+            {"id": "shoulder_abduction", "label": "Controlled transport", "metric": "shoulder_abduction", "targets": {"easy": 25, "medium": 35, "difficult": 45}, "weight": 0.25, "steps": [3, 4]},
         ],
         "compensations": [
+            # Forward trunk lean to make up for the reach (all movement steps).
             {"id": "trunk_lean", "metric": "trunk_lean_delta", "threshold_deg": 12, "min_frames": 8, "min_ratio": 0.35, "penalty": 10, "correction": "Keep your shoulders square and move the light object with your arm."},
-            # Side lean typically appears only while the cup is carried across, i.e. in
-            # a fraction of the repetition, so a fifth of the movement frames is enough.
-            {"id": "trunk_side_lean", "metric": "trunk_side_lean_delta", "threshold_deg": 10, "min_frames": 8, "min_ratio": 0.2, "penalty": 8, "correction": "Keep your body upright and carry the cup across with your arm."},
+            # Side lean / rotation to get the cup across instead of moving the arm (carry and release).
+            {"id": "trunk_side_lean", "metric": "trunk_side_lean_delta", "threshold_deg": 10, "min_frames": 8, "min_ratio": 0.3, "penalty": 8, "correction": "Keep your body upright and carry the cup across with your arm.", "steps": [3, 4]},
+            # Shoulder hiking (all movement steps).
             {"id": "shoulder_hike", "metric": "shoulder_hike_delta", "threshold_deg": 9, "min_frames": 8, "min_ratio": 0.35, "penalty": 7, "correction": "Set the shoulder down before lifting the object again."},
-            # A dropped (flexed) wrist while gripping: the hand bends well away from
-            # the forearm line. Measured only when the forearm is side-on to the camera.
-            {"id": "wrist_flexion", "metric": "wrist_flexion_delta", "threshold_deg": 25, "min_frames": 8, "min_ratio": 0.3, "penalty": 6, "correction": "Keep your wrist straight, in line with your forearm, as you grip and carry the cup."},
+            # "Chicken wing": the arm abducts and the elbow rises above the hand to reach,
+            # instead of the arm going forward (reach and grasp steps).
+            {"id": "elbow_flare", "metric": "elbow_flare_deg", "threshold_deg": 45, "min_frames": 8, "min_ratio": 0.35, "penalty": 7, "correction": "Keep your elbow low and close to your body, and reach forward with your arm.", "steps": [0, 1, 2]},
+            # A flexed (dropped) wrist while gripping and carrying: the hand bends well
+            # away from the forearm line. Measured only when the forearm is side-on to
+            # the camera (grasp, carry and release steps).
+            {"id": "wrist_flexion", "metric": "wrist_flexion_delta", "threshold_deg": 25, "min_frames": 8, "min_ratio": 0.3, "penalty": 6, "correction": "Keep your wrist straight, in line with your forearm, as you grip and carry the cup.", "steps": [2, 3, 4]},
         ],
     },
     "ex_handopen": {
@@ -9646,6 +9732,7 @@ let stepStartTime = 0;
 let inTargetSince = null;
 let lastInTargetTs = 0;
 let stepCompleted = false;
+let stepVoiceFinishedAt = 0;   // a step cannot complete until its instruction has been heard
 let running = false;
 let cameraStream = null;
 let confirmationAudioStream = null;
@@ -10405,6 +10492,13 @@ function rawMovementMetrics(lm, handLm){
     raw.trunk_depth_tilt=rad2deg(Math.asin(clamp(dz/Math.max(.05,raw.torso_length),-1,1)));
     raw.active_wrist_x=lm[ACTIVE.wrist].x;
     raw.active_wrist_y=lm[ACTIVE.wrist].y;
+    // "Chicken wing": the upper arm swinging out sideways (elbow farther from the
+    // body's midline than the shoulder, and rising) instead of going forward.
+    // Frontal-plane angle of the upper arm from straight down: 0 = hanging,
+    // 90 = elbow out at shoulder height. A forward reach keeps it small.
+    const elbowOut=Math.max(0,Math.abs(lm[ACTIVE.elbow].x-midShoulder.x)-Math.abs(lm[ACTIVE.shoulder].x-midShoulder.x));
+    const elbowDown=Math.max(.02,lm[ACTIVE.elbow].y-lm[ACTIVE.shoulder].y);
+    raw.elbow_flare=rad2deg(Math.atan2(elbowOut,elbowDown));
   }
   if(handLm){
     const fingerAngles=[
@@ -10506,15 +10600,21 @@ function metricValue(metric,raw){
   if(metric === "shoulder_pelvis_mismatch" || metric === "knee_alignment" || metric === "shoulder_rotation") return raw[metric];
   if(metric === "heel_lift_angle") return rad2deg(Math.atan2(Math.abs(raw.heel_y-(base.heel_y||raw.heel_y)),raw.foot_length||.02));
   if(metric === "knee_motion_delta") return rad2deg(Math.atan2(Math.hypot(raw.knee_x-(base.knee_x||raw.knee_x),raw.knee_y-(base.knee_y||raw.knee_y)),raw.torso_length||.04));
+  if(metric === "elbow_flare_deg") return raw.elbow_flare;
   if(metric === "wrist_flexion_delta"){
     // Arm exercises judge the wrist against the forearm (a relaxed wrist reads
-    // ~15 degrees when no calibrated value exists); hand-only exercises, where
-    // the forearm points at the camera, keep the hand-axis comparison.
-    if(STANDARD.tracking_mode !== "hand" && Number.isFinite(raw.wrist_bend)){
+    // ~15 degrees when no calibrated value exists) and only in frames where
+    // that is measurable - never the bare hand axis, which turns with the arm.
+    if(STANDARD.tracking_mode !== "hand"){
+      if(!Number.isFinite(raw.wrist_bend)) return NaN;
       const rest=Number.isFinite(Number(base.wrist_bend)) ? Number(base.wrist_bend) : 15;
       return Math.max(0,raw.wrist_bend-rest);
     }
-    return Math.abs(raw.hand_axis-(base.hand_axis||raw.hand_axis));
+    // Hand-only exercises (forearm supported, pointing at the camera): hand-axis
+    // turn from calibration, wrapped so 350 degrees reads as 10.
+    if(!Number.isFinite(raw.hand_axis) || !Number.isFinite(Number(base.hand_axis))) return NaN;
+    const turn=Math.abs(raw.hand_axis-Number(base.hand_axis)) % 360;
+    return Math.min(turn,360-turn);
   }
   return Number(raw[metric]);
 }
@@ -10566,6 +10666,10 @@ function updateCalibration(lm,handLm){
   }
   calibrationAnchors.push(anchor);
   calibrationSamples.push(rawMovementMetrics(lm,handLm));
+  if(handLm && handLm.length >= 21){
+    restHandOpenSamples.push(handOpenScore);
+    if(restHandOpenSamples.length > 60) restHandOpenSamples.shift();
+  }
   if(calibrationSamples.length > 54){
     calibrationSamples.shift();
     calibrationAnchors.shift();
@@ -10589,6 +10693,7 @@ async function completeCalibration(){
   calibrationFinishing=true;
   const keys=Object.keys(calibrationSamples[0]||{});
   baselineMetrics=Object.fromEntries(keys.map(key=>[key,median(calibrationSamples.map(sample=>Number(sample[key])))]));
+  restHandOpenScore=restHandOpenSamples.length >= 10 ? median(restHandOpenSamples) : null;
   if(HAS_DYNAMIC_LAP_TARGET){
     exerciseLapTarget=exerciseLapTargetCalibration.target ? {...exerciseLapTargetCalibration.target} : null;
     exerciseLapTargetRadius=Number.isFinite(exerciseLapTargetRadius)
@@ -10639,6 +10744,12 @@ function activeMovementPhase(){
   if(fbEl.classList.contains("show")) return false;
   return (sub.phase||"movement") !== "return";
 }
+// A scored step or compensation rule may name the cycle steps it applies to
+// (e.g. the elbow is judged while reaching to the cup, wrist flexion while
+// gripping and carrying); without "steps" it applies to every movement step.
+function ruleAppliesNow(rule){
+  return !Array.isArray(rule.steps) || rule.steps.includes(currentSubStep);
+}
 function resetRepMetrics(){
   clearTemporaryCompensationEvidence();
   romBest={};
@@ -10677,12 +10788,14 @@ function updateMetrics(lm,handLm){
     || (raw.shoulder_flexion-(Number(baselineMetrics.shoulder_flexion)||0)) >= 15;
   const reachKey=reachKeyMetric();
   const reachValue=reachKey ? metricValue(reachKey,raw) : raw.reach_extent;
-  if(armRaised && Number.isFinite(reachValue) && Number.isFinite(raw.elbow_extension)){
+  const elbowStepNow=(STANDARD.rom_steps||[]).find(step=>step.metric==="elbow_extension");
+  if(armRaised && (!elbowStepNow || ruleAppliesNow(elbowStepNow)) && Number.isFinite(reachValue) && Number.isFinite(raw.elbow_extension)){
     reachFrames.push({key:reachValue,elbow:raw.elbow_extension});
     reachFrames.sort((a,b)=>b.key-a.key);
     if(reachFrames.length > MAX_REACH_FRAMES) reachFrames.length=MAX_REACH_FRAMES;
   }
   for(const step of STANDARD.rom_steps||[]){
+    if(!ruleAppliesNow(step)) continue;
     if(step.metric === "elbow_extension"){
       const elbow=elbowAtPeakReach();
       if(Number.isFinite(elbow)) romBest[step.id]=elbow;
@@ -10693,6 +10806,7 @@ function updateMetrics(lm,handLm){
   }
   const evidenceValues={};
   for(const rule of STANDARD.compensations||[]){
+    if(!ruleAppliesNow(rule)) continue;
     const value=metricValue(rule.metric,raw);
     if(!Number.isFinite(value)) continue;
     compensationEligible[rule.id]=(compensationEligible[rule.id]||0)+1;
@@ -10752,7 +10866,7 @@ const HAND_LANDMARK_FRESH_MS=350;   // same freshness window as the assessment
 // runs every 180 ms instead of every frame and the last hand is kept longer,
 // so the skeleton and the carried object keep moving smoothly (as in the
 // assessment).
-const HAND_BACKOFF_SCAN_INTERVAL_MS=180, HAND_BACKOFF_FRESH_MS=2600, MIN_SMOOTH_FPS=15;
+const HAND_SCAN_INTERVAL_MS=66, HAND_BACKOFF_SCAN_INTERVAL_MS=180, HAND_BACKOFF_FRESH_MS=2600, MIN_SMOOTH_FPS=15;
 let frameIntervalMs=33, lastLoopTs=0, lastHandScanTs=0;
 function handBackoffActive(){ return frameIntervalMs > 1000/MIN_SMOOTH_FPS; }
 function handFreshWindowMs(){ return handBackoffActive() ? HAND_BACKOFF_FRESH_MS : HAND_LANDMARK_FRESH_MS; }
@@ -10762,6 +10876,19 @@ const TARGET_HOLD_GRACE_MS=350;     // same hold grace as the assessment
 // spread; fingertip-to-palm distance), and decayed when the hand is lost.
 const HAND_OPEN_SCORE=0.45, HAND_CLOSED_SCORE=0.30;
 let handOpenScore=0, fistClosureScore=0, handOpenDegreesSmoothed=NaN;
+// The hand must visibly change shape at each hand step: "open" is judged
+// against the resting hand from calibration, "close" against the hand as it
+// was when the open step finished, and "release" against the closed grasp.
+// (Absolute thresholds alone can pass while the hand is still open, because a
+// hand seen edge-on projects as if it were closed.)
+let restHandOpenScore=null, restHandOpenSamples=[];
+let handOpenRef=null, handClosedRef=null;
+const HAND_CHANGE_MARGIN=0.25, HAND_OPEN_REST_MARGIN=0.10, HAND_CLOSE_DEGREES_DROP=30;
+function noteHandStepCompleted(step){
+  const which=step && step.target && step.target.landmark;
+  if(which === "HAND_OPEN") handOpenRef={open:handOpenScore, closure:fistClosureScore, degrees:handOpenDegreesSmoothed};
+  if(which === "HAND_CLOSED") handClosedRef={open:handOpenScore, closure:fistClosureScore, degrees:handOpenDegreesSmoothed};
+}
 function updateRehabHandScores(h){
   if(!h || h.length < 21){
     handOpenScore=Math.max(0,handOpenScore-0.15);
@@ -10822,9 +10949,21 @@ function checkTarget(lm){
     if(handGateNearSince == null) handGateNearSince=now;
     const waitedLongEnough = now-handGateNearSince >= Number(sub.max_wait_ms||6000);
     if(!handIsFresh(now)) return waitedLongEnough;
-    // Same gesture thresholds as the assessment's HAND_OPEN / HAND_CLOSED targets.
-    return which === "HAND_OPEN" ? handOpenScore > HAND_OPEN_SCORE || waitedLongEnough
-      : (fistClosureScore > HAND_CLOSED_SCORE && handOpenScore < 0.62) || waitedLongEnough;
+    if(which === "HAND_OPEN"){
+      // Opening: clearly open (assessment threshold) and wider than the hand at
+      // rest, or - after a grasp - wider than the closed grasp was.
+      const reference = handClosedRef ? handClosedRef.open : restHandOpenScore;
+      const margin = handClosedRef ? HAND_CHANGE_MARGIN : HAND_OPEN_REST_MARGIN;
+      const opened = handOpenScore > HAND_OPEN_SCORE && (reference == null || handOpenScore > reference + margin);
+      return opened || waitedLongEnough;
+    }
+    // Closing around the cup: the fingers must actually curl from the open
+    // hand - lower open score, higher closure, and the finger angle down.
+    const ref = handOpenRef || {open:Math.max(HAND_OPEN_SCORE, handOpenScore), closure:fistClosureScore, degrees:handOpenDegreesSmoothed};
+    const closed = fistClosureScore > HAND_CLOSED_SCORE
+      && handOpenScore < ref.open - HAND_CHANGE_MARGIN
+      && (!Number.isFinite(ref.degrees) || !Number.isFinite(handOpenDegreesSmoothed) || handOpenDegreesSmoothed <= ref.degrees - HAND_CLOSE_DEGREES_DROP);
+    return closed || waitedLongEnough;
   }
   const bilateral=(STANDARD.rom_steps||[]).some(step=>String(step.metric||"").startsWith("bilateral_"));
   if(bilateral) return ok(Lw) && ok(Rw);
@@ -10912,21 +11051,27 @@ function drawVirtualBar(x1, y1, x2, y2){
 // hand landmarks, which are steadier than the pose wrist) and its position is
 // smoothed frame to frame so it glides with the hand instead of jittering.
 let vobjAnchor = null;
+let vobjPalmOffset = {x:0, y:0};
 function vobjWristPoint(lm){
-  let target = null;
+  // The pose wrist is updated every frame (the hand model may run less often),
+  // so the cup follows it without lag; the offset from wrist to palm centre is
+  // taken from the latest hand detection so the cup still sits in the palm.
+  const wrist = lm && lm[ACTIVE.wrist] && pointVisible(lm[ACTIVE.wrist]) ? lm[ACTIVE.wrist] : null;
   if(handIsFresh(performance.now()) && latestHandLandmarks.length >= 21){
     const h = latestHandLandmarks;
-    target = {x:(h[0].x + h[5].x + h[9].x + h[13].x + h[17].x) / 5, y:(h[0].y + h[5].y + h[9].y + h[13].y + h[17].y) / 5};
-  }else{
-    const wrist = lm && lm[ACTIVE.wrist];
-    if(wrist && pointVisible(wrist)) target = {x: wrist.x, y: wrist.y};
+    const palm = {x:(h[0].x + h[5].x + h[9].x + h[13].x + h[17].x) / 5, y:(h[0].y + h[5].y + h[9].y + h[13].y + h[17].y) / 5};
+    vobjPalmOffset = wrist ? {x: palm.x - wrist.x, y: palm.y - wrist.y} : {x:0, y:0};
+    if(!wrist) return vobjSmooth(palm);
   }
-  if(!target) return vobjAnchor ? {x: vobjAnchor.x * canvas.width, y: vobjAnchor.y * canvas.height} : null;
-  // Exponential smoothing; a large jump (re-detection) snaps instead of trailing.
+  if(!wrist) return vobjAnchor ? {x: vobjAnchor.x * canvas.width, y: vobjAnchor.y * canvas.height} : null;
+  return vobjSmooth({x: wrist.x + vobjPalmOffset.x, y: wrist.y + vobjPalmOffset.y});
+}
+function vobjSmooth(target){
+  // Light smoothing only (mostly the new position); a large jump snaps.
   if(!vobjAnchor || Math.hypot(target.x - vobjAnchor.x, target.y - vobjAnchor.y) > 0.12){
     vobjAnchor = {x: target.x, y: target.y};
   }else{
-    vobjAnchor = {x: vobjAnchor.x * 0.55 + target.x * 0.45, y: vobjAnchor.y * 0.55 + target.y * 0.45};
+    vobjAnchor = {x: vobjAnchor.x * 0.3 + target.x * 0.7, y: vobjAnchor.y * 0.3 + target.y * 0.7};
   }
   return {x: vobjAnchor.x * canvas.width, y: vobjAnchor.y * canvas.height};
 }
@@ -10978,6 +11123,7 @@ function drawVirtualObject(lm, handLm){
 }
 
 function vobjOnStepCompleted(completedStep){
+  noteHandStepCompleted(CFG.cycle[completedStep]);
   if(!VOBJ || VOBJ.mode !== "carry") return;
   if(completedStep === VOBJ.grab_step) vobjState = "carried";
   if(completedStep === VOBJ.place_step && vobjState === "carried"){
@@ -11126,9 +11272,14 @@ function drawLiveDegrees(lm){
   if(Number.isFinite(side) && side>=4){
     drawDegreeLabel(mid.x*canvas.width-40, mid.y*canvas.height+60, `Side lean ${Math.round(side)}°`, side>=Number(sideRule.threshold_deg||10)?"#FF9B8A":"#FFD27A");
   }
+  const flareRule=(STANDARD.compensations||[]).find(item=>item.metric==="elbow_flare_deg");
+  const flare=flareRule && ruleAppliesNow(flareRule) ? metricValue("elbow_flare_deg",raw) : NaN;
+  if(Number.isFinite(flare) && flare>=20 && anchors.elbow){
+    drawDegreeLabel(anchors.elbow.x, anchors.elbow.y+26, `Elbow out ${Math.round(flare)}°`, flare>=Number(flareRule.threshold_deg||45)?"#FF9B8A":"#FFD27A");
+  }
   const wristRule=(STANDARD.compensations||[]).find(item=>item.metric==="wrist_flexion_delta");
   const wristDrop=wristRule ? metricValue("wrist_flexion_delta",raw) : NaN;
-  if(Number.isFinite(wristDrop) && wristDrop>=6 && anchors.hand){
+  if(Number.isFinite(wristDrop) && wristDrop>=6 && anchors.hand && ruleAppliesNow(wristRule)){
     drawDegreeLabel(anchors.hand.x, anchors.hand.y-26, `Wrist bend ${Math.round(wristDrop)}°`, wristDrop>=Number(wristRule.threshold_deg||18)?"#FF9B8A":"#FFD27A");
   }
 }
@@ -11138,6 +11289,7 @@ async function startRep(){
   feedbackPending = false;
   resetRepMetrics();
   vobjState = "resting"; vobjPlacePos = null; vobjAnchor = null;
+  handOpenRef = null; handClosedRef = null;
   repLabel.textContent = `Repetition ${currentRep+1} of ${CFG.reps}`;
   // Update the visual rep progress bar
   try{
@@ -11158,10 +11310,12 @@ async function startSubStep(){
   const sub = CFG.cycle[currentSubStep];
   captionEl.textContent = sub.caption;
   stepStartTime = performance.now();
-  inTargetSince = null; stepCompleted = false; handGateNearSince = null;
+  inTargetSince = null; stepCompleted = false; handGateNearSince = null; stepVoiceFinishedAt = 0;
   tapBtn.disabled = true;
   prefetchVoice(CFG.cycle[currentSubStep + 1] && CFG.cycle[currentSubStep + 1].voice);
+  const voiceForStep = currentSubStep;
   await playVoice(sub.voice);
+  if(currentSubStep === voiceForStep) stepVoiceFinishedAt = performance.now();
   tapBtn.disabled = false;
 }
 
@@ -11580,7 +11734,7 @@ function loop(){
   if(lastLoopTs) frameIntervalMs = frameIntervalMs * 0.9 + Math.min(500, now - lastLoopTs) * 0.1;
   lastLoopTs = now;
   if(handLandmarker){
-    const scanInterval = handBackoffActive() ? HAND_BACKOFF_SCAN_INTERVAL_MS : 0;
+    const scanInterval = handBackoffActive() ? HAND_BACKOFF_SCAN_INTERVAL_MS : HAND_SCAN_INTERVAL_MS;
     if(now - lastHandScanTs >= scanInterval){
       lastHandScanTs = now;
       try{
@@ -11613,7 +11767,10 @@ function loop(){
     // Sub-step target detection (only while NOT showing feedback)
     if(CFG.pose_mode === "body" && !fbEl.classList.contains("show")){
       const sub = CFG.cycle[currentSubStep];
-      if(sub && sub.target){
+      // Voice gate (as in the assessment): the circle only starts counting once
+      // the step's instruction has finished and the patient has had a moment.
+      const voiceGateOpen = stepVoiceFinishedAt > 0 && (now - stepVoiceFinishedAt) >= TARGET_HOLD_GRACE_MS;
+      if(sub && sub.target && voiceGateOpen){
         const ok = checkTarget(lm);
         if(ok){
           if(inTargetSince == null) inTargetSince = now;
@@ -11739,7 +11896,14 @@ window.addEventListener("pagehide",clearTemporaryCompensationEvidence,{once:true
 
 postRN({type:"ready"});
 if(URL_PARAMS.get("test_mode") !== "rep_feedback"){
+  // Models and the spoken lines this exercise will need are fetched while the
+  // patient reads the start screen, so Start does not wait for them.
   warmUpModels().catch(() => {});
+  prefetchVoice(CFG.setup_voice);
+  prefetchVoice(STANDARD.calibration_instruction);
+  prefetchVoice(POSTURE_CHANGED_VOICE);
+  prefetchVoice("Wonderful. Here we go.");
+  (CFG.cycle||[]).forEach(step => prefetchVoice(step && step.voice));
 }
 if(URL_PARAMS.get("test_mode") === "rep_feedback"){
   overlay.classList.add("hidden");

@@ -909,25 +909,34 @@ def test_cylindrical_grasp_reach_open_close_carry_release_flow_and_compensations
     for word in ("open your hand wide", "close your fingers around the cup", "carry it across", "set it down"):
         assert word in grasp["setup_voice"].lower(), word
 
-    # Scored metrics: reach (shoulder flexion), transport (shoulder abduction), hand opening.
-    assert [(step["metric"], step["weight"]) for step in standard["rom_steps"]] == [
-        ("shoulder_flexion", 0.45), ("shoulder_abduction", 0.35), ("finger_extension", 0.20)]
+    # Scored metrics, each measured only in the steps where it matters: elbow
+    # extension at the cup and reach (steps 0-2), hand opening (step 1), transport
+    # (steps 3-4). The elbow is form-critical: a bent elbow at the cup never scores 90.
+    assert [(step["metric"], step["weight"], step["steps"]) for step in standard["rom_steps"]] == [
+        ("elbow_extension", 0.30, [0, 1, 2]), ("shoulder_flexion", 0.20, [0, 1, 2]),
+        ("finger_extension", 0.25, [1]), ("shoulder_abduction", 0.25, [3, 4])]
+    assert standard["rom_steps"][0]["targets"] == {"easy": 118, "medium": 130, "difficult": 142}
     assert standard["rom_steps"][2]["targets"] == {"easy": 115, "medium": 130, "difficult": 145}
     # Compensatory patterns: forward lean to the cup, side lean to carry it,
-    # shoulder hiking, and a dropped wrist while gripping.
-    assert [rule["id"] for rule in standard["compensations"]] == ["trunk_lean", "trunk_side_lean", "shoulder_hike", "wrist_flexion"]
-    assert {rule["id"]: rule["metric"] for rule in standard["compensations"]} == {
-        "trunk_lean": "trunk_lean_delta", "trunk_side_lean": "trunk_side_lean_delta",
-        "shoulder_hike": "shoulder_hike_delta", "wrist_flexion": "wrist_flexion_delta"}
-    assert set(profile["compensation_labels"]) == {"trunk_lean", "trunk_side_lean", "shoulder_hike", "wrist_flexion"}
-    assert "hand_opening" in profile["rom_cues"]
+    # shoulder hiking, elbow flare ("chicken wing") while reaching, and a flexed
+    # wrist while gripping and carrying.
+    assert [(rule["id"], rule["metric"], rule.get("steps")) for rule in standard["compensations"]] == [
+        ("trunk_lean", "trunk_lean_delta", None), ("trunk_side_lean", "trunk_side_lean_delta", [3, 4]),
+        ("shoulder_hike", "shoulder_hike_delta", None), ("elbow_flare", "elbow_flare_deg", [0, 1, 2]),
+        ("wrist_flexion", "wrist_flexion_delta", [2, 3, 4])]
+    assert set(profile["compensation_labels"]) == {"trunk_lean", "trunk_side_lean", "shoulder_hike", "elbow_flare", "wrist_flexion"}
+    assert "hand_opening" in profile["rom_cues"] and "elbow_extension" in profile["rom_cues"]
+    assert "function ruleAppliesNow(rule)" in source
+    assert "if(!ruleAppliesNow(step)) continue;" in source and "if(!ruleAppliesNow(rule)) continue;" in source
+    assert "raw.elbow_flare=rad2deg(Math.atan2(elbowOut,elbowDown));" in source
     assert grasp["compensation_problems"] == {
         "trunk_lean": "your chest leaned toward the cup",
         "trunk_side_lean": "your body leaned to the side to carry the cup",
         "shoulder_hike": "your shoulder lifted toward your ear",
-        "wrist_flexion": "your wrist bent downward instead of staying in line with your forearm while you gripped the cup",
+        "elbow_flare": "your elbow flared out and up instead of reaching forward",
+        "wrist_flexion": "your wrist bent inward instead of staying in line with your forearm while you gripped the cup",
     }
-    assert "straight wrist" in grasp["correct_form_cue"]
+    assert "straight wrist" in grasp["correct_form_cue"] and "straighten your elbow" in grasp["correct_form_cue"]
     assert next(rule for rule in standard["compensations"] if rule["id"] == "wrist_flexion")["threshold_deg"] == 25
 
     # Runner: the hit test uses the same image coordinates the circle is drawn
@@ -951,23 +960,34 @@ def test_cylindrical_grasp_reach_open_close_carry_release_flow_and_compensations
     assert "handOpenScore=handOpenScore*0.6+open*0.4;" in source
     assert "fistClosureScore=fistClosureScore*0.6+closure*0.4;" in source
     assert "const HAND_OPEN_SCORE=0.45, HAND_CLOSED_SCORE=0.30;" in source
-    assert 'return which === "HAND_OPEN" ? handOpenScore > HAND_OPEN_SCORE || waitedLongEnough' in source
+    # Each hand step needs a real change of hand shape (open vs rest, close vs the
+    # open hand, release vs the grasp) and cannot complete before its instruction
+    # has been heard - an edge-on hand can no longer pass "closed" while still open.
+    assert "function noteHandStepCompleted(step)" in source
+    assert "const HAND_CHANGE_MARGIN=0.25, HAND_OPEN_REST_MARGIN=0.10, HAND_CLOSE_DEGREES_DROP=30;" in source
+    assert "&& handOpenScore < ref.open - HAND_CHANGE_MARGIN" in source
+    assert "restHandOpenScore=restHandOpenSamples.length >= 10 ? median(restHandOpenSamples) : null;" in source
+    assert "const voiceGateOpen = stepVoiceFinishedAt > 0 && (now - stepVoiceFinishedAt) >= TARGET_HOLD_GRACE_MS;" in source
     assert "const HAND_LANDMARK_FRESH_MS=350;" in source
     assert "const TARGET_HOLD_GRACE_MS=350;" in source
     assert "}else if(inTargetSince != null && (now - lastInTargetTs) > TARGET_HOLD_GRACE_MS){" in source
-    assert "const HAND_BACKOFF_SCAN_INTERVAL_MS=180, HAND_BACKOFF_FRESH_MS=2600, MIN_SMOOTH_FPS=15;" in source
-    # The carried cup rides the palm of the tracked hand with smoothing.
-    assert "let vobjAnchor = null;" in source
-    assert "vobjAnchor = {x: vobjAnchor.x * 0.55 + target.x * 0.45, y: vobjAnchor.y * 0.55 + target.y * 0.45};" in source
+    # The carried cup follows the per-frame pose wrist (offset to the palm from
+    # the latest hand detection) with light smoothing, so it does not lag.
+    assert "let vobjAnchor = null;" in source and "let vobjPalmOffset = {x:0, y:0};" in source
+    assert "vobjAnchor = {x: vobjAnchor.x * 0.3 + target.x * 0.7, y: vobjAnchor.y * 0.3 + target.y * 0.7};" in source
+    assert "const HAND_SCAN_INTERVAL_MS=66, HAND_BACKOFF_SCAN_INTERVAL_MS=180, HAND_BACKOFF_FRESH_MS=2600, MIN_SMOOTH_FPS=15;" in source
     # Models are created as soon as the runner page opens, not on Start.
     assert "function warmUpModels(){" in source
     assert "warmUpModels().catch(() => {});" in source
+    assert '  prefetchVoice("Wonderful. Here we go.");' in source
     assert 'captionEl.textContent = "Loading the movement model…";' in source
     # Side lean and wrist drop are measured in ways that do not fire just because
     # the arm swings across: lateral trunk angle, and wrist bend against the forearm.
     assert 'if(metric === "trunk_side_lean_delta") return Math.abs(raw.trunk_angle-(base.trunk_angle||0));' in source
     assert "raw.wrist_bend=(fl >= sw*0.45 && hl >= sw*0.12)" in source  # image-plane only, foreshortening-guarded
-    assert 'if(STANDARD.tracking_mode !== "hand" && Number.isFinite(raw.wrist_bend)){' in source
+    assert "if(!Number.isFinite(raw.wrist_bend)) return NaN;" in source  # never the bare hand axis for arm exercises
+    assert "return Math.min(turn,360-turn);" in source  # hand-only exercises wrap the hand-axis turn
+    assert 'if(STANDARD.tracking_mode !== "hand"){' in source
     # Live numbers the patient sees: Reach / Arm across / Hand open against target,
     # plus Shoulder lift, Trunk lean, Side lean and Wrist bend as they appear.
     assert 'shoulder_abduction:{joint:"shoulder",text:"Arm across"}' in source
