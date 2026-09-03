@@ -15,7 +15,7 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import Svg, { Circle, G, Line, Polyline, Text as SvgText } from "react-native-svg";
-import { useRouter } from "expo-router";
+import { useLocalSearchParams, useRouter } from "expo-router";
 import * as Haptics from "expo-haptics";
 import { colors, spacing, radius } from "@/src/theme";
 import { signIn, authedFetch, cachePatientOnboarding, getCachedPatientProfile, hasAcceptedConsent, type Me } from "@/src/auth";
@@ -83,12 +83,14 @@ function ProgressPreviewChart() {
 export default function SignInScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
+  const { auth } = useLocalSearchParams<{ auth?: string | string[] }>();
+  const requestedAuth = Array.isArray(auth) ? auth[0] : auth;
   const { width } = useWindowDimensions();
   const isWide = width >= 980;
   const isMediumDesktop = isWide && width < 1500;
   const showHeaderSignIn = width >= 520;
-  const [overlay, setOverlay] = useState<Overlay>(null);
-  const [authIntent, setAuthIntent] = useState<AuthIntent>("start");
+  const [overlay, setOverlay] = useState<Overlay>(requestedAuth === "signin" || requestedAuth === "start" ? "auth" : null);
+  const [authIntent, setAuthIntent] = useState<AuthIntent>(requestedAuth === "signin" ? "signin" : "start");
   const [email, setEmail] = useState("");
   const [name, setName] = useState("");
   const [trialCode, setTrialCode] = useState("");

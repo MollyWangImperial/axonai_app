@@ -84,3 +84,11 @@ def test_sign_in_page_matches_the_selected_welcome_flow():
     assert "Good morning, Molly" in source
     assert 'testID="signin-progress-preview"' in source
     assert "Continue with Google" not in source
+
+
+def test_external_sign_in_link_can_open_the_trial_form_directly():
+    source = (server.ROOT_DIR.parent / "frontend" / "app" / "sign-in.tsx").read_text(encoding="utf-8")
+
+    assert "useLocalSearchParams" in source
+    assert 'requestedAuth === "signin" || requestedAuth === "start" ? "auth" : null' in source
+    assert 'requestedAuth === "signin" ? "signin" : "start"' in source
