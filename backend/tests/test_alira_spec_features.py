@@ -967,15 +967,23 @@ def test_cylindrical_grasp_reach_open_close_carry_release_flow_and_compensations
     assert "const HAND_CHANGE_MARGIN=0.25, HAND_OPEN_REST_MARGIN=0.10, HAND_CLOSE_DEGREES_DROP=30;" in source
     assert "&& handOpenScore < ref.open - HAND_CHANGE_MARGIN" in source
     assert "restHandOpenScore=restHandOpenSamples.length >= 10 ? median(restHandOpenSamples) : null;" in source
-    assert "const voiceGateOpen = stepVoiceFinishedAt > 0 && (now - stepVoiceFinishedAt) >= TARGET_HOLD_GRACE_MS;" in source
+    assert "function targetActivationReady(finishedAt,now)" in source
+    assert "function exerciseTargetIsArmed(now=performance.now())" in source
+    assert "const voiceGateOpen = exerciseTargetIsArmed(now);" in source
+    assert "stepVoiceFinishedAt = 0;" in source
+    assert "if(currentSubStep === voiceForStep) stepVoiceFinishedAt = performance.now();" in source
     assert "const HAND_LANDMARK_FRESH_MS=350;" in source
     assert "const TARGET_HOLD_GRACE_MS=350;" in source
     assert "}else if(inTargetSince != null && (now - lastInTargetTs) > TARGET_HOLD_GRACE_MS){" in source
     # The carried cup follows the per-frame pose wrist (offset to the palm from
-    # the latest hand detection) with light smoothing, so it does not lag.
+    # the latest hand detection). Adaptive smoothing heavily favours the newest
+    # point while moving, and hand inference uses the assessment's every-frame
+    # cadence whenever the device can sustain it.
     assert "let vobjAnchor = null;" in source and "let vobjPalmOffset = {x:0, y:0};" in source
-    assert "vobjAnchor = {x: vobjAnchor.x * 0.3 + target.x * 0.7, y: vobjAnchor.y * 0.3 + target.y * 0.7};" in source
-    assert "const HAND_SCAN_INTERVAL_MS=66, HAND_BACKOFF_SCAN_INTERVAL_MS=180, HAND_BACKOFF_FRESH_MS=2600, MIN_SMOOTH_FPS=15;" in source
+    assert "function nextVirtualObjectAnchor(previous,target)" in source
+    assert "const follow=clamp(0.84+travel*3.0,0.84,0.98);" in source
+    assert "const HAND_SCAN_INTERVAL_MS=0, HAND_BACKOFF_SCAN_INTERVAL_MS=180, HAND_BACKOFF_FRESH_MS=2600, MIN_SMOOTH_FPS=15;" in source
+    assert "window.__rehynExerciseTrackingTest={" in source
     # Models are created as soon as the runner page opens, not on Start.
     assert "function warmUpModels(){" in source
     assert "warmUpModels().catch(() => {});" in source

@@ -171,10 +171,18 @@ def test_runner_pose_and_target_overlay_match_assessment_visual_geometry():
     assert 'targetInnerScale:Number(OVERLAY_STYLE.target_inner_scale)||.55' in html
     assert 'holdRingScale:Number(OVERLAY_STYLE.hold_ring_scale)||1.25' in html
     assert 'holdRingWidth:Number(OVERLAY_STYLE.hold_ring_width_px)||8' in html
-    assert 'drawLandmarks(handLm,{color:ASSESSMENT_OVERLAY_STYLE.landmarkColor,radius:ASSESSMENT_OVERLAY_STYLE.landmarkRadius})' in html
+    assert server.EXERCISE_OVERLAY_STYLE["hand_keypoint_color"] in html
+    assert server.EXERCISE_OVERLAY_STYLE["hand_connector_color"] in html
+    assert 'landmarkRadius:Number(OVERLAY_STYLE.hand_keypoint_radius_px)||1.4' in html
+    assert 'connectorWidth:Number(OVERLAY_STYLE.hand_connector_width_px)||2' in html
+    assert 'drawConnectors(handLm,HandLandmarker.HAND_CONNECTIONS,{color:ASSESSMENT_HAND_OVERLAY_STYLE.connectorColor,lineWidth:ASSESSMENT_HAND_OVERLAY_STYLE.connectorWidth})' in html
+    assert 'drawLandmarks(handLm,{color:ASSESSMENT_HAND_OVERLAY_STYLE.landmarkColor,radius:ASSESSMENT_HAND_OVERLAY_STYLE.landmarkRadius})' in html
     assert 'effectiveExerciseTargetRadius(sub,lm)' in html
     assert 'const R = effectiveExerciseTargetRadius(sub,lm);' in html
     assert 'const tr = effectiveExerciseTargetRadius(sub,lm)*Math.min(canvas.width,canvas.height);' in html
+    assert 'ctx.strokeStyle=armed ? ASSESSMENT_OVERLAY_STYLE.targetColor : "rgba(225,142,109,0.45)";' in html
+    assert 'ctx.setLineDash(armed ? [] : [10,8]);' in html
+    assert 'if(armed && inTargetSince){' in html
     assert 'sub.target.r * 1.55' not in html
 
 

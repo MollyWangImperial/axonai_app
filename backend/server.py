@@ -8461,6 +8461,13 @@ EXERCISE_OVERLAY_STYLE: Dict[str, Any] = {
     "keypoint_radius_px": 3,
     "connector_color": "#4A7856",
     "connector_width_px": 4,
+    # Match the initial assessment's lighter, finer hand skeleton. Pose and
+    # hand landmarks deliberately use different weights so the fingers remain
+    # readable without covering the patient's hand.
+    "hand_keypoint_color": "rgba(217,229,220,0.72)",
+    "hand_keypoint_radius_px": 1.4,
+    "hand_connector_color": "rgba(127,229,163,0.88)",
+    "hand_connector_width_px": 2,
     "target_color": "#E18E6D",
     "target_edge_width_px": 6,
     "target_inner_scale": 0.55,
@@ -9643,6 +9650,12 @@ const ASSESSMENT_OVERLAY_STYLE = Object.freeze({
   holdRingWidth:Number(OVERLAY_STYLE.hold_ring_width_px)||8,
   calibrationTargetColor:OVERLAY_STYLE.calibration_target_color||"#7FE5A3",
   calibrationTargetFill:OVERLAY_STYLE.calibration_target_fill||"rgba(74,120,86,.28)",
+});
+const ASSESSMENT_HAND_OVERLAY_STYLE = Object.freeze({
+  landmarkColor:OVERLAY_STYLE.hand_keypoint_color||"rgba(217,229,220,0.72)",
+  landmarkRadius:Number(OVERLAY_STYLE.hand_keypoint_radius_px)||1.4,
+  connectorColor:OVERLAY_STYLE.hand_connector_color||"rgba(127,229,163,0.88)",
+  connectorWidth:Number(OVERLAY_STYLE.hand_connector_width_px)||2,
 });
 
 function classifyCameraDevice({
@@ -10863,15 +10876,20 @@ let latestHandLandmarks=null;   // the affected hand in the latest frame (when h
 let latestHandSeenAt=0;         // when it was last detected (a brief gap keeps the previous hand)
 let handGateNearSince=null;     // when the wrist first arrived at the cup for a hand-opening / grasp step
 const HAND_LANDMARK_FRESH_MS=350;   // same freshness window as the assessment
-// When pose + hands together drag the frame rate under 15 fps, the hand model
-// runs every 180 ms instead of every frame and the last hand is kept longer,
-// so the skeleton and the carried object keep moving smoothly (as in the
-// assessment).
-const HAND_SCAN_INTERVAL_MS=66, HAND_BACKOFF_SCAN_INTERVAL_MS=180, HAND_BACKOFF_FRESH_MS=2600, MIN_SMOOTH_FPS=15;
+// Match the assessment: scan the hand on every available frame while the
+// device is keeping up. If pose + hands fall below 15 fps, use the same 180 ms
+// backoff and keep the last reliable hand briefly so the overlay does not blink.
+const HAND_SCAN_INTERVAL_MS=0, HAND_BACKOFF_SCAN_INTERVAL_MS=180, HAND_BACKOFF_FRESH_MS=2600, MIN_SMOOTH_FPS=15;
 let frameIntervalMs=33, lastLoopTs=0, lastHandScanTs=0;
 function handBackoffActive(){ return frameIntervalMs > 1000/MIN_SMOOTH_FPS; }
 function handFreshWindowMs(){ return handBackoffActive() ? HAND_BACKOFF_FRESH_MS : HAND_LANDMARK_FRESH_MS; }
 const TARGET_HOLD_GRACE_MS=350;     // same hold grace as the assessment
+function targetActivationReady(finishedAt,now){
+  return finishedAt > 0 && (now-finishedAt) >= TARGET_HOLD_GRACE_MS;
+}
+function exerciseTargetIsArmed(now=performance.now()){
+  return targetActivationReady(stepVoiceFinishedAt,now);
+}
 // Hand-opening and fist-closure scores, computed and smoothed exactly like the
 // initial assessment (finger straightness, fingertip spread, thumb-index
 // spread; fingertip-to-palm distance), and decayed when the hand is lost.
@@ -11067,13 +11085,21 @@ function vobjWristPoint(lm){
   if(!wrist) return vobjAnchor ? {x: vobjAnchor.x * canvas.width, y: vobjAnchor.y * canvas.height} : null;
   return vobjSmooth({x: wrist.x + vobjPalmOffset.x, y: wrist.y + vobjPalmOffset.y});
 }
+function nextVirtualObjectAnchor(previous,target){
+  if(!previous) return {x:target.x,y:target.y};
+  const travel=Math.hypot(target.x-previous.x,target.y-previous.y);
+  if(travel > 0.12) return {x:target.x,y:target.y};
+  // At rest, retain just enough history to suppress one-frame wrist jitter.
+  // During a real reach, raise the follow weight toward 98% so the cup stays
+  // visually attached to the current wrist/palm instead of trailing it.
+  const follow=clamp(0.84+travel*3.0,0.84,0.98);
+  return {
+    x:previous.x*(1-follow)+target.x*follow,
+    y:previous.y*(1-follow)+target.y*follow,
+  };
+}
 function vobjSmooth(target){
-  // Light smoothing only (mostly the new position); a large jump snaps.
-  if(!vobjAnchor || Math.hypot(target.x - vobjAnchor.x, target.y - vobjAnchor.y) > 0.12){
-    vobjAnchor = {x: target.x, y: target.y};
-  }else{
-    vobjAnchor = {x: vobjAnchor.x * 0.3 + target.x * 0.7, y: vobjAnchor.y * 0.3 + target.y * 0.7};
-  }
+  vobjAnchor=nextVirtualObjectAnchor(vobjAnchor,target);
   return {x: vobjAnchor.x * canvas.width, y: vobjAnchor.y * canvas.height};
 }
 
@@ -11141,8 +11167,8 @@ function drawOverlay(lm,handLm){
     drawingUtils.drawConnectors(lm,PoseLandmarker.POSE_CONNECTIONS,{color:ASSESSMENT_OVERLAY_STYLE.connectorColor,lineWidth:ASSESSMENT_OVERLAY_STYLE.connectorWidth});
   }
   if(handLm){
-    drawingUtils.drawLandmarks(handLm,{color:ASSESSMENT_OVERLAY_STYLE.landmarkColor,radius:ASSESSMENT_OVERLAY_STYLE.landmarkRadius});
-    drawingUtils.drawConnectors(handLm,HandLandmarker.HAND_CONNECTIONS,{color:ASSESSMENT_OVERLAY_STYLE.connectorColor,lineWidth:ASSESSMENT_OVERLAY_STYLE.connectorWidth});
+    drawingUtils.drawConnectors(handLm,HandLandmarker.HAND_CONNECTIONS,{color:ASSESSMENT_HAND_OVERLAY_STYLE.connectorColor,lineWidth:ASSESSMENT_HAND_OVERLAY_STYLE.connectorWidth});
+    drawingUtils.drawLandmarks(handLm,{color:ASSESSMENT_HAND_OVERLAY_STYLE.landmarkColor,radius:ASSESSMENT_HAND_OVERLAY_STYLE.landmarkRadius});
   }
   if(calibrating){
     if(HAS_DYNAMIC_LAP_TARGET && exerciseLapTargetCalibration.ready && exerciseLapTargetCalibration.target){
@@ -11162,17 +11188,23 @@ function drawOverlay(lm,handLm){
   }
   const sub = CFG.cycle[currentSubStep];
   if(sub && sub.target){
+    const armed=exerciseTargetIsArmed();
     const target=effectiveExerciseTarget(sub);
     const tx = target.x*canvas.width;
     const ty = target.y*canvas.height;
     const tr = effectiveExerciseTargetRadius(sub,lm)*Math.min(canvas.width,canvas.height);
     const pulse = 1 + 0.08*Math.sin(performance.now()/250);
+    ctx.save();
     ctx.beginPath(); ctx.arc(tx,ty,tr*pulse,0,Math.PI*2);
     ctx.lineWidth=ASSESSMENT_OVERLAY_STYLE.targetEdgeWidth;
-    ctx.strokeStyle=ASSESSMENT_OVERLAY_STYLE.targetColor;
+    ctx.strokeStyle=armed ? ASSESSMENT_OVERLAY_STYLE.targetColor : "rgba(225,142,109,0.45)";
+    ctx.setLineDash(armed ? [] : [10,8]);
     ctx.stroke();
-    ctx.beginPath(); ctx.arc(tx,ty,tr*ASSESSMENT_OVERLAY_STYLE.targetInnerScale,0,Math.PI*2);
-    ctx.fillStyle = "rgba(225,142,109,0.4)"; ctx.fill();
+    ctx.restore();
+    if(armed){
+      ctx.beginPath(); ctx.arc(tx,ty,tr*ASSESSMENT_OVERLAY_STYLE.targetInnerScale,0,Math.PI*2);
+      ctx.fillStyle = "rgba(225,142,109,0.4)"; ctx.fill();
+    }
     if(HAND_GATE_LANDMARKS.has(sub.target.landmark)){
       // The canvas is CSS-mirrored: flip the text back so it reads correctly.
       const hint = sub.target.landmark === "HAND_OPEN" ? "Open hand" : "Close hand";
@@ -11187,7 +11219,7 @@ function drawOverlay(lm,handLm){
       ctx.fillStyle="#FDFDFD"; ctx.fillText(hint, 0, 0);
       ctx.restore();
     }
-    if(inTargetSince){
+    if(armed && inTargetSince){
       const elapsed = performance.now() - inTargetSince;
       const progress = Math.min(1, elapsed / sub.hold_ms);
       ctx.beginPath(); ctx.arc(tx,ty,tr*ASSESSMENT_OVERLAY_STYLE.holdRingScale,-Math.PI/2,-Math.PI/2+progress*Math.PI*2);
@@ -11770,7 +11802,7 @@ function loop(){
       const sub = CFG.cycle[currentSubStep];
       // Voice gate (as in the assessment): the circle only starts counting once
       // the step's instruction has finished and the patient has had a moment.
-      const voiceGateOpen = stepVoiceFinishedAt > 0 && (now - stepVoiceFinishedAt) >= TARGET_HOLD_GRACE_MS;
+      const voiceGateOpen = exerciseTargetIsArmed(now);
       if(sub && sub.target && voiceGateOpen){
         const ok = checkTarget(lm);
         if(ok){
@@ -11949,6 +11981,12 @@ window.__rehynExerciseScoringTest={
   repRomDetails,
   computeRepScore,
   confirmedCompensations,
+};
+window.__rehynExerciseTrackingTest={
+  targetActivationReady,
+  nextVirtualObjectAnchor,
+  handScanIntervalMs:HAND_SCAN_INTERVAL_MS,
+  handOverlayStyle:ASSESSMENT_HAND_OVERLAY_STYLE,
 };
 window.__rehynExerciseLapCalibrationTest={
   diagnose:(landmarks)=>exerciseLapTargetCandidateStatus(landmarks),
