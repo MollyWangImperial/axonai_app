@@ -727,11 +727,18 @@ def test_forward_reach_grading_is_phase_gated_and_catches_forward_lean_and_shrug
     assert "Math.asin(clamp(2*(1-w0/w),0,1))" in source
     assert "Math.asin(clamp(1.5*(1-e0/e),0,1))" in source
     assert "raw.ear_width=" in source and "raw.neck_gap=" in source
-    # Shoulder hiking: asymmetry, own-height rise, or neck shortening.
+    # Shoulder hiking as clavicle elevation (lever = half the shoulder width, so
+    # a ~3 cm one-sided rise reads 8 degrees), plus a two-shoulder shrug that
+    # must both lift the shoulders in the frame and shorten both neck gaps.
     assert "function shoulderHikeDegrees(raw)" in source
-    assert "Math.atan2(Math.max(0,g0-g),g0)" in source
+    assert "const halfWidth=Math.max(.03,(Number(raw.shoulder_width)||.18)/2);" in source
+    assert "rad2deg(Math.atan2(Math.max(0,raw.shoulder_line_delta-line0),halfWidth))" in source
+    assert "const bilateral=rad2deg(Math.atan2(Math.min(frameRise,gapShrink),halfWidth));" in source
+    assert "raw.shoulder_line_delta=lm[OTHER.shoulder].y-lm[ACTIVE.shoulder].y;" in source
+    assert "raw.other_neck_gap=" in source
     # Stale calibrations from older builds are never reused.
-    assert "const REHAB_CALIBRATION_VERSION = 2;" in source
+    assert "const REHAB_CALIBRATION_VERSION = 3;" in source
+    assert '"other_neck_gap","shoulder_line_delta","shoulders_y"' in source
     assert "REHAB_BASELINE_REQUIRED_KEYS.some(" in source
 
     # A confirmed compensation scores a fixed 70 and earns no point; only a
@@ -808,6 +815,32 @@ def test_trunk_restrained_reaching_is_graded_like_forward_reach_and_recalibrates
     runner_script = source.split("REHAB_RUNNER_HTML_TEMPLATE = r", 1)[1]
     assert runner_script.count("requestAnimationFrame(loop);") == 3  # ensureLoop + the loop's own two re-schedules
     assert "  ensureLoop();\n  await playVoice(STANDARD.calibration_instruction);" in source
+
+    # The elbow is judged at the top of the reach (frames within 10% of the
+    # repetition's peak shoulder flexion), never on the way up where a hanging
+    # arm is naturally straight; the on-screen target verifies the reach itself,
+    # so only the joints it cannot verify can make a repetition incomplete.
+    assert "function reachKeyMetric()" in source
+    assert "function elbowAtPeakReach()" in source
+    assert "const NEAR_PEAK_REACH_RATIO=0.9, MAX_REACH_FRAMES=8;" in source
+    assert "reachFrames.push({key:reachValue,elbow:raw.elbow_extension});" in source
+    assert 'const verifiedByTarget=CFG.pose_mode === "body" ? reachKeyMetric() : null;' in source
+    # Within 5% of today's target is full attainment for a step (camera angles
+    # read low for a reach toward the lens), so a correct repetition clears 90.
+    assert server.EXERCISE_SCORING_METHOD["full_credit_ratio"] == 0.95
+    assert "clamp(achieved/(target*ROM_FULL_CREDIT_RATIO),0,1)" in source
+
+    # Tapping Continue while the feedback is still being read must not freeze
+    # the next repetition: an interrupted instruction settles immediately and
+    # never clears the listeners of the instruction that replaced it, listening
+    # only starts while the feedback panel is still up, and one bad frame can
+    # never stop the camera loop.
+    assert "let stopActiveVoice = null;" in source
+    assert "if(stopActiveVoice) stopActiveVoice();" in source
+    assert 'audioEl.removeEventListener("ended", onEnded);' in source
+    assert "if(sequence !== voiceSequence) return;   // superseded while the audio was being fetched" in source
+    assert 'if(fbEl.classList.contains("show")) startListening();' in source
+    assert 'postRN({type:"exercise_frame_error", message:String(e && e.message || e)});' in source
 
 
 def test_earning_points_pops_a_fading_congratulations_toast():

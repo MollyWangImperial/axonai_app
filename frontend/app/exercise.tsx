@@ -133,6 +133,9 @@ export default function ExerciseScreen() {
                 exercise_id: exercise_id || "",
                 plan_id: planId,
                 completed_reps: Number(msg.reps || arr.length || 0),
+                // Only correctly performed repetitions earn points (the runner
+                // counts them: no compensation, score at or above the threshold).
+                quality_reps: typeof msg.quality_reps === "number" ? msg.quality_reps : undefined,
                 average_score: rawAvg,
                 repetition_scores: arr,
                 assisted,

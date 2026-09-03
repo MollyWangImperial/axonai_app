@@ -8411,6 +8411,9 @@ EXERCISE_SCORING_METHOD: Dict[str, Any] = {
     # this threshold. An incomplete repetition is capped just below it.
     "point_threshold": 90,
     "complete_rom_ratio": 0.9,
+    # Camera angles read a little low for a reach toward the lens, so reaching
+    # within 5% of today's target counts as full attainment for that step.
+    "full_credit_ratio": 0.95,
     "quality_boundary": "camera-derived coaching score; not a diagnosis or laboratory motion-capture measurement",
 }
 
@@ -9463,8 +9466,8 @@ const URL_PARAMS = new URLSearchParams(window.location.search);
 const VOICE_GUIDANCE_ENABLED = URL_PARAMS.get("voice_guidance") !== "0";
 const AFFECTED_SIDE = URL_PARAMS.get("affected_side") === "left" ? "left" : "right";
 const REHAB_SESSION_ID = (URL_PARAMS.get("rehab_session_id")||"").replace(/[^a-zA-Z0-9_-]/g,"").slice(0,96);
-const REHAB_CALIBRATION_VERSION = 2;  // v2: forward-lean, neck-gap and shoulder-height baselines
-const REHAB_BASELINE_REQUIRED_KEYS = ["trunk_angle","shoulder_width","ear_width","neck_gap","active_shoulder_y","torso_shoulder_ratio","shoulder_flexion"];
+const REHAB_CALIBRATION_VERSION = 3;  // v3: shoulder-line, both-shoulder height and both neck-gap baselines for shrug detection
+const REHAB_BASELINE_REQUIRED_KEYS = ["trunk_angle","shoulder_width","ear_width","neck_gap","other_neck_gap","shoulder_line_delta","shoulders_y","active_shoulder_y","torso_shoulder_ratio","shoulder_flexion"];
 const STANDARD = CFG.movement_standard || {tracking_mode:"pose", posture:"seated", rom_steps:[], compensations:[]};
 const CALIBRATION_CONTRACT = CFG.calibration_contract || {};
 const SCORING_METHOD = CFG.scoring_method || {};
@@ -9749,36 +9752,63 @@ function playBrowserVoice(text){
   });
 }
 
+// One instruction plays at a time. A newer instruction (for example "Wonderful,
+// here we go" when the patient taps Continue while the feedback is still being
+// read) interrupts the current one, and the interrupted call settles at once:
+// it never keeps waiting on the shared audio element, and it never clears the
+// listeners of the instruction that replaced it (that used to freeze the next
+// repetition's start for up to 45 seconds).
+let voiceSequence = 0;
+let stopActiveVoice = null;
 async function playVoice(text){
   if(!VOICE_GUIDANCE_ENABLED || !text){
     voiceText.textContent = "Voice guidance off · follow on-screen text";
     return;
   }
+  const sequence = ++voiceSequence;
+  if(stopActiveVoice) stopActiveVoice();
   try{
     voiceText.textContent = "Playing instruction…";
     const audioB64 = await fetchVoiceAudio(text);
+    if(sequence !== voiceSequence) return;   // superseded while the audio was being fetched
+    if(stopActiveVoice) stopActiveVoice();
     audioEl.pause();
     audioEl.src = "data:audio/mpeg;base64," + audioB64;
     await new Promise((resolve, reject) => {
       let settled = false;
+      let timeout = setTimeout(() => finish(resolve), 45000);
+      const onEnded = () => finish(resolve);
+      const onError = () => finish(() => reject(new Error("Audio element could not play the instruction")));
+      const onMetadata = () => {
+        // Once the clip length is known, give up shortly after it should have ended.
+        if(Number.isFinite(audioEl.duration) && audioEl.duration > 0){
+          clearTimeout(timeout);
+          timeout = setTimeout(() => finish(resolve), audioEl.duration * 1000 + 3000);
+        }
+      };
       const finish = callback => {
         if(settled) return;
         settled = true;
         clearTimeout(timeout);
-        audioEl.onended = null;
-        audioEl.onerror = null;
+        audioEl.removeEventListener("ended", onEnded);
+        audioEl.removeEventListener("error", onError);
+        audioEl.removeEventListener("loadedmetadata", onMetadata);
+        if(stopActiveVoice === stop) stopActiveVoice = null;
         callback();
       };
-      const timeout = setTimeout(() => finish(resolve), 45000);
-      audioEl.onended = () => finish(resolve);
-      audioEl.onerror = () => finish(() => reject(new Error("Audio element could not play the instruction")));
+      const stop = () => finish(resolve);
+      stopActiveVoice = stop;
+      audioEl.addEventListener("ended", onEnded);
+      audioEl.addEventListener("error", onError);
+      audioEl.addEventListener("loadedmetadata", onMetadata);
       const playback = audioEl.play();
       if(playback && typeof playback.catch === "function"){
-        playback.catch(error => finish(() => reject(error)));
+        playback.catch(error => { if(!settled && sequence === voiceSequence) finish(() => reject(error)); });
       }
     });
-    voiceText.textContent = "Instruction ready";
+    if(sequence === voiceSequence) voiceText.textContent = "Instruction ready";
   }catch(e){
+    if(sequence !== voiceSequence) return;   // interrupted: the newer instruction is playing
     voiceText.textContent = "Using device voice";
     const spoke = await playBrowserVoice(text);
     voiceText.textContent = spoke ? "Instruction ready" : "Voice unavailable — follow on-screen text";
@@ -10076,9 +10106,17 @@ function rawMovementMetrics(lm, handLm){
     raw.torso_length=Math.max(.04,Math.hypot(midShoulder.x-midHip.x,midShoulder.y-midHip.y));
     raw.shoulder_width=shoulderWidth;
     raw.active_shoulder_y=lm[ACTIVE.shoulder].y;
-    // Distance from the affected shoulder to its wrist (in shoulder widths):
-    // the frame where this peaks is where the reach is judged.
-    raw.reach_extent=Math.hypot(lm[ACTIVE.wrist].x-lm[ACTIVE.shoulder].x,lm[ACTIVE.wrist].y-lm[ACTIVE.shoulder].y)/shoulderWidth;
+    // Distance from the affected shoulder to its wrist (in shoulder widths),
+    // including the pose model's depth so a reach straight toward the camera
+    // still peaks at full extension: the frames where this peaks are where
+    // the elbow is judged.
+    const reachDepth=(lm[ACTIVE.wrist].z||0)-(lm[ACTIVE.shoulder].z||0);
+    raw.reach_extent=Math.hypot(lm[ACTIVE.wrist].x-lm[ACTIVE.shoulder].x,lm[ACTIVE.wrist].y-lm[ACTIVE.shoulder].y,reachDepth)/shoulderWidth;
+    // Shoulder line (other minus affected height: positive when the affected
+    // shoulder sits higher), both-shoulder height, and the neck gap on the
+    // other side - the shrug detector compares all of these with calibration.
+    raw.shoulder_line_delta=lm[OTHER.shoulder].y-lm[ACTIVE.shoulder].y;
+    raw.shoulders_y=midShoulder.y;
     // Leaning toward a front-facing camera foreshortens the trunk while the
     // shoulders appear wider, so this ratio drops with forward lean.
     raw.torso_shoulder_ratio=raw.torso_length/shoulderWidth;
@@ -10088,6 +10126,8 @@ function rawMovementMetrics(lm, handLm){
     // Neck gap on the affected side: a shrug shortens ear-to-shoulder distance.
     const activeEar=lm[ACTIVE.shoulder===11 ? 7 : 8];
     raw.neck_gap=activeEar ? Math.max(.01,lm[ACTIVE.shoulder].y-activeEar.y) : NaN;
+    const otherEar=lm[OTHER.shoulder===11 ? 7 : 8];
+    raw.other_neck_gap=otherEar ? Math.max(.01,lm[OTHER.shoulder].y-otherEar.y) : NaN;
     // Depth tilt from the pose model's relative z: shoulders nearer than hips.
     const dz=(midHip.z||0)-(midShoulder.z||0);
     raw.trunk_depth_tilt=rad2deg(Math.asin(clamp(dz/Math.max(.05,raw.torso_length),-1,1)));
@@ -10131,20 +10171,30 @@ function forwardLeanDegrees(raw){
   return (Number.isFinite(baseRatio)&&baseRatio>0&&Number.isFinite(raw.torso_shoulder_ratio))
     ? rad2deg(Math.acos(clamp(raw.torso_shoulder_ratio/baseRatio,0,1))) : 0;
 }
-// Shoulder hiking on the affected side, in degrees, as the largest of: rise
-// relative to the other shoulder (asymmetry), rise above the shoulder's own
-// calibrated height, and neck shortening (ear-to-shoulder gap closing) - so a
-// one-sided shrug and a two-shoulder shrug are both caught.
+// Shoulder hiking on the affected side, in degrees. A shrug elevates the
+// clavicle about the sternum, so the lever is HALF the shoulder width: a rise
+// of one seventh of the shoulder width (about 3 cm) reads as 8 degrees.
+//  1) one-sided shrug: the affected shoulder rising above the other one,
+//     relative to the calibrated shoulder line (body-relative, so leaning
+//     toward the camera or sitting taller does not count);
+//  2) two-shoulder shrug: both shoulders higher in the frame than at
+//     calibration AND both ear-to-shoulder gaps shorter - a chin tuck shortens
+//     the gaps without lifting the shoulders, and leaning toward a low camera
+//     lifts the frame position without shortening the gaps, so neither counts.
 function shoulderHikeDegrees(raw){
   const base=baselineMetrics;
-  const asymmetry=Math.max(0,raw.shoulder_hike-(Number(base.shoulder_hike)||0));
-  const baseY=Number(base.active_shoulder_y);
-  const rise=Number.isFinite(baseY)
-    ? rad2deg(Math.atan2(Math.max(0,baseY-raw.active_shoulder_y),raw.shoulder_width||.18)) : 0;
+  const halfWidth=Math.max(.03,(Number(raw.shoulder_width)||.18)/2);
+  const line0=Number(base.shoulder_line_delta);
+  const asymmetry=(Number.isFinite(line0)&&Number.isFinite(raw.shoulder_line_delta))
+    ? rad2deg(Math.atan2(Math.max(0,raw.shoulder_line_delta-line0),halfWidth)) : 0;
+  const y0=Number(base.shoulders_y);
+  const frameRise=(Number.isFinite(y0)&&Number.isFinite(raw.shoulders_y)) ? Math.max(0,y0-raw.shoulders_y) : 0;
   const g0=Number(base.neck_gap), g=Number(raw.neck_gap);
-  const neck=(Number.isFinite(g0)&&Number.isFinite(g)&&g0>0)
-    ? rad2deg(Math.atan2(Math.max(0,g0-g),g0)) : 0;
-  return Math.max(asymmetry,rise,neck);
+  const o0=Number(base.other_neck_gap), o=Number(raw.other_neck_gap);
+  const gapShrink=(Number.isFinite(g0)&&Number.isFinite(g)&&Number.isFinite(o0)&&Number.isFinite(o))
+    ? Math.max(0,Math.min(g0-g,o0-o)) : 0;
+  const bilateral=rad2deg(Math.atan2(Math.min(frameRise,gapShrink),halfWidth));
+  return Math.max(asymmetry,bilateral);
 }
 function metricValue(metric,raw){
   const base=baselineMetrics;
@@ -10267,6 +10317,22 @@ async function completeCalibration(){
 let activeFrames=0;          // frames inside the movement phase (the only ones scored)
 let peakReachExtent=-1;      // farthest shoulder-to-wrist distance seen this rep
 let peakReachElbow=NaN;      // elbow angle at that peak-reach frame
+let reachFrames=[];          // the top-of-reach raised-arm frames of this rep ({key, elbow})
+const NEAR_PEAK_REACH_RATIO=0.9, MAX_REACH_FRAMES=8;
+// The elbow is judged at the top of the reach: the frames where the exercise's
+// main movement metric (shoulder flexion for a forward reach) is within 10% of
+// its peak for the repetition. Frames on the way up - where a still-hanging arm
+// is naturally straight - never count, and the best elbow angle among the
+// top-of-reach frames is used so one noisy frame cannot decide it.
+function reachKeyMetric(){
+  const step=(STANDARD.rom_steps||[]).find(item=>item.metric!=="elbow_extension");
+  return step ? step.metric : null;
+}
+function elbowAtPeakReach(){
+  if(!reachFrames.length) return NaN;
+  const best=reachFrames[0].key;
+  return Math.max(...reachFrames.filter(item=>item.key>=best*NEAR_PEAK_REACH_RATIO).map(item=>item.elbow));
+}
 function activeMovementPhase(){
   const sub=CFG.cycle[currentSubStep];
   if(!sub) return false;
@@ -10282,6 +10348,7 @@ function resetRepMetrics(){
   activeFrames=0;
   peakReachExtent=-1;
   peakReachElbow=NaN;
+  reachFrames=[];
   peakCompensationDegrees={};
 }
 let peakCompensationDegrees={};
@@ -10304,9 +10371,17 @@ function updateMetrics(lm,handLm){
   // raised - a straight arm resting on the lap earns nothing.
   const armRaised=!Number.isFinite(raw.shoulder_flexion)
     || (raw.shoulder_flexion-(Number(baselineMetrics.shoulder_flexion)||0)) >= 15;
+  const reachKey=reachKeyMetric();
+  const reachValue=reachKey ? metricValue(reachKey,raw) : raw.reach_extent;
+  if(armRaised && Number.isFinite(reachValue) && Number.isFinite(raw.elbow_extension)){
+    reachFrames.push({key:reachValue,elbow:raw.elbow_extension});
+    reachFrames.sort((a,b)=>b.key-a.key);
+    if(reachFrames.length > MAX_REACH_FRAMES) reachFrames.length=MAX_REACH_FRAMES;
+  }
   for(const step of STANDARD.rom_steps||[]){
     if(step.metric === "elbow_extension"){
-      if(armRaised && Number.isFinite(peakReachElbow)) romBest[step.id]=peakReachElbow;
+      const elbow=elbowAtPeakReach();
+      if(Number.isFinite(elbow)) romBest[step.id]=elbow;
       continue;
     }
     const value=metricValue(step.metric,raw);
@@ -10805,11 +10880,13 @@ function confirmedCompensations(){
     return hits >= Number(rule.min_frames||8) && hits/eligible >= Number(rule.min_ratio||.35);
   });
 }
+const ROM_FULL_CREDIT_RATIO=Number(SCORING_METHOD.full_credit_ratio)||0.95;
 function repRomDetails(){
   return (STANDARD.rom_steps||[]).map(step=>{
     const achieved=Math.round(Number(romBest[step.id]||0)*10)/10;
     const target=Number(step.target_deg||0);
-    const score=target>0 ? Math.round(clamp(achieved/target,0,1)*100) : 0;
+    // Within 5% of today's target counts as full attainment for the step.
+    const score=target>0 ? Math.round(clamp(achieved/(target*ROM_FULL_CREDIT_RATIO),0,1)*100) : 0;
     return {id:step.id,label:step.label,metric:step.metric,achieved_deg:achieved,target_deg:target,score,weight:Number(step.weight||0)};
   });
 }
@@ -10817,9 +10894,13 @@ const POINT_THRESHOLD=Number(SCORING_METHOD.point_threshold)||90;
 const ROM_COMPLETE_RATIO=Number(SCORING_METHOD.complete_rom_ratio)||0.9;
 // Movement steps that stopped short of today's target (below 90% of it) -
 // for example an elbow that stayed bent. A repetition with one of these is
-// not yet a correct repetition, whatever the other joints did.
+// not yet a correct repetition, whatever the other joints did. For
+// body-tracked exercises the on-screen target already verifies the reach
+// itself, so the main movement metric counts through its score weight only;
+// the joints the target cannot verify (the elbow) must be within range.
 function incompleteRomSteps(){
-  return repRomDetails().filter(item=>item.target_deg>0 && item.achieved_deg < item.target_deg*ROM_COMPLETE_RATIO);
+  const verifiedByTarget=CFG.pose_mode === "body" ? reachKeyMetric() : null;
+  return repRomDetails().filter(item=>item.metric!==verifiedByTarget && item.target_deg>0 && item.achieved_deg < item.target_deg*ROM_COMPLETE_RATIO);
 }
 function romProblemText(item){
   const achieved=Math.round(item.achieved_deg), target=Math.round(item.target_deg);
@@ -10902,7 +10983,7 @@ async function showFeedback(){
     ? `${rewardVoice} Your score is ${lastRepScore} out of 100. ${label}. ${feedback} When you're ready, tap continue, or say yes to keep going.`
     : `${rewardVoice} ${label}. ${feedback} When you're ready, tap continue, or say yes to keep going.`;
   await playVoice(feedbackVoice);
-  startListening();
+  if(fbEl.classList.contains("show")) startListening();
 }
 
 async function confirmAndContinue(){
@@ -11005,30 +11086,37 @@ function loop(){
       if(h&&h.landmarks&&h.landmarks[0]) handLm=h.landmarks[0];
     }catch(e){}
   }
-  drawOverlay(lm,handLm);
-  if(calibrating){
-    updateCalibration(lm,handLm);
-    requestAnimationFrame(loop);
-    return;
-  }
-  if(!fbEl.classList.contains("show")) updateMetrics(lm,handLm);
+  // A single bad frame must never stop the camera loop (the target circle,
+  // live degrees and step detection all depend on it), so the frame work is
+  // guarded and the next frame is always scheduled.
+  try{
+    drawOverlay(lm,handLm);
+    if(calibrating){
+      updateCalibration(lm,handLm);
+      requestAnimationFrame(loop);
+      return;
+    }
+    if(!fbEl.classList.contains("show")) updateMetrics(lm,handLm);
 
-  // Sub-step target detection (only while NOT showing feedback)
-  if(CFG.pose_mode === "body" && !fbEl.classList.contains("show")){
-    const sub = CFG.cycle[currentSubStep];
-    if(sub && sub.target){
-      const ok = checkTarget(lm);
-      if(ok){
-        if(inTargetSince == null) inTargetSince = now;
-        if(!stepCompleted && (now - inTargetSince) >= sub.hold_ms){
-          stepCompleted = true;
-          if(navigator.vibrate) navigator.vibrate(60);
-          setTimeout(() => advanceSubStep(), 250);
+    // Sub-step target detection (only while NOT showing feedback)
+    if(CFG.pose_mode === "body" && !fbEl.classList.contains("show")){
+      const sub = CFG.cycle[currentSubStep];
+      if(sub && sub.target){
+        const ok = checkTarget(lm);
+        if(ok){
+          if(inTargetSince == null) inTargetSince = now;
+          if(!stepCompleted && (now - inTargetSince) >= sub.hold_ms){
+            stepCompleted = true;
+            if(navigator.vibrate) navigator.vibrate(60);
+            setTimeout(() => advanceSubStep(), 250);
+          }
+        }else{
+          inTargetSince = null;
         }
-      }else{
-        inTargetSince = null;
       }
     }
+  }catch(e){
+    postRN({type:"exercise_frame_error", message:String(e && e.message || e)});
   }
   requestAnimationFrame(loop);
 }

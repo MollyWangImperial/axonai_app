@@ -1,8 +1,10 @@
 """Encouragement mechanism (spec section 10).
 
-Points reward effort, safe participation, and personal progress - never only
-perfect completion. Every safely completed repetition earns one point whether
-it is performed independently, at reduced intensity, or with caregiver help.
+Points reward safe participation and personal progress. A camera-guided
+repetition earns its point only when performed correctly (no confirmed
+compensatory pattern and a quality score at or above the point threshold);
+compensated repetitions are scored 70 and coached instead. Caregiver-delivered
+routines and tap-confirmed repetitions keep earning their points.
 
 Streaks include streak freezes: a day is never counted as broken when the
 patient chose a rest or recovery day, reported heavy fatigue, or reported
@@ -97,11 +99,22 @@ def compute_rewards(
             except (TypeError, ValueError):
                 completed_repetitions = 0
         repetition_count += completed_repetitions
+        # Only correctly performed repetitions earn points when the client
+        # reports them (no compensation, score at or above the threshold);
+        # older clients that do not report quality keep the legacy behaviour.
+        raw_quality = activity.get("quality_reps")
+        if raw_quality is None:
+            rewarded_repetitions = completed_repetitions
+        else:
+            try:
+                rewarded_repetitions = max(0, min(completed_repetitions, int(raw_quality)))
+            except (TypeError, ValueError):
+                rewarded_repetitions = 0
         if str(activity.get("exercise_id") or "").startswith("CG_"):
             caregiver_routine_count += 1
             activity_points += POINTS_PER_CAREGIVER_ROUTINE
         else:
-            activity_points += completed_repetitions * POINTS_PER_REPETITION
+            activity_points += rewarded_repetitions * POINTS_PER_REPETITION
         session_days.add(completed.date())
 
     tap_days = 0
