@@ -8169,13 +8169,28 @@ REHAB_RUNNER_CONFIG: Dict[str, Dict[str, Any]] = {
         "name": "Cylindrical Grasp & Transport",
         "reps": 5,
         "pose_mode": "body",
-        "setup_voice": "We will practise grasping and carrying a cup. The cup is drawn on your screen, so you do not need a real object. Reach to the cup with your affected hand, and it will follow your hand as you carry it.",
-        "virtual_object": {"type": "cup", "mode": "carry", "grab_step": 0, "place_step": 1},
-        "correct_form_cue": "Next time, keep your shoulders square and your chest still, and carry the cup across with your arm.",
+        # Pose plus the hand landmarker: the hand-opening and grasp steps are
+        # confirmed from the fingers, not just from the wrist reaching the cup.
+        "hand_tracking": True,
+        # The cup starts on the affected side and is carried across the midline;
+        # for a left-affected patient the targets are mirrored at runtime.
+        "mirror_for_left": True,
+        "setup_voice": "We will practise reaching for a cup, opening your hand, grasping it, and carrying it across. The cup is drawn on your screen, so you do not need a real object. Reach to the cup with your affected hand, open your hand wide, close your fingers around the cup, carry it across, open your hand to set it down, then return to your lap.",
+        "virtual_object": {"type": "cup", "mode": "carry", "grab_step": 2, "place_step": 4},
+        "correct_form_cue": "Next time, keep your chest still and both shoulders level: reach with your arm, open your hand wide, close it around the cup, and carry it across with your arm and a straight wrist.",
+        "compensation_problems": {
+            "trunk_lean": "your chest leaned toward the cup",
+            "trunk_side_lean": "your body leaned to the side to carry the cup",
+            "shoulder_hike": "your shoulder lifted toward your ear",
+            "wrist_flexion": "your wrist dropped as you gripped the cup",
+        },
         "cycle": [
-            {"caption": "Reach to the cup on screen and grasp it", "voice": "Reach toward the cup on your screen and close your affected hand around it, as if picking it up.", "target": {"x": 0.30, "y": 0.55, "r": 0.10}, "hold_ms": 1200},
-            {"caption": "Carry the cup across", "voice": "The cup is in your hand now. Carry it slowly across to the other side.", "target": {"x": 0.70, "y": 0.55, "r": 0.10}, "hold_ms": 1500},
-            {"caption": "Set it down, release, and return", "voice": "Open your fingers to set the cup down, then bring your empty hand back to your lap. Nicely done.", "target": {"x": 0.5, "y": 0.78, "r": 0.10}, "hold_ms": 1200},
+            {"caption": "Reach to the cup", "voice": "Reach toward the cup on your screen with your affected hand.", "target": {"x": 0.30, "y": 0.55, "r": 0.10}, "hold_ms": 900},
+            {"caption": "Open your hand wide around the cup", "voice": "Now open your hand wide, ready to take the cup.", "target": {"landmark": "HAND_OPEN", "x": 0.30, "y": 0.55, "r": 0.14}, "hold_ms": 600, "max_wait_ms": 6000},
+            {"caption": "Close your fingers around the cup", "voice": "Close your fingers around the cup to grasp it.", "target": {"landmark": "HAND_CLOSED", "x": 0.30, "y": 0.55, "r": 0.14}, "hold_ms": 500, "max_wait_ms": 6000},
+            {"caption": "Carry the cup across", "voice": "The cup is in your hand. Carry it slowly across to the other side.", "target": {"x": 0.70, "y": 0.55, "r": 0.10}, "hold_ms": 1200},
+            {"caption": "Open your hand to set the cup down", "voice": "Open your fingers to set the cup down.", "target": {"landmark": "HAND_OPEN", "x": 0.70, "y": 0.55, "r": 0.14}, "hold_ms": 500, "max_wait_ms": 6000},
+            {"caption": "Return your empty hand to your lap", "voice": "Now bring your empty hand back to your lap. Nicely done.", "target": {"x": 0.5, "y": 0.78, "r": 0.10}, "hold_ms": 1200},
         ],
         "feedback_rules": [
             {"if": "trunk_lean_deg > 18", "say": "I noticed your trunk twisted with the cup. On the next repetition, try keeping your shoulders square and let your arm cross the midline."},
@@ -8501,9 +8516,10 @@ EXERCISE_COACHING_PROFILES: Dict[str, Dict[str, Any]] = {
         "rom_cues": {
             "shoulder_flexion": "On the next repetition, bring the arm to the object without taking your chest with it.",
             "shoulder_abduction": "On the next repetition, move the light object across with the arm while both shoulders stay square.",
+            "hand_opening": "On the next repetition, open your fingers a little wider before you take the cup.",
         },
-        "compensation_labels": {"trunk_lean": "Trunk lean or rotation", "shoulder_hike": "Shoulder hiking"},
-        "measurement_limit": "The current camera score reflects arm transport and posture; it cannot confirm grip force or reliable object coupling.",
+        "compensation_labels": {"trunk_lean": "Trunk lean", "trunk_side_lean": "Trunk side lean", "shoulder_hike": "Shoulder hiking", "wrist_flexion": "Wrist drop while gripping"},
+        "measurement_limit": "The camera score reflects arm transport, posture, and how far the fingers open and close around the on-screen cup; it cannot confirm grip force.",
     },
     "ex_handopen": {
         "training_focus": "Active finger extension and controlled release with the forearm supported and wrist near neutral.",
@@ -8688,12 +8704,18 @@ EXERCISE_MOVEMENT_STANDARDS: Dict[str, Dict[str, Any]] = {
         "tracking_mode": "pose", "posture": "seated",
         "calibration_instruction": "Sit square to the camera with both shoulders, hips, elbows, and wrists visible. The cup you will move is shown on the screen - no real object is needed. Rest your hands and hold still.",
         "rom_steps": [
-            {"id": "shoulder_flexion", "label": "Reach to the object", "metric": "shoulder_flexion", "targets": {"easy": 30, "medium": 42, "difficult": 52}, "weight": 0.55},
-            {"id": "shoulder_abduction", "label": "Controlled transport", "metric": "shoulder_abduction", "targets": {"easy": 25, "medium": 35, "difficult": 45}, "weight": 0.45},
+            {"id": "shoulder_flexion", "label": "Reach to the object", "metric": "shoulder_flexion", "targets": {"easy": 30, "medium": 42, "difficult": 52}, "weight": 0.45},
+            {"id": "shoulder_abduction", "label": "Controlled transport", "metric": "shoulder_abduction", "targets": {"easy": 25, "medium": 35, "difficult": 45}, "weight": 0.35},
+            # Hand opening around the on-screen cup (median finger angle, 180 = straight).
+            {"id": "hand_opening", "label": "Hand opening", "metric": "finger_extension", "targets": {"easy": 115, "medium": 130, "difficult": 145}, "weight": 0.20},
         ],
         "compensations": [
             {"id": "trunk_lean", "metric": "trunk_lean_delta", "threshold_deg": 12, "min_frames": 8, "min_ratio": 0.35, "penalty": 10, "correction": "Keep your shoulders square and move the light object with your arm."},
+            # Side lean typically appears only while the cup is carried across, i.e. in
+            # a fraction of the repetition, so a fifth of the movement frames is enough.
+            {"id": "trunk_side_lean", "metric": "trunk_side_lean_delta", "threshold_deg": 10, "min_frames": 8, "min_ratio": 0.2, "penalty": 8, "correction": "Keep your body upright and carry the cup across with your arm."},
             {"id": "shoulder_hike", "metric": "shoulder_hike_delta", "threshold_deg": 9, "min_frames": 8, "min_ratio": 0.35, "penalty": 7, "correction": "Set the shoulder down before lifting the object again."},
+            {"id": "wrist_flexion", "metric": "wrist_flexion_delta", "threshold_deg": 18, "min_frames": 8, "min_ratio": 0.3, "penalty": 6, "correction": "Keep your wrist straight as you grip and carry the cup."},
         ],
     },
     "ex_handopen": {
@@ -9469,10 +9491,24 @@ const REHAB_SESSION_ID = (URL_PARAMS.get("rehab_session_id")||"").replace(/[^a-z
 const REHAB_CALIBRATION_VERSION = 3;  // v3: shoulder-line, both-shoulder height and both neck-gap baselines for shrug detection
 const REHAB_BASELINE_REQUIRED_KEYS = ["trunk_angle","shoulder_width","ear_width","neck_gap","other_neck_gap","shoulder_line_delta","shoulders_y","active_shoulder_y","torso_shoulder_ratio","shoulder_flexion"];
 const STANDARD = CFG.movement_standard || {tracking_mode:"pose", posture:"seated", rom_steps:[], compensations:[]};
+const HAS_SIDE_LEAN_RULE = (STANDARD.compensations||[]).some(rule=>rule.metric === "trunk_side_lean_delta");
 const CALIBRATION_CONTRACT = CFG.calibration_contract || {};
 const SCORING_METHOD = CFG.scoring_method || {};
 const OVERLAY_STYLE = CFG.overlay_style || {};
 const HAS_DYNAMIC_LAP_TARGET = (CFG.cycle||[]).some(step=>step && step.target && step.target.landmark === "LAP_DYNAMIC");
+// Static targets are authored for a right-affected patient (the cup starts on
+// the affected side); mirror them for a left-affected patient.
+if(AFFECTED_SIDE === "left" && CFG.mirror_for_left){
+  for(const step of CFG.cycle||[]){
+    if(step && step.target && step.target.landmark !== "LAP_DYNAMIC" && Number.isFinite(Number(step.target.x))){
+      step.target.x = Math.round((1 - Number(step.target.x)) * 1000) / 1000;
+    }
+  }
+}
+// Hand-opening / grasp steps need the hand landmarker even in pose mode.
+const HAND_GATE_LANDMARKS = new Set(["HAND_OPEN","HAND_CLOSED"]);
+const NEEDS_HAND_TRACKING = (CFG.movement_standard||{}).tracking_mode === "hand" || !!CFG.hand_tracking
+  || (CFG.cycle||[]).some(step=>step && step.target && HAND_GATE_LANDMARKS.has(step.target.landmark));
 const LAP_CALIBRATION_MIN_SAMPLES = Number(CALIBRATION_CONTRACT.lap_minimum_samples)||8;
 const LAP_CALIBRATION_MIN_MS = Number(CALIBRATION_CONTRACT.lap_minimum_duration_ms)||650;
 const LAP_CALIBRATION_STABLE_RATIO = Number(CALIBRATION_CONTRACT.lap_stable_sample_ratio)||.70;
@@ -9863,13 +9899,61 @@ async function setupPose(){
     baseOptions:{modelAssetPath:"/vendor/mediapipe/models/pose_landmarker_lite.task"},
     runningMode:"VIDEO", numPoses:1
   });
-  if(STANDARD.tracking_mode === "hand"){
+  if(NEEDS_HAND_TRACKING){
     handLandmarker = await HandLandmarker.createFromOptions(fr,{
       baseOptions:{modelAssetPath:"/vendor/mediapipe/models/hand_landmarker.task"},
       runningMode:"VIDEO", numHands:4
     });
   }
   drawingUtils = new DrawingUtils(ctx);
+}
+// Up to four hands may be in view (the patient's two plus a helper's); keep
+// the one nearest the affected wrist of the pose, with the reported handedness
+// as a tie-breaker, and follow it between frames.
+let affectedHandTrackWrist = null, affectedHandTrackSeenAt = 0;
+function anatomicalHandedness(rawCategory){
+  // MediaPipe handedness assumes mirrored selfie input; inference receives the
+  // unmirrored camera pixels, so swap its label back to the patient's anatomy.
+  if(rawCategory === "Right") return "Left";
+  if(rawCategory === "Left") return "Right";
+  return "";
+}
+function selectRehabAffectedHand(result, lm, now){
+  const list = result && Array.isArray(result.landmarks) ? result.landmarks : [];
+  if(!list.length) return null;
+  const expectedSide = AFFECTED_SIDE === "left" ? "Left" : "Right";
+  const poseWrist = lm && lm[ACTIVE.wrist] && pointVisible(lm[ACTIVE.wrist]) ? lm[ACTIVE.wrist] : null;
+  const shoulderWidth = lm && lm[11] && lm[12] ? Math.hypot(lm[11].x-lm[12].x, lm[11].y-lm[12].y) : 0.22;
+  const associationRadius = Math.max(0.14, Math.min(0.32, shoulderWidth * 0.85));
+  const trackIsFresh = affectedHandTrackWrist && now - affectedHandTrackSeenAt < 900;
+  const candidates = list.map((landmarks, index) => {
+    const category = result.handednesses && result.handednesses[index] && result.handednesses[index][0] ? result.handednesses[index][0] : null;
+    const handedness = anatomicalHandedness(category && category.categoryName);
+    const confidence = category && Number.isFinite(category.score) ? category.score : 0;
+    const wrist = landmarks && landmarks[0];
+    const poseDistance = poseWrist && wrist ? Math.hypot(wrist.x-poseWrist.x, wrist.y-poseWrist.y) : Infinity;
+    const trackDistance = trackIsFresh && wrist ? Math.hypot(wrist.x-affectedHandTrackWrist.x, wrist.y-affectedHandTrackWrist.y) : Infinity;
+    const sidePenalty = handedness && handedness !== expectedSide ? 0.18 : 0;
+    const score = (Number.isFinite(poseDistance) ? poseDistance * 4 : 0) + (Number.isFinite(trackDistance) ? trackDistance * 0.7 : 0) + sidePenalty - confidence * 0.05;
+    return {landmarks, handedness, wrist, poseDistance, trackDistance, score};
+  }).filter(candidate => candidate.wrist);
+  let eligible = poseWrist
+    ? candidates.filter(candidate => candidate.poseDistance <= associationRadius)
+    : candidates.filter(candidate => candidate.handedness === expectedSide || (trackIsFresh && candidate.trackDistance <= 0.16));
+  // A single visible hand is the patient's own hand (helpers show up as extra
+  // hands), so never lose it over an uncertain handedness label or a pose
+  // wrist that drifted.
+  if(!eligible.length && candidates.length === 1) eligible = candidates;
+  if(!eligible.length) return null;
+  eligible.sort((a,b) => a.score - b.score);
+  affectedHandTrackWrist = {x:eligible[0].wrist.x, y:eligible[0].wrist.y};
+  affectedHandTrackSeenAt = now;
+  return eligible[0].landmarks;
+}
+// Median finger opening angle (180 = straight) of the tracked hand.
+function handOpeningDegrees(handLm){
+  if(!handLm || handLm.length < 21) return NaN;
+  return median([angle(handLm[5],handLm[6],handLm[8]), angle(handLm[9],handLm[10],handLm[12]), angle(handLm[13],handLm[14],handLm[16]), angle(handLm[17],handLm[18],handLm[20])]);
 }
 
 function rad2deg(r){ return r*180/Math.PI; }
@@ -10144,6 +10228,13 @@ function rawMovementMetrics(lm, handLm){
     raw.finger_extension=median(fingerAngles);
     raw.pinch_flexion=((180-angle(handLm[2],handLm[3],handLm[4]))+(180-angle(handLm[5],handLm[6],handLm[8])))/2;
     raw.hand_axis=rad2deg(Math.atan2(handLm[9].y-handLm[0].y,handLm[9].x-handLm[0].x));
+    // Wrist bend relative to the forearm (0 = hand in line with the forearm):
+    // unlike the hand axis alone, this does not change when the whole arm
+    // swings across, so it can flag a dropped wrist during a reach or carry.
+    if(lm && lm[ACTIVE.elbow] && pointVisible(lm[ACTIVE.elbow])){
+      const straight=angle(lm[ACTIVE.elbow],handLm[0],handLm[9]);
+      raw.wrist_bend=Number.isFinite(straight) ? 180-straight : NaN;
+    }
   }
   return raw;
 }
@@ -10207,7 +10298,12 @@ function metricValue(metric,raw){
   if(metric === "ankle_dorsiflexion") return Math.abs(raw.ankle_angle-(base.ankle_angle||raw.ankle_angle));
   if(metric === "pelvic_shift") return Math.abs(raw.pelvic_shift-(base.pelvic_shift||raw.pelvic_shift));
   if(metric === "trunk_lateral_rom") return Math.abs(raw.trunk_angle-(base.trunk_angle||0));
-  if(metric === "trunk_lean_delta") return Math.max(Math.abs(raw.trunk_angle-(base.trunk_angle||0)),forwardLeanDegrees(raw));
+  if(metric === "trunk_side_lean_delta") return Math.abs(raw.trunk_angle-(base.trunk_angle||0));
+  // Where an exercise names side lean as its own pattern, trunk lean means the
+  // forward lean only; otherwise it is whichever is larger.
+  if(metric === "trunk_lean_delta") return HAS_SIDE_LEAN_RULE
+    ? forwardLeanDegrees(raw)
+    : Math.max(Math.abs(raw.trunk_angle-(base.trunk_angle||0)),forwardLeanDegrees(raw));
   if(metric === "shoulder_hike_delta") return shoulderHikeDegrees(raw);
   if(metric === "hip_hike_delta") return Math.abs(raw.hip_hike-(base.hip_hike||0));
   if(metric === "arm_asymmetry") return Math.abs(raw.shoulder_flexion-raw.other_shoulder_flexion);
@@ -10215,7 +10311,16 @@ function metricValue(metric,raw){
   if(metric === "shoulder_pelvis_mismatch" || metric === "knee_alignment" || metric === "shoulder_rotation") return raw[metric];
   if(metric === "heel_lift_angle") return rad2deg(Math.atan2(Math.abs(raw.heel_y-(base.heel_y||raw.heel_y)),raw.foot_length||.02));
   if(metric === "knee_motion_delta") return rad2deg(Math.atan2(Math.hypot(raw.knee_x-(base.knee_x||raw.knee_x),raw.knee_y-(base.knee_y||raw.knee_y)),raw.torso_length||.04));
-  if(metric === "wrist_flexion_delta") return Math.abs(raw.hand_axis-(base.hand_axis||raw.hand_axis));
+  if(metric === "wrist_flexion_delta"){
+    // Arm exercises judge the wrist against the forearm (a relaxed wrist reads
+    // ~15 degrees when no calibrated value exists); hand-only exercises, where
+    // the forearm points at the camera, keep the hand-axis comparison.
+    if(STANDARD.tracking_mode !== "hand" && Number.isFinite(raw.wrist_bend)){
+      const rest=Number.isFinite(Number(base.wrist_bend)) ? Number(base.wrist_bend) : 15;
+      return Math.max(0,raw.wrist_bend-rest);
+    }
+    return Math.abs(raw.hand_axis-(base.hand_axis||raw.hand_axis));
+  }
   return Number(raw[metric]);
 }
 function movementAnchor(lm,handLm){
@@ -10416,6 +10521,13 @@ function effectiveExerciseTargetRadius(sub,lm){
   return Math.min(Math.max(baseR,exerciseShoulderWidth(lm)*0.55),0.18);
 }
 
+let latestHandLandmarks=null;   // the affected hand in the latest frame (when hand tracking is on)
+let handGateNearSince=null;     // when the wrist first arrived at the cup for a hand-opening / grasp step
+const HAND_CLOSED_DEGREES=110;  // fingers curled around the cup
+function handGateOpenDegrees(){
+  const step=(STANDARD.rom_steps||[]).find(item=>item.metric==="finger_extension");
+  return step && Number(step.target_deg) > 0 ? Number(step.target_deg)*ROM_COMPLETE_RATIO : 120;
+}
 function checkTarget(lm){
   const sub = CFG.cycle[currentSubStep];
   if(!sub || !sub.target || !lm) return false;
@@ -10427,7 +10539,26 @@ function checkTarget(lm){
     return exerciseLandmarkIsUsable(affectedWrist,.35)
       && Math.hypot(affectedWrist.x-t.x,affectedWrist.y-t.y) < R;
   }
-  const ok = (p) => p && Math.hypot((1-p.x)-t.x, p.y-t.y) < R;
+  // The circle is drawn at the target's image coordinates on the mirrored
+  // canvas, exactly like the skeleton, so the wrist is compared in the same
+  // coordinates - the hand has to be on the circle the patient sees.
+  const ok = (p) => p && Math.hypot(p.x-t.x, p.y-t.y) < R;
+  const which = sub.target.landmark;
+  if(HAND_GATE_LANDMARKS.has(which)){
+    // Hand-opening / grasp steps: the affected wrist must be at the cup AND the
+    // fingers must open (or close) far enough. If the fingers cannot get there,
+    // the step still completes after max_wait_ms so nobody is stuck; the
+    // shortfall is then named in the feedback.
+    const wrist = lm[ACTIVE.wrist] && pointVisible(lm[ACTIVE.wrist]) ? lm[ACTIVE.wrist] : (latestHandLandmarks && latestHandLandmarks[0]);
+    if(!ok(wrist)){ handGateNearSince=null; return false; }
+    const now=performance.now();
+    if(handGateNearSince == null) handGateNearSince=now;
+    const opening=handOpeningDegrees(latestHandLandmarks);
+    const waitedLongEnough = now-handGateNearSince >= Number(sub.max_wait_ms||6000);
+    if(!Number.isFinite(opening)) return waitedLongEnough;
+    return which === "HAND_OPEN" ? opening >= handGateOpenDegrees() || waitedLongEnough
+      : opening <= HAND_CLOSED_DEGREES || waitedLongEnough;
+  }
   const bilateral=(STANDARD.rom_steps||[]).some(step=>String(step.metric||"").startsWith("bilateral_"));
   if(bilateral) return ok(Lw) && ok(Rw);
   return ok(lm[ACTIVE.wrist]);
@@ -10611,6 +10742,20 @@ function drawOverlay(lm,handLm){
     ctx.stroke();
     ctx.beginPath(); ctx.arc(tx,ty,tr*ASSESSMENT_OVERLAY_STYLE.targetInnerScale,0,Math.PI*2);
     ctx.fillStyle = "rgba(225,142,109,0.4)"; ctx.fill();
+    if(HAND_GATE_LANDMARKS.has(sub.target.landmark)){
+      // The canvas is CSS-mirrored: flip the text back so it reads correctly.
+      const hint = sub.target.landmark === "HAND_OPEN" ? "Open hand" : "Close hand";
+      ctx.save();
+      ctx.translate(tx, ty - tr - 18); ctx.scale(-1, 1);
+      const size=Math.max(13,Math.round(Math.min(canvas.width,canvas.height)*0.036));
+      ctx.font=`700 ${size}px system-ui, -apple-system, sans-serif`;
+      ctx.textAlign="center"; ctx.textBaseline="middle";
+      ctx.fillStyle="rgba(28,32,29,0.78)";
+      const w=ctx.measureText(hint).width+size;
+      if(ctx.roundRect){ ctx.beginPath(); ctx.roundRect(-w/2, -size*0.75, w, size*1.5, size*0.75); ctx.fill(); }
+      ctx.fillStyle="#FDFDFD"; ctx.fillText(hint, 0, 0);
+      ctx.restore();
+    }
     if(inTargetSince){
       const elapsed = performance.now() - inTargetSince;
       const progress = Math.min(1, elapsed / sub.hold_ms);
@@ -10640,29 +10785,62 @@ function drawDegreeLabel(x, y, text, color){
   ctx.fillText(text, x+padding, y);
   ctx.restore();
 }
+// Where each metric's live number is shown, and what the patient sees it called.
+const LIVE_METRIC_LABELS={
+  elbow_extension:{joint:"elbow",text:"Elbow"},
+  elbow_flexion:{joint:"elbow",text:"Elbow bend"},
+  shoulder_flexion:{joint:"shoulder",text:"Reach"},
+  shoulder_abduction:{joint:"shoulder",text:"Arm across"},
+  bilateral_shoulder_flexion:{joint:"shoulder",text:"Both arms"},
+  finger_extension:{joint:"hand",text:"Hand open"},
+  pinch_flexion:{joint:"hand",text:"Pinch"},
+};
 function drawLiveDegrees(lm){
   if(!lm || calibrating || !lastRawMetrics || STANDARD.tracking_mode==="hand") return;
   const raw=lastRawMetrics;
-  const elbowStep=(STANDARD.rom_steps||[]).find(step=>step.metric==="elbow_extension");
-  const elbow=lm[ACTIVE.elbow];
-  if(elbowStep && elbow && Number.isFinite(raw.elbow_extension)){
-    const target=Number(elbowStep.target_deg||0);
-    const ok=raw.elbow_extension>=target;
-    drawDegreeLabel(elbow.x*canvas.width+14, elbow.y*canvas.height, `Elbow ${Math.round(raw.elbow_extension)}°${target?` / ${target}°`:""}`, ok?"#9EE8B5":"#FFD27A");
+  const anchors={
+    elbow:lm[ACTIVE.elbow] ? {x:lm[ACTIVE.elbow].x*canvas.width+14, y:lm[ACTIVE.elbow].y*canvas.height} : null,
+    shoulder:lm[ACTIVE.shoulder] ? {x:lm[ACTIVE.shoulder].x*canvas.width+14, y:lm[ACTIVE.shoulder].y*canvas.height+4} : null,
+    hand:(latestHandLandmarks && latestHandLandmarks[9]) ? {x:latestHandLandmarks[9].x*canvas.width+16, y:latestHandLandmarks[9].y*canvas.height}
+      : (lm[ACTIVE.wrist] ? {x:lm[ACTIVE.wrist].x*canvas.width+16, y:lm[ACTIVE.wrist].y*canvas.height} : null),
+  };
+  const used={};
+  const place=(joint,text,color)=>{
+    const anchor=anchors[joint];
+    if(!anchor) return;
+    const row=used[joint]||0; used[joint]=row+1;
+    drawDegreeLabel(anchor.x, anchor.y+row*26, text, color);
+  };
+  // 1) the joints being scored, against today's target (green once met)
+  for(const step of STANDARD.rom_steps||[]){
+    const spec=LIVE_METRIC_LABELS[step.metric];
+    if(!spec) continue;
+    const value=step.metric==="finger_extension" ? handOpeningDegrees(latestHandLandmarks) : metricValue(step.metric,raw);
+    if(!Number.isFinite(value)) continue;
+    const target=Number(step.target_deg||0);
+    place(spec.joint, `${spec.text} ${Math.round(value)}°${target?` / ${Math.round(target)}°`:""}`, value>=target?"#9EE8B5":"#FFD27A");
   }
-  const shoulder=lm[ACTIVE.shoulder];
+  // 2) the compensations being watched (shown once they start to appear)
+  const shoulderRule=(STANDARD.compensations||[]).find(item=>item.metric==="shoulder_hike_delta");
   const hike=shoulderHikeDegrees(raw);
-  if(shoulder && Number.isFinite(hike) && hike>=2){
-    const rule=(STANDARD.compensations||[]).find(item=>item.metric==="shoulder_hike_delta");
-    const over=rule && hike>=Number(rule.threshold_deg||8);
-    drawDegreeLabel(shoulder.x*canvas.width+14, shoulder.y*canvas.height-22, `Shoulder lift ${Math.round(hike)}°`, over?"#FF9B8A":"#FFD27A");
+  if(shoulderRule && Number.isFinite(hike) && hike>=2 && lm[ACTIVE.shoulder]){
+    drawDegreeLabel(lm[ACTIVE.shoulder].x*canvas.width+14, lm[ACTIVE.shoulder].y*canvas.height-22, `Shoulder lift ${Math.round(hike)}°`, hike>=Number(shoulderRule.threshold_deg||8)?"#FF9B8A":"#FFD27A");
   }
-  const lean=Math.max(Math.abs(raw.trunk_angle-(Number(baselineMetrics.trunk_angle)||0)),forwardLeanDegrees(raw));
+  const mid={x:(lm[11].x+lm[12].x)/2,y:(lm[11].y+lm[12].y)/2};
+  const leanRule=(STANDARD.compensations||[]).find(item=>item.metric==="trunk_lean_delta");
+  const lean=leanRule ? metricValue("trunk_lean_delta",raw) : NaN;
   if(Number.isFinite(lean) && lean>=4){
-    const rule=(STANDARD.compensations||[]).find(item=>item.metric==="trunk_lean_delta");
-    const over=rule && lean>=Number(rule.threshold_deg||12);
-    const mid={x:(lm[11].x+lm[12].x)/2,y:(lm[11].y+lm[12].y)/2};
-    drawDegreeLabel(mid.x*canvas.width-40, mid.y*canvas.height+34, `Trunk lean ${Math.round(lean)}°`, over?"#FF9B8A":"#FFD27A");
+    drawDegreeLabel(mid.x*canvas.width-40, mid.y*canvas.height+34, `Trunk lean ${Math.round(lean)}°`, lean>=Number(leanRule.threshold_deg||12)?"#FF9B8A":"#FFD27A");
+  }
+  const sideRule=(STANDARD.compensations||[]).find(item=>item.metric==="trunk_side_lean_delta");
+  const side=sideRule ? metricValue("trunk_side_lean_delta",raw) : NaN;
+  if(Number.isFinite(side) && side>=4){
+    drawDegreeLabel(mid.x*canvas.width-40, mid.y*canvas.height+60, `Side lean ${Math.round(side)}°`, side>=Number(sideRule.threshold_deg||10)?"#FF9B8A":"#FFD27A");
+  }
+  const wristRule=(STANDARD.compensations||[]).find(item=>item.metric==="wrist_flexion_delta");
+  const wristDrop=wristRule ? metricValue("wrist_flexion_delta",raw) : NaN;
+  if(Number.isFinite(wristDrop) && wristDrop>=6 && anchors.hand){
+    drawDegreeLabel(anchors.hand.x, anchors.hand.y-26, `Wrist bend ${Math.round(wristDrop)}°`, wristDrop>=Number(wristRule.threshold_deg||18)?"#FF9B8A":"#FFD27A");
   }
 }
 
@@ -10691,7 +10869,7 @@ async function startSubStep(){
   const sub = CFG.cycle[currentSubStep];
   captionEl.textContent = sub.caption;
   stepStartTime = performance.now();
-  inTargetSince = null; stepCompleted = false;
+  inTargetSince = null; stepCompleted = false; handGateNearSince = null;
   tapBtn.disabled = true;
   prefetchVoice(CFG.cycle[currentSubStep + 1] && CFG.cycle[currentSubStep + 1].voice);
   await playVoice(sub.voice);
@@ -10741,6 +10919,9 @@ function pickFeedback(){
       || first.coaching_cue
       || "On the next repetition, move a little farther within a comfortable range while keeping the same safe setup.";
     return `I noticed ${joinProblems(incomplete.map(romProblemText))}. ${correction}`;
+  }
+  if(unmeasuredRomSteps().some(item=>item.metric==="finger_extension"||item.metric==="pinch_flexion")){
+    return "I could not see your affected hand clearly enough to check your grip. Keep your whole hand inside the camera view on the next repetition.";
   }
   return "That movement stayed close to today’s target. Keep the same smooth control on the next repetition.";
 }
@@ -10883,24 +11064,38 @@ function confirmedCompensations(){
 const ROM_FULL_CREDIT_RATIO=Number(SCORING_METHOD.full_credit_ratio)||0.95;
 function repRomDetails(){
   return (STANDARD.rom_steps||[]).map(step=>{
+    const measured=Number.isFinite(Number(romBest[step.id]));
     const achieved=Math.round(Number(romBest[step.id]||0)*10)/10;
     const target=Number(step.target_deg||0);
     // Within 5% of today's target counts as full attainment for the step.
     const score=target>0 ? Math.round(clamp(achieved/(target*ROM_FULL_CREDIT_RATIO),0,1)*100) : 0;
-    return {id:step.id,label:step.label,metric:step.metric,achieved_deg:achieved,target_deg:target,score,weight:Number(step.weight||0)};
+    return {id:step.id,label:step.label,metric:step.metric,achieved_deg:achieved,target_deg:target,score,weight:Number(step.weight||0),measured};
   });
 }
+// A step the camera never measured (for example the fingers when the hand was
+// out of view) neither scores nor fails the repetition - the patient is asked
+// to keep the hand in view instead.
+function measuredRomDetails(){
+  const details=repRomDetails();
+  const measured=details.filter(item=>item.measured);
+  return measured.length ? measured : details;
+}
+// Steps that must be within range for a repetition to count as correct: the
+// elbow (a bent elbow can still arrive at the target by leaning or hiking)
+// and the fingers (a grasp task is not done until the hand really opens).
+const FORM_CRITICAL_METRICS=new Set(["elbow_extension","finger_extension"]);
 const POINT_THRESHOLD=Number(SCORING_METHOD.point_threshold)||90;
 const ROM_COMPLETE_RATIO=Number(SCORING_METHOD.complete_rom_ratio)||0.9;
-// Movement steps that stopped short of today's target (below 90% of it) -
-// for example an elbow that stayed bent. A repetition with one of these is
-// not yet a correct repetition, whatever the other joints did. For
-// body-tracked exercises the on-screen target already verifies the reach
-// itself, so the main movement metric counts through its score weight only;
-// the joints the target cannot verify (the elbow) must be within range.
+// An elbow that stayed bent (below 90% of today's extension target) makes the
+// repetition incomplete, whatever the other joints did: the on-screen target
+// verifies the reach itself, but a patient can arrive there with a bent elbow
+// by leaning or hiking, so the elbow is checked separately. Other steps count
+// through their score weight only.
 function incompleteRomSteps(){
-  const verifiedByTarget=CFG.pose_mode === "body" ? reachKeyMetric() : null;
-  return repRomDetails().filter(item=>item.metric!==verifiedByTarget && item.target_deg>0 && item.achieved_deg < item.target_deg*ROM_COMPLETE_RATIO);
+  return repRomDetails().filter(item=>item.measured && FORM_CRITICAL_METRICS.has(item.metric) && item.target_deg>0 && item.achieved_deg < item.target_deg*ROM_COMPLETE_RATIO);
+}
+function unmeasuredRomSteps(){
+  return repRomDetails().filter(item=>!item.measured);
 }
 function romProblemText(item){
   const achieved=Math.round(item.achieved_deg), target=Math.round(item.target_deg);
@@ -10910,11 +11105,12 @@ function romProblemText(item){
     : `your elbow did not straighten toward the target (${target} degrees)`;
   if(metric==="shoulder_flexion"||metric==="shoulder_abduction"||metric==="bilateral_shoulder_flexion") return `your arm reached ${achieved} of ${target} degrees`;
   if(metric==="finger_extension") return `your fingers opened to ${achieved} of ${target} degrees`;
+  if(metric==="pinch_flexion") return `your pinch closed to ${achieved} of ${target} degrees`;
   return `your ${String(item.label||metric).toLowerCase()} reached ${achieved} of ${target} degrees`;
 }
 function computeRepScore(){
   if(trackingFrames < SCORING_MIN_FRAMES || activeFrames < SCORING_MIN_FRAMES) return null;
-  const details=repRomDetails();
+  const details=measuredRomDetails();
   const totalWeight=details.reduce((sum,item)=>sum+item.weight,0)||1;
   let score=details.reduce((sum,item)=>sum+item.score*item.weight,0)/totalWeight;
   const confirmed=confirmedCompensations();
@@ -10928,12 +11124,18 @@ function computeRepScore(){
   return Math.round(clamp(score,0,100));
 }
 function repEarnsPoint(score){
-  // Only a correct repetition (no compensation, every step within range,
-  // score at or above the threshold) earns the point.
+  // Only a verified correct repetition (no compensation, every form-critical
+  // step measured and within range, score at or above the threshold) earns
+  // the point.
   if(score == null) return false;
   if(confirmedCompensations().length) return false;
   if(incompleteRomSteps().length) return false;
+  if(unmeasuredRomSteps().some(item=>FORM_CRITICAL_METRICS.has(item.metric))) return false;
   return score >= POINT_THRESHOLD;
+}
+function pointBlockedByVisibility(){
+  return !confirmedCompensations().length && !incompleteRomSteps().length
+    && unmeasuredRomSteps().some(item=>FORM_CRITICAL_METRICS.has(item.metric));
 }
 
 function scoreLabel(s){
@@ -10958,7 +11160,9 @@ async function showFeedback(){
   if(pointEarned) qualityReps += 1;
   fbReward.innerHTML = pointEarned
     ? '<span class="rewardStar" aria-hidden="true">&#11088;</span><span class="rewardCopy"><strong>+1 point</strong><span>Great repetition!</span></span>'
-    : '<span class="rewardStar" aria-hidden="true">&#128161;</span><span class="rewardCopy"><strong>No point this time</strong><span>Correct the movement to earn it.</span></span>';
+    : (cameraScored && pointBlockedByVisibility()
+      ? '<span class="rewardStar" aria-hidden="true">&#128161;</span><span class="rewardCopy"><strong>No point this time</strong><span>Keep your hand in view to earn it.</span></span>'
+      : '<span class="rewardStar" aria-hidden="true">&#128161;</span><span class="rewardCopy"><strong>No point this time</strong><span>Correct the movement to earn it.</span></span>');
   fbStep.textContent = `Repetition ${currentRep+1} of ${CFG.reps} complete · ${label}`;
   fbTitle.textContent = cameraScored ? `Your score: ${lastRepScore}/100` : "Repetition complete";
   fbBody.textContent = feedback;
@@ -11083,9 +11287,10 @@ function loop(){
   if(handLandmarker){
     try{
       const h=handLandmarker.detectForVideo(video,now);
-      if(h&&h.landmarks&&h.landmarks[0]) handLm=h.landmarks[0];
+      handLm=selectRehabAffectedHand(h, lm, now);
     }catch(e){}
   }
+  latestHandLandmarks=handLm;
   // A single bad frame must never stop the camera loop (the target circle,
   // live degrees and step detection all depend on it), so the frame work is
   // guarded and the next frame is always scheduled.

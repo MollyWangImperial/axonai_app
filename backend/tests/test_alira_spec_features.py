@@ -638,7 +638,9 @@ def test_home_uses_display_palette_for_green_and_supporting_text():
 def test_object_exercises_draw_virtual_objects_on_screen():
     """Exercises that used real props now draw the object on the canvas instead."""
     cfg = server.REHAB_RUNNER_CONFIG
-    assert cfg["ex_grasp"]["virtual_object"] == {"type": "cup", "mode": "carry", "grab_step": 0, "place_step": 1}
+    # The cup attaches once the fingers close around it (step 2) and is set down
+    # once the hand opens at the far side (step 4).
+    assert cfg["ex_grasp"]["virtual_object"] == {"type": "cup", "mode": "carry", "grab_step": 2, "place_step": 4}
     assert cfg["ex_h2m"]["virtual_object"] == {"type": "cup", "mode": "held"}
     assert cfg["ex_handopen"]["virtual_object"] == {"type": "ball", "mode": "hand_anchor"}
     assert cfg["ex_pinch"]["virtual_object"]["mode"] == "pick_place"
@@ -708,7 +710,7 @@ def test_forward_reach_grading_is_phase_gated_and_catches_forward_lean_and_shrug
     # Return-to-rest steps are tagged so they never earn ROM credit or dilute
     # compensation confirmation; the reach itself is the movement phase.
     assert [step["phase"] for step in cfg["ex_reach"]["cycle"]] == ["movement", "return"]
-    assert [step["phase"] for step in cfg["ex_grasp"]["cycle"]] == ["movement", "movement", "return"]
+    assert [step["phase"] for step in cfg["ex_grasp"]["cycle"]] == ["movement"] * 5 + ["return"]
     assert [step["phase"] for step in cfg["ex_h2m"]["cycle"]] == ["movement", "return"]
     assert [step["phase"] for step in cfg["ex_bilateral"]["cycle"]] == ["movement", "movement"]
     assert "function activeMovementPhase()" in source
@@ -760,7 +762,7 @@ def test_forward_reach_grading_is_phase_gated_and_catches_forward_lean_and_shrug
     assert "Next time, keep your trunk and shoulder still and simply extend your elbow to reach the target." in source
     # Live on-screen degrees: elbow angle vs target, shoulder lift, trunk lean.
     assert "function drawLiveDegrees(lm)" in source
-    assert "`Elbow ${Math.round(raw.elbow_extension)}°" in source
+    assert 'elbow_extension:{joint:"elbow",text:"Elbow"}' in source
     assert "`Shoulder lift ${Math.round(hike)}°`" in source
     assert "`Trunk lean ${Math.round(lean)}°`" in source
 
@@ -824,7 +826,7 @@ def test_trunk_restrained_reaching_is_graded_like_forward_reach_and_recalibrates
     assert "function elbowAtPeakReach()" in source
     assert "const NEAR_PEAK_REACH_RATIO=0.9, MAX_REACH_FRAMES=8;" in source
     assert "reachFrames.push({key:reachValue,elbow:raw.elbow_extension});" in source
-    assert 'const verifiedByTarget=CFG.pose_mode === "body" ? reachKeyMetric() : null;' in source
+    assert "return repRomDetails().filter(item=>item.measured && FORM_CRITICAL_METRICS.has(item.metric) && item.target_deg>0 && item.achieved_deg < item.target_deg*ROM_COMPLETE_RATIO);" in source
     # Within 5% of today's target is full attainment for a step (camera angles
     # read low for a reach toward the lens), so a correct repetition clears 90.
     assert server.EXERCISE_SCORING_METHOD["full_credit_ratio"] == 0.95
@@ -841,6 +843,93 @@ def test_trunk_restrained_reaching_is_graded_like_forward_reach_and_recalibrates
     assert "if(sequence !== voiceSequence) return;   // superseded while the audio was being fetched" in source
     assert 'if(fbEl.classList.contains("show")) startListening();' in source
     assert 'postRN({type:"exercise_frame_error", message:String(e && e.message || e)});' in source
+
+
+def test_cylindrical_grasp_reach_open_close_carry_release_flow_and_compensations():
+    """Reach -> open hand -> close around the cup -> carry -> open to set down -> return,
+    confirmed from the fingers, graded like the forward reach, with the circle the
+    patient sees being the circle that is hit-tested."""
+    source = (ROOT / "backend" / "server.py").read_text(encoding="utf-8")
+    grasp = server.REHAB_RUNNER_CONFIG["ex_grasp"]
+    standard = server.EXERCISE_MOVEMENT_STANDARDS["ex_grasp"]
+    profile = server.EXERCISE_COACHING_PROFILES["ex_grasp"]
+
+    captions = [step["caption"] for step in grasp["cycle"]]
+    assert captions == [
+        "Reach to the cup",
+        "Open your hand wide around the cup",
+        "Close your fingers around the cup",
+        "Carry the cup across",
+        "Open your hand to set the cup down",
+        "Return your empty hand to your lap",
+    ]
+    landmarks = [(step["target"] or {}).get("landmark") for step in grasp["cycle"]]
+    assert landmarks == [None, "HAND_OPEN", "HAND_CLOSED", None, "HAND_OPEN", None]
+    # The hand steps sit exactly where the cup is drawn, and never trap the patient.
+    assert grasp["cycle"][1]["target"]["x"] == grasp["cycle"][0]["target"]["x"] == grasp["cycle"][2]["target"]["x"]
+    assert grasp["cycle"][4]["target"]["x"] == grasp["cycle"][3]["target"]["x"]
+    assert all(step.get("max_wait_ms") == 6000 for step in grasp["cycle"] if (step["target"] or {}).get("landmark"))
+    assert grasp["hand_tracking"] is True and grasp["mirror_for_left"] is True
+    for word in ("open your hand wide", "close your fingers around the cup", "carry it across", "set it down"):
+        assert word in grasp["setup_voice"].lower(), word
+
+    # Scored metrics: reach (shoulder flexion), transport (shoulder abduction), hand opening.
+    assert [(step["metric"], step["weight"]) for step in standard["rom_steps"]] == [
+        ("shoulder_flexion", 0.45), ("shoulder_abduction", 0.35), ("finger_extension", 0.20)]
+    assert standard["rom_steps"][2]["targets"] == {"easy": 115, "medium": 130, "difficult": 145}
+    # Compensatory patterns: forward lean to the cup, side lean to carry it,
+    # shoulder hiking, and a dropped wrist while gripping.
+    assert [rule["id"] for rule in standard["compensations"]] == ["trunk_lean", "trunk_side_lean", "shoulder_hike", "wrist_flexion"]
+    assert {rule["id"]: rule["metric"] for rule in standard["compensations"]} == {
+        "trunk_lean": "trunk_lean_delta", "trunk_side_lean": "trunk_side_lean_delta",
+        "shoulder_hike": "shoulder_hike_delta", "wrist_flexion": "wrist_flexion_delta"}
+    assert set(profile["compensation_labels"]) == {"trunk_lean", "trunk_side_lean", "shoulder_hike", "wrist_flexion"}
+    assert "hand_opening" in profile["rom_cues"]
+    assert grasp["compensation_problems"] == {
+        "trunk_lean": "your chest leaned toward the cup",
+        "trunk_side_lean": "your body leaned to the side to carry the cup",
+        "shoulder_hike": "your shoulder lifted toward your ear",
+        "wrist_flexion": "your wrist dropped as you gripped the cup",
+    }
+    assert "straight wrist" in grasp["correct_form_cue"]
+
+    # Runner: the hit test uses the same image coordinates the circle is drawn
+    # in (the old mirrored comparison put the live circle on the wrong side for
+    # any off-centre target), targets mirror for a left-affected patient, the
+    # hand landmarker runs for hand-gated steps, and the affected hand is the
+    # one nearest the affected wrist.
+    assert "const ok = (p) => p && Math.hypot(p.x-t.x, p.y-t.y) < R;" in source
+    assert "Math.hypot((1-p.x)-t.x, p.y-t.y) < R" not in source.split("REHAB_RUNNER_HTML_TEMPLATE = r", 1)[1]
+    assert 'if(AFFECTED_SIDE === "left" && CFG.mirror_for_left){' in source
+    assert 'const HAND_GATE_LANDMARKS = new Set(["HAND_OPEN","HAND_CLOSED"]);' in source
+    assert "if(NEEDS_HAND_TRACKING){" in source
+    assert "function selectRehabAffectedHand(result, lm, now)" in source
+    assert "handLm=selectRehabAffectedHand(h, lm, now);" in source
+    assert "function handOpeningDegrees(handLm)" in source
+    assert "const HAND_CLOSED_DEGREES=110;" in source
+    assert 'return which === "HAND_OPEN" ? opening >= handGateOpenDegrees() || waitedLongEnough' in source
+    # Side lean and wrist drop are measured in ways that do not fire just because
+    # the arm swings across: lateral trunk angle, and wrist bend against the forearm.
+    assert 'if(metric === "trunk_side_lean_delta") return Math.abs(raw.trunk_angle-(base.trunk_angle||0));' in source
+    assert "raw.wrist_bend=Number.isFinite(straight) ? 180-straight : NaN;" in source
+    assert 'if(STANDARD.tracking_mode !== "hand" && Number.isFinite(raw.wrist_bend)){' in source
+    # Live numbers the patient sees: Reach / Arm across / Hand open against target,
+    # plus Shoulder lift, Trunk lean, Side lean and Wrist bend as they appear.
+    assert 'shoulder_abduction:{joint:"shoulder",text:"Arm across"}' in source
+    assert 'finger_extension:{joint:"hand",text:"Hand open"}' in source
+    assert "`Side lean ${Math.round(side)}°`" in source
+    assert "`Wrist bend ${Math.round(wristDrop)}°`" in source
+    assert 'const hint = sub.target.landmark === "HAND_OPEN" ? "Open hand" : "Close hand";' in source
+    # Grading: the fingers are form-critical (a weak opening never reaches 90),
+    # an unseen hand neither scores nor fails, but earns no point either.
+    assert 'const FORM_CRITICAL_METRICS=new Set(["elbow_extension","finger_extension"]);' in source
+    assert "function measuredRomDetails()" in source
+    assert "if(unmeasuredRomSteps().some(item=>FORM_CRITICAL_METRICS.has(item.metric))) return false;" in source
+    assert "Keep your hand in view to earn it." in source
+    assert "I could not see your affected hand clearly enough to check your grip." in source
+    configured = server._configure_rehab_runner("ex_grasp", "medium", "standard")
+    assert configured["hand_tracking"] is True
+    assert [step["target"].get("landmark") for step in configured["cycle"]] == landmarks
 
 
 def test_earning_points_pops_a_fading_congratulations_toast():
