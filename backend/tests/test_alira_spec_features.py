@@ -265,6 +265,21 @@ def test_caregiver_routine_keeps_its_flat_five_point_reward():
     assert rewards["points"] == 5 + 20
 
 
+def test_only_correct_repetitions_earn_points():
+    activities = [
+        {"exercise_id": "ex_reach", "completed_reps": 5, "quality_reps": 2, "completed_at": (NOW - timedelta(days=1)).isoformat()},
+        # Legacy client without a quality count keeps the old behaviour.
+        {"exercise_id": "ex_reach", "completed_reps": 3, "completed_at": (NOW - timedelta(days=2)).isoformat()},
+    ]
+    rewards = compute_rewards(activities, {}, now=NOW)
+    # Reporting all 5 reps as correct would earn exactly 3 more repetition points.
+    all_correct = [dict(activities[0], quality_reps=5), activities[1]]
+    assert compute_rewards(all_correct, {}, now=NOW)["points"] - rewards["points"] == 3
+    # A compensated session (no correct reps) earns no repetition points at all.
+    none_correct = [dict(activities[0], quality_reps=0), activities[1]]
+    assert rewards["points"] - compute_rewards(none_correct, {}, now=NOW)["points"] == 2
+
+
 def test_streak_freeze_for_chosen_rest_day():
     activities = [activity(1), activity(3)]  # gap on day 2
     rest_day = check_in(days_ago=2, session_preference="rest_recovery")
@@ -669,7 +684,7 @@ def test_completion_asks_about_carer_help_and_halves_assisted_scores():
     assert "Did a carer or family member help you move during this exercise?" in source
     assert "async function askAssistance()" in source
     assert "const assisted = await askAssistance();" in source
-    assert "reps: CFG.reps, assisted});" in source
+    assert "reps: CFG.reps, assisted, quality_reps: qualityReps});" in source
 
     # The app sends RAW scores plus the flag; the server halves exactly once.
     assert 'msg.assisted === true' in exercise
@@ -719,10 +734,19 @@ def test_forward_reach_grading_is_phase_gated_and_catches_forward_lean_and_shrug
     assert "const REHAB_CALIBRATION_VERSION = 2;" in source
     assert "REHAB_BASELINE_REQUIRED_KEYS.some(" in source
 
-    # A confirmed compensation caps the repetition at 80 and the feedback names
-    # the problem with its degrees before giving the correction.
-    assert server.EXERCISE_SCORING_METHOD["compensation_score_cap"] == 80
-    assert "score=Math.min(score,Number(SCORING_METHOD.compensation_score_cap)||80);" in source
+    # A confirmed compensation scores a fixed 70 and earns no point; only a
+    # correct repetition (no compensation, score >= 90) earns its point. The
+    # feedback names the problem with its degrees before giving the correction.
+    assert server.EXERCISE_SCORING_METHOD["compensation_score"] == 70
+    assert server.EXERCISE_SCORING_METHOD["point_threshold"] == 90
+    assert "if(confirmed.length) score=Number(SCORING_METHOD.compensation_score)||70;" in source
+    assert "function repEarnsPoint(score)" in source
+    assert "if(pointEarned) qualityReps += 1;" in source
+    assert "<strong>No point this time</strong>" in source
+    assert '"That repetition did not earn a point yet."' in source
+    assert "quality_reps: qualityReps" in source
+    exercise = (ROOT / "frontend" / "app" / "exercise.tsx").read_text(encoding="utf-8")
+    assert "quality_reps: typeof msg.quality_reps" in exercise
     assert "your trunk leaned forward (${degrees} degrees)" in source
     assert "your shoulder lifted toward your ear (${degrees} degrees)" in source
     assert "your elbow stayed bent at ${achieved} of ${target} degrees" in source
@@ -732,6 +756,58 @@ def test_forward_reach_grading_is_phase_gated_and_catches_forward_lean_and_shrug
     assert "`Elbow ${Math.round(raw.elbow_extension)}°" in source
     assert "`Shoulder lift ${Math.round(hike)}°`" in source
     assert "`Trunk lean ${Math.round(lean)}°`" in source
+
+
+def test_trunk_restrained_reaching_is_graded_like_forward_reach_and_recalibrates_on_posture_change():
+    """Leaning off the chair or hiking the shoulder during trunk-restrained reaching is
+    flagged, corrected, scored 70 and earns no point; a bent elbow never reaches 90."""
+    source = (ROOT / "backend" / "server.py").read_text(encoding="utf-8")
+    trunk = server.REHAB_RUNNER_CONFIG["ex_trunk"]
+    standard = server.EXERCISE_MOVEMENT_STANDARDS["ex_trunk"]
+
+    # Same shared engine: a reach phase that is scored and a return phase that is not,
+    # with the workbook's stricter 8-degree trunk-lean threshold for this exercise.
+    assert [step["phase"] for step in trunk["cycle"]] == ["movement", "return"]
+    assert {rule["id"]: rule["threshold_deg"] for rule in standard["compensations"]} == {"trunk_lean": 8, "shoulder_hike": 8}
+    assert [step["metric"] for step in standard["rom_steps"]] == ["shoulder_flexion", "elbow_extension"]
+
+    # The alarm names what went wrong in this exercise's own terms, then the correction.
+    assert trunk["compensation_problems"]["trunk_lean"] == "your back came away from the chair and your trunk leaned forward"
+    assert trunk["compensation_problems"]["shoulder_hike"] == "your shoulder lifted toward your ear"
+    assert "back against the chair" in trunk["correct_form_cue"] and "extend your elbow" in trunk["correct_form_cue"]
+    assert "const specific=CFG.compensation_problems && CFG.compensation_problems[rule.id];" in source
+    assert "const correction=CFG.correct_form_cue" in source
+    configured = server._configure_rehab_runner("ex_trunk", "medium", "standard")
+    assert configured["compensation_problems"] == trunk["compensation_problems"]
+    assert configured["correct_form_cue"] == trunk["correct_form_cue"]
+
+    # A repetition with a step short of its target (e.g. the elbow stayed bent) is
+    # named in degrees and capped below the point threshold; only a complete,
+    # uncompensated repetition earns the point.
+    assert server.EXERCISE_SCORING_METHOD["complete_rom_ratio"] == 0.9
+    assert "function incompleteRomSteps()" in source
+    assert "else if(incompleteRomSteps().length) score=Math.min(score,POINT_THRESHOLD-1);" in source
+    assert "if(incompleteRomSteps().length) return false;" in source
+    assert "problems.push(...incompleteRomSteps().map(romProblemText));" in source
+    assert "return `I noticed ${joinProblems(incomplete.map(romProblemText))}. ${correction}`;" in source
+    assert "your arm reached ${achieved} of ${target} degrees" in source
+
+    # A session calibration captured for another exercise (forward reach, back away
+    # from the chair) is reused only when the patient is still sitting the same way;
+    # otherwise the runner says so and learns the new starting position.
+    assert "function ensureLoop()" in source
+    assert "async function postureMatchesSessionBaseline()" in source
+    assert 'for(const key of ["shoulder_width","torso_length","active_shoulder_y"])' in source
+    assert "const postureMatches=await postureMatchesSessionBaseline();" in source
+    assert 'reason:"posture_changed"' in source
+    assert 'const POSTURE_CHANGED_VOICE="You are sitting a little differently for this exercise, so I will learn your starting position again. Please hold still for a moment.";' in source
+    assert "await playVoice(POSTURE_CHANGED_VOICE);" in source
+    # The setup voice (how to sit for this exercise) plays before the check, once.
+    assert source.index("await playVoice(CFG.setup_voice);\n    setupVoicePlayed=true;") < source.index("const postureMatches=await postureMatchesSessionBaseline();")
+    assert "if(!setupVoicePlayed){" in source
+    runner_script = source.split("REHAB_RUNNER_HTML_TEMPLATE = r", 1)[1]
+    assert runner_script.count("requestAnimationFrame(loop);") == 3  # ensureLoop + the loop's own two re-schedules
+    assert "  ensureLoop();\n  await playVoice(STANDARD.calibration_instruction);" in source
 
 
 def test_earning_points_pops_a_fading_congratulations_toast():

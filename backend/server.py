@@ -8086,6 +8086,7 @@ REHAB_RUNNER_CONFIG: Dict[str, Dict[str, Any]] = {
         "reps": 5,
         "pose_mode": "body",
         "setup_voice": "Welcome. We are going to practice the graded forward reach. Sit upright, with your back away from the chair. Place your affected hand on your lap. I'll guide you through each repetition.",
+        "correct_form_cue": "Next time, keep your trunk and shoulder still and simply extend your elbow to reach the target.",
         "cycle": [
             {"caption": "Reach forward to the target", "voice": "Slowly reach your hand forward, as far as you comfortably can.", "target": {"x": 0.5, "y": 0.40, "r": 0.10}, "hold_ms": 1200},
             {"caption": "Return to lap", "voice": "Now gently return your hand to the same calibrated place on your lap.", "target": {"x": 0.5, "y": 0.78, "r": 0.10, "landmark": "LAP_DYNAMIC"}, "hold_ms": 1200},
@@ -8102,6 +8103,11 @@ REHAB_RUNNER_CONFIG: Dict[str, Dict[str, Any]] = {
         "reps": 5,
         "pose_mode": "body",
         "setup_voice": "We will practice trunk-restrained reaching. Sit tall, with your back firmly against the chair. Try to keep your back touching the chair the whole time. Let's begin.",
+        "correct_form_cue": "Next time, keep your back against the chair and your shoulder relaxed, and simply extend your elbow to reach the target.",
+        "compensation_problems": {
+            "trunk_lean": "your back came away from the chair and your trunk leaned forward",
+            "shoulder_hike": "your shoulder lifted toward your ear",
+        },
         "cycle": [
             {"caption": "Reach forward (back against chair)", "voice": "Reach forward to the target — keep your back pressed into the chair.", "target": {"x": 0.5, "y": 0.40, "r": 0.10}, "hold_ms": 1200},
             {"caption": "Return slowly", "voice": "Slowly return your hand to your lap.", "target": {"x": 0.5, "y": 0.78, "r": 0.10}, "hold_ms": 1200},
@@ -8165,6 +8171,7 @@ REHAB_RUNNER_CONFIG: Dict[str, Dict[str, Any]] = {
         "pose_mode": "body",
         "setup_voice": "We will practise grasping and carrying a cup. The cup is drawn on your screen, so you do not need a real object. Reach to the cup with your affected hand, and it will follow your hand as you carry it.",
         "virtual_object": {"type": "cup", "mode": "carry", "grab_step": 0, "place_step": 1},
+        "correct_form_cue": "Next time, keep your shoulders square and your chest still, and carry the cup across with your arm.",
         "cycle": [
             {"caption": "Reach to the cup on screen and grasp it", "voice": "Reach toward the cup on your screen and close your affected hand around it, as if picking it up.", "target": {"x": 0.30, "y": 0.55, "r": 0.10}, "hold_ms": 1200},
             {"caption": "Carry the cup across", "voice": "The cup is in your hand now. Carry it slowly across to the other side.", "target": {"x": 0.70, "y": 0.55, "r": 0.10}, "hold_ms": 1500},
@@ -8396,8 +8403,14 @@ EXERCISE_SCORING_METHOD: Dict[str, Any] = {
     "rom_cap_percent": 100,
     "compensation_confirmation": "minimum frame count and minimum eligible-frame ratio must both be met",
     # A repetition completed through a confirmed compensatory pattern (trunk
-    # lean, shoulder hiking, ...) never scores above this, whatever the ROM says.
-    "compensation_score_cap": 80,
+    # lean, shoulder hiking, ...) is scored exactly this, whatever the ROM says.
+    "compensation_score": 70,
+    # A repetition earns its point only when done correctly: no confirmed
+    # compensation, every movement step within complete_rom_ratio of today's
+    # target (e.g. the elbow really straightened), and a score at or above
+    # this threshold. An incomplete repetition is capped just below it.
+    "point_threshold": 90,
+    "complete_rom_ratio": 0.9,
     "quality_boundary": "camera-derived coaching score; not a diagnosis or laboratory motion-capture measurement",
 }
 
@@ -9439,6 +9452,8 @@ const fbChecks = document.getElementById("fbChecks");
 const fbHeard = document.getElementById("fbHeard");
 const fbConfirmBtn = document.getElementById("fbConfirmBtn");
 const assistEl = document.getElementById("assist");
+const fbReward = document.getElementById("fbReward");
+let qualityReps = 0;         // repetitions done correctly this session (the ones that earn points)
 const assistYesBtn = document.getElementById("assistYesBtn");
 const assistNoBtn = document.getElementById("assistNoBtn");
 const fbReplay = document.getElementById("fbReplay");
@@ -9606,6 +9621,34 @@ function postRN(d){ if(window.ReactNativeWebView) window.ReactNativeWebView.post
 
 function rehabCalibrationStorageKey(){
   return REHAB_SESSION_ID ? `rehab-calibration-v${REHAB_CALIBRATION_VERSION}:${REHAB_SESSION_ID}` : "";
+}
+let loopStarted=false;
+let setupVoicePlayed=false;
+const POSTURE_CHANGED_VOICE="You are sitting a little differently for this exercise, so I will learn your starting position again. Please hold still for a moment.";
+function ensureLoop(){
+  if(loopStarted) return;
+  loopStarted=true;
+  requestAnimationFrame(loop);
+}
+// Sample the live pose for up to ~4 s and compare seated posture with the
+// stored baseline (shoulder width, torso length, shoulder height). Any real
+// change of seating position fails the check and triggers recalibration.
+async function postureMatchesSessionBaseline(){
+  const samples=[];
+  const started=performance.now();
+  while(samples.length < 12 && performance.now()-started < 4000){
+    await new Promise(resolve=>setTimeout(resolve,80));
+    if(lastRawMetrics && Number.isFinite(Number(lastRawMetrics.shoulder_width))) samples.push(lastRawMetrics);
+  }
+  if(samples.length < 6) return false;
+  const base=baselineMetrics;
+  const med=(key)=>median(samples.map(sample=>Number(sample[key])));
+  for(const key of ["shoulder_width","torso_length","active_shoulder_y"]){
+    if(!Number.isFinite(Number(base[key]))) return false;
+  }
+  const rel=(key)=>Math.abs(med(key)-Number(base[key]))/Math.max(1e-6,Math.abs(Number(base[key])));
+  const shoulderShift=Math.abs(med("active_shoulder_y")-Number(base.active_shoulder_y));
+  return rel("shoulder_width") < 0.06 && rel("torso_length") < 0.08 && shoulderShift < 0.04;
 }
 function loadSessionCalibration(){
   const key=rehabCalibrationStorageKey();
@@ -10215,7 +10258,10 @@ async function completeCalibration(){
     lap_target:exerciseLapTarget,
     lap_target_radius:exerciseLapTargetRadius,
   });
-  await playVoice(CFG.setup_voice);
+  if(!setupVoicePlayed){
+    await playVoice(CFG.setup_voice);
+    setupVoicePlayed=true;
+  }
   await startRep();
 }
 let activeFrames=0;          // frames inside the movement phase (the only ones scored)
@@ -10580,6 +10626,10 @@ async function startSubStep(){
 function compensationProblemText(rule){
   const degrees=Math.round(peakCompensationDegrees[rule.id]||0);
   const metric=String(rule.metric||"");
+  // Exercise-specific wording first (e.g. "your back came away from the
+  // chair" for trunk-restrained reaching), then the generic descriptions.
+  const specific=CFG.compensation_problems && CFG.compensation_problems[rule.id];
+  if(specific) return `${specific} (${degrees} degrees)`;
   if(metric==="trunk_lean_delta") return `your trunk leaned forward (${degrees} degrees)`;
   if(metric==="shoulder_hike_delta") return `your shoulder lifted toward your ear (${degrees} degrees)`;
   if(metric==="arm_asymmetry") return `your arms moved unevenly (${degrees} degrees apart)`;
@@ -10599,25 +10649,23 @@ function pickFeedback(){
     // 2) give one clear correction for the next repetition.
     const problems=confirmed.map(rule=>compensationProblemText(rule));
     const elbowStep=(STANDARD.rom_steps||[]).find(step=>step.metric==="elbow_extension");
-    if(elbowStep){
-      const achieved=Math.round(Number(romBest[elbowStep.id]||0));
-      const target=Number(elbowStep.target_deg||0);
-      if(target>0 && achieved < target*0.9) problems.push(`your elbow stayed bent at ${achieved} of ${target} degrees`);
-    }
-    const correction=elbowStep
-      ? "Next time, keep your trunk and shoulder still and simply extend your elbow to reach the target."
-      : confirmed.map(rule=>rule.correction).join(" ");
+    problems.push(...incompleteRomSteps().map(romProblemText));
+    const correction=CFG.correct_form_cue
+      || (elbowStep
+        ? "Next time, keep your trunk and shoulder still and simply extend your elbow to reach the target."
+        : confirmed.map(rule=>rule.correction).join(" "));
     return `I noticed ${joinProblems(problems)}. ${correction}`;
   }
-  let lowest=null;
-  for(const step of STANDARD.rom_steps||[]){
-    const achieved=Number(romBest[step.id]||0);
-    const target=Math.max(1,Number(step.target_deg||1));
-    const ratio=achieved/target;
-    if(!lowest || ratio<lowest.ratio) lowest={step,achieved,ratio};
-  }
-  if(lowest && lowest.ratio < .9){
-    return lowest.step.coaching_cue || "On the next repetition, move a little farther within a comfortable range while keeping the same safe setup.";
+  // No compensation, but a step stopped short of today's target (for example
+  // the elbow stayed bent): say which one, in degrees, and how to fix it.
+  const incomplete=incompleteRomSteps();
+  if(incomplete.length){
+    const elbowShort=incomplete.some(item=>item.metric==="elbow_extension");
+    const first=(STANDARD.rom_steps||[]).find(step=>step.id===incomplete[0].id)||{};
+    const correction=(elbowShort && CFG.correct_form_cue)
+      || first.coaching_cue
+      || "On the next repetition, move a little farther within a comfortable range while keeping the same safe setup.";
+    return `I noticed ${joinProblems(incomplete.map(romProblemText))}. ${correction}`;
   }
   return "That movement stayed close to today’s target. Keep the same smooth control on the next repetition.";
 }
@@ -10765,6 +10813,24 @@ function repRomDetails(){
     return {id:step.id,label:step.label,metric:step.metric,achieved_deg:achieved,target_deg:target,score,weight:Number(step.weight||0)};
   });
 }
+const POINT_THRESHOLD=Number(SCORING_METHOD.point_threshold)||90;
+const ROM_COMPLETE_RATIO=Number(SCORING_METHOD.complete_rom_ratio)||0.9;
+// Movement steps that stopped short of today's target (below 90% of it) -
+// for example an elbow that stayed bent. A repetition with one of these is
+// not yet a correct repetition, whatever the other joints did.
+function incompleteRomSteps(){
+  return repRomDetails().filter(item=>item.target_deg>0 && item.achieved_deg < item.target_deg*ROM_COMPLETE_RATIO);
+}
+function romProblemText(item){
+  const achieved=Math.round(item.achieved_deg), target=Math.round(item.target_deg);
+  const metric=String(item.metric||"");
+  if(metric==="elbow_extension") return achieved>0
+    ? `your elbow stayed bent at ${achieved} of ${target} degrees`
+    : `your elbow did not straighten toward the target (${target} degrees)`;
+  if(metric==="shoulder_flexion"||metric==="shoulder_abduction"||metric==="bilateral_shoulder_flexion") return `your arm reached ${achieved} of ${target} degrees`;
+  if(metric==="finger_extension") return `your fingers opened to ${achieved} of ${target} degrees`;
+  return `your ${String(item.label||metric).toLowerCase()} reached ${achieved} of ${target} degrees`;
+}
 function computeRepScore(){
   if(trackingFrames < SCORING_MIN_FRAMES || activeFrames < SCORING_MIN_FRAMES) return null;
   const details=repRomDetails();
@@ -10772,10 +10838,21 @@ function computeRepScore(){
   let score=details.reduce((sum,item)=>sum+item.score*item.weight,0)/totalWeight;
   const confirmed=confirmedCompensations();
   for(const rule of confirmed) score-=Number(rule.penalty||0);
-  // A repetition completed through a compensatory pattern is capped: the
-  // patient is told what went wrong and how to fix it, never rewarded above it.
-  if(confirmed.length) score=Math.min(score,Number(SCORING_METHOD.compensation_score_cap)||80);
+  // A repetition completed through a compensatory pattern scores a fixed 70:
+  // the patient is told what went wrong and how to fix it, and it earns no point.
+  if(confirmed.length) score=Number(SCORING_METHOD.compensation_score)||70;
+  // An incomplete repetition (a step short of its target, e.g. a bent elbow)
+  // never reaches the point threshold either.
+  else if(incompleteRomSteps().length) score=Math.min(score,POINT_THRESHOLD-1);
   return Math.round(clamp(score,0,100));
+}
+function repEarnsPoint(score){
+  // Only a correct repetition (no compensation, every step within range,
+  // score at or above the threshold) earns the point.
+  if(score == null) return false;
+  if(confirmedCompensations().length) return false;
+  if(incompleteRomSteps().length) return false;
+  return score >= POINT_THRESHOLD;
 }
 
 function scoreLabel(s){
@@ -10794,6 +10871,13 @@ async function showFeedback(){
   lastRepScore = computeRepScore();
   const cameraScored = lastRepScore != null;
   const label = cameraScored ? scoreLabel(lastRepScore) : "Well done";
+  // Tap/guided reps (no camera score) keep earning their point; camera-scored
+  // reps earn it only when done correctly.
+  const pointEarned = cameraScored ? repEarnsPoint(lastRepScore) : true;
+  if(pointEarned) qualityReps += 1;
+  fbReward.innerHTML = pointEarned
+    ? '<span class="rewardStar" aria-hidden="true">&#11088;</span><span class="rewardCopy"><strong>+1 point</strong><span>Great repetition!</span></span>'
+    : '<span class="rewardStar" aria-hidden="true">&#128161;</span><span class="rewardCopy"><strong>No point this time</strong><span>Correct the movement to earn it.</span></span>';
   fbStep.textContent = `Repetition ${currentRep+1} of ${CFG.reps} complete · ${label}`;
   fbTitle.textContent = cameraScored ? `Your score: ${lastRepScore}/100` : "Repetition complete";
   fbBody.textContent = feedback;
@@ -10805,6 +10889,7 @@ async function showFeedback(){
     rep:currentRep+1,
     total:CFG.reps,
     score:lastRepScore,
+    point_earned:pointEarned,
     feedback,
     rom_metrics:repRomDetails(),
     compensations:confirmedCompensations().map(rule=>({id:rule.id,correction:rule.correction})),
@@ -10812,9 +10897,10 @@ async function showFeedback(){
   });
 
   // Voice: feedback + ask for "yes"
+  const rewardVoice = pointEarned ? "Great repetition. You earned one point." : "That repetition did not earn a point yet.";
   const feedbackVoice = cameraScored
-    ? `Great repetition. You earned one point. Your score is ${lastRepScore} out of 100. ${label}. ${feedback} When you're ready, tap continue, or say yes to keep going.`
-    : `Great repetition. You earned one point. ${label}. ${feedback} When you're ready, tap continue, or say yes to keep going.`;
+    ? `${rewardVoice} Your score is ${lastRepScore} out of 100. ${label}. ${feedback} When you're ready, tap continue, or say yes to keep going.`
+    : `${rewardVoice} ${label}. ${feedback} When you're ready, tap continue, or say yes to keep going.`;
   await playVoice(feedbackVoice);
   startListening();
 }
@@ -10858,7 +10944,7 @@ async function finishExercise(){
   }else{
     await playVoice("Magnificent work. You have finished this exercise. I'm so proud of you.");
   }
-  postRN({type:"exercise_complete", exercise_id: location.search, reps: CFG.reps, assisted});
+  postRN({type:"exercise_complete", exercise_id: location.search, reps: CFG.reps, assisted, quality_reps: qualityReps});
   if(cameraStream) cameraStream.getTracks().forEach(track=>track.stop());
   if(confirmationAudioStream) confirmationAudioStream.getTracks().forEach(track=>track.stop());
 }
@@ -10951,6 +11037,7 @@ startBtn.addEventListener("click", async () => {
   const unlockPromise = unlockAudioPlayback();
   const setupVoicePromise = prefetchVoice(CFG.setup_voice);
   const calibrationVoicePromise = prefetchVoice(STANDARD.calibration_instruction);
+  prefetchVoice(POSTURE_CHANGED_VOICE);
   CFG.cycle.forEach(step => prefetchVoice(step.voice));
   overlay.classList.add("hidden");
   startBtn.disabled = true;
@@ -10973,17 +11060,36 @@ startBtn.addEventListener("click", async () => {
       : null;
     calibrating=false;
     calibrationEl.classList.add("hidden");
-    postRN({
-      type:"exercise_calibration_reused",
-      exercise_id:CFG.name,
-      rehab_session_id:REHAB_SESSION_ID,
-      source_tracking_mode:sessionCalibration.source_tracking_mode,
-      source_posture:sessionCalibration.source_posture,
-    });
-    requestAnimationFrame(loop);
+    ensureLoop();
+    // The setup voice tells the patient how to sit for THIS exercise (for
+    // example back against the chair for trunk-restrained reaching), so let
+    // them settle first and only then compare their posture with the stored
+    // baseline.
     await playVoice(CFG.setup_voice);
-    await startRep();
-    return;
+    setupVoicePlayed=true;
+    // A stored baseline is only valid if the patient is sitting the same way
+    // now. Trunk-restrained reaching (back against the chair) after forward
+    // reach (back away from the chair) changes distance and posture, which
+    // would blind the lean and shrug detectors - so recalibrate on drift.
+    calibrationInstruction.textContent="Hold still for a moment.";
+    calibrationStatus.textContent="Checking your starting position…";
+    calibrationFill.style.width="100%";
+    calibrationEl.classList.remove("hidden");
+    const postureMatches=await postureMatchesSessionBaseline();
+    calibrationEl.classList.add("hidden");
+    if(postureMatches){
+      postRN({
+        type:"exercise_calibration_reused",
+        exercise_id:CFG.name,
+        rehab_session_id:REHAB_SESSION_ID,
+        source_tracking_mode:sessionCalibration.source_tracking_mode,
+        source_posture:sessionCalibration.source_posture,
+      });
+      await startRep();
+      return;
+    }
+    postRN({type:"exercise_calibration_recaptured", exercise_id:CFG.name, rehab_session_id:REHAB_SESSION_ID, reason:"posture_changed"});
+    await playVoice(POSTURE_CHANGED_VOICE);
   }
   calibrating = true;
   calibrationInstructionFinished = false;
@@ -11003,7 +11109,7 @@ startBtn.addEventListener("click", async () => {
   calibrationStatus.textContent = "Looking for the required joints…";
   calibrationFill.style.width = "0%";
   calibrationEl.classList.remove("hidden");
-  requestAnimationFrame(loop);
+  ensureLoop();
   await playVoice(STANDARD.calibration_instruction);
   calibrationInstructionFinished = true;
   if(calibrationReady) void completeCalibration();
@@ -11196,6 +11302,9 @@ class AliraActivitySubmit(BaseModel):
     # True when the patient confirmed a carer or family member helped during
     # the exercise; the server halves the stored score (ASSISTED_SCORE_FACTOR).
     assisted: bool = False
+    # Repetitions done correctly (no compensation, score >= point threshold);
+    # only these earn repetition points. Absent for legacy/tap clients.
+    quality_reps: Optional[int] = Field(default=None, ge=0, le=500)
 
 
 class AliraFunctionalIssueSubmit(BaseModel):
@@ -12670,6 +12779,7 @@ async def _persist_alira_activity(user: Dict[str, Any], payload: AliraActivitySu
         "repetition_scores": repetition_scores,
         "observed_response": payload.observed_response,
         "assisted": payload.assisted,
+        "quality_reps": payload.quality_reps,
         "unassisted_average_score": unassisted_average_score if payload.assisted else None,
         "functional_domain": EXERCISE_FUNCTIONAL_DOMAINS.get(payload.exercise_id),
         "completed_at": completed_at,
