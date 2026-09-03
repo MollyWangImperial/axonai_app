@@ -749,6 +749,16 @@ def test_forward_reach_grading_is_phase_gated_and_catches_forward_lean_and_shrug
     assert server.EXERCISE_SCORING_METHOD["compensation_score"] == 70
     assert server.EXERCISE_SCORING_METHOD["point_threshold"] == 90
     assert "if(confirmed.length) score=Number(SCORING_METHOD.compensation_score)||70;" in source
+    # Compensation frames are counted only while the movement is underway (the
+    # main joint has left rest, or the hand has left its resting place), so the
+    # seconds spent listening to the instruction cannot dilute a lean or shrug
+    # below the 35% share; a compensation held for ~1 s of movement is confirmed
+    # whatever the share.
+    assert "function movementUnderway(raw)" in source
+    assert "if(!ruleAppliesNow(rule) || !underway) continue;" in source
+    assert "return value-rest >= 0.25*span;" in source
+    assert server.EXERCISE_SCORING_METHOD["sustained_compensation_frames"] == 24
+    assert "return hits/eligible >= Number(rule.min_ratio||.35) || hits >= SUSTAINED_COMPENSATION_FRAMES;" in source
     assert "function repEarnsPoint(score)" in source
     assert "if(pointEarned) qualityReps += 1;" in source
     assert "<strong>No point this time</strong>" in source
@@ -927,7 +937,7 @@ def test_cylindrical_grasp_reach_open_close_carry_release_flow_and_compensations
     assert set(profile["compensation_labels"]) == {"trunk_lean", "trunk_side_lean", "shoulder_hike", "elbow_flare", "wrist_flexion"}
     assert "hand_opening" in profile["rom_cues"] and "elbow_extension" in profile["rom_cues"]
     assert "function ruleAppliesNow(rule)" in source
-    assert "if(!ruleAppliesNow(step)) continue;" in source and "if(!ruleAppliesNow(rule)) continue;" in source
+    assert "if(!ruleAppliesNow(step)) continue;" in source and "if(!ruleAppliesNow(rule) || !underway) continue;" in source
     assert "raw.elbow_flare=rad2deg(Math.atan2(elbowOut,elbowDown));" in source
     assert grasp["compensation_problems"] == {
         "trunk_lean": "your chest leaned toward the cup",

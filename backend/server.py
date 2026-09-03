@@ -8508,6 +8508,9 @@ EXERCISE_SCORING_METHOD: Dict[str, Any] = {
     # this threshold. An incomplete repetition is capped just below it.
     "point_threshold": 90,
     "complete_rom_ratio": 0.9,
+    # A compensation held for about a second of movement (24 frames) is
+    # confirmed even if it was a smaller share of a long repetition.
+    "sustained_compensation_frames": 24,
     # Camera angles read a little low for a reach toward the lens, so reaching
     # within 5% of today's target counts as full attainment for that step.
     "full_credit_ratio": 0.95,
@@ -10758,6 +10761,27 @@ function activeMovementPhase(){
   if(fbEl.classList.contains("show")) return false;
   return (sub.phase||"movement") !== "return";
 }
+// The movement is underway once the exercise's main joint has moved a quarter
+// of the way from its resting angle toward today's target (for a reach: the
+// shoulder has flexed ~12 degrees beyond rest). Tap-confirmed exercises have
+// no target phases, so every frame counts there.
+function movementUnderway(raw){
+  if(CFG.pose_mode !== "body") return true;
+  // The affected hand has clearly left its calibrated resting place.
+  const base=baselineMetrics;
+  if(Number.isFinite(Number(base.active_wrist_x)) && Number.isFinite(raw.active_wrist_x)){
+    const moved=Math.hypot(raw.active_wrist_x-Number(base.active_wrist_x),raw.active_wrist_y-Number(base.active_wrist_y));
+    if(moved >= 0.5*(Number(raw.shoulder_width)||.18)) return true;
+  }
+  const key=(STANDARD.rom_steps||[]).find(step=>step.metric!=="elbow_extension");
+  if(!key) return true;
+  const value=metricValue(key.metric,raw);
+  const rest=metricValue(key.metric,base);
+  const target=Number(key.target_deg||0);
+  if(!Number.isFinite(value) || !Number.isFinite(rest) || !(target > 0)) return true;
+  const span=Math.max(5,target-rest);
+  return value-rest >= 0.25*span;
+}
 // A scored step or compensation rule may name the cycle steps it applies to
 // (e.g. the elbow is judged while reaching to the cup, wrist flexion while
 // gripping and carrying); without "steps" it applies to every movement step.
@@ -10819,8 +10843,14 @@ function updateMetrics(lm,handLm){
     if(Number.isFinite(value)) romBest[step.id]=Math.max(Number(romBest[step.id]||0),value);
   }
   const evidenceValues={};
+  // Compensations are judged against the frames in which the movement is
+  // actually underway (the main joint has left its resting angle), not the
+  // frames spent listening to the instruction or settling: a lean or shrug
+  // during a two-second reach must not be diluted by four seconds of sitting
+  // still beforehand.
+  const underway=movementUnderway(raw);
   for(const rule of STANDARD.compensations||[]){
-    if(!ruleAppliesNow(rule)) continue;
+    if(!ruleAppliesNow(rule) || !underway) continue;
     const value=metricValue(rule.metric,raw);
     if(!Number.isFinite(value)) continue;
     compensationEligible[rule.id]=(compensationEligible[rule.id]||0)+1;
@@ -11530,11 +11560,16 @@ function stopListening(){
 
 let lastFeedbackText = "";
 let lastRepScore = null;
+// A compensation is confirmed by the workbook rule (enough frames AND a large
+// enough share of the movement) or, whatever the share, when it was held for
+// about a second of movement (SUSTAINED_COMPENSATION_FRAMES).
+const SUSTAINED_COMPENSATION_FRAMES=Number(SCORING_METHOD.sustained_compensation_frames)||24;
 function confirmedCompensations(){
   return (STANDARD.compensations||[]).filter(rule=>{
     const hits=Number(compensationHits[rule.id]||0);
     const eligible=Math.max(1,Number(compensationEligible[rule.id]||0));
-    return hits >= Number(rule.min_frames||8) && hits/eligible >= Number(rule.min_ratio||.35);
+    if(hits < Number(rule.min_frames||8)) return false;
+    return hits/eligible >= Number(rule.min_ratio||.35) || hits >= SUSTAINED_COMPENSATION_FRAMES;
   });
 }
 const ROM_FULL_CREDIT_RATIO=Number(SCORING_METHOD.full_credit_ratio)||0.95;
