@@ -21,9 +21,10 @@ import json
 import hashlib
 from collections import OrderedDict
 import hmac
+import secrets
 import sys
 import tempfile
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 try:
     from backend.rehab_assessment import (
@@ -12414,6 +12415,10 @@ class UserSignup(BaseModel):
     trial_code: str = ""
 
 
+class LoginHandoffCompletion(BaseModel):
+    token: str
+
+
 class InitialAssessmentCompletionRecovery(BaseModel):
     completed_task_ids: List[str] = Field(default_factory=list)
 
@@ -12725,6 +12730,69 @@ async def _sign_in(payload: UserSignup) -> Dict[str, Any]:
     return {**granted, **_account_state(granted, is_new_account=is_new_account)}
 
 
+LOGIN_HANDOFF_TTL_SECONDS = 300
+LOCAL_LOGIN_HANDOFFS: Dict[str, Dict[str, Any]] = {}
+
+
+def _login_handoff_digest(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+async def _create_login_handoff(user: Dict[str, Any]) -> str:
+    """Create a short-lived, single-use bridge from rehyn.com to the app.
+
+    The trial code and patient details never enter the redirect URL. Only a
+    random bearer token is sent to the app, while Mongo stores its digest.
+    """
+    token = secrets.token_urlsafe(32)
+    digest = _login_handoff_digest(token)
+    record = {
+        "token_hash": digest,
+        "user_id": user["id"],
+        "is_new_account": bool(user.get("is_new_account")),
+        "expires_at": datetime.now(timezone.utc) + timedelta(seconds=LOGIN_HANDOFF_TTL_SECONDS),
+    }
+    try:
+        await db.login_handoffs.insert_one(record)
+    except Exception as exc:
+        logger.warning(f"Mongo unavailable for login handoff; using local fallback: {str(exc)[:120]}")
+        LOCAL_LOGIN_HANDOFFS[digest] = record
+    return token
+
+
+async def _consume_login_handoff(token: str) -> Dict[str, Any]:
+    supplied = str(token or "").strip()
+    if not supplied:
+        raise HTTPException(status_code=401, detail="This sign-in link is not valid.")
+
+    digest = _login_handoff_digest(supplied)
+    now = datetime.now(timezone.utc)
+    record = None
+    try:
+        record = await db.login_handoffs.find_one_and_delete(
+            {"token_hash": digest, "expires_at": {"$gt": now}},
+            {"_id": 0},
+        )
+    except Exception as exc:
+        logger.warning(f"Mongo unavailable for login handoff completion; using local fallback: {str(exc)[:120]}")
+        record = LOCAL_LOGIN_HANDOFFS.pop(digest, None)
+
+    if not record or record.get("expires_at", now) <= now:
+        LOCAL_LOGIN_HANDOFFS.pop(digest, None)
+        raise HTTPException(status_code=401, detail="This sign-in link has expired. Please sign in again.")
+
+    try:
+        user = await db.users.find_one({"id": record["user_id"]}, {"_id": 0})
+    except Exception as exc:
+        logger.warning(f"Mongo unavailable for login handoff user lookup; using local fallback: {str(exc)[:120]}")
+        user = LOCAL_USERS.get(record["user_id"])
+    if not user:
+        raise HTTPException(status_code=401, detail="We could not finish signing you in. Please try again.")
+    if user.get("trial_access_granted") is not True:
+        raise HTTPException(status_code=403, detail="Trial access could not be confirmed.")
+    return {**user, **_account_state(user, is_new_account=bool(record.get("is_new_account")))}
+
+
 @api_router.post("/users/signup")
 async def signup(payload: UserSignup):
     return await _sign_in(payload)
@@ -12733,6 +12801,18 @@ async def signup(payload: UserSignup):
 @api_router.post("/users/login")
 async def login(payload: UserSignup):
     return await _sign_in(payload)
+
+
+@api_router.post("/users/login-handoff")
+async def create_login_handoff(payload: UserSignup):
+    user = await _sign_in(payload)
+    token = await _create_login_handoff(user)
+    return {"handoff_token": token, "expires_in": LOGIN_HANDOFF_TTL_SECONDS}
+
+
+@api_router.post("/users/login-handoff/complete")
+async def complete_login_handoff(payload: LoginHandoffCompletion):
+    return await _consume_login_handoff(payload.token)
 
 
 class PatientOnboarding(BaseModel):
@@ -15210,6 +15290,8 @@ async def _ensure_user_indexes() -> None:
     try:
         await db.users.create_index("id", name="users_id")
         await db.users.create_index("email", name="users_email")
+        await db.login_handoffs.create_index("token_hash", name="login_handoff_token", unique=True)
+        await db.login_handoffs.create_index("expires_at", name="login_handoff_expiry", expireAfterSeconds=0)
     except Exception as exc:
         logger.warning(f"Could not create user indexes: {str(exc)[:120]}")
 

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   AccessibilityInfo,
   ActivityIndicator,
@@ -21,7 +21,7 @@ import Svg, { Circle, G, Line, Polyline, Text as SvgText } from "react-native-sv
 import { useLocalSearchParams, useRouter } from "expo-router";
 import * as Haptics from "expo-haptics";
 import { colors, spacing, radius } from "@/src/theme";
-import { signIn, authedFetch, cachePatientOnboarding, getCachedPatientProfile, hasAcceptedConsent, type Me } from "@/src/auth";
+import { signIn, completeSignInHandoff, authedFetch, cachePatientOnboarding, getCachedPatientProfile, hasAcceptedConsent, type Me } from "@/src/auth";
 
 const DEEP_GREEN = "#07563A";
 const HERO_GREEN = "#3DD45A";
@@ -152,8 +152,9 @@ function ProgressPreview({ onPress }: { onPress: () => void }) {
 export default function SignInScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
-  const { auth } = useLocalSearchParams<{ auth?: string | string[] }>();
+  const { auth, handoff } = useLocalSearchParams<{ auth?: string | string[]; handoff?: string | string[] }>();
   const requestedAuth = Array.isArray(auth) ? auth[0] : auth;
+  const requestedHandoff = Array.isArray(handoff) ? handoff[0] : handoff;
   const { width } = useWindowDimensions();
   const isWide = width >= 980;
   const showHeaderSignIn = width >= 520;
@@ -245,8 +246,10 @@ export default function SignInScreen() {
     }, 2600);
     return () => clearInterval(timer);
   }, [phraseOffset, phraseOpacity, reduceMotion]);
+  const [handoffError, setHandoffError] = useState<string | null>(null);
+  const handoffStarted = useRef(false);
 
-  const routePatientAfterLogin = async (user: Me) => {
+  const routePatientAfterLogin = useCallback(async (user: Me) => {
     // The sign-in response carries the account state saved in MongoDB:
     // consent_accepted and onboarding_complete are true for a returning
     // account, so the Terms and the initial survey are shown only to a new
@@ -295,7 +298,18 @@ export default function SignInScreen() {
       clearTimeout(recoveryTimeout);
     }
     router.replace("/onboarding");
-  };
+  }, [router]);
+
+  useEffect(() => {
+    if (!requestedHandoff || handoffStarted.current) return;
+    handoffStarted.current = true;
+    setHandoffError(null);
+    void completeSignInHandoff(requestedHandoff)
+      .then(routePatientAfterLogin)
+      .catch((error) => {
+        setHandoffError(error instanceof Error ? error.message : "We could not finish signing you in. Please try again.");
+      });
+  }, [requestedHandoff, routePatientAfterLogin]);
 
   const openAuth = (intent: AuthIntent) => {
     setAuthIntent(intent);
@@ -339,6 +353,39 @@ export default function SignInScreen() {
     setOverlay(null);
     router.push("/privacy-policy" as never);
   };
+
+  if (requestedHandoff) {
+    return (
+      <View style={[styles.handoffScreen, { paddingTop: insets.top, paddingBottom: insets.bottom }]}>
+        <RehynBrand />
+        <View style={styles.handoffCard}>
+          {handoffError ? (
+            <>
+              <Ionicons name="alert-circle-outline" size={42} color={colors.error} />
+              <Text style={styles.handoffTitle}>Please sign in again</Text>
+              <Text style={styles.handoffBody}>{handoffError}</Text>
+              <Pressable
+                accessibilityRole="button"
+                onPress={() => {
+                  if (Platform.OS === "web" && typeof window !== "undefined") window.location.assign("https://rehyn.com/?signin=1");
+                  else router.replace("/sign-in");
+                }}
+                style={({ pressed }) => [styles.submitButton, pressed && styles.pressed]}
+              >
+                <Text style={styles.submitText}>Return to sign in</Text>
+              </Pressable>
+            </>
+          ) : (
+            <>
+              <ActivityIndicator size="large" color={DEEP_GREEN} />
+              <Text style={styles.handoffTitle}>Opening Rehyn…</Text>
+              <Text style={styles.handoffBody}>Your secure sign-in is being completed.</Text>
+            </>
+          )}
+        </View>
+      </View>
+    );
+  }
 
   const backgroundTranslateX = backgroundDrift.interpolate({ inputRange: [0, 1], outputRange: [-28, 30] });
   const backgroundTranslateY = backgroundDrift.interpolate({ inputRange: [0, 1], outputRange: [-12, 15] });
@@ -564,6 +611,10 @@ export default function SignInScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: WARM_WHITE },
+  handoffScreen: { flex: 1, minHeight: 520, backgroundColor: WARM_WHITE, alignItems: "center", justifyContent: "center", gap: 30, paddingHorizontal: 24 },
+  handoffCard: { width: "100%", maxWidth: 520, minHeight: 250, borderRadius: radius.lg, borderWidth: 1, borderColor: "#DADFD9", backgroundColor: "#FFFFFF", alignItems: "center", justifyContent: "center", padding: 38, shadowColor: "#071E16", shadowOpacity: 0.12, shadowRadius: 24, shadowOffset: { width: 0, height: 10 } },
+  handoffTitle: { color: INK, fontSize: 30, lineHeight: 38, fontWeight: "800", textAlign: "center", marginTop: 22 },
+  handoffBody: { color: MUTED, fontSize: 17, lineHeight: 26, textAlign: "center", marginTop: 8, marginBottom: 24 },
   scrollContent: { flexGrow: 1 },
   headerShell: { width: "100%", backgroundColor: WARM_WHITE, paddingHorizontal: 68 },
   headerShellCompact: { paddingHorizontal: 18 },

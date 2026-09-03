@@ -199,6 +199,26 @@ export async function signIn(email: string, name: string, role: "patient" | "the
   return u;
 }
 
+export async function completeSignInHandoff(token: string): Promise<Me> {
+  const r = await fetch(`${BASE}/api/users/login-handoff/complete`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ token }),
+  });
+  if (!r.ok) {
+    const body = await r.json().catch(() => null);
+    throw new Error(body?.detail || "We could not finish signing you in. Please try again.");
+  }
+  const user: Me = await r.json();
+  if (user.trial_access_granted !== true) throw new Error("Trial access could not be confirmed.");
+  await storage.setItem(USER_KEY, user.id);
+  await storage.setItem(USER_OBJ, JSON.stringify(user));
+  await storage.setItem(BACKEND_USER_KEY, user.id);
+  await hydrateAccountStateFromServer(user);
+  notifyAuthStateChanged();
+  return user;
+}
+
 // The sign-in response carries the account state saved in MongoDB. Seeding the
 // device caches from it means a returning patient is never asked to accept the
 // Terms or repeat the initial survey - even on a new device or after clearing
