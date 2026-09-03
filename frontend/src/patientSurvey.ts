@@ -56,13 +56,13 @@ export const PATIENT_SURVEY_STEPS: PatientSurveyStep[] = [
       { value: "other", label: "Another area" },
       { value: "unsure", label: "Not sure yet" },
     ] },
-  { key: "dominant_hand", question: "Which is your dominant hand (before stroke)?", type: "single",
+  { key: "dominant_hand", question: "Which was your dominant hand before your stroke?", helper: "Choose the hand you usually used for writing or eating.", type: "single",
     options: [
       { value: "right", label: "Right-handed", emoji: "✋" },
       { value: "left", label: "Left-handed", emoji: "🤚" },
       { value: "ambidextrous", label: "Both / Ambidextrous", emoji: "🙌" },
     ] },
-  { key: "sitting_ability", question: "Can you sit upright safely in a stable chair for about 3 minutes?", helper: "This tells Alira whether seated arm and hand tasks are suitable.", type: "single",
+  { key: "sitting_ability", question: "Can you sit upright safely in a stable chair for about 3 minutes?", helper: "Choose the picture that is closest to your situation.", type: "single",
     options: [
       { value: "independent", label: "Yes, without someone holding me" },
       { value: "needs_support", label: "Only with support or someone helping" },

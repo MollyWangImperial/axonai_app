@@ -9086,6 +9086,8 @@ def _configure_rehab_runner(exercise_id: str, difficulty: str, variation: str) -
         if exercise_id in SUPERVISED_EXERCISE_IDS else ""
     )
     cfg["setup_voice"] = f"{cfg.get('setup_voice', '')} Today's level is {level}. {rules[level]} {variation_cue}{safety_cue}".strip()
+    cfg["exercise_id"] = exercise_id
+    cfg["temporary_compensation_evidence"] = exercise_id == "ex_reach"
     cfg["difficulty"] = level
     cfg["variation"] = selected_variation
     cfg["difficulty_adjustment"] = rules[level]
@@ -9350,8 +9352,9 @@ REHAB_RUNNER_HTML_TEMPLATE = r"""<!DOCTYPE html>
   #assist .row{display:flex;gap:12px;justify-content:center}
   #assist button{min-height:56px;padding:0 22px;border-radius:12px;border:2px solid rgba(255,255,255,0.55);background:transparent;color:#fff;font-size:17px;font-weight:800}
   #assist button.primary{background:#FDFDFD;color:#1C201D;border-color:#FDFDFD}
-  #fb{position:absolute;inset:0;background:linear-gradient(180deg, rgba(74,120,86,0.92), rgba(28,32,29,0.95));padding:24px;display:flex;flex-direction:column;justify-content:center;gap:16px;text-align:center;pointer-events:auto;z-index:9;opacity:0;transition:opacity .35s}
+  #fb{position:absolute;inset:0;background:linear-gradient(180deg, rgba(74,120,86,0.92), rgba(28,32,29,0.95));padding:24px;display:flex;flex-direction:column;justify-content:center;gap:16px;text-align:center;pointer-events:auto;z-index:9;opacity:0;transition:opacity .35s;overflow-y:auto}
   #fb.show{opacity:1}
+  #fb.hasEvidence{justify-content:flex-start;padding-top:max(24px,calc(env(safe-area-inset-top,0px) + 18px));padding-bottom:max(24px,calc(env(safe-area-inset-bottom,0px) + 18px))}
   #fb .step{font-size:13px;color:#D9E5DC;letter-spacing:1px;text-transform:uppercase;font-weight:700}
   #fb .reward{width:min(320px,100%);margin:0 auto;display:flex;align-items:center;justify-content:center;gap:12px;background:#FFF8DE;color:#155D3C;border:1px solid #F0D472;border-radius:14px;padding:12px 18px;box-shadow:0 12px 32px rgba(0,0,0,.18)}
   #fb .rewardStar{font-size:30px;line-height:1}
@@ -9360,12 +9363,22 @@ REHAB_RUNNER_HTML_TEMPLATE = r"""<!DOCTYPE html>
   #fb .rewardCopy span{font-size:13px;font-weight:750;color:#486151}
   #fb .title{font-size:22px;font-weight:800;color:#fff;line-height:1.3}
   #fb .body{font-size:16px;color:#FDFDFD;line-height:1.5;background:rgba(255,255,255,0.08);padding:14px;border-radius:14px}
+  #fb .evidence{width:min(460px,100%);margin:0 auto;text-align:left;background:#FDFDFD;color:#173D2B;border-radius:16px;padding:12px;box-shadow:0 16px 38px rgba(0,0,0,.24)}
+  #fb .evidenceHead{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:0 2px 10px}
+  #fb .evidenceHead strong{font-size:16px;font-weight:850}
+  #fb .evidenceHead span{font-size:11px;font-weight:800;color:#A12C27;background:#FDE9E7;border-radius:999px;padding:5px 8px;white-space:nowrap}
+  #fb .evidenceFrame{position:relative;width:100%;max-height:36vh;aspect-ratio:4/3;overflow:hidden;border-radius:11px;background:#151A17;border:1px solid #DDE5DE}
+  #fb .evidenceFrame img{display:block;width:100%;height:100%;object-fit:contain;background:#151A17}
+  #fb .evidenceLabels{display:flex;flex-wrap:wrap;gap:7px;margin-top:10px}
+  #fb .evidenceLabel{font-size:12px;font-weight:850;color:#A12C27;background:#FDE9E7;border:1px dashed #D9473F;border-radius:999px;padding:5px 9px}
+  #fb .evidencePrivacy{margin:8px 2px 0;color:#56655C;font-size:11px;line-height:1.35}
   #fb .prompt{font-size:15px;color:#D9E5DC;font-style:italic}
   #fb .mic{display:flex;align-items:center;justify-content:center;gap:10px;background:rgba(225,142,109,0.18);padding:10px;border-radius:14px;border:1px solid rgba(225,142,109,0.4)}
   #fb .mic .dot{width:12px;height:12px;border-radius:50%;background:#E18E6D;animation:pulse 1.1s ease-in-out infinite}
   @keyframes pulse{0%,100%{transform:scale(.7);opacity:.6}50%{transform:scale(1.2);opacity:1}}
   #fb .heard{font-size:13px;color:#fff;opacity:.85;min-height:18px}
   #fb .row{display:flex;gap:10px;justify-content:center;margin-top:8px}
+  #fb.hasEvidence>.row{position:sticky;bottom:0;z-index:2;width:min(460px,100%);margin:8px auto 0;padding:8px;border-radius:14px;background:rgba(28,32,29,.94)}
   #fb button{background:rgba(255,255,255,0.18);color:#fff;border:none;padding:12px 18px;border-radius:14px;font-weight:700;font-size:14px;cursor:pointer}
   #fb button.primary{background:#4A7856}
   #fb .check{font-size:14px;color:#D9E5DC;display:flex;gap:8px;align-items:center;justify-content:center}
@@ -9426,6 +9439,12 @@ REHAB_RUNNER_HTML_TEMPLATE = r"""<!DOCTYPE html>
       <span class="rewardCopy"><strong>+1 point</strong><span>Great repetition!</span></span>
     </div>
     <div class="title" id="fbTitle">Here's what I noticed</div>
+    <div class="evidence hidden" id="fbEvidence" data-testid="temporary-compensation-evidence">
+      <div class="evidenceHead"><strong>Where the movement changed</strong><span>Temporary image</span></div>
+      <div class="evidenceFrame"><img id="fbEvidenceImage" alt="Temporary camera frame with the detected movement area outlined in red" /></div>
+      <div class="evidenceLabels" id="fbEvidenceLabels"></div>
+      <div class="evidencePrivacy">Kept only for this feedback screen and deleted when you continue.</div>
+    </div>
     <div class="body" id="fbBody">…</div>
     <div class="prompt" id="fbPrompt">When you're ready, please say <b>"Yes"</b>.</div>
     <div class="mic" id="fbMic">
@@ -9473,6 +9492,9 @@ const fbEl = document.getElementById("fb");
 const fbStep = document.getElementById("fbStep");
 const fbTitle = document.getElementById("fbTitle");
 const fbBody = document.getElementById("fbBody");
+const fbEvidence = document.getElementById("fbEvidence");
+const fbEvidenceImage = document.getElementById("fbEvidenceImage");
+const fbEvidenceLabels = document.getElementById("fbEvidenceLabels");
 const fbPrompt = document.getElementById("fbPrompt");
 const fbMic = document.getElementById("fbMic");
 const fbChecks = document.getElementById("fbChecks");
@@ -9497,6 +9519,8 @@ const HAS_SIDE_LEAN_RULE = (STANDARD.compensations||[]).some(rule=>rule.metric =
 const CALIBRATION_CONTRACT = CFG.calibration_contract || {};
 const SCORING_METHOD = CFG.scoring_method || {};
 const OVERLAY_STYLE = CFG.overlay_style || {};
+const TEMPORARY_COMPENSATION_EVIDENCE = CFG.exercise_id === "ex_reach" && CFG.temporary_compensation_evidence === true;
+const EVIDENCE_COMPENSATION_IDS = new Set(["trunk_lean","shoulder_hike"]);
 const HAS_DYNAMIC_LAP_TARGET = (CFG.cycle||[]).some(step=>step && step.target && step.target.landmark === "LAP_DYNAMIC");
 // Static targets are authored for a right-affected patient (the cup starts on
 // the affected side); mirror them for a left-affected patient.
@@ -9646,6 +9670,10 @@ let feedbackPending = false;
 let latestExercisePoseLandmarks = null;
 let exerciseLapTarget = null;
 let exerciseLapTargetRadius = null;
+let liveCompensationStreaks = {};
+let liveCompensationIds = new Set();
+let temporaryCompensationEvidence = null;
+let lastEvidenceCaptureAt = 0;
 function newExerciseLapTargetCalibration(){
   return {samples:[], target:null, ready:false, announced:false, lastCandidateAt:0};
 }
@@ -10003,6 +10031,144 @@ function sideIndexes(side){
 }
 const ACTIVE = sideIndexes(AFFECTED_SIDE);
 const OTHER = sideIndexes(AFFECTED_SIDE === "left" ? "right" : "left");
+
+function evidencePoint(lm,index,width,height,mirrorX=false){
+  const point=lm&&lm[index];
+  if(!pointVisible(point)) return null;
+  return {x:(mirrorX ? 1-point.x : point.x)*width,y:point.y*height};
+}
+function strokeDottedPath(targetCtx,points,closed=false){
+  const clean=points.filter(Boolean);
+  if(clean.length < 2) return;
+  const scale=Math.max(1,Math.min(targetCtx.canvas.width,targetCtx.canvas.height)/640);
+  targetCtx.save();
+  targetCtx.beginPath();
+  targetCtx.moveTo(clean[0].x,clean[0].y);
+  clean.slice(1).forEach(point=>targetCtx.lineTo(point.x,point.y));
+  if(closed) targetCtx.closePath();
+  targetCtx.setLineDash([2*scale,9*scale]);
+  targetCtx.lineCap="round";
+  targetCtx.lineJoin="round";
+  targetCtx.lineWidth=4.5*scale;
+  targetCtx.strokeStyle="#FF3B30";
+  targetCtx.shadowColor="rgba(86,0,0,.78)";
+  targetCtx.shadowBlur=4*scale;
+  targetCtx.stroke();
+  targetCtx.restore();
+}
+function drawCompensationHighlights(targetCtx,lm,ids,{mirrorX=false}={}){
+  if(!lm || !ids || !ids.length) return;
+  const width=targetCtx.canvas.width,height=targetCtx.canvas.height;
+  const selected=new Set(ids);
+  if(selected.has("trunk_lean")){
+    const leftShoulder=evidencePoint(lm,11,width,height,mirrorX);
+    const rightShoulder=evidencePoint(lm,12,width,height,mirrorX);
+    const rightHip=evidencePoint(lm,24,width,height,mirrorX);
+    const leftHip=evidencePoint(lm,23,width,height,mirrorX);
+    const torso=[leftShoulder,rightShoulder,rightHip,leftHip];
+    if(torso.every(Boolean)){
+      targetCtx.save();
+      targetCtx.beginPath();
+      targetCtx.moveTo(torso[0].x,torso[0].y);
+      torso.slice(1).forEach(point=>targetCtx.lineTo(point.x,point.y));
+      targetCtx.closePath();
+      targetCtx.fillStyle="rgba(255,59,48,.08)";
+      targetCtx.fill();
+      targetCtx.restore();
+      strokeDottedPath(targetCtx,torso,true);
+      strokeDottedPath(targetCtx,[midpoint(leftShoulder,rightShoulder),midpoint(leftHip,rightHip)]);
+    }
+  }
+  if(selected.has("shoulder_hike")){
+    const shoulder=evidencePoint(lm,ACTIVE.shoulder,width,height,mirrorX);
+    const otherShoulder=evidencePoint(lm,OTHER.shoulder,width,height,mirrorX);
+    const earIndex=ACTIVE.shoulder===11 ? 7 : 8;
+    const ear=evidencePoint(lm,earIndex,width,height,mirrorX);
+    if(shoulder){
+      const shoulderWidth=otherShoulder ? Math.hypot(shoulder.x-otherShoulder.x,shoulder.y-otherShoulder.y) : width*.18;
+      const neckHeight=ear ? Math.hypot(shoulder.x-ear.x,shoulder.y-ear.y) : height*.10;
+      const radiusX=Math.max(28,shoulderWidth*.32);
+      const radiusY=Math.max(34,neckHeight*.72);
+      const centerY=ear ? (shoulder.y+ear.y)/2 : shoulder.y-radiusY*.28;
+      const scale=Math.max(1,Math.min(width,height)/640);
+      targetCtx.save();
+      targetCtx.beginPath();
+      targetCtx.ellipse(shoulder.x,centerY,radiusX,radiusY,0,0,Math.PI*2);
+      targetCtx.setLineDash([2*scale,9*scale]);
+      targetCtx.lineCap="round";
+      targetCtx.lineWidth=4.5*scale;
+      targetCtx.strokeStyle="#FF3B30";
+      targetCtx.shadowColor="rgba(86,0,0,.78)";
+      targetCtx.shadowBlur=4*scale;
+      targetCtx.stroke();
+      targetCtx.restore();
+      if(otherShoulder) strokeDottedPath(targetCtx,[otherShoulder,shoulder]);
+    }
+  }
+}
+function clearTemporaryCompensationEvidence(){
+  temporaryCompensationEvidence=null;
+  lastEvidenceCaptureAt=0;
+  fbEvidenceImage.removeAttribute("src");
+  fbEvidenceLabels.textContent="";
+  fbEvidence.classList.add("hidden");
+  fbEl.classList.remove("hasEvidence");
+}
+function captureTemporaryCompensationEvidence(lm,ids,severity,values){
+  if(!TEMPORARY_COMPENSATION_EVIDENCE || !lm || !video.videoWidth || !video.videoHeight || video.readyState < 2) return;
+  const supportedIds=ids.filter(id=>EVIDENCE_COMPENSATION_IDS.has(id));
+  if(!supportedIds.length) return;
+  const now=performance.now();
+  const addsArea=!temporaryCompensationEvidence || supportedIds.some(id=>!temporaryCompensationEvidence.ids.includes(id));
+  const improvesPeak=!temporaryCompensationEvidence || severity >= temporaryCompensationEvidence.severity+.08;
+  if(!addsArea && (!improvesPeak || now-lastEvidenceCaptureAt < 450)) return;
+  const sourceWidth=video.videoWidth,sourceHeight=video.videoHeight;
+  const scale=Math.min(1,900/Math.max(sourceWidth,sourceHeight));
+  const shot=document.createElement("canvas");
+  shot.width=Math.max(1,Math.round(sourceWidth*scale));
+  shot.height=Math.max(1,Math.round(sourceHeight*scale));
+  const shotCtx=shot.getContext("2d");
+  if(!shotCtx) return;
+  // The patient sees a mirrored selfie view. Bake that same view into the
+  // temporary frame so the red outline matches the on-screen body area.
+  shotCtx.save();
+  shotCtx.translate(shot.width,0);
+  shotCtx.scale(-1,1);
+  shotCtx.drawImage(video,0,0,shot.width,shot.height);
+  shotCtx.drawImage(canvas,0,0,shot.width,shot.height);
+  shotCtx.restore();
+  drawCompensationHighlights(shotCtx,lm,supportedIds,{mirrorX:true});
+  temporaryCompensationEvidence={
+    dataUrl:shot.toDataURL("image/jpeg",.84),
+    ids:[...supportedIds],
+    severity,
+    values:{...values},
+  };
+  lastEvidenceCaptureAt=now;
+}
+function showTemporaryCompensationEvidence(confirmed){
+  const confirmedIds=new Set((confirmed||[]).map(rule=>rule.id));
+  const visibleIds=temporaryCompensationEvidence
+    ? temporaryCompensationEvidence.ids.filter(id=>confirmedIds.has(id))
+    : [];
+  if(!visibleIds.length){
+    fbEvidence.classList.add("hidden");
+    fbEl.classList.remove("hasEvidence");
+    return;
+  }
+  fbEvidenceImage.src=temporaryCompensationEvidence.dataUrl;
+  fbEvidenceLabels.textContent="";
+  visibleIds.forEach(id=>{
+    const rule=(confirmed||[]).find(item=>item.id===id);
+    const degrees=Math.round(Number(temporaryCompensationEvidence.values[id])||0);
+    const chip=document.createElement("span");
+    chip.className="evidenceLabel";
+    chip.textContent=`${rule&&rule.label ? rule.label : id.replace(/_/g," ")}${degrees ? ` · ${degrees}°` : ""}`;
+    fbEvidenceLabels.appendChild(chip);
+  });
+  fbEvidence.classList.remove("hidden");
+  fbEl.classList.add("hasEvidence");
+}
 
 function isExerciseLapTarget(step){
   return !!step && !!step.target && step.target.landmark === "LAP_DYNAMIC";
@@ -10474,9 +10640,12 @@ function activeMovementPhase(){
   return (sub.phase||"movement") !== "return";
 }
 function resetRepMetrics(){
+  clearTemporaryCompensationEvidence();
   romBest={};
   compensationHits={};
   compensationEligible={};
+  liveCompensationStreaks={};
+  liveCompensationIds=new Set();
   trackingFrames=0;
   lowQualityFrames=0;
   activeFrames=0;
@@ -10491,6 +10660,7 @@ function updateMetrics(lm,handLm){
   const quality=trackingQuality(lm,handLm);
   if(quality < CALIBRATION_MIN_TRACKING_QUALITY){ lowQualityFrames+=1; return; }
   const raw=rawMovementMetrics(lm,handLm);
+  latestExercisePoseLandmarks=lm || latestExercisePoseLandmarks;
   lastRawMetrics=raw;
   trackingFrames+=1;
   // Return-to-rest frames are never scored: they cannot earn ROM credit and
@@ -10521,12 +10691,36 @@ function updateMetrics(lm,handLm){
     const value=metricValue(step.metric,raw);
     if(Number.isFinite(value)) romBest[step.id]=Math.max(Number(romBest[step.id]||0),value);
   }
+  const evidenceValues={};
   for(const rule of STANDARD.compensations||[]){
     const value=metricValue(rule.metric,raw);
     if(!Number.isFinite(value)) continue;
     compensationEligible[rule.id]=(compensationEligible[rule.id]||0)+1;
     peakCompensationDegrees[rule.id]=Math.max(Number(peakCompensationDegrees[rule.id]||0),value);
-    if(value >= Number(rule.threshold_deg||0)) compensationHits[rule.id]=(compensationHits[rule.id]||0)+1;
+    const aboveThreshold=value >= Number(rule.threshold_deg||0);
+    if(aboveThreshold) compensationHits[rule.id]=(compensationHits[rule.id]||0)+1;
+    const previousStreak=Number(liveCompensationStreaks[rule.id]||0);
+    liveCompensationStreaks[rule.id]=aboveThreshold ? previousStreak+1 : Math.max(0,previousStreak-2);
+    // Three consecutive eligible frames are enough to show a calm live cue;
+    // final feedback still uses the stricter min-frame and ratio confirmation.
+    if(EVIDENCE_COMPENSATION_IDS.has(rule.id) && liveCompensationStreaks[rule.id] >= 3){
+      liveCompensationIds.add(rule.id);
+      evidenceValues[rule.id]=value;
+    }else if(liveCompensationStreaks[rule.id] === 0){
+      liveCompensationIds.delete(rule.id);
+    }
+  }
+  if(TEMPORARY_COMPENSATION_EVIDENCE && liveCompensationIds.size){
+    const ids=[...liveCompensationIds];
+    const values={};
+    let severity=0;
+    ids.forEach(id=>{
+      const rule=(STANDARD.compensations||[]).find(item=>item.id===id);
+      const value=Number(evidenceValues[id]||peakCompensationDegrees[id]||0);
+      values[id]=value;
+      severity=Math.max(severity,value/Math.max(1,Number(rule&&rule.threshold_deg)||1));
+    });
+    captureTemporaryCompensationEvidence(lm,ids,severity,values);
   }
 }
 
@@ -10857,6 +11051,9 @@ function drawOverlay(lm,handLm){
   }
   drawVirtualObject(lm, handLm);
   drawLiveDegrees(lm);
+  if(TEMPORARY_COMPENSATION_EVIDENCE && activeMovementPhase() && liveCompensationIds.size){
+    drawCompensationHighlights(ctx,lm,[...liveCompensationIds]);
+  }
 }
 
 // Live readout so the patient can see the numbers being graded: the elbow
@@ -11244,6 +11441,7 @@ async function showFeedback(){
   const feedback = pickFeedback();
   lastFeedbackText = feedback;
   lastRepScore = computeRepScore();
+  const confirmed=confirmedCompensations();
   const cameraScored = lastRepScore != null;
   const label = cameraScored ? scoreLabel(lastRepScore) : "Well done";
   // Tap/guided reps (no camera score) keep earning their point; camera-scored
@@ -11258,6 +11456,7 @@ async function showFeedback(){
   fbStep.textContent = `Repetition ${currentRep+1} of ${CFG.reps} complete · ${label}`;
   fbTitle.textContent = cameraScored ? `Your score: ${lastRepScore}/100` : "Repetition complete";
   fbBody.textContent = feedback;
+  showTemporaryCompensationEvidence(confirmed);
   if(navigator.vibrate) navigator.vibrate([50, 30, 80]);
   fbEl.classList.remove("hidden");
   requestAnimationFrame(() => fbEl.classList.add("show"));
@@ -11269,7 +11468,7 @@ async function showFeedback(){
     point_earned:pointEarned,
     feedback,
     rom_metrics:repRomDetails(),
-    compensations:confirmedCompensations().map(rule=>({id:rule.id,correction:rule.correction})),
+    compensations:confirmed.map(rule=>({id:rule.id,correction:rule.correction})),
     tracking_quality:trackingFrames/Math.max(1,trackingFrames+lowQualityFrames),
   });
 
@@ -11288,6 +11487,7 @@ async function confirmAndContinue(){
   stopListening();
   fbEl.classList.remove("show");
   setTimeout(()=> fbEl.classList.add("hidden"), 350);
+  clearTemporaryCompensationEvidence();
   currentRep += 1;
   if(currentRep >= CFG.reps){
     finishExercise();
@@ -11314,6 +11514,7 @@ async function finishExercise(){
   running = false;
   stopListening();
   fbEl.classList.add("hidden");
+  clearTemporaryCompensationEvidence();
   const assisted = await askAssistance();
   captionEl.textContent = "Exercise complete!";
   if(assisted){
@@ -11529,10 +11730,12 @@ startBtn.addEventListener("click", async () => {
 exitBtn.addEventListener("click", () => {
   running=false;
   stopListening();
+  clearTemporaryCompensationEvidence();
   if(cameraStream) cameraStream.getTracks().forEach(track=>track.stop());
   if(confirmationAudioStream) confirmationAudioStream.getTracks().forEach(track=>track.stop());
   postRN({type:"exit"});
 });
+window.addEventListener("pagehide",clearTemporaryCompensationEvidence,{once:true});
 
 postRN({type:"ready"});
 if(URL_PARAMS.get("test_mode") !== "rep_feedback"){
@@ -11546,6 +11749,32 @@ if(URL_PARAMS.get("test_mode") === "rep_feedback"){
   fbPrompt.innerHTML = 'When you are ready, please say <b>"Yes"</b>.';
   fbMic.classList.add("hidden");
   fbChecks.classList.add("hidden");
+  fbEl.classList.remove("hidden");
+  requestAnimationFrame(() => fbEl.classList.add("show"));
+}
+if(URL_PARAMS.get("test_mode") === "compensation_feedback"){
+  overlay.classList.add("hidden");
+  const demo=document.createElement("canvas");
+  demo.width=640; demo.height=480;
+  const demoCtx=demo.getContext("2d");
+  demoCtx.fillStyle="#28302C"; demoCtx.fillRect(0,0,demo.width,demo.height);
+  const demoLm=Array.from({length:33},()=>({x:.5,y:.5,visibility:1}));
+  Object.assign(demoLm[11],{x:.40,y:.28}); Object.assign(demoLm[12],{x:.64,y:.22});
+  Object.assign(demoLm[23],{x:.43,y:.75}); Object.assign(demoLm[24],{x:.61,y:.76});
+  Object.assign(demoLm[7],{x:.44,y:.15}); Object.assign(demoLm[8],{x:.61,y:.11});
+  demoCtx.strokeStyle="#72B487"; demoCtx.lineWidth=5;
+  demoCtx.beginPath(); demoCtx.moveTo(.40*640,.28*480); demoCtx.lineTo(.64*640,.22*480); demoCtx.lineTo(.61*640,.76*480); demoCtx.lineTo(.43*640,.75*480); demoCtx.closePath(); demoCtx.stroke();
+  drawCompensationHighlights(demoCtx,demoLm,["trunk_lean","shoulder_hike"]);
+  temporaryCompensationEvidence={dataUrl:demo.toDataURL("image/jpeg",.84),ids:["trunk_lean","shoulder_hike"],severity:1.4,values:{trunk_lean:16,shoulder_hike:10}};
+  const demoConfirmed=(STANDARD.compensations||[]).filter(rule=>temporaryCompensationEvidence.ids.includes(rule.id));
+  fbStep.textContent = `Repetition 1 of ${CFG.reps} complete · Great work`;
+  fbReward.innerHTML = '<span class="rewardStar" aria-hidden="true">&#128161;</span><span class="rewardCopy"><strong>No point this time</strong><span>Correct the movement to earn it.</span></span>';
+  fbTitle.textContent = "Your score: 70/100";
+  fbBody.textContent = "I noticed your trunk leaned forward and your shoulder lifted toward your ear. Keep your chest tall and relax your shoulder before the next reach.";
+  fbPrompt.innerHTML = 'When you are ready, please say <b>"Yes"</b>.';
+  fbMic.classList.add("hidden");
+  fbChecks.classList.add("hidden");
+  showTemporaryCompensationEvidence(demoConfirmed);
   fbEl.classList.remove("hidden");
   requestAnimationFrame(() => fbEl.classList.add("show"));
 }

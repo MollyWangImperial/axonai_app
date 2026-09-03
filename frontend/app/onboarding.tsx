@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { View, Text, StyleSheet, Pressable, TextInput, ScrollView, ActivityIndicator, KeyboardAvoidingView, Modal, Platform } from "react-native";
+import { View, Text, StyleSheet, Pressable, TextInput, ScrollView, ActivityIndicator, KeyboardAvoidingView, Modal, Platform, Image, useWindowDimensions } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import { useLocalSearchParams, useRouter } from "expo-router";
@@ -7,6 +7,7 @@ import * as Haptics from "expo-haptics";
 import { colors, spacing, radius } from "@/src/theme";
 import { authedFetch, cachePatientOnboarding, getCachedUser, signIn } from "@/src/auth";
 import { ASSESSMENT_READINESS_KEYS, PATIENT_SURVEY_STEPS, MOVEMENT_READINESS_VERSION } from "@/src/patientSurvey";
+import { getAgeAnatomyPresentation } from "@/src/ageAnatomy";
 
 const READINESS_SURVEY_STEPS = PATIENT_SURVEY_STEPS.filter((item) =>
   ASSESSMENT_READINESS_KEYS.includes(item.key as typeof ASSESSMENT_READINESS_KEYS[number]),
@@ -50,8 +51,16 @@ const GOAL_PICTURES: Record<string, { icon: keyof typeof MaterialCommunityIcons.
   other: { icon: "star-plus-outline", tint: "#4E5A52", background: "#EEF1EE" },
 };
 
+const DOMINANT_HAND_PERSON = require("@/assets/images/survey-dominant-hand-person.png");
+const DOMINANT_HANDS = require("@/assets/images/survey-dominant-hands.png");
+const SITTING_INDEPENDENT = require("@/assets/images/survey-sitting-independent.png");
+const SITTING_SUPPORTED = require("@/assets/images/survey-sitting-supported.png");
+const SITTING_UNSAFE = require("@/assets/images/survey-sitting-unsafe.png");
+const SITTING_UNSURE = require("@/assets/images/survey-sitting-unsure.png");
+
 export default function OnboardingScreen() {
   const insets = useSafeAreaInsets();
+  const { width } = useWindowDimensions();
   const router = useRouter();
   const params = useLocalSearchParams<{ mode?: string }>();
   const isReadinessUpdate = params.mode === "assessment-readiness";
@@ -85,6 +94,9 @@ export default function OnboardingScreen() {
 
   const step = steps[idx];
   const progress = ((idx + 1) / steps.length) * 100;
+  const useWideAffectedAreaLayout = width >= 1180;
+  const useWideDominantHandLayout = width >= 900;
+  const useWideSittingAbilityLayout = width >= 1000;
 
   useEffect(() => {
     if (!startsFromSavedProfile) return;
@@ -246,6 +258,185 @@ export default function OnboardingScreen() {
       );
     }
     if (step.type === "single") {
+      if (step.key === "dominant_hand") {
+        const selectedHand = values.dominant_hand;
+        const chooseHand = (value: "left" | "right" | "ambidextrous") => setVal("dominant_hand", value);
+        const renderSideChoice = (value: "left" | "right", label: string) => {
+          const active = selectedHand === value;
+          return (
+            <Pressable
+              key={value}
+              testID={`onb-opt-dominant_hand-${value}`}
+              accessibilityRole="radio"
+              accessibilityState={{ selected: active }}
+              accessibilityLabel={`${label} handed`}
+              onPress={() => chooseHand(value)}
+              style={[
+                styles.dominantSideChoice,
+                useWideDominantHandLayout && styles.dominantSideChoiceWide,
+                active && styles.dominantSideChoiceActive,
+              ]}
+            >
+              <Text style={[styles.dominantSideLabel, active && styles.dominantSideLabelActive]}>{label}</Text>
+              {active ? <Ionicons name="checkmark" size={useWideDominantHandLayout ? 34 : 25} color={colors.brandPrimary} /> : null}
+            </Pressable>
+          );
+        };
+        const bothSelected = selectedHand === "ambidextrous";
+        const selectedSummary = selectedHand === "left"
+          ? "Left-handed selected"
+          : selectedHand === "right"
+            ? "Right-handed selected"
+            : null;
+
+        return (
+          <View
+            testID="dominant-hand-selector"
+            accessibilityRole="radiogroup"
+            style={[styles.dominantHandLayout, useWideDominantHandLayout && styles.dominantHandLayoutWide]}
+          >
+            <View style={[styles.dominantPersonCard, useWideDominantHandLayout && styles.dominantPersonCardWide]}>
+              <Text style={styles.dominantDirectionNote}>Same direction as you</Text>
+              <View style={styles.dominantPersonRow}>
+                {renderSideChoice("left", "LEFT")}
+                <Image
+                  source={DOMINANT_HAND_PERSON}
+                  resizeMode="contain"
+                  accessibilityLabel="Person shown from behind, facing the same direction as you"
+                  style={[styles.dominantPersonImage, useWideDominantHandLayout && styles.dominantPersonImageWide]}
+                />
+                {renderSideChoice("right", "RIGHT")}
+              </View>
+              <View style={styles.dominantSelectionSummary}>
+                {selectedSummary ? (
+                  <>
+                    <Ionicons name="checkmark-circle" size={24} color={colors.brandPrimary} />
+                    <Text style={styles.dominantSelectionSummaryText}>{selectedSummary}</Text>
+                  </>
+                ) : (
+                  <Text style={styles.dominantSelectionHint}>Choose left or right</Text>
+                )}
+              </View>
+            </View>
+
+            <Pressable
+              testID="onb-opt-dominant_hand-ambidextrous"
+              accessibilityRole="radio"
+              accessibilityState={{ selected: bothSelected }}
+              accessibilityLabel="Both hands or ambidextrous"
+              onPress={() => chooseHand("ambidextrous")}
+              style={[
+                styles.dominantBothCard,
+                useWideDominantHandLayout && styles.dominantBothCardWide,
+                bothSelected && styles.dominantChoiceActive,
+              ]}
+            >
+              <Image
+                source={DOMINANT_HANDS}
+                resizeMode="contain"
+                accessibilityLabel="Two open hands"
+                style={[styles.dominantHandsImage, useWideDominantHandLayout && styles.dominantHandsImageWide]}
+              />
+              <View style={styles.dominantBothCopy}>
+                <View style={styles.dominantBothTitleRow}>
+                  <Ionicons
+                    name={bothSelected ? "checkmark-circle" : "ellipse-outline"}
+                    size={28}
+                    color={bothSelected ? colors.brandPrimary : colors.borderStrong}
+                  />
+                  <Text style={[styles.dominantBothEyebrow, bothSelected && styles.dominantSideLabelActive]}>BOTH</Text>
+                </View>
+                <Text style={styles.dominantBothTitle}>Both / Ambidextrous</Text>
+                <Text style={styles.dominantBothDescription}>I used both hands about the same.</Text>
+              </View>
+            </Pressable>
+          </View>
+        );
+      }
+
+      if (step.key === "sitting_ability") {
+        const selectedAbility = values.sitting_ability;
+        const sittingChoices = [
+          {
+            value: "independent",
+            label: "Yes, without someone holding me",
+            image: SITTING_INDEPENDENT,
+            imageLabel: "Person sitting upright independently in a stable chair",
+          },
+          {
+            value: "needs_support",
+            label: "Only with support or someone helping",
+            image: SITTING_SUPPORTED,
+            imageLabel: "Person sitting upright with another person helping",
+          },
+          {
+            value: "unable",
+            label: "No, not safely at the moment",
+            image: SITTING_UNSAFE,
+            imageLabel: "Stable chair beside a safety pause symbol",
+          },
+        ] as const;
+        const renderChoiceIndicator = (active: boolean) => (
+          <View style={[styles.sittingChoiceIndicator, active && styles.sittingChoiceIndicatorActive]}>
+            {active ? <Ionicons name="checkmark" size={28} color={colors.onBrandPrimary} /> : null}
+          </View>
+        );
+
+        return (
+          <View
+            testID="sitting-ability-selector"
+            accessibilityRole="radiogroup"
+            style={styles.sittingAbilityLayout}
+          >
+            <View style={[styles.sittingChoiceGrid, useWideSittingAbilityLayout && styles.sittingChoiceGridWide]}>
+              {sittingChoices.map((choice) => {
+                const active = selectedAbility === choice.value;
+                return (
+                  <Pressable
+                    key={choice.value}
+                    testID={`onb-opt-sitting_ability-${choice.value}`}
+                    accessibilityRole="radio"
+                    accessibilityState={{ selected: active }}
+                    accessibilityLabel={choice.label}
+                    onPress={() => setVal("sitting_ability", choice.value)}
+                    style={[
+                      styles.sittingChoiceCard,
+                      useWideSittingAbilityLayout && styles.sittingChoiceCardWide,
+                      active && styles.sittingChoiceCardActive,
+                    ]}
+                  >
+                    <Image
+                      source={choice.image}
+                      resizeMode="contain"
+                      accessibilityLabel={choice.imageLabel}
+                      style={[styles.sittingChoiceImage, useWideSittingAbilityLayout && styles.sittingChoiceImageWide]}
+                    />
+                    <Text style={[styles.sittingChoiceLabel, useWideSittingAbilityLayout && styles.sittingChoiceLabelWide]}>{choice.label}</Text>
+                    {renderChoiceIndicator(active)}
+                  </Pressable>
+                );
+              })}
+            </View>
+
+            <Pressable
+              testID="onb-opt-sitting_ability-not_sure"
+              accessibilityRole="radio"
+              accessibilityState={{ selected: selectedAbility === "not_sure" }}
+              accessibilityLabel="I am not sure"
+              onPress={() => setVal("sitting_ability", "not_sure")}
+              style={[
+                styles.sittingUnsureChoice,
+                selectedAbility === "not_sure" && styles.sittingChoiceCardActive,
+              ]}
+            >
+              <Image source={SITTING_UNSURE} resizeMode="contain" accessibilityLabel="Chair with a question mark" style={styles.sittingUnsureImage} />
+              <Text style={styles.sittingUnsureLabel}>I am not sure</Text>
+              {renderChoiceIndicator(selectedAbility === "not_sure")}
+            </Pressable>
+          </View>
+        );
+      }
+
       return (
         <View style={styles.optionsCol}>
           {step.options!.map((o) => {
@@ -275,6 +466,136 @@ export default function OnboardingScreen() {
     }
     if (step.type === "multi") {
       const selected: string[] = values[step.key] || [];
+
+      if (step.key === "affected_areas") {
+        const anatomy = getAgeAnatomyPresentation(typeof values.age_band === "string" ? values.age_band : null);
+        const toggleAffectedArea = (value: string) => {
+          const active = selected.includes(value);
+          if (value === "other") {
+            if (active) {
+              setVal(step.key, selected.filter((item) => item !== "other"));
+              setVal("affected_areas_other", undefined);
+              setOtherAreaText("");
+            } else {
+              setShowOtherArea(true);
+            }
+            return;
+          }
+          if (value === "unsure") {
+            setVal(step.key, active ? [] : ["unsure"]);
+            setVal("affected_areas_other", undefined);
+            setOtherAreaText("");
+            return;
+          }
+          const next = active
+            ? selected.filter((item) => item !== value)
+            : [...selected.filter((item) => item !== "unsure"), value];
+          setVal(step.key, next);
+        };
+        const selectedLabels = step.options!
+          .filter((option) => selected.includes(option.value))
+          .map((option) => option.value === "other" && values.affected_areas_other
+            ? String(values.affected_areas_other)
+            : option.label.replace(" (shoulder, arm or hand)", "").replace(" (hip, leg or foot)", ""));
+        const limbOptions = [
+          { value: "left_upper", side: "L", label: "Your left arm" },
+          { value: "right_upper", side: "R", label: "Your right arm" },
+          { value: "left_lower", side: "L", label: "Your left leg" },
+          { value: "right_lower", side: "R", label: "Your right leg" },
+        ];
+
+        const renderLimbChoice = (option: typeof limbOptions[number]) => {
+          const active = selected.includes(option.value);
+          return (
+            <Pressable
+              key={option.value}
+              testID={`onb-multi-affected_areas-${option.value}`}
+              accessibilityRole="checkbox"
+              accessibilityState={{ checked: active }}
+              onPress={() => toggleAffectedArea(option.value)}
+              style={[styles.bodyAreaChoice, useWideAffectedAreaLayout && styles.bodyAreaChoiceWide, active && styles.bodyAreaChoiceActive]}
+            >
+              <View style={[styles.sideBadge, active && styles.sideBadgeActive]}>
+                <Text style={[styles.sideBadgeText, active && styles.sideBadgeTextActive]}>{option.side}</Text>
+              </View>
+              <Text style={[styles.bodyAreaChoiceText, active && styles.bodyAreaChoiceTextActive]}>{option.label}</Text>
+              <Ionicons
+                name={active ? "checkmark-circle" : "ellipse-outline"}
+                size={25}
+                color={active ? colors.brandPrimary : colors.borderStrong}
+              />
+            </Pressable>
+          );
+        };
+
+        const additionalOptions = [
+          { value: "face_speech", label: "Face or speech", icon: "account-voice" as const },
+          { value: "other", label: "Another area", icon: "human" as const },
+          { value: "unsure", label: "Not sure yet", icon: "help-circle-outline" as const },
+        ];
+
+        return (
+          <View style={[styles.bodyAreaLayout, useWideAffectedAreaLayout && styles.bodyAreaLayoutWide]} testID="affected-area-selector">
+            <View style={[styles.bodyAreaMain, useWideAffectedAreaLayout && styles.bodyAreaMainWide]}>
+              {useWideAffectedAreaLayout ? (
+                <View style={styles.limbColumn}>
+                  {renderLimbChoice(limbOptions[0])}
+                  {renderLimbChoice(limbOptions[2])}
+                </View>
+              ) : null}
+
+              <View style={styles.anatomyPanel}>
+                <Image source={anatomy.source} resizeMode="contain" accessibilityLabel={anatomy.viewLabel} style={[styles.bodyAreaAnatomy, useWideAffectedAreaLayout && styles.bodyAreaAnatomyWide]} />
+                <Text style={styles.anatomyPrompt}>Choose every area that was affected</Text>
+              </View>
+
+              {useWideAffectedAreaLayout ? (
+                <View style={styles.limbColumn}>
+                  {renderLimbChoice(limbOptions[1])}
+                  {renderLimbChoice(limbOptions[3])}
+                </View>
+              ) : (
+                <View style={styles.limbGrid}>{limbOptions.map(renderLimbChoice)}</View>
+              )}
+            </View>
+
+            <View style={[styles.additionalAreaColumn, useWideAffectedAreaLayout && styles.additionalAreaColumnWide]}>
+              {additionalOptions.map((option) => {
+                const active = selected.includes(option.value);
+                return (
+                  <Pressable
+                    key={option.value}
+                    testID={`onb-multi-affected_areas-${option.value}`}
+                    accessibilityRole="checkbox"
+                    accessibilityState={{ checked: active }}
+                    onPress={() => toggleAffectedArea(option.value)}
+                    style={[styles.additionalAreaChoice, active && styles.bodyAreaChoiceActive]}
+                  >
+                    <View style={[styles.additionalAreaIcon, active && styles.additionalAreaIconActive]}>
+                      <MaterialCommunityIcons name={option.icon} size={34} color={active ? colors.brandPrimary : colors.onSurfaceTertiary} />
+                    </View>
+                    <View style={styles.additionalAreaCopy}>
+                      <Text style={[styles.additionalAreaLabel, active && styles.bodyAreaChoiceTextActive]}>{option.label}</Text>
+                      {option.value === "other" && active && values.affected_areas_other ? (
+                        <Text numberOfLines={2} style={styles.additionalAreaDetail}>{String(values.affected_areas_other)}</Text>
+                      ) : null}
+                    </View>
+                    <Ionicons name={active ? "checkmark-circle" : "ellipse-outline"} size={25} color={active ? colors.brandPrimary : colors.borderStrong} />
+                  </Pressable>
+                );
+              })}
+            </View>
+
+            {selectedLabels.length > 0 ? (
+              <View style={styles.bodyAreaSummary} testID="affected-area-summary">
+                <Ionicons name="checkmark-circle" size={23} color={colors.success} />
+                <Text style={styles.bodyAreaSummaryText}>{selectedLabels.join(" · ")}</Text>
+              </View>
+            ) : null}
+          </View>
+        );
+      }
+
       return (
         <View style={styles.optionsGrid}>
           {step.options!.map((o) => {
@@ -389,8 +710,18 @@ export default function OnboardingScreen() {
 
       <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={{ flex: 1 }}>
         <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
-          <Text style={styles.question} testID={`onb-q-${step.key}`}>{step.question}</Text>
-          {step.helper && <Text style={styles.helper}>{step.helper}</Text>}
+          <Text style={[
+            styles.question,
+            step.key === "affected_areas" && useWideAffectedAreaLayout && styles.bodyAreaQuestion,
+            step.key === "dominant_hand" && useWideDominantHandLayout && styles.dominantHandQuestionWide,
+            step.key === "sitting_ability" && useWideSittingAbilityLayout && styles.sittingAbilityQuestionWide,
+          ]} testID={`onb-q-${step.key}`}>{step.question}</Text>
+          {step.helper && <Text style={[
+            styles.helper,
+            step.key === "affected_areas" && useWideAffectedAreaLayout && styles.bodyAreaHelper,
+            step.key === "dominant_hand" && useWideDominantHandLayout && styles.dominantHandHelperWide,
+            step.key === "sitting_ability" && useWideSittingAbilityLayout && styles.sittingAbilityHelperWide,
+          ]}>{step.helper}</Text>}
           <View style={{ height: spacing.lg }} />
           {loadingProfile ? <ActivityIndicator color={colors.brandPrimary} /> : renderInput()}
         </ScrollView>
@@ -642,6 +973,51 @@ const styles = StyleSheet.create({
   optionEmoji: { fontSize: 24 },
   optionLabel: { flex: 1, fontSize: 16, fontWeight: "600", color: colors.onSurface },
   optionLabelActive: { color: colors.onBrandTertiary, fontWeight: "700" },
+  dominantHandLayout: { width: "100%", gap: spacing.md },
+  dominantHandLayoutWide: { flexDirection: "row", alignItems: "stretch", gap: spacing.lg },
+  dominantPersonCard: { minWidth: 0, alignItems: "center", paddingHorizontal: spacing.sm, paddingTop: spacing.md, paddingBottom: spacing.sm, borderRadius: radius.sm, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface },
+  dominantPersonCardWide: { flex: 1.65, minHeight: 430, paddingHorizontal: spacing.lg, paddingTop: spacing.md },
+  dominantDirectionNote: { color: colors.brandPrimary, fontSize: 15, lineHeight: 20, fontWeight: "800", textAlign: "center" },
+  dominantPersonRow: { width: "100%", flexDirection: "row", alignItems: "center", justifyContent: "center", gap: spacing.sm },
+  dominantPersonImage: { flexShrink: 1, width: 132, height: 224 },
+  dominantPersonImageWide: { width: 225, height: 340 },
+  dominantSideChoice: { flexShrink: 0, width: 82, aspectRatio: 1, alignItems: "center", justifyContent: "center", gap: 1, borderRadius: 999, borderWidth: 3, borderColor: colors.borderStrong, backgroundColor: colors.surface },
+  dominantSideChoiceWide: { width: 116, borderWidth: 4, gap: spacing.xs },
+  dominantSideChoiceActive: { borderColor: colors.brandPrimary, backgroundColor: "#EEF6F0" },
+  dominantSideLabel: { color: colors.onSurface, fontSize: 14, lineHeight: 18, fontWeight: "900" },
+  dominantSideLabelActive: { color: colors.brandPrimary },
+  dominantSelectionSummary: { minHeight: 28, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: spacing.xs },
+  dominantSelectionSummaryText: { color: colors.brandPrimary, fontSize: 16, lineHeight: 22, fontWeight: "800", textAlign: "center" },
+  dominantSelectionHint: { color: colors.onSurfaceTertiary, fontSize: 13, lineHeight: 20, fontWeight: "600", textAlign: "center" },
+  dominantBothCard: { minWidth: 0, minHeight: 140, flexDirection: "row", alignItems: "center", gap: spacing.md, padding: spacing.md, borderRadius: radius.sm, borderWidth: 2, borderColor: colors.border, backgroundColor: colors.surface },
+  dominantBothCardWide: { flex: 1, minHeight: 430, flexDirection: "column", alignItems: "stretch", justifyContent: "center", paddingHorizontal: spacing.xl, paddingVertical: spacing.lg },
+  dominantChoiceActive: { borderColor: colors.brandPrimary, backgroundColor: "#EEF6F0" },
+  dominantHandsImage: { flexShrink: 0, width: 120, height: 104 },
+  dominantHandsImageWide: { width: "100%", height: 220 },
+  dominantBothCopy: { flex: 1, minWidth: 0, justifyContent: "center", gap: 4 },
+  dominantBothTitleRow: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
+  dominantBothEyebrow: { color: colors.onSurface, fontSize: 16, lineHeight: 21, fontWeight: "900" },
+  dominantBothTitle: { color: colors.onSurface, fontSize: 19, lineHeight: 25, fontWeight: "800" },
+  dominantBothDescription: { color: colors.onSurfaceSecondary, fontSize: 14, lineHeight: 20, fontWeight: "600" },
+  dominantHandQuestionWide: { fontSize: 32, lineHeight: 39 },
+  dominantHandHelperWide: { fontSize: 17, lineHeight: 24 },
+  sittingAbilityLayout: { width: "100%", gap: spacing.md },
+  sittingChoiceGrid: { width: "100%", gap: spacing.sm },
+  sittingChoiceGridWide: { flexDirection: "row", alignItems: "stretch", gap: spacing.md },
+  sittingChoiceCard: { width: "100%", minHeight: 148, flexDirection: "row", alignItems: "center", gap: spacing.md, padding: spacing.md, borderRadius: radius.sm, borderWidth: 2, borderColor: colors.borderStrong, backgroundColor: colors.surface },
+  sittingChoiceCardWide: { flex: 1, width: "auto", minWidth: 0, minHeight: 360, flexDirection: "column", justifyContent: "space-between", paddingHorizontal: spacing.lg, paddingVertical: spacing.md },
+  sittingChoiceCardActive: { borderColor: colors.brandPrimary, borderWidth: 3, backgroundColor: "#EEF6F0" },
+  sittingChoiceImage: { flexShrink: 0, width: 116, height: 116 },
+  sittingChoiceImageWide: { width: "100%", height: 235 },
+  sittingChoiceLabel: { flex: 1, minWidth: 0, color: colors.onSurface, fontSize: 17, lineHeight: 23, fontWeight: "800" },
+  sittingChoiceLabelWide: { flex: 0, minHeight: 48, textAlign: "center", fontSize: 18, lineHeight: 24 },
+  sittingChoiceIndicator: { flexShrink: 0, width: 46, height: 46, borderRadius: 23, alignItems: "center", justifyContent: "center", borderWidth: 3, borderColor: colors.brandPrimary, backgroundColor: colors.surface },
+  sittingChoiceIndicatorActive: { backgroundColor: colors.brandPrimary },
+  sittingUnsureChoice: { width: "100%", minHeight: 86, flexDirection: "row", alignItems: "center", gap: spacing.md, paddingHorizontal: spacing.lg, paddingVertical: spacing.sm, borderRadius: radius.sm, borderWidth: 2, borderColor: colors.borderStrong, backgroundColor: colors.surface },
+  sittingUnsureImage: { flexShrink: 0, width: 92, height: 68 },
+  sittingUnsureLabel: { flex: 1, minWidth: 0, color: colors.onSurface, fontSize: 18, lineHeight: 24, fontWeight: "800" },
+  sittingAbilityQuestionWide: { fontSize: 34, lineHeight: 42 },
+  sittingAbilityHelperWide: { fontSize: 18, lineHeight: 25 },
   optionsGrid: { flexDirection: "row", flexWrap: "wrap", gap: spacing.sm },
   chip: { maxWidth: "100%", flexDirection: "row", alignItems: "center", gap: 6, backgroundColor: colors.surfaceSecondary, paddingHorizontal: spacing.md, paddingVertical: 10, borderRadius: radius.pill, borderWidth: 2, borderColor: "transparent" },
   chipActive: { borderColor: colors.brandPrimary, backgroundColor: colors.brandTertiary },
@@ -654,6 +1030,37 @@ const styles = StyleSheet.create({
   goalCheck: { position: "absolute", top: 8, right: 8 },
   chipText: { flexShrink: 1, fontSize: 14, lineHeight: 19, fontWeight: "600", color: colors.onSurface },
   chipTextActive: { color: colors.onBrandTertiary, fontWeight: "700" },
+  bodyAreaLayout: { width: "100%", gap: spacing.md },
+  bodyAreaLayoutWide: { flexDirection: "row", flexWrap: "wrap", alignItems: "stretch", gap: spacing.lg },
+  bodyAreaMain: { flex: 1, minWidth: 0, gap: spacing.md },
+  bodyAreaMainWide: { minWidth: 760, flexDirection: "row", alignItems: "center", justifyContent: "center" },
+  limbColumn: { width: 240, gap: spacing.xl, justifyContent: "space-around" },
+  limbGrid: { flexDirection: "row", flexWrap: "wrap", gap: spacing.sm },
+  anatomyPanel: { minWidth: 0, alignItems: "center", justifyContent: "center" },
+  bodyAreaAnatomy: { width: 170, height: 300 },
+  bodyAreaAnatomyWide: { width: 225, height: 400 },
+  anatomyPrompt: { maxWidth: 230, color: colors.onSurfaceSecondary, fontSize: 13, lineHeight: 18, fontWeight: "700", textAlign: "center", marginTop: spacing.xs },
+  bodyAreaChoice: { flex: 1, minWidth: 230, minHeight: 78, flexDirection: "row", alignItems: "center", gap: spacing.sm, paddingHorizontal: spacing.md, paddingVertical: spacing.sm, borderRadius: radius.sm, borderWidth: 2, borderColor: colors.borderStrong, backgroundColor: colors.surface },
+  bodyAreaChoiceWide: { flex: 0, width: "100%", minWidth: 0 },
+  bodyAreaChoiceActive: { borderColor: colors.brandPrimary, backgroundColor: "#EEF6F0" },
+  sideBadge: { width: 38, height: 38, borderRadius: 19, alignItems: "center", justifyContent: "center", backgroundColor: colors.surfaceTertiary },
+  sideBadgeActive: { backgroundColor: colors.brandPrimary },
+  sideBadgeText: { color: colors.onSurfaceSecondary, fontSize: 17, fontWeight: "900" },
+  sideBadgeTextActive: { color: colors.onBrandPrimary },
+  bodyAreaChoiceText: { flex: 1, color: colors.onSurface, fontSize: 15, lineHeight: 20, fontWeight: "800", textTransform: "uppercase" },
+  bodyAreaChoiceTextActive: { color: colors.brandPrimary },
+  additionalAreaColumn: { gap: spacing.sm },
+  additionalAreaColumnWide: { width: 310 },
+  additionalAreaChoice: { minHeight: 96, flexDirection: "row", alignItems: "center", gap: spacing.md, padding: spacing.md, borderRadius: radius.sm, borderWidth: 2, borderColor: colors.borderStrong, backgroundColor: colors.surface },
+  additionalAreaIcon: { width: 58, height: 58, borderRadius: 29, alignItems: "center", justifyContent: "center", backgroundColor: colors.surfaceSecondary },
+  additionalAreaIconActive: { backgroundColor: colors.brandTertiary },
+  additionalAreaCopy: { flex: 1, minWidth: 0 },
+  additionalAreaLabel: { color: colors.onSurface, fontSize: 17, lineHeight: 22, fontWeight: "800" },
+  additionalAreaDetail: { color: colors.onSurfaceSecondary, fontSize: 12, lineHeight: 17, marginTop: 3 },
+  bodyAreaSummary: { width: "100%", minHeight: 48, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: spacing.xs, paddingHorizontal: spacing.md, paddingVertical: spacing.sm, borderRadius: radius.sm, backgroundColor: "#EEF6F0" },
+  bodyAreaSummaryText: { flexShrink: 1, color: colors.brandPrimary, fontSize: 14, lineHeight: 20, fontWeight: "800", textAlign: "center" },
+  bodyAreaQuestion: { fontSize: 34, lineHeight: 42 },
+  bodyAreaHelper: { fontSize: 18, lineHeight: 25 },
   footer: { padding: spacing.md, backgroundColor: colors.surface, borderTopWidth: 1, borderTopColor: colors.divider },
   saveError: { color: colors.error, fontSize: 14, lineHeight: 20, marginBottom: spacing.sm, textAlign: "center" },
   continueBtn: { backgroundColor: colors.brandPrimary, padding: 16, borderRadius: radius.lg, alignItems: "center", minHeight: 56, justifyContent: "center" },

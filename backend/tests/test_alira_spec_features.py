@@ -767,6 +767,42 @@ def test_forward_reach_grading_is_phase_gated_and_catches_forward_lean_and_shrug
     assert "`Trunk lean ${Math.round(lean)}°`" in source
 
 
+def test_forward_reach_shows_private_temporary_visual_compensation_evidence():
+    """Confirmed reach compensations get an in-memory annotated frame, never an upload."""
+    source = (ROOT / "backend" / "server.py").read_text(encoding="utf-8")
+    reach = server._configure_rehab_runner("ex_reach", "medium", "standard")
+    trunk = server._configure_rehab_runner("ex_trunk", "medium", "standard")
+
+    assert reach["exercise_id"] == "ex_reach"
+    assert reach["temporary_compensation_evidence"] is True
+    assert trunk["temporary_compensation_evidence"] is False
+    assert 'data-testid="temporary-compensation-evidence"' in source
+    assert "function drawCompensationHighlights(" in source
+    assert 'targetCtx.setLineDash([2*scale,9*scale]);' in source
+    assert 'selected.has("trunk_lean")' in source
+    assert 'selected.has("shoulder_hike")' in source
+    assert "lm,ACTIVE.shoulder" in source
+
+    # A short sustained streak controls the live dotted cue. The final score and
+    # screenshot still require the existing stricter confirmed-compensation rule.
+    assert "liveCompensationStreaks[rule.id] >= 3" in source
+    assert "showTemporaryCompensationEvidence(confirmed);" in source
+    assert "const confirmed=confirmedCompensations();" in source
+
+    capture_block = source.split("function captureTemporaryCompensationEvidence", 1)[1].split(
+        "function showTemporaryCompensationEvidence", 1
+    )[0]
+    assert 'shot.toDataURL("image/jpeg",.84)' in capture_block
+    for forbidden in ("fetch(", "postRN(", "localStorage", "sessionStorage", "indexedDB"):
+        assert forbidden not in capture_block
+
+    # The photo is detached as soon as the patient continues or exits, and a
+    # page close also clears the only JavaScript reference.
+    assert 'fbEvidenceImage.removeAttribute("src");' in source
+    assert source.count("clearTemporaryCompensationEvidence();") >= 4
+    assert 'window.addEventListener("pagehide",clearTemporaryCompensationEvidence,{once:true});' in source
+
+
 def test_trunk_restrained_reaching_is_graded_like_forward_reach_and_recalibrates_on_posture_change():
     """Leaning off the chair or hiking the shoulder during trunk-restrained reaching is
     flagged, corrected, scored 70 and earns no point; a bent elbow never reaches 90."""

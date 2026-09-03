@@ -24,6 +24,7 @@ export const USER_KEY = "active_user_id_v2";
 export const USER_OBJ = "active_user_obj_v2";
 const BACKEND_USER_KEY = `backend_user_id_v1:${BASE}`;
 const TRIAL_ACCESS_KEY = `trial_access_code_v1:${BASE}`;
+const SIGN_IN_TIMEOUT_MS = 15000;
 const authStateListeners = new Set<() => void>();
 
 export function subscribeAuthState(listener: () => void) {
@@ -151,10 +152,23 @@ export async function signIn(email: string, name: string, role: "patient" | "the
   const savedTrialCode = await storage.secureGet(TRIAL_ACCESS_KEY, "");
   const accessCode = (trialCode || savedTrialCode || "").trim();
   if (!accessCode) throw new Error("Enter your trial code to continue.");
-  const r = await fetch(`${BASE}/api/users/login`, {
-    method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ email, name, role, trial_code: accessCode }),
-  });
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), SIGN_IN_TIMEOUT_MS);
+  let r: Response;
+  try {
+    r = await fetch(`${BASE}/api/users/login`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email, name, role, trial_code: accessCode }),
+      signal: controller.signal,
+    });
+  } catch {
+    if (controller.signal.aborted) {
+      throw new Error("Sign-in is taking longer than expected. Please try again.");
+    }
+    throw new Error("Rehyn cannot reach the sign-in service. Check your connection and try again.");
+  } finally {
+    clearTimeout(timeout);
+  }
   if (!r.ok) {
     const body = await r.json().catch(() => null);
     throw new Error(body?.detail || "Sign-in failed. Try again.");
@@ -231,11 +245,11 @@ export async function clearPendingConsent() {
   await storage.removeItem(PENDING_CONSENT_KEY);
 }
 
-export async function hasAcceptedConsent(userId: string): Promise<boolean> {
+export async function hasAcceptedConsent(userId: string, signal?: AbortSignal): Promise<boolean> {
   const value: string | null = await storage.getItem(consentAcceptedKey(userId), "" as string);
   const locallyAccepted = value === "1";
   try {
-    const response = await authedFetch("/api/users/consent");
+    const response = await authedFetch("/api/users/consent", { signal });
     // Only an authentication failure means "not accepted". A server hiccup
     // (cold start, 5xx) must not send an existing patient back to the Terms.
     if (response.status === 401 || response.status === 403) return false;
