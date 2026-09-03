@@ -4798,7 +4798,7 @@ async function setupHand(){
     handLandmarker = await HandLandmarker.createFromOptions(filesetResolver, {
       baseOptions:{ modelAssetPath: "/vendor/mediapipe/models/hand_landmarker.task" },
       runningMode: "VIDEO",
-      numHands: 2,
+      numHands: 4,  # patient hands plus a helping carer hand or two
       minHandDetectionConfidence: 0.65,
       minHandPresenceConfidence: 0.65,
       minTrackingConfidence: 0.7,
@@ -8346,6 +8346,20 @@ EXERCISE_OVERLAY_STYLE: Dict[str, Any] = {
     "calibration_target_fill": "rgba(74,120,86,.28)",
 }
 
+# Movement-phase tagging for scoring: only the active movement of a
+# repetition is scored. Return-to-rest frames are excluded so a straight elbow
+# at rest cannot claim "elbow extension", and upright resting frames cannot
+# dilute the confirmation of a compensation that lasted the whole reach.
+_RETURN_STEP_PATTERN = re.compile(r"\b(return|lower)\b", re.IGNORECASE)
+for _runner in REHAB_RUNNER_CONFIG.values():
+    for _step in _runner.get("cycle") or []:
+        _is_return = (
+            ((_step.get("target") or {}).get("landmark") == "LAP_DYNAMIC")
+            or bool(_RETURN_STEP_PATTERN.search(str(_step.get("caption") or "")))
+        )
+        _step.setdefault("phase", "return" if _is_return else "movement")
+
+
 EXERCISE_SCORING_METHOD: Dict[str, Any] = {
     "scale_min": 0,
     "scale_max": 100,
@@ -8354,6 +8368,33 @@ EXERCISE_SCORING_METHOD: Dict[str, Any] = {
     "rom_cap_percent": 100,
     "compensation_confirmation": "minimum frame count and minimum eligible-frame ratio must both be met",
     "quality_boundary": "camera-derived coaching score; not a diagnosis or laboratory motion-capture measurement",
+}
+
+# Assisted completions: when the patient confirms a carer or family member
+# helped during the exercise, the session score is halved before it is stored,
+# so the functional-domain score (upper limb, hand, lower limb) reflects
+# independent ability rather than the helper's.
+ASSISTED_SCORE_FACTOR = 0.5
+
+EXERCISE_FUNCTIONAL_DOMAINS: Dict[str, str] = {
+    "ex_reach": "upper_limb",
+    "ex_trunk": "upper_limb",
+    "ex_wallslide": "upper_limb",
+    "ex_scapdepress": "upper_limb",
+    "ex_h2m": "upper_limb",
+    "ex_grasp": "upper_limb",
+    "ex_bilateral": "upper_limb",
+    "ex_maintenance": "upper_limb",
+    "ex_handopen": "hand",
+    "ex_pinch": "hand",
+    "ex_lower_selective": "lower_limb",
+    "ex_ankle_dorsiflexion": "lower_limb",
+    "ex_sit_to_stand": "lower_limb",
+    "ex_supported_stand": "lower_limb",
+    "ex_supported_step": "lower_limb",
+    "ex_weight_shift": "lower_limb",
+    "ex_sitting_balance": "lower_limb",
+    "ex_step_stance": "lower_limb",
 }
 
 EXERCISE_COACHING_PROFILES: Dict[str, Dict[str, Any]] = {
@@ -9234,6 +9275,10 @@ REHAB_RUNNER_HTML_TEMPLATE = r"""<!DOCTYPE html>
   #calibrationTrack{height:8px;margin-top:10px;border-radius:4px;background:#DDE5DE;overflow:hidden}
   #calibrationFill{width:0;height:100%;border-radius:4px;background:#4A7856;transition:width .18s ease}
   /* Feedback / confirmation overlay */
+  #assist{position:absolute;inset:0;background:linear-gradient(180deg, rgba(74,120,86,0.94), rgba(28,32,29,0.96));padding:24px;display:flex;flex-direction:column;justify-content:center;gap:18px;text-align:center;pointer-events:auto;z-index:11}
+  #assist .row{display:flex;gap:12px;justify-content:center}
+  #assist button{min-height:56px;padding:0 22px;border-radius:12px;border:2px solid rgba(255,255,255,0.55);background:transparent;color:#fff;font-size:17px;font-weight:800}
+  #assist button.primary{background:#FDFDFD;color:#1C201D;border-color:#FDFDFD}
   #fb{position:absolute;inset:0;background:linear-gradient(180deg, rgba(74,120,86,0.92), rgba(28,32,29,0.95));padding:24px;display:flex;flex-direction:column;justify-content:center;gap:16px;text-align:center;pointer-events:auto;z-index:9;opacity:0;transition:opacity .35s}
   #fb.show{opacity:1}
   #fb .step{font-size:13px;color:#D9E5DC;letter-spacing:1px;text-transform:uppercase;font-weight:700}
@@ -9295,6 +9340,14 @@ REHAB_RUNNER_HTML_TEMPLATE = r"""<!DOCTYPE html>
       <div id="calibrationTrack"><div id="calibrationFill"></div></div>
     </div>
   </div>
+  <div id="assist" class="hidden" data-testid="exercise-assist-question">
+    <div class="title">One quick question</div>
+    <div class="body">Did a carer or family member help you move during this exercise?</div>
+    <div class="row">
+      <button id="assistYesBtn" data-testid="exercise-assist-yes">Yes, I had help</button>
+      <button id="assistNoBtn" class="primary" data-testid="exercise-assist-no">No, I did it myself</button>
+    </div>
+  </div>
   <div id="fb" class="hidden">
     <div class="step" id="fbStep">Rep 1 complete</div>
     <div class="reward" id="fbReward" role="status" aria-live="polite">
@@ -9354,6 +9407,9 @@ const fbMic = document.getElementById("fbMic");
 const fbChecks = document.getElementById("fbChecks");
 const fbHeard = document.getElementById("fbHeard");
 const fbConfirmBtn = document.getElementById("fbConfirmBtn");
+const assistEl = document.getElementById("assist");
+const assistYesBtn = document.getElementById("assistYesBtn");
+const assistNoBtn = document.getElementById("assistNoBtn");
 const fbReplay = document.getElementById("fbReplay");
 const checkYes = document.getElementById("checkYes");
 const checkUnderstand = document.getElementById("checkUnderstand");
@@ -9704,7 +9760,7 @@ async function setupPose(){
   if(STANDARD.tracking_mode === "hand"){
     handLandmarker = await HandLandmarker.createFromOptions(fr,{
       baseOptions:{modelAssetPath:"/vendor/mediapipe/models/hand_landmarker.task"},
-      runningMode:"VIDEO", numHands:1
+      runningMode:"VIDEO", numHands:4
     });
   }
   drawingUtils = new DrawingUtils(ctx);
@@ -9942,6 +9998,14 @@ function rawMovementMetrics(lm, handLm){
     raw.knee_x=lm[ACTIVE.knee].x;
     raw.knee_y=lm[ACTIVE.knee].y;
     raw.torso_length=Math.max(.04,Math.hypot(midShoulder.x-midHip.x,midShoulder.y-midHip.y));
+    raw.shoulder_width=shoulderWidth;
+    raw.active_shoulder_y=lm[ACTIVE.shoulder].y;
+    // Distance from the affected shoulder to its wrist (in shoulder widths):
+    // the frame where this peaks is where the reach is judged.
+    raw.reach_extent=Math.hypot(lm[ACTIVE.wrist].x-lm[ACTIVE.shoulder].x,lm[ACTIVE.wrist].y-lm[ACTIVE.shoulder].y)/shoulderWidth;
+    // Leaning toward a front-facing camera foreshortens the trunk while the
+    // shoulders appear wider, so this ratio drops with forward lean.
+    raw.torso_shoulder_ratio=raw.torso_length/shoulderWidth;
     raw.active_wrist_x=lm[ACTIVE.wrist].x;
     raw.active_wrist_y=lm[ACTIVE.wrist].y;
   }
@@ -9968,8 +10032,27 @@ function metricValue(metric,raw){
   if(metric === "knee_flexion") return Math.abs(raw.knee_extension-(base.knee_extension||raw.knee_extension));
   if(metric === "ankle_dorsiflexion") return Math.abs(raw.ankle_angle-(base.ankle_angle||raw.ankle_angle));
   if(metric === "pelvic_shift") return Math.abs(raw.pelvic_shift-(base.pelvic_shift||raw.pelvic_shift));
-  if(metric === "trunk_lateral_rom" || metric === "trunk_lean_delta") return Math.abs(raw.trunk_angle-(base.trunk_angle||0));
-  if(metric === "shoulder_hike_delta") return Math.max(0,raw.shoulder_hike-(base.shoulder_hike||0));
+  if(metric === "trunk_lateral_rom") return Math.abs(raw.trunk_angle-(base.trunk_angle||0));
+  if(metric === "trunk_lean_delta"){
+    const lateral=Math.abs(raw.trunk_angle-(base.trunk_angle||0));
+    // Forward lean is invisible to the lateral formula on a front-facing
+    // camera; recover it from trunk foreshortening against the calibrated ratio.
+    const baseRatio=Number(base.torso_shoulder_ratio)||raw.torso_shoulder_ratio;
+    const forward=(Number.isFinite(baseRatio)&&baseRatio>0&&Number.isFinite(raw.torso_shoulder_ratio))
+      ? rad2deg(Math.acos(clamp(raw.torso_shoulder_ratio/baseRatio,0,1)))
+      : 0;
+    return Math.max(lateral,forward);
+  }
+  if(metric === "shoulder_hike_delta"){
+    const asymmetry=Math.max(0,raw.shoulder_hike-(base.shoulder_hike||0));
+    // A bilateral shrug shows no asymmetry, so also measure the affected
+    // shoulder rising above its own calibrated position.
+    const baseY=Number(base.active_shoulder_y);
+    const rise=Number.isFinite(baseY)
+      ? rad2deg(Math.atan2(Math.max(0,baseY-raw.active_shoulder_y),raw.shoulder_width||.18))
+      : 0;
+    return Math.max(asymmetry,rise);
+  }
   if(metric === "hip_hike_delta") return Math.abs(raw.hip_hike-(base.hip_hike||0));
   if(metric === "arm_asymmetry") return Math.abs(raw.shoulder_flexion-raw.other_shoulder_flexion);
   if(metric === "body_asymmetry") return (Math.abs(raw.hip_extension-raw.other_hip_extension)+Math.abs(raw.knee_extension-raw.other_knee_extension))/2;
@@ -10072,19 +10155,47 @@ async function completeCalibration(){
   await playVoice(CFG.setup_voice);
   await startRep();
 }
+let activeFrames=0;          // frames inside the movement phase (the only ones scored)
+let peakReachExtent=-1;      // farthest shoulder-to-wrist distance seen this rep
+let peakReachElbow=NaN;      // elbow angle at that peak-reach frame
+function activeMovementPhase(){
+  const sub=CFG.cycle[currentSubStep];
+  if(!sub) return false;
+  if(fbEl.classList.contains("show")) return false;
+  return (sub.phase||"movement") !== "return";
+}
 function resetRepMetrics(){
   romBest={};
   compensationHits={};
   compensationEligible={};
   trackingFrames=0;
   lowQualityFrames=0;
+  activeFrames=0;
+  peakReachExtent=-1;
+  peakReachElbow=NaN;
 }
 function updateMetrics(lm,handLm){
   const quality=trackingQuality(lm,handLm);
   if(quality < CALIBRATION_MIN_TRACKING_QUALITY){ lowQualityFrames+=1; return; }
   const raw=rawMovementMetrics(lm,handLm);
   trackingFrames+=1;
+  // Return-to-rest frames are never scored: they cannot earn ROM credit and
+  // they do not count toward the compensation denominator.
+  if(!activeMovementPhase()) return;
+  activeFrames+=1;
+  if(Number.isFinite(raw.reach_extent) && raw.reach_extent > peakReachExtent){
+    peakReachExtent=raw.reach_extent;
+    peakReachElbow=raw.elbow_extension;
+  }
+  // Elbow extension is judged at peak reach, and only once the arm is actually
+  // raised - a straight arm resting on the lap earns nothing.
+  const armRaised=!Number.isFinite(raw.shoulder_flexion)
+    || (raw.shoulder_flexion-(Number(baselineMetrics.shoulder_flexion)||0)) >= 15;
   for(const step of STANDARD.rom_steps||[]){
+    if(step.metric === "elbow_extension"){
+      if(armRaised && Number.isFinite(peakReachElbow)) romBest[step.id]=peakReachElbow;
+      continue;
+    }
     const value=metricValue(step.metric,raw);
     if(Number.isFinite(value)) romBest[step.id]=Math.max(Number(romBest[step.id]||0),value);
   }
@@ -10516,7 +10627,7 @@ function repRomDetails(){
   });
 }
 function computeRepScore(){
-  if(trackingFrames < SCORING_MIN_FRAMES) return null;
+  if(trackingFrames < SCORING_MIN_FRAMES || activeFrames < SCORING_MIN_FRAMES) return null;
   const details=repRomDetails();
   const totalWeight=details.reduce((sum,item)=>sum+item.weight,0)||1;
   let score=details.reduce((sum,item)=>sum+item.score*item.weight,0)/totalWeight;
@@ -10581,13 +10692,30 @@ async function confirmAndContinue(){
   confirming=false;
 }
 
+// After the last repetition, ask honestly whether a carer or family member
+// helped: an assisted session still counts, but its score is halved so the
+// functional-domain score reflects independent ability.
+async function askAssistance(){
+  return await new Promise((resolve) => {
+    assistEl.classList.remove("hidden");
+    assistYesBtn.onclick = () => { assistEl.classList.add("hidden"); resolve(true); };
+    assistNoBtn.onclick = () => { assistEl.classList.add("hidden"); resolve(false); };
+    playVoice("One quick question. Did a carer or family member help you move during this exercise? Please tap yes or no.").catch(() => {});
+  });
+}
+
 async function finishExercise(){
   running = false;
   stopListening();
   fbEl.classList.add("hidden");
+  const assisted = await askAssistance();
   captionEl.textContent = "Exercise complete!";
-  await playVoice("Magnificent work. You have finished this exercise. I'm so proud of you.");
-  postRN({type:"exercise_complete", exercise_id: location.search, reps: CFG.reps});
+  if(assisted){
+    await playVoice("Thank you for telling me. Working together with your carer still counts, and this session is recorded as helper supported.");
+  }else{
+    await playVoice("Magnificent work. You have finished this exercise. I'm so proud of you.");
+  }
+  postRN({type:"exercise_complete", exercise_id: location.search, reps: CFG.reps, assisted});
   if(cameraStream) cameraStream.getTracks().forEach(track=>track.stop());
   if(confirmationAudioStream) confirmationAudioStream.getTracks().forEach(track=>track.stop());
 }
@@ -10922,6 +11050,9 @@ class AliraActivitySubmit(BaseModel):
     # Caregiver-delivered routines: the carer's qualitative observation of how
     # much the patient joined in - the Tier 1 progress signal.
     observed_response: Optional[str] = Field(default=None, pattern="^(none|flicker|small_movement|more_than_before)$")
+    # True when the patient confirmed a carer or family member helped during
+    # the exercise; the server halves the stored score (ASSISTED_SCORE_FACTOR).
+    assisted: bool = False
 
 
 class AliraFunctionalIssueSubmit(BaseModel):
@@ -12236,6 +12367,15 @@ async def _persist_alira_activity(user: Dict[str, Any], payload: AliraActivitySu
         raise HTTPException(status_code=422, detail="completed_at must be an ISO-8601 timestamp") from exc
     repetition_scores = _normalise_repetition_scores(payload.repetition_scores)
     average_score = _average_repetition_scores(repetition_scores, payload.average_score)
+    unassisted_average_score = average_score
+    if payload.assisted:
+        # The client reports raw camera scores plus the assisted flag; halving
+        # happens here once, so every downstream consumer (journey scores,
+        # functional-domain averages, care-plan monitoring) inherits it.
+        repetition_scores = [round(score * ASSISTED_SCORE_FACTOR, 1) for score in repetition_scores]
+        average_score = (
+            round(average_score * ASSISTED_SCORE_FACTOR, 1) if average_score is not None else None
+        )
     activity = {
         "id": "aca_" + uuid.uuid4().hex[:16],
         "user_id": user["id"],
@@ -12245,6 +12385,9 @@ async def _persist_alira_activity(user: Dict[str, Any], payload: AliraActivitySu
         "average_score": average_score,
         "repetition_scores": repetition_scores,
         "observed_response": payload.observed_response,
+        "assisted": payload.assisted,
+        "unassisted_average_score": unassisted_average_score if payload.assisted else None,
+        "functional_domain": EXERCISE_FUNCTIONAL_DOMAINS.get(payload.exercise_id),
         "completed_at": completed_at,
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
@@ -12290,6 +12433,8 @@ async def _persist_alira_activity(user: Dict[str, Any], payload: AliraActivitySu
             "exercise_id": activity["exercise_id"],
             "completed_reps": activity["completed_reps"],
             "average_score": activity["average_score"],
+            "assisted": activity["assisted"],
+            "functional_domain": activity["functional_domain"],
             "scored_repetitions": len(activity["repetition_scores"]),
         },
     )
@@ -12496,6 +12641,21 @@ async def list_alira_check_ins(request: Request, limit: int = 20):
     return {"check_ins": items[:max(1, min(limit, 100))]}
 
 
+def _domain_exercise_scores(items: List[Dict[str, Any]], per_domain: int = 5) -> Dict[str, Optional[float]]:
+    """Final score per functional domain: the mean of the most recent scored
+    exercise activities in that domain (assisted sessions already halved)."""
+    buckets: Dict[str, List[float]] = {"upper_limb": [], "hand": [], "lower_limb": []}
+    for item in items:  # items arrive newest-first
+        domain = item.get("functional_domain") or EXERCISE_FUNCTIONAL_DOMAINS.get(str(item.get("exercise_id")))
+        score = item.get("average_score")
+        if domain in buckets and isinstance(score, (int, float)) and len(buckets[domain]) < per_domain:
+            buckets[domain].append(float(score))
+    return {
+        domain: (round(sum(scores) / len(scores), 1) if scores else None)
+        for domain, scores in buckets.items()
+    }
+
+
 @api_router.get("/alira/activities")
 async def list_alira_activities(request: Request, limit: int = 100, exercise_id: Optional[str] = None):
     user = await _user_from_header(dict(request.headers))
@@ -12509,6 +12669,7 @@ async def list_alira_activities(request: Request, limit: int = 100, exercise_id:
     return {
         "activities": items[:max(1, min(limit, 500))],
         "target_score": 80,
+        "domain_scores": _domain_exercise_scores(items),
     }
 
 

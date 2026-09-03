@@ -656,6 +656,63 @@ def test_object_exercises_draw_virtual_objects_on_screen():
         assert "screen" in voice, ex
 
 
+def test_completion_asks_about_carer_help_and_halves_assisted_scores():
+    source = (ROOT / "backend" / "server.py").read_text(encoding="utf-8")
+    exercise = (ROOT / "frontend" / "app" / "exercise.tsx").read_text(encoding="utf-8")
+
+    # Both runners can now see more than two hands (patient + helper).
+    assert "numHands: 4" in source and "numHands:4" in source
+    assert "numHands: 2" not in source and "numHands:1" not in source
+
+    # Finishing an exercise pops the carer/family question before closing.
+    assert 'data-testid="exercise-assist-question"' in source
+    assert "Did a carer or family member help you move during this exercise?" in source
+    assert "async function askAssistance()" in source
+    assert "const assisted = await askAssistance();" in source
+    assert "reps: CFG.reps, assisted});" in source
+
+    # The app sends RAW scores plus the flag; the server halves exactly once.
+    assert 'msg.assisted === true' in exercise
+    assert "assisted," in exercise
+    assert server.ASSISTED_SCORE_FACTOR == 0.5
+    assert "unassisted_average_score" in source
+
+    # Every exercise maps to the functional domain its score affects.
+    assert server.EXERCISE_FUNCTIONAL_DOMAINS["ex_reach"] == "upper_limb"
+    assert server.EXERCISE_FUNCTIONAL_DOMAINS["ex_handopen"] == "hand"
+    assert server.EXERCISE_FUNCTIONAL_DOMAINS["ex_sit_to_stand"] == "lower_limb"
+    assert set(server.EXERCISE_FUNCTIONAL_DOMAINS) == set(server.REHAB_RUNNER_CONFIG)
+    assert '"domain_scores": _domain_exercise_scores(items)' in source
+
+
+def test_forward_reach_grading_is_phase_gated_and_catches_forward_lean_and_shrugs():
+    """A bent elbow, a forward lean, or a two-shoulder shrug can no longer score 100."""
+    source = (ROOT / "backend" / "server.py").read_text(encoding="utf-8")
+    cfg = server.REHAB_RUNNER_CONFIG
+
+    # Return-to-rest steps are tagged so they never earn ROM credit or dilute
+    # compensation confirmation; the reach itself is the movement phase.
+    assert [step["phase"] for step in cfg["ex_reach"]["cycle"]] == ["movement", "return"]
+    assert [step["phase"] for step in cfg["ex_grasp"]["cycle"]] == ["movement", "movement", "return"]
+    assert [step["phase"] for step in cfg["ex_h2m"]["cycle"]] == ["movement", "return"]
+    assert [step["phase"] for step in cfg["ex_bilateral"]["cycle"]] == ["movement", "movement"]
+    assert "function activeMovementPhase()" in source
+    assert "if(!activeMovementPhase()) return;" in source
+    assert "activeFrames < SCORING_MIN_FRAMES" in source
+
+    # Elbow extension is judged at peak reach with the arm actually raised,
+    # not as the maximum angle anywhere in the repetition.
+    assert "peakReachElbow=raw.elbow_extension;" in source
+    assert 'if(step.metric === "elbow_extension")' in source
+    assert ">= 15;" in source  # arm-raised guard against a resting straight arm
+
+    # Forward lean toward a front-facing camera and bilateral shrugs are measured.
+    assert "raw.torso_shoulder_ratio=raw.torso_length/shoulderWidth;" in source
+    assert "Math.acos(clamp(raw.torso_shoulder_ratio/baseRatio,0,1))" in source
+    assert "raw.active_shoulder_y=lm[ACTIVE.shoulder].y;" in source
+    assert "Math.max(0,baseY-raw.active_shoulder_y)" in source
+
+
 def test_earning_points_pops_a_fading_congratulations_toast():
     component = (ROOT / "frontend" / "src" / "components" / "PointsCelebration.tsx").read_text(encoding="utf-8")
     home = (ROOT / "frontend" / "app" / "(tabs)" / "index.tsx").read_text(encoding="utf-8")

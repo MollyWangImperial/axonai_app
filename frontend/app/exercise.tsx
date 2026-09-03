@@ -115,10 +115,17 @@ export default function ExerciseScreen() {
       } else if (msg.type === "exercise_complete") {
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
         const arr = scoresThisSession.current;
-        const avg = arr.length ? Math.round(arr.reduce((a, b) => a + b, 0) / arr.length) : null;
+        const rawAvg = arr.length ? Math.round(arr.reduce((a, b) => a + b, 0) / arr.length) : null;
+        // The runner asks after the last repetition whether a carer or family
+        // member helped. An assisted session still counts, but scores are
+        // halved (the server applies the same factor to what it stores, so we
+        // send the RAW scores plus the flag - never pre-halved).
+        const assisted = msg.assisted === true;
+        const avg = assisted && rawAvg != null ? Math.round(rawAvg / 2) : rawAvg;
+        const localScores = assisted ? arr.map((s) => Math.round(s / 2)) : [...arr];
         setDoneInfo({ reps: msg.reps || 0, avgScore: avg });
         if (!isLibraryTest) {
-          await saveSessionAverage(avg, [...arr]);
+          await saveSessionAverage(avg, localScores);
           try {
             await authedFetch("/api/alira/activities", {
               method: "POST",
@@ -126,8 +133,9 @@ export default function ExerciseScreen() {
                 exercise_id: exercise_id || "",
                 plan_id: planId,
                 completed_reps: Number(msg.reps || arr.length || 0),
-                average_score: avg,
+                average_score: rawAvg,
                 repetition_scores: arr,
+                assisted,
                 completed_at: new Date().toISOString(),
               }),
             });

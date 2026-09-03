@@ -8,7 +8,9 @@ from backend import server
 
 def test_hand_landmarker_can_observe_both_hands_but_keeps_only_the_affected_hand():
     source = server.POSE_RUNNER_HTML
-    assert "numHands: 2" in source
+    # Up to 4 hands are observed (patient's two plus a helping carer hand or
+    # two); metric selection still keeps only the affected hand.
+    assert "numHands: 4" in source
     assert "function selectAffectedHandDetection(result" in source
     assert "sideLandmarks(latestPoseLandmarks, AFFECTED_SIDE).wrist" in source
     assert "candidate.poseDistance <= associationRadius" in source

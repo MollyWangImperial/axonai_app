@@ -306,6 +306,68 @@ def test_caregiver_routine_activity_is_accepted_without_an_assessment(monkeypatc
     assert rejected.status_code == 409
 
 
+def test_assisted_completion_halves_the_stored_score_for_the_domain(monkeypatch):
+    async def user_from_header(_headers):
+        return signed_in_user()
+
+    async def assessments(_user_id):
+        return [{
+            "id": "a1",
+            "created_at": "2026-08-30T10:00:00+00:00",
+            "rehab_plan": [{"id": "ex_reach", "reps": 10, "sets": 3}],
+        }]
+
+    async def empty(_user_id):
+        return []
+
+    async def no_db(*_args, **_kwargs):
+        raise RuntimeError("no db in test")
+
+    monkeypatch.setattr(server, "_user_from_header", user_from_header)
+    monkeypatch.setattr(server, "_care_assessments_for_user", assessments)
+    monkeypatch.setattr(server, "_care_check_ins_for_user", empty)
+    monkeypatch.setattr(server, "_care_activities_for_user", empty)
+    monkeypatch.setattr(server, "_care_issue_reports_for_user", empty)
+    # Keep the Mongo-fallback write out of the shared on-disk local state.
+    monkeypatch.setattr(server, "_persist_local_dict", lambda *_a, **_k: None)
+    monkeypatch.setitem(server.LOCAL_CARE_STATE, "u_alira_care", {})
+    response = TestClient(server.app).post(
+        "/api/alira/activities",
+        headers={"X-User-Id": "u_alira_care"},
+        json={
+            "exercise_id": "ex_reach",
+            "plan_id": "assessment-1",
+            "completed_reps": 5,
+            "average_score": 84,
+            "repetition_scores": [80, 84, 88],
+            "assisted": True,
+        },
+    )
+
+    assert response.status_code == 200
+    activity = response.json()["activity"]
+    # The raw camera score is halved once, server-side, and the honest record
+    # keeps both the assisted flag and the unassisted value.
+    assert activity["assisted"] is True
+    assert activity["average_score"] == 42
+    assert activity["repetition_scores"] == [40.0, 42.0, 44.0]
+    assert activity["unassisted_average_score"] == 84
+    # Forward reach counts toward the upper-limb functional score.
+    assert activity["functional_domain"] == "upper_limb"
+
+
+def test_domain_scores_average_recent_activities_per_functional_domain():
+    items = [
+        {"exercise_id": "ex_reach", "functional_domain": "upper_limb", "average_score": 42},
+        {"exercise_id": "ex_h2m", "functional_domain": "upper_limb", "average_score": 80},
+        {"exercise_id": "ex_pinch", "functional_domain": "hand", "average_score": 60},
+    ]
+    scores = server._domain_exercise_scores(items)
+    assert scores["upper_limb"] == 61.0  # the halved assisted session drags the domain score down
+    assert scores["hand"] == 60.0
+    assert scores["lower_limb"] is None
+
+
 def test_completed_exercise_activity_is_an_authenticated_care_event(monkeypatch):
     captured = {}
 
