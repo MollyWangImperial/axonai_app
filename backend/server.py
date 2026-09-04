@@ -564,9 +564,11 @@ class ImmutableStaticFiles(StaticFiles):
         return response
 
 
-FRONTEND_PUBLIC_DIR = Path(__file__).resolve().parents[1] / "frontend" / "public"
-MEDIAPIPE_ASSET_DIR = FRONTEND_PUBLIC_DIR / "vendor" / "mediapipe"
-PREPARED_TTS_DIR = FRONTEND_PUBLIC_DIR / "audio" / "prepared"
+FRONTEND_ROOT_DIR = Path(__file__).resolve().parents[1] / "frontend"
+FRONTEND_PUBLIC_DIR = FRONTEND_ROOT_DIR / "public"
+FRONTEND_STATIC_DIR = FRONTEND_PUBLIC_DIR if FRONTEND_PUBLIC_DIR.is_dir() else FRONTEND_ROOT_DIR / "dist"
+MEDIAPIPE_ASSET_DIR = FRONTEND_STATIC_DIR / "vendor" / "mediapipe"
+PREPARED_TTS_DIR = FRONTEND_STATIC_DIR / "audio" / "prepared"
 if MEDIAPIPE_ASSET_DIR.is_dir():
     app.mount(
         "/vendor/mediapipe",

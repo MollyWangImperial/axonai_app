@@ -21,6 +21,7 @@ def test_cylindrical_grasp_fixed_prompts_are_prepared_audio_assets():
 
 
 def test_runner_prefers_prepared_audio_and_initializes_pose_and_hand_together():
+    assert 'FRONTEND_PUBLIC_DIR if FRONTEND_PUBLIC_DIR.is_dir() else FRONTEND_ROOT_DIR / "dist"' in SERVER_SOURCE
     assert 'cfg["prepared_voice_assets"]' in SERVER_SOURCE
     assert 'const preparedUrl = CFG.prepared_voice_assets && CFG.prepared_voice_assets[text];' in SERVER_SOURCE
     assert 'fetch(preparedUrl,{cache:"force-cache"})' in SERVER_SOURCE
