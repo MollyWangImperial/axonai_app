@@ -2326,7 +2326,10 @@ def merge_validated_model_issues(
 # ============ Routes ============
 @api_router.get("/")
 async def root():
-    return {"message": "NeuroMotion Stroke Rehab API"}
+    return {
+        "message": "NeuroMotion Stroke Rehab API",
+        "release": os.environ.get("RENDER_GIT_COMMIT", "local"),
+    }
 
 
 @api_router.get("/health/db")
