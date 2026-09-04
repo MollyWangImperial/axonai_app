@@ -8038,7 +8038,7 @@ async function beginAssessmentSetup(){
     if(overlayCopy) overlayCopy.textContent = String(error && error.message ? error.message : "The assessment could not load. Please try again.");
     overlay.classList.remove("hidden");
     startBtn.disabled = false;
-    startBtn.textContent = "Try Camera Again";
+    startBtn.textContent = "Try Again";
     startBtn.removeAttribute("aria-busy");
     startSetupInProgress = false;
     postRN({type:"assessment_start_error", message:`Could not load assessment tasks: ${String(error)}`});
@@ -11554,6 +11554,18 @@ function drawVirtualBar(x1, y1, x2, y2){
 // smoothed frame to frame so it glides with the hand instead of jittering.
 let vobjAnchor = null;
 let vobjPalmOffset = {x:0, y:0};
+// Palm centre from the pose model's own hand points (pinky and index
+// knuckles sit at wrist+2 / wrist+4): a held cup sits in the palm, about
+// 60% of the way from the wrist joint to the knuckles. Used whenever the hand
+// model is not running (hand-to-mouth) or has not reported recently, so the
+// cup is drawn in the middle of the hand rather than at the wrist joint.
+function posePalmCentre(lm){
+  const wrist = lm && lm[ACTIVE.wrist];
+  const pinky = lm && lm[ACTIVE.wrist + 2], index = lm && lm[ACTIVE.wrist + 4];
+  if(!pointVisible(wrist) || !pointVisible(pinky) || !pointVisible(index)) return null;
+  const knuckles = midpoint(pinky, index);
+  return {x: wrist.x + (knuckles.x - wrist.x) * 0.6, y: wrist.y + (knuckles.y - wrist.y) * 0.6};
+}
 function vobjWristPoint(lm){
   // The pose wrist is updated every frame (the hand model may run less often),
   // so the cup follows it without lag; the offset from wrist to palm centre is
@@ -11564,6 +11576,9 @@ function vobjWristPoint(lm){
     const palm = {x:(h[0].x + h[5].x + h[9].x + h[13].x + h[17].x) / 5, y:(h[0].y + h[5].y + h[9].y + h[13].y + h[17].y) / 5};
     vobjPalmOffset = wrist ? {x: palm.x - wrist.x, y: palm.y - wrist.y} : {x:0, y:0};
     if(!wrist) return vobjSmooth(palm);
+  }else{
+    const palm = posePalmCentre(lm);
+    if(palm && wrist) vobjPalmOffset = {x: palm.x - wrist.x, y: palm.y - wrist.y};
   }
   if(!wrist) return vobjAnchor ? {x: vobjAnchor.x * canvas.width, y: vobjAnchor.y * canvas.height} : null;
   return vobjSmooth({x: wrist.x + vobjPalmOffset.x, y: wrist.y + vobjPalmOffset.y});

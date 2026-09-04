@@ -846,6 +846,12 @@ def test_hand_to_mouth_is_guided_step_by_step_and_graded_like_the_reach_exercise
     assert '!/_DYNAMIC$/.test(String(step.target.landmark||""))' in source
     assert "affected hand resting on the visible part of your lap" in standard["calibration_instruction"]
 
+    # The carried cup sits in the middle of the hand: with no hand model, the
+    # palm centre comes from the pose model's own knuckle points (60% of the
+    # way from the wrist joint to the knuckles), not the wrist joint itself.
+    assert "function posePalmCentre(lm)" in source
+    assert "return {x: wrist.x + (knuckles.x - wrist.x) * 0.6, y: wrist.y + (knuckles.y - wrist.y) * 0.6};" in source
+    assert "const palm = posePalmCentre(lm);" in source
     # Same pose model and overlay style as every other exercise (no hand model needed).
     assert cfg["pose_mode"] == "body" and not cfg.get("hand_tracking")
     assert "drawingUtils.drawLandmarks(lm,{color:ASSESSMENT_OVERLAY_STYLE.landmarkColor,radius:ASSESSMENT_OVERLAY_STYLE.landmarkRadius});" in source
@@ -1028,11 +1034,15 @@ def test_cylindrical_grasp_reach_open_close_carry_release_flow_and_compensations
         "Return your empty hand to your lap",
     ]
     landmarks = [(step["target"] or {}).get("landmark") for step in grasp["cycle"]]
-    assert landmarks == [None, "HAND_OPEN", "HAND_CLOSED", None, "HAND_OPEN", None]
+    assert landmarks == [None, "HAND_OPEN", "HAND_CLOSED", None, "HAND_OPEN", "LAP_DYNAMIC"]
     # The hand steps sit exactly where the cup is drawn, and never trap the patient.
     assert grasp["cycle"][1]["target"]["x"] == grasp["cycle"][0]["target"]["x"] == grasp["cycle"][2]["target"]["x"]
     assert grasp["cycle"][4]["target"]["x"] == grasp["cycle"][3]["target"]["x"]
-    assert all(step.get("max_wait_ms") == 6000 for step in grasp["cycle"] if (step["target"] or {}).get("landmark"))
+    assert all(
+        step.get("max_wait_ms") == 6000
+        for step in grasp["cycle"]
+        if (step["target"] or {}).get("landmark") in {"HAND_OPEN", "HAND_CLOSED"}
+    )
     assert grasp["hand_tracking"] is True and grasp["mirror_for_left"] is True
     for word in ("open your hand wide", "close your fingers around the cup", "carry it across", "set it down"):
         assert word in grasp["setup_voice"].lower(), word
@@ -1210,13 +1220,16 @@ def test_rehab_plan_loading_tracks_real_plan_preparation_stages():
     assert '"Choosing suitable exercises"' in rehab
     assert '"Creating your plan"' in rehab
     assert "This usually takes less than a minute." in rehab
-    assert "const assessment = id === DEMO_ASSESSMENT_ID" in rehab
+    assert "const assessmentPromise = id === DEMO_ASSESSMENT_ID" in rehab
     assert "isCurrentAccountPlan" in rehab
     assert "setPreparationStage(1);" in rehab
     assert 'authedFetch("/api/alira/care-plan")' in rehab
     assert "setPreparationStage(2);" in rehab
     assert "await loadProgress(sessionPlan);" in rehab
     assert 'entry === "assessment_complete"' in rehab
+    assert 'useState(entry === "assessment_complete")' in rehab
+    assert "setShowPreparation(enteredFromFreshAssessment);" in rehab
+    assert rehab.index("setShowPreparation(enteredFromFreshAssessment);") < rehab.index("const assessment = await assessmentPromise;")
     assert "enteredFromFreshAssessment && firstAccess" in rehab
     assert "loading && showPreparation" in rehab
     assert 'entry: "assessment_complete"' in assessment
