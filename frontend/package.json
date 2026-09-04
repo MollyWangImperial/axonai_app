@@ -10,6 +10,7 @@
     "ios": "expo start --ios",
     "web": "expo start --web",
     "build:web": "node ./scripts/download-mediapipe-assets.js && expo export --platform web && node ./scripts/inject-pwa.js",
+    "prepare:grasp-voice": "cd .. && python -m backend.generate_prepared_exercise_audio",
     "lint": "expo lint"
   },
   "dependencies": {

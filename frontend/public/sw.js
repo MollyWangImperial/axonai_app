@@ -16,6 +16,16 @@ const MODEL_FILES = [
   "/vendor/mediapipe/models/pose_landmarker_lite.task",
   "/vendor/mediapipe/models/hand_landmarker.task",
 ];
+const PREPARED_VOICE_MANIFEST = "/audio/prepared/manifest.json";
+
+async function cachePreparedVoice(cache) {
+  const response = await fetch(new Request(PREPARED_VOICE_MANIFEST, { cache: "reload" }));
+  if (!response.ok) return;
+  await cache.put(PREPARED_VOICE_MANIFEST, response.clone());
+  const manifest = await response.json();
+  const files = (manifest.assets || []).map((asset) => asset.url).filter(Boolean);
+  await Promise.allSettled(files.map((file) => cache.add(file)));
+}
 
 self.addEventListener("install", (event) => {
   event.waitUntil(
@@ -27,6 +37,7 @@ self.addEventListener("install", (event) => {
         }),
       );
       await Promise.allSettled(MODEL_FILES.map((file) => cache.add(file)));
+      await cachePreparedVoice(cache);
     }),
   );
   self.skipWaiting();

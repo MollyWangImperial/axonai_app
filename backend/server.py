@@ -551,9 +551,34 @@ tts_client = OpenAITextToSpeech(api_key=EMERGENT_LLM_KEY) if (OpenAITextToSpeech
 app = FastAPI()
 api_router = APIRouter(prefix="/api")
 
-MEDIAPIPE_ASSET_DIR = Path(__file__).resolve().parents[1] / "frontend" / "public" / "vendor" / "mediapipe"
+
+class ImmutableStaticFiles(StaticFiles):
+    async def get_response(self, path: str, scope: Dict[str, Any]) -> Response:
+        response = await super().get_response(path, scope)
+        if response.status_code == 200:
+            response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+            if path.endswith(".wasm"):
+                response.headers["Content-Type"] = "application/wasm"
+            elif path.endswith(".task"):
+                response.headers["Content-Type"] = "application/octet-stream"
+        return response
+
+
+FRONTEND_PUBLIC_DIR = Path(__file__).resolve().parents[1] / "frontend" / "public"
+MEDIAPIPE_ASSET_DIR = FRONTEND_PUBLIC_DIR / "vendor" / "mediapipe"
+PREPARED_TTS_DIR = FRONTEND_PUBLIC_DIR / "audio" / "prepared"
 if MEDIAPIPE_ASSET_DIR.is_dir():
-    app.mount("/vendor/mediapipe", StaticFiles(directory=str(MEDIAPIPE_ASSET_DIR)), name="mediapipe-assets")
+    app.mount(
+        "/vendor/mediapipe",
+        ImmutableStaticFiles(directory=str(MEDIAPIPE_ASSET_DIR)),
+        name="mediapipe-assets",
+    )
+if PREPARED_TTS_DIR.is_dir():
+    app.mount(
+        "/audio/prepared",
+        ImmutableStaticFiles(directory=str(PREPARED_TTS_DIR)),
+        name="prepared-tts-assets",
+    )
 
 
 # ============ Models ============
@@ -2952,9 +2977,32 @@ TTS_MEMORY_CACHE_LIMIT = 400
 _tts_memory_cache: "OrderedDict[str, str]" = OrderedDict()
 _tts_inflight: Dict[str, "asyncio.Future[str]"] = {}
 
+EXERCISE_POSTURE_CHANGED_VOICE = (
+    "You are sitting a little differently for this exercise, so I will learn your starting "
+    "position again. Please hold still for a moment."
+)
+EXERCISE_TRANSITION_VOICE = "Wonderful. Here we go."
+EXERCISE_ASSISTANCE_QUESTION_VOICE = (
+    "One quick question. Did a carer or family member help you move during this exercise? "
+    "Please tap yes or no."
+)
+EXERCISE_ASSISTED_COMPLETE_VOICE = (
+    "Thank you for telling me. Working together with your carer still counts, and this session "
+    "is recorded as helper supported."
+)
+EXERCISE_INDEPENDENT_COMPLETE_VOICE = (
+    "Magnificent work. You have finished this exercise. I'm so proud of you."
+)
+
 
 def _tts_cache_key(text: str, voice: str) -> str:
     return hashlib.sha256(f"{TTS_MODEL}|{voice}|{text}".encode("utf-8")).hexdigest()
+
+
+def _prepared_tts_asset_url(text: str, voice: Optional[str] = None) -> Optional[str]:
+    key = _tts_cache_key(text, voice or TTS_VOICE)
+    path = PREPARED_TTS_DIR / f"{key}.mp3"
+    return f"/audio/prepared/{key}.mp3" if path.is_file() else None
 
 
 def _tts_cache_get(key: str) -> Optional[str]:
@@ -9382,6 +9430,21 @@ def _configure_rehab_runner(exercise_id: str, difficulty: str, variation: str) -
     cfg["calibration_contract"] = _copy.deepcopy(EXERCISE_CALIBRATION_CONTRACT)
     cfg["overlay_style"] = _copy.deepcopy(EXERCISE_OVERLAY_STYLE)
     cfg["scoring_method"] = _copy.deepcopy(EXERCISE_SCORING_METHOD)
+    fixed_voice_texts = [
+        str(cfg.get("setup_voice") or ""),
+        str(movement_standard.get("calibration_instruction") or ""),
+        EXERCISE_POSTURE_CHANGED_VOICE,
+        EXERCISE_TRANSITION_VOICE,
+        EXERCISE_ASSISTANCE_QUESTION_VOICE,
+        EXERCISE_ASSISTED_COMPLETE_VOICE,
+        EXERCISE_INDEPENDENT_COMPLETE_VOICE,
+        *[str(step.get("voice") or "") for step in cfg.get("cycle") or []],
+    ]
+    cfg["prepared_voice_assets"] = {
+        text: asset_url
+        for text in fixed_voice_texts
+        if text and (asset_url := _prepared_tts_asset_url(text))
+    }
     return cfg
 
 
@@ -10141,11 +10204,11 @@ async function playVoice(text){
   activeVoiceSequence=sequence;
   try{
     voiceText.textContent = "Listen to the full instruction…";
-    const audioB64 = await fetchVoiceAudio(text);
+    const audioSource = await fetchVoiceAudio(text);
     if(sequence !== voiceSequence) return "interrupted";
     if(stopActiveVoice) stopActiveVoice();
     audioEl.pause();
-    audioEl.src = "data:audio/mpeg;base64," + audioB64;
+    audioEl.src = audioSource;
     const playbackStatus=await new Promise((resolve, reject) => {
       let settled = false;
       let timeout = setTimeout(() => finish(() => {
@@ -10210,19 +10273,29 @@ async function playVoice(text){
 }
 
 function fetchVoiceAudio(text){
-  const key = `nova::${text}`;
+  const preparedUrl = CFG.prepared_voice_assets && CFG.prepared_voice_assets[text];
+  const key = `${preparedUrl || "generated"}::${text}`;
   if(voiceAudioCache.has(key)) return Promise.resolve(voiceAudioCache.get(key));
   if(voiceAudioInflight.has(key)) return voiceAudioInflight.get(key);
-  const request = fetch(`${API_BASE}/tts/generate`,{
-    method:"POST",
-    headers:{"Content-Type":"application/json"},
-    body:JSON.stringify({text})
-  }).then(async res => {
-    if(!res.ok) throw new Error("tts fail");
-    const data = await res.json();
-    voiceAudioCache.set(key, data.audio_b64);
-    return data.audio_b64;
-  }).finally(() => voiceAudioInflight.delete(key));
+  const pendingRequest = preparedUrl
+    ? fetch(preparedUrl,{cache:"force-cache"}).then(async res => {
+        if(!res.ok) throw new Error("prepared tts fail");
+        const objectUrl=URL.createObjectURL(await res.blob());
+        voiceAudioCache.set(key,objectUrl);
+        return objectUrl;
+      })
+    : fetch(`${API_BASE}/tts/generate`,{
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({text})
+      }).then(async res => {
+        if(!res.ok) throw new Error("tts fail");
+        const data = await res.json();
+        const source="data:audio/mpeg;base64,"+data.audio_b64;
+        voiceAudioCache.set(key,source);
+        return source;
+      });
+  const request = pendingRequest.finally(() => voiceAudioInflight.delete(key));
   voiceAudioInflight.set(key, request);
   return request;
 }
@@ -10266,15 +10339,15 @@ function warmUpModels(){
 }
 async function setupPose(){
   const fr = await FilesetResolver.forVisionTasks("/vendor/mediapipe/wasm");
-  landmarker = await PoseLandmarker.createFromOptions(fr,{
+  const posePromise=PoseLandmarker.createFromOptions(fr,{
     baseOptions:{modelAssetPath:"/vendor/mediapipe/models/pose_landmarker_lite.task"},
     runningMode:"VIDEO", numPoses:1
   });
+  // Cylindrical grasp needs both models. Initialise them together instead of
+  // making the patient wait for pose setup and then a second hand-model setup.
+  let handPromise=Promise.resolve(null);
   if(NEEDS_HAND_TRACKING){
-    // Same hand model and confidence settings as the initial assessment
-    // (hand-to-mouth, hand opening, pinch): a hand has to be seen and tracked
-    // confidently before it counts, which is what keeps the tracking steady.
-    handLandmarker = await HandLandmarker.createFromOptions(fr,{
+    handPromise=HandLandmarker.createFromOptions(fr,{
       baseOptions:{modelAssetPath:"/vendor/mediapipe/models/hand_landmarker.task"},
       runningMode:"VIDEO", numHands:4,
       minHandDetectionConfidence:0.65,
@@ -10282,6 +10355,7 @@ async function setupPose(){
       minTrackingConfidence:0.7,
     });
   }
+  [landmarker,handLandmarker]=await Promise.all([posePromise,handPromise]);
   drawingUtils = new DrawingUtils(ctx);
 }
 // Up to four hands may be in view (the patient's two plus a helper's); keep
@@ -12142,7 +12216,10 @@ startBtn.addEventListener("click", async () => {
     return;
   }
   captionEl.textContent = "Preparing…";
-  await Promise.allSettled([unlockPromise, setupVoicePromise, calibrationVoicePromise]);
+  // Start as soon as the setup clip is ready. Calibration audio continues to
+  // prefetch in parallel and must not hold the setup screen open.
+  void calibrationVoicePromise;
+  await Promise.allSettled([unlockPromise, setupVoicePromise]);
   running = true;
   const sessionCalibration = loadSessionCalibration();
   if(sessionCalibration){
