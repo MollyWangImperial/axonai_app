@@ -767,7 +767,7 @@ def test_forward_reach_grading_is_phase_gated_and_catches_forward_lean_and_shrug
     exercise = (ROOT / "frontend" / "app" / "exercise.tsx").read_text(encoding="utf-8")
     assert "quality_reps: typeof msg.quality_reps" in exercise
     assert "your trunk leaned forward (${degrees} degrees)" in source
-    assert "your shoulder lifted toward your ear (${degrees} degrees)" in source
+    assert "your shoulder lifted toward your ear (${degrees} degrees, more than the reach itself needs)" in source
     assert "your elbow stayed bent at ${achieved} of ${target} degrees" in source
     assert "Next time, keep your trunk and shoulder still and simply extend your elbow to reach the target." in source
     # Live on-screen degrees: elbow angle vs target, shoulder lift, trunk lean.
@@ -775,6 +775,40 @@ def test_forward_reach_grading_is_phase_gated_and_catches_forward_lean_and_shrug
     assert 'elbow_extension:{joint:"elbow",text:"Elbow"}' in source
     assert "`Shoulder lift ${Math.round(hike)}°`" in source
     assert "`Trunk lean ${Math.round(lean)}°`" in source
+
+
+def test_shoulder_hike_allows_the_rise_that_comes_with_raising_the_arm():
+    """Raising the arm lifts the shoulder a little by itself (scapulohumeral
+    rhythm), so a normal reach must not be flagged as hiking: the shrug
+    threshold grows with shoulder flexion beyond rest, while a shrug before
+    the arm is up is still judged against the plain threshold."""
+    source = (ROOT / "backend" / "server.py").read_text(encoding="utf-8")
+    method = server.EXERCISE_SCORING_METHOD
+    assert method["shoulder_hike_allowance_per_flexion_deg"] == 0.10
+    assert method["shoulder_hike_allowance_free_flexion_deg"] == 10
+    assert "function expectedShoulderRise(raw)" in source
+    assert "return SHOULDER_HIKE_ALLOWANCE_PER_FLEXION_DEG*Math.max(0,flexion-rest-free);" in source
+    assert "function compensationThreshold(rule,raw)" in source
+    assert 'return rule.metric === "shoulder_hike_delta" ? threshold+expectedShoulderRise(raw) : threshold;' in source
+    # Every judgement of the shoulder-hike rule uses the per-frame threshold:
+    # the confirmation count, the evidence severity and the live label colour.
+    assert "const aboveThreshold=value >= compensationThreshold(rule,raw);" in source
+    assert "value/Math.max(1,rule ? compensationThreshold(rule,raw) : 1)" in source
+    assert 'hike>=compensationThreshold(shoulderRule,raw)?"#FF9B8A":"#FFD27A"' in source
+    assert "value >= Number(rule.threshold_deg||0)" not in source.split("REHAB_RUNNER_HTML_TEMPLATE = r", 1)[1]
+    # Worked example with the forward-reach rule (8 degrees at rest): a reach to
+    # 76 degrees of flexion from a 15-degree rest tolerates 8 + 0.10 * 51 = 13.1
+    # degrees, so the ~9 degrees a normal reach produces is not hiking, while a
+    # real shrug (a further 3-4 cm, 15+ degrees) still is.
+    rest, flexion, base = 15, 76, 8
+    allowance = method["shoulder_hike_allowance_per_flexion_deg"] * max(0, flexion - rest - method["shoulder_hike_allowance_free_flexion_deg"])
+    assert round(base + allowance, 1) == 13.1
+    assert 9 < base + allowance < 15
+    assert base + method["shoulder_hike_allowance_per_flexion_deg"] * max(0, 20 - rest - 10) == base  # shrug before the arm is up
+    # The lap-target calibration window is time-based, so a 60 fps camera can
+    # still judge the hand still (24 frames would span only 0.4 s).
+    assert source.count("while(samples.length > 120 || (samples.length && now") == 2
+    assert "samples.length > 24" not in source
 
 
 def test_forward_reach_shows_private_temporary_visual_compensation_evidence():
@@ -886,7 +920,9 @@ def test_trunk_restrained_reaching_is_graded_like_forward_reach_and_recalibrates
     assert "let stopActiveVoice = null;" in source
     assert "if(stopActiveVoice) stopActiveVoice();" in source
     assert 'audioEl.removeEventListener("ended", onEnded);' in source
-    assert "if(sequence !== voiceSequence) return;   // superseded while the audio was being fetched" in source
+    # (An instruction superseded while its audio was being fetched reports
+    # "interrupted" instead of completing, so it can never arm the target.)
+    assert 'if(sequence !== voiceSequence) return "interrupted";' in source
     assert 'if(fbEl.classList.contains("show")) startListening();' in source
     assert 'postRN({type:"exercise_frame_error", message:String(e && e.message || e)});' in source
 
@@ -977,14 +1013,24 @@ def test_cylindrical_grasp_reach_open_close_carry_release_flow_and_compensations
     assert "const HAND_CHANGE_MARGIN=0.25, HAND_OPEN_REST_MARGIN=0.10, HAND_CLOSE_DEGREES_DROP=30;" in source
     assert "&& handOpenScore < ref.open - HAND_CHANGE_MARGIN" in source
     assert "restHandOpenScore=restHandOpenSamples.length >= 10 ? median(restHandOpenSamples) : null;" in source
-    assert "function targetActivationReady(finishedAt,now)" in source
+    assert "function targetActivationReady(finishedAt,now,voiceIsActive=false)" in source
+    assert "return !voiceIsActive && finishedAt > 0" in source
     assert "function exerciseTargetIsArmed(now=performance.now())" in source
+    assert "activeVoiceSequence!==0" in source
     assert "const voiceGateOpen = exerciseTargetIsArmed(now);" in source
     assert "stepVoiceFinishedAt = 0;" in source
-    assert "if(currentSubStep === voiceForStep) stepVoiceFinishedAt = performance.now();" in source
+    assert 'const voiceStatus=await playVoice(sub.voice);' in source
+    assert 'voiceStatus === "interrupted"' in source
+    assert "instructionToken !== stepInstructionToken" in source
+    assert "stepVoiceFinishedAt=stepStartTime;" in source
+    assert 'voiceText.textContent="Your turn";' in source
+    assert 'return "completed";' in source
+    assert 'return "interrupted";' in source
+    assert 'audioEl.pause();' in source
     assert "const HAND_LANDMARK_FRESH_MS=350;" in source
-    assert "const TARGET_HOLD_GRACE_MS=350;" in source
-    assert "}else if(inTargetSince != null && (now - lastInTargetTs) > TARGET_HOLD_GRACE_MS){" in source
+    assert "const TARGET_ARM_DELAY_AFTER_VOICE_MS=700;" in source
+    assert "const TARGET_HOLD_LOSS_GRACE_MS=350;" in source
+    assert "}else if(inTargetSince != null && (now - lastInTargetTs) > TARGET_HOLD_LOSS_GRACE_MS){" in source
     # The carried cup follows the per-frame pose wrist (offset to the palm from
     # the latest hand detection). Adaptive smoothing heavily favours the newest
     # point while moving, and hand inference uses the assessment's every-frame

@@ -6113,7 +6113,10 @@ function updateLapTargetCalibration(lm, now){
     t:now,
     shoulderWidth:candidate.shoulderWidth,
   });
-  while(samples.length > 24 || (samples.length && now - samples[0].t > 1200)) samples.shift();
+  // Keep the last 1.2 s of samples. The window is time-based: a fixed count of
+  // 24 would span only 0.4 s at 60 frames per second, less than the stability
+  // window, and the hand could never be judged still.
+  while(samples.length > 120 || (samples.length && now - samples[0].t > 1200)) samples.shift();
 
   let center = {x:medianValue(samples.map(s => s.x)), y:medianValue(samples.map(s => s.y))};
   lapTargetCalibration.target = center;
@@ -8675,6 +8678,17 @@ EXERCISE_SCORING_METHOD: Dict[str, Any] = {
     # Camera angles read a little low for a reach toward the lens, so reaching
     # within 5% of today's target counts as full attainment for that step.
     "full_credit_ratio": 0.95,
+    # Raising the arm lifts the shoulder a little by itself: the collarbone
+    # elevates and the shoulder blade rotates upward as the arm goes up (normal
+    # scapulohumeral rhythm), and the camera's shoulder point rides up with the
+    # deltoid. That is not hiking, so the shrug threshold grows by this many
+    # degrees for every degree of shoulder flexion beyond the first
+    # "free" degrees above the resting angle: a reach to 60 degrees tolerates
+    # about 4 degrees more shoulder rise than a shrug at rest does, a reach to
+    # 90 about 7. A shrug at the start of the reach, before the arm is up, is
+    # judged against the plain threshold.
+    "shoulder_hike_allowance_per_flexion_deg": 0.10,
+    "shoulder_hike_allowance_free_flexion_deg": 10,
     "quality_boundary": "camera-derived coaching score; not a diagnosis or laboratory motion-capture measurement",
 }
 
@@ -10590,7 +10604,10 @@ function updateExerciseLapTargetCalibration(lm,now){
     t:now,
     shoulderWidth:candidate.shoulderWidth,
   });
-  while(samples.length > 24 || (samples.length && now-samples[0].t > 1200)) samples.shift();
+  // Keep the last 1.2 s of samples. The window is time-based: a fixed count of
+  // 24 would span only 0.4 s at 60 frames per second, less than
+  // LAP_CALIBRATION_MIN_MS, and the hand could never be judged still.
+  while(samples.length > 120 || (samples.length && now-samples[0].t > 1200)) samples.shift();
   let center={x:median(samples.map(sample=>sample.x)),y:median(samples.map(sample=>sample.y))};
   exerciseLapTargetCalibration.target=center;
   if(samples.length < LAP_CALIBRATION_MIN_SAMPLES) return;
@@ -10997,6 +11014,25 @@ function movementUnderway(raw){
 function ruleAppliesNow(rule){
   return !Array.isArray(rule.steps) || rule.steps.includes(currentSubStep);
 }
+// Raising the arm lifts the shoulder a little on its own (the collarbone
+// elevates and the shoulder blade rotates upward with the arm - normal
+// scapulohumeral rhythm - and the pose model's shoulder point rides up with
+// the deltoid), so a shoulder that rises WITH the reach is not hiking. The
+// shrug threshold therefore grows with the affected shoulder's flexion beyond
+// its resting angle; a shrug before the arm is up meets the plain threshold.
+const SHOULDER_HIKE_ALLOWANCE_PER_FLEXION_DEG=Number(SCORING_METHOD.shoulder_hike_allowance_per_flexion_deg);
+const SHOULDER_HIKE_FREE_FLEXION_DEG=Number(SCORING_METHOD.shoulder_hike_allowance_free_flexion_deg);
+function expectedShoulderRise(raw){
+  if(CFG.pose_mode !== "body" || !Number.isFinite(SHOULDER_HIKE_ALLOWANCE_PER_FLEXION_DEG)) return 0;
+  const flexion=Number(raw && raw.shoulder_flexion), rest=Number(baselineMetrics.shoulder_flexion);
+  if(!Number.isFinite(flexion) || !Number.isFinite(rest)) return 0;
+  const free=Number.isFinite(SHOULDER_HIKE_FREE_FLEXION_DEG) ? SHOULDER_HIKE_FREE_FLEXION_DEG : 10;
+  return SHOULDER_HIKE_ALLOWANCE_PER_FLEXION_DEG*Math.max(0,flexion-rest-free);
+}
+function compensationThreshold(rule,raw){
+  const threshold=Number(rule.threshold_deg||0);
+  return rule.metric === "shoulder_hike_delta" ? threshold+expectedShoulderRise(raw) : threshold;
+}
 function resetRepMetrics(){
   clearTemporaryCompensationEvidence();
   romBest={};
@@ -11064,7 +11100,7 @@ function updateMetrics(lm,handLm){
     if(!Number.isFinite(value)) continue;
     compensationEligible[rule.id]=(compensationEligible[rule.id]||0)+1;
     peakCompensationDegrees[rule.id]=Math.max(Number(peakCompensationDegrees[rule.id]||0),value);
-    const aboveThreshold=value >= Number(rule.threshold_deg||0);
+    const aboveThreshold=value >= compensationThreshold(rule,raw);
     if(aboveThreshold) compensationHits[rule.id]=(compensationHits[rule.id]||0)+1;
     const previousStreak=Number(liveCompensationStreaks[rule.id]||0);
     liveCompensationStreaks[rule.id]=aboveThreshold ? previousStreak+1 : Math.max(0,previousStreak-2);
@@ -11085,7 +11121,7 @@ function updateMetrics(lm,handLm){
       const rule=(STANDARD.compensations||[]).find(item=>item.id===id);
       const value=Number(evidenceValues[id]||peakCompensationDegrees[id]||0);
       values[id]=value;
-      severity=Math.max(severity,value/Math.max(1,Number(rule&&rule.threshold_deg)||1));
+      severity=Math.max(severity,value/Math.max(1,rule ? compensationThreshold(rule,raw) : 1));
     });
     captureTemporaryCompensationEvidence(lm,ids,severity,values);
   }
@@ -11534,7 +11570,7 @@ function drawLiveDegrees(lm){
   const shoulderRule=(STANDARD.compensations||[]).find(item=>item.metric==="shoulder_hike_delta");
   const hike=shoulderHikeDegrees(raw);
   if(shoulderRule && Number.isFinite(hike) && hike>=2 && lm[ACTIVE.shoulder]){
-    drawDegreeLabel(lm[ACTIVE.shoulder].x*canvas.width+14, lm[ACTIVE.shoulder].y*canvas.height-22, `Shoulder lift ${Math.round(hike)}°`, hike>=Number(shoulderRule.threshold_deg||8)?"#FF9B8A":"#FFD27A");
+    drawDegreeLabel(lm[ACTIVE.shoulder].x*canvas.width+14, lm[ACTIVE.shoulder].y*canvas.height-22, `Shoulder lift ${Math.round(hike)}°`, hike>=compensationThreshold(shoulderRule,raw)?"#FF9B8A":"#FFD27A");
   }
   const mid={x:(lm[11].x+lm[12].x)/2,y:(lm[11].y+lm[12].y)/2};
   const leanRule=(STANDARD.compensations||[]).find(item=>item.metric==="trunk_lean_delta");
@@ -11615,7 +11651,7 @@ function compensationProblemText(rule){
   const specific=CFG.compensation_problems && CFG.compensation_problems[rule.id];
   if(specific) return `${specific} (${degrees} degrees)`;
   if(metric==="trunk_lean_delta") return `your trunk leaned forward (${degrees} degrees)`;
-  if(metric==="shoulder_hike_delta") return `your shoulder lifted toward your ear (${degrees} degrees)`;
+  if(metric==="shoulder_hike_delta") return `your shoulder lifted toward your ear (${degrees} degrees, more than the reach itself needs)`;
   if(metric==="arm_asymmetry") return `your arms moved unevenly (${degrees} degrees apart)`;
   if(metric==="hip_hike_delta") return `your hip lifted (${degrees} degrees)`;
   if(metric==="wrist_flexion_delta") return `your wrist bent instead of your fingers (${degrees} degrees)`;
