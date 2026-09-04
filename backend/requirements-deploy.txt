@@ -9,3 +9,4 @@ python-multipart==0.0.32
 stripe==14.4.1
 uvicorn[standard]==0.25.0
 boto3==1.40.41
+certifi==2026.6.17

@@ -6,6 +6,8 @@ import asyncio
 import os
 import time
 
+import pytest
+from fastapi import HTTPException
 from pymongo.errors import ServerSelectionTimeoutError
 
 os.environ.setdefault("MONGO_URL", "mongodb://127.0.0.1:27017")
@@ -141,3 +143,67 @@ def test_database_is_guarded_and_hosted_timeout_is_five_seconds():
     assert '"MONGO_SERVER_SELECTION_TIMEOUT_MS", 1000 if _MONGO_IS_LOCAL else 5000' in text
     assert 'task_video_bucket = AsyncIOMotorGridFSBucket(_mongo_database, bucket_name="task_videos")' in text
     assert '@api_router.get("/health/db")' in text
+
+
+def test_hosted_sign_in_never_creates_an_ephemeral_patient_account(monkeypatch):
+    breaker = server._MongoCircuitBreaker(cooldown_s=30)
+    dead = _DeadCollection()
+    monkeypatch.setattr(server, "db", type("DeadDatabase", (), {
+        "users": server._GuardedCollection(dead, breaker),
+    })())
+    monkeypatch.setattr(server, "ALLOW_EPHEMERAL_PATIENT_STATE", False)
+    monkeypatch.setattr(server, "LOCAL_USERS", {})
+
+    with pytest.raises(HTTPException) as raised:
+        asyncio.run(server.get_or_create_user("molly@example.com", "Molly"))
+
+    assert raised.value.status_code == 503
+    assert "Nothing has been reset or marked incomplete" in raised.value.detail
+    assert server.LOCAL_USERS == {}
+
+
+def test_hosted_account_write_is_not_acknowledged_when_mongo_is_down(monkeypatch):
+    breaker = server._MongoCircuitBreaker(cooldown_s=30)
+    dead = _DeadCollection()
+    monkeypatch.setattr(server, "db", type("DeadDatabase", (), {
+        "users": server._GuardedCollection(dead, breaker),
+    })())
+    monkeypatch.setattr(server, "ALLOW_EPHEMERAL_PATIENT_STATE", False)
+    monkeypatch.setattr(server, "LOCAL_USERS", {})
+
+    with pytest.raises(HTTPException) as raised:
+        asyncio.run(server._save_user_fields(
+            {"id": "u_patient", "email": "molly@example.com"},
+            {"initial_assessment_completed_at": "2026-09-04T12:00:00+00:00"},
+            context="initial-assessment account marker",
+        ))
+
+    assert raised.value.status_code == 503
+    assert server.LOCAL_USERS == {}
+
+
+def test_database_health_is_unhealthy_while_durable_store_is_in_cooldown(monkeypatch):
+    breaker = server._MongoCircuitBreaker(cooldown_s=30)
+    breaker.trip(ServerSelectionTimeoutError("Atlas unavailable"))
+    monkeypatch.setattr(server, "MONGO_CIRCUIT", breaker)
+
+    response = asyncio.run(server.database_health())
+
+    assert response.status_code == 503
+    assert b'"ok":false' in response.body
+
+
+def test_hosted_atlas_client_uses_certifi_and_render_checks_database_health():
+    source = open(os.path.dirname(server.__file__) + "/server.py", encoding="utf-8").read()
+    render = open(os.path.dirname(server.__file__) + "/../render.yaml", encoding="utf-8").read()
+
+    assert '_mongo_client_options["tlsCAFile"] = certifi.where()' in source
+    assert "ALLOW_EPHEMERAL_PATIENT_STATE = _MONGO_IS_LOCAL" in source
+    assert "healthCheckPath: /api/health/db" in render
+
+
+def test_assessment_reads_and_first_plan_access_require_the_durable_store():
+    source = open(os.path.dirname(server.__file__) + "/server.py", encoding="utf-8").read()
+
+    assert '_require_durable_patient_store(purpose, e)' in source
+    assert '_require_durable_patient_store("rehab plan access", exc)' in source

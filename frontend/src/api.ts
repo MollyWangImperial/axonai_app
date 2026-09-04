@@ -533,6 +533,10 @@ export async function fetchTestingLibrary(): Promise<TestingLibrary> {
 
 export async function fetchHistory(): Promise<Assessment[]> {
   const res = await authedFetch("/api/assessment/history");
+  if (!res.ok) {
+    const body = await res.json().catch(() => null);
+    throw new Error(body?.detail || "Could not load assessment history");
+  }
   return res.json();
 }
 

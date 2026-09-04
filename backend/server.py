@@ -3504,6 +3504,7 @@ async def _owned_assessment_doc(assessment_id: str, request: Request, purpose: s
     try:
         doc = await db.assessments.find_one({"id": assessment_id, "user_id": user["id"]}, {"_id": 0})
     except Exception as e:
+        _require_durable_patient_store(purpose, e)
         logger.warning("Mongo unavailable for %s; using local fallback: %s", purpose, str(e)[:120])
         doc = next(
             (item for item in LOCAL_ASSESSMENTS if item.get("id") == assessment_id and item.get("user_id") == user["id"]),
@@ -3547,6 +3548,7 @@ async def record_rehab_plan_access(assessment_id: str, request: Request):
                 )
                 first_viewed_at = (stored or {}).get("rehab_plan_first_viewed_at")
         except Exception as exc:
+            _require_durable_patient_store("rehab plan access", exc)
             logger.warning("Mongo unavailable for rehab plan access; local fallback: %s", str(exc)[:120])
             for item in LOCAL_ASSESSMENTS:
                 if item.get("id") == assessment_id and item.get("user_id") == doc.get("user_id"):
@@ -13088,9 +13090,9 @@ SUBSCRIPTION_UNLIMITED_ACTIONS = {"assessment", "rehab_plan", "guided_exercise"}
 # Every piece of account state the app relies on between sign-ins - Terms
 # acceptance, the initial survey (profile), data permissions, check-ins and
 # assessment markers - is written to the MongoDB `users` document keyed by the
-# stable account id. The local JSON file remains a mirror for development
-# without Mongo and for short outages, and anything recorded there while Mongo
-# was unreachable is promoted into MongoDB the next time the account is read.
+# stable account id. Local JSON is a development-only fallback and a migration
+# source for records created by older builds; hosted requests fail closed when
+# MongoDB is unavailable so temporary disk is never presented as durable state.
 
 # Account fields that must never be lost between sign-ins. Used to promote
 # local-fallback records into MongoDB after an outage.
@@ -13303,6 +13305,7 @@ async def consume_credits(user_id: str, kind: str) -> Dict[str, Any]:
     try:
         user = await db.users.find_one({"id": user_id}, {"_id": 0})
     except Exception as e:
+        _require_durable_patient_store("credit balance lookup", e)
         logger.warning(f"Mongo unavailable for credit lookup; using local fallback: {str(e)[:120]}")
         user = LOCAL_USERS.get(user_id)
     if not user:
@@ -13326,6 +13329,7 @@ async def consume_credits(user_id: str, kind: str) -> Dict[str, Any]:
             "ts": datetime.now(timezone.utc).isoformat(),
         })
     except Exception as e:
+        _require_durable_patient_store("credit balance update", e)
         logger.warning(f"Mongo unavailable for credit update; using local fallback: {str(e)[:120]}")
         user["credits"] = new_credits
         LOCAL_USERS[user_id] = user
@@ -13396,6 +13400,7 @@ async def _create_login_handoff(user: Dict[str, Any]) -> str:
     try:
         await db.login_handoffs.insert_one(record)
     except Exception as exc:
+        _require_durable_patient_store("sign-in handoff", exc)
         logger.warning(f"Mongo unavailable for login handoff; using local fallback: {str(exc)[:120]}")
         LOCAL_LOGIN_HANDOFFS[digest] = record
     return token
@@ -13415,6 +13420,7 @@ async def _consume_login_handoff(token: str) -> Dict[str, Any]:
             {"_id": 0},
         )
     except Exception as exc:
+        _require_durable_patient_store("sign-in handoff completion", exc)
         logger.warning(f"Mongo unavailable for login handoff completion; using local fallback: {str(exc)[:120]}")
         record = LOCAL_LOGIN_HANDOFFS.pop(digest, None)
 
@@ -13425,6 +13431,7 @@ async def _consume_login_handoff(token: str) -> Dict[str, Any]:
     try:
         user = await db.users.find_one({"id": record["user_id"]}, {"_id": 0})
     except Exception as exc:
+        _require_durable_patient_store("sign-in handoff account lookup", exc)
         logger.warning(f"Mongo unavailable for login handoff user lookup; using local fallback: {str(exc)[:120]}")
         user = LOCAL_USERS.get(record["user_id"])
     if not user:

@@ -171,6 +171,38 @@ def test_returning_account_survives_backend_restart_with_empty_local_state(monke
         assert users._match({"id": "u_restart"})["consent"]["accepted_at"] == "2026-08-01T10:00:00+00:00"
 
 
+def test_initial_assessment_completion_survives_restart_and_new_device(monkeypatch, tmp_path):
+    _isolate_local_state(monkeypatch, tmp_path)
+    completed_at = "2026-08-02T11:30:00+00:00"
+    users = MemoryUsers({
+        "id": server._stable_user_id("assessed@example.com"),
+        "email": "assessed@example.com",
+        "name": "Assessed",
+        "role": "patient",
+        "credits": 100,
+        "trial_access_granted": True,
+        "consent": {
+            "terms_version": server.CURRENT_TERMS_VERSION,
+            "terms_accepted": True,
+            "health_data_consent": True,
+        },
+        "onboarding_complete": True,
+        "profile": {"preferred_name": "Assessed", "side_affected": "left"},
+        "initial_assessment_completed_at": completed_at,
+        "initial_assessment_completion_source": "assessment_submission",
+    })
+    monkeypatch.setattr(server, "db", SimpleNamespace(users=users))
+
+    # No device cache or Render-local file is available after this simulated
+    # restart. The sign-in payload must still carry the durable account marker.
+    monkeypatch.setattr(server, "LOCAL_USERS", {})
+    with TestClient(server.app) as client:
+        login = _login(client, email="assessed@example.com", name="Assessed").json()
+
+    assert login["initial_assessment_completed_at"] == completed_at
+    assert login["initial_assessment_completion_source"] == "assessment_submission"
+
+
 def test_state_saved_during_a_mongo_outage_is_promoted_when_mongo_returns(monkeypatch, tmp_path):
     _isolate_local_state(monkeypatch, tmp_path)
     monkeypatch.setattr(server, "db", SimpleNamespace(users=UnavailableUsers()))

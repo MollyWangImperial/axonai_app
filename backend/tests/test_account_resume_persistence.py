@@ -131,6 +131,19 @@ def test_home_restores_account_activity_before_deciding_the_next_step():
     assert "|| initialAssessmentCompletedAt" in home
     assert 'primaryTitle = isInitialAssessment' in home
     assert 'activeExerciseIds.length\n        ? "Today\'s exercises"' in home
+    assert "fetchHistory().catch(() => null)" in home
+    assert "A 5xx/database outage is unknown state" in home
+    assert 'testID="home-account-state-unavailable"' in home
+    assert "Nothing has been reset" in home
+
+
+def test_sign_in_hydrates_the_initial_assessment_marker_from_the_account():
+    auth = (server.ROOT_DIR.parent / "frontend" / "src" / "auth.ts").read_text(encoding="utf-8")
+    api = (server.ROOT_DIR.parent / "frontend" / "src" / "api.ts").read_text(encoding="utf-8")
+
+    assert "initial_assessment_completed_at?: string | null;" in auth
+    assert "await cacheInitialAssessmentCompletion(user.id, user.initial_assessment_completed_at);" in auth
+    assert 'body?.detail || "Could not load assessment history"' in api
 
 
 def test_completed_legacy_task_ledger_recovers_initial_assessment_account_state(monkeypatch):
@@ -232,7 +245,7 @@ def test_frontend_recovers_legacy_account_identity_and_completed_task_state():
     assert 'storage.getItem("active_user_obj_v1", "")' in auth
     assert "patientActivityKey(previousUserId), patientActivityKey(nextUserId)" in auth
     assert "legacy.id !== userId" in auth
-    assert "completedTaskIdsFromCache(initialTaskCache)" in home
+    assert 'completedTaskIdsFromCache(initialTaskCache || "")' in home
     assert 'authedFetch("/api/users/activity/recover-initial-assessment"' in home
     assert 'id: CURRENT_ACCOUNT_PLAN_ID' in home
     assert 'authedFetch("/api/rehab/current-plan")' in rehab

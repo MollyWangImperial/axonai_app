@@ -18,6 +18,7 @@ export type Me = {
   consent_required?: boolean;
   onboarding_complete?: boolean;
   profile?: Record<string, any> | null;
+  initial_assessment_completed_at?: string | null;
 };
 
 export const USER_KEY = "active_user_id_v2";
@@ -231,6 +232,9 @@ export async function hydrateAccountStateFromServer(user: Me) {
   }
   if (user.onboarding_complete === true) {
     await cachePatientOnboarding(user.id, user.profile && typeof user.profile === "object" ? user.profile : null);
+  }
+  if (user.initial_assessment_completed_at) {
+    await cacheInitialAssessmentCompletion(user.id, user.initial_assessment_completed_at);
   }
 }
 

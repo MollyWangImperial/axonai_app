@@ -4,7 +4,7 @@ services:
     runtime: docker
     plan: free
     dockerfilePath: ./Dockerfile
-    healthCheckPath: /api/
+    healthCheckPath: /api/health/db
     envVars:
       - key: MONGO_URL
         sync: false
