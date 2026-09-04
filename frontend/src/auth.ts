@@ -150,8 +150,9 @@ export async function signIn(email: string, name: string, role: "patient" | "the
     storage.getItem("active_user_obj_v1", ""),
   ]);
   const savedTrialCode = await storage.secureGet(TRIAL_ACCESS_KEY, "");
+  // TESTING PHASE: the trial code is optional (the server accepts sign-in
+  // without checking it until REHYN_ENFORCE_TRIAL_CODE is set again).
   const accessCode = (trialCode || savedTrialCode || "").trim();
-  if (!accessCode) throw new Error("Enter your trial code to continue.");
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), SIGN_IN_TIMEOUT_MS);
   let r: Response;

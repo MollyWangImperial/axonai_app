@@ -325,8 +325,8 @@ export default function SignInScreen() {
   };
 
   const submit = async () => {
-    if (!name.trim() || !email.trim() || !trialCode.trim()) {
-      setErr("Enter your name, email, and trial code to continue.");
+    if (!name.trim() || !email.trim()) {
+      setErr("Enter your name and email to continue.");
       return;
     }
     if (!/^\S+@\S+\.\S+$/.test(email.trim())) {
@@ -526,7 +526,7 @@ export default function SignInScreen() {
               <ScrollView contentContainerStyle={styles.formContent} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
                 <View style={styles.modalBrand}><RehynBrand compact /></View>
                 <Text style={styles.formTitle}>{authIntent === "start" ? "Start free" : "Sign in to Rehyn"}</Text>
-                <Text style={styles.formSubtitle}>Enter your details and trial code to continue.</Text>
+                <Text style={styles.formSubtitle}>Enter your name and email to continue.</Text>
 
                 <Text style={styles.inputLabel}>Your name</Text>
                 <TextInput
@@ -555,7 +555,7 @@ export default function SignInScreen() {
                   returnKeyType="next"
                 />
 
-                <Text style={styles.inputLabel}>Trial code</Text>
+                <Text style={styles.inputLabel}>Trial code (optional)</Text>
                 <View style={styles.trialInputShell}>
                   <TextInput
                     value={trialCode}
@@ -575,7 +575,7 @@ export default function SignInScreen() {
                     <Ionicons name={showTrialCode ? "eye-off-outline" : "eye-outline"} size={22} color={MUTED} />
                   </Pressable>
                 </View>
-                <Text style={styles.trialHint}>Trial access is required to use Rehyn.</Text>
+                <Text style={styles.trialHint}>The trial code is optional while Rehyn is in testing.</Text>
 
                 {err ? <Text accessibilityRole="alert" testID="signin-error" style={styles.error}>{err}</Text> : null}
                 <Pressable testID="signin-submit" disabled={loading} onPress={submit} style={({ pressed }) => [styles.submitButton, loading && styles.disabled, pressed && !loading && styles.buttonPressed]}>

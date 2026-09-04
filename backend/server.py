@@ -3,7 +3,8 @@ from fastapi.responses import HTMLResponse, RedirectResponse, Response, Streamin
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from starlette.staticfiles import StaticFiles
-from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorGridFSBucket
+from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorCollection, AsyncIOMotorGridFSBucket
+from pymongo.errors import ConnectionFailure
 from bson import ObjectId
 from bson.errors import InvalidId
 import os
@@ -19,6 +20,8 @@ import asyncio
 import httpx
 import json
 import hashlib
+import inspect
+import time
 from collections import OrderedDict
 import hmac
 import secrets
@@ -131,9 +134,15 @@ ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env", override=True)
 logger = logging.getLogger(__name__)
 REHYN_TRIAL_ACCESS_CODE = os.environ.get("REHYN_TRIAL_ACCESS_CODE", "").strip()
+# TESTING PHASE: the trial-code check is switched off so anyone can sign in.
+# To restore it, set REHYN_ENFORCE_TRIAL_CODE=1 on the server (Render ->
+# Environment) - the check itself is unchanged and still tested.
+TRIAL_ACCESS_CHECK_ENABLED = os.environ.get("REHYN_ENFORCE_TRIAL_CODE", "").strip().lower() in {"1", "true", "yes"}
 
 
 def _require_trial_access_code(candidate: Optional[str]) -> None:
+    if not TRIAL_ACCESS_CHECK_ENABLED:
+        return
     supplied = str(candidate or "").strip()
     if not REHYN_TRIAL_ACCESS_CODE or not supplied or not hmac.compare_digest(supplied, REHYN_TRIAL_ACCESS_CODE):
         raise HTTPException(status_code=403, detail="The trial code is not valid.")
@@ -161,16 +170,153 @@ def _mongo_timeout_ms(env_name: str, default_ms: int) -> int:
 # Mongo stays responsive. Both values can be tuned per environment.
 _MONGO_IS_LOCAL = any(host in mongo_url for host in ("localhost", "127.0.0.1", "host.docker.internal"))
 MONGO_SERVER_SELECTION_TIMEOUT_MS = _mongo_timeout_ms(
-    "MONGO_SERVER_SELECTION_TIMEOUT_MS", 1000 if _MONGO_IS_LOCAL else 10000
+    "MONGO_SERVER_SELECTION_TIMEOUT_MS", 1000 if _MONGO_IS_LOCAL else 5000
 )
-MONGO_CONNECT_TIMEOUT_MS = _mongo_timeout_ms("MONGO_CONNECT_TIMEOUT_MS", 1000 if _MONGO_IS_LOCAL else 10000)
+MONGO_CONNECT_TIMEOUT_MS = _mongo_timeout_ms("MONGO_CONNECT_TIMEOUT_MS", 1000 if _MONGO_IS_LOCAL else 5000)
 client = AsyncIOMotorClient(
     mongo_url,
     serverSelectionTimeoutMS=MONGO_SERVER_SELECTION_TIMEOUT_MS,
     connectTimeoutMS=MONGO_CONNECT_TIMEOUT_MS,
 )
-db = client[os.environ["DB_NAME"]]
-task_video_bucket = AsyncIOMotorGridFSBucket(db, bucket_name="task_videos")
+_mongo_database = client[os.environ["DB_NAME"]]
+
+
+# When MongoDB is unreachable (cluster paused, IP access list, network), every
+# call used to wait for the full server-selection timeout before falling back
+# to the local store - a sign-in makes several such calls in a row, so it took
+# 20-30 s and the app's 15 s sign-in limit gave up first. The circuit breaker
+# below remembers the first failure: for the next MONGO_CIRCUIT_COOLDOWN_S the
+# database raises immediately (the existing local fallbacks then answer at
+# once), after which one call is allowed through to probe again.
+class MongoUnavailableError(ConnectionFailure):
+    """Raised at once while the circuit breaker is open."""
+
+
+class _MongoCircuitBreaker:
+    def __init__(self, cooldown_s: float) -> None:
+        self.cooldown_s = max(1.0, float(cooldown_s))
+        self.down_until = 0.0
+        self.last_error = ""
+        self.tripped_at: Optional[str] = None
+
+    def is_open(self) -> bool:
+        return time.monotonic() < self.down_until
+
+    def retry_in_s(self) -> float:
+        return max(0.0, self.down_until - time.monotonic())
+
+    def check(self) -> None:
+        if self.is_open():
+            raise MongoUnavailableError(
+                f"MongoDB unreachable; retrying in {self.retry_in_s():.0f}s ({self.last_error or 'server selection timed out'})"
+            )
+
+    def trip(self, error: BaseException) -> None:
+        self.down_until = time.monotonic() + self.cooldown_s
+        self.last_error = str(error)[:200]
+        self.tripped_at = datetime.now(timezone.utc).isoformat()
+        logger.warning(f"MongoDB unreachable; failing fast for {self.cooldown_s:.0f}s: {self.last_error}")
+
+    def clear(self) -> None:
+        self.down_until = 0.0
+
+    def status(self) -> Dict[str, Any]:
+        return {
+            "state": "cooldown" if self.is_open() else "closed",
+            "retry_in_s": round(self.retry_in_s(), 1),
+            "last_error": self.last_error or None,
+            "tripped_at": self.tripped_at,
+            "cooldown_s": self.cooldown_s,
+        }
+
+
+MONGO_CIRCUIT = _MongoCircuitBreaker(_mongo_timeout_ms("MONGO_CIRCUIT_COOLDOWN_MS", 30000) / 1000.0)
+_MONGO_CURSOR_METHODS = {"find", "aggregate", "list_indexes"}
+
+
+class _GuardedCursor:
+    """A Motor cursor whose awaited results trip the breaker on connection loss."""
+
+    def __init__(self, cursor: Any, breaker: _MongoCircuitBreaker) -> None:
+        self._cursor = cursor
+        self._breaker = breaker
+
+    def __getattr__(self, name: str) -> Any:
+        attr = getattr(self._cursor, name)
+        if not callable(attr):
+            return attr
+        if name in {"sort", "limit", "skip", "batch_size", "hint", "max_time_ms", "collation", "allow_disk_use"}:
+            def chained(*args: Any, **kwargs: Any) -> "_GuardedCursor":
+                attr(*args, **kwargs)
+                return self
+            return chained
+
+        async def guarded(*args: Any, **kwargs: Any) -> Any:
+            self._breaker.check()
+            try:
+                result = attr(*args, **kwargs)
+                if inspect.isawaitable(result):
+                    result = await result
+            except ConnectionFailure as error:
+                self._breaker.trip(error)
+                raise
+            self._breaker.clear()
+            return result
+        return guarded
+
+    def __aiter__(self) -> Any:
+        return self._cursor.__aiter__()
+
+
+class _GuardedCollection:
+    def __init__(self, collection: Any, breaker: _MongoCircuitBreaker) -> None:
+        self._collection = collection
+        self._breaker = breaker
+
+    def __getattr__(self, name: str) -> Any:
+        attr = getattr(self._collection, name)
+        if isinstance(attr, AsyncIOMotorCollection):
+            return _GuardedCollection(attr, self._breaker)  # e.g. task_videos.files
+        if not callable(attr):
+            return attr
+        if name in _MONGO_CURSOR_METHODS:
+            def cursor_method(*args: Any, **kwargs: Any) -> _GuardedCursor:
+                self._breaker.check()
+                return _GuardedCursor(attr(*args, **kwargs), self._breaker)
+            return cursor_method
+
+        async def guarded(*args: Any, **kwargs: Any) -> Any:
+            self._breaker.check()
+            try:
+                result = attr(*args, **kwargs)
+                if inspect.isawaitable(result):
+                    result = await result
+            except ConnectionFailure as error:
+                self._breaker.trip(error)
+                raise
+            self._breaker.clear()
+            return result
+        return guarded
+
+
+class _GuardedDatabase:
+    def __init__(self, database: Any, breaker: _MongoCircuitBreaker) -> None:
+        self._database = database
+        self._breaker = breaker
+
+    @property
+    def raw(self) -> Any:
+        return self._database
+
+    def __getattr__(self, name: str) -> Any:
+        return _GuardedCollection(getattr(self._database, name), self._breaker)
+
+    def __getitem__(self, name: str) -> Any:
+        return _GuardedCollection(self._database[name], self._breaker)
+
+
+db = _GuardedDatabase(_mongo_database, MONGO_CIRCUIT)
+task_video_bucket = AsyncIOMotorGridFSBucket(_mongo_database, bucket_name="task_videos")
 TASK_VIDEO_MAX_BYTES = 35 * 1024 * 1024
 TASK_VIDEO_FALLBACK_DIR = ROOT_DIR / ".task_videos"
 LOCAL_STATE_DIR = ROOT_DIR / ".local_state"
@@ -2154,6 +2300,21 @@ def merge_validated_model_issues(
 @api_router.get("/")
 async def root():
     return {"message": "NeuroMotion Stroke Rehab API"}
+
+
+@api_router.get("/health/db")
+async def database_health():
+    """Is MongoDB reachable from this server right now? (No patient data.)"""
+    started = time.monotonic()
+    if MONGO_CIRCUIT.is_open():
+        return {"ok": False, "state": "cooldown", "ms": 0, **MONGO_CIRCUIT.status()}
+    try:
+        await asyncio.wait_for(client.admin.command("ping"), timeout=MONGO_SERVER_SELECTION_TIMEOUT_MS / 1000 + 2)
+        MONGO_CIRCUIT.clear()
+        return {"ok": True, "state": "connected", "ms": round((time.monotonic() - started) * 1000), **MONGO_CIRCUIT.status()}
+    except Exception as error:  # noqa: BLE001 - any failure means the database is not usable
+        MONGO_CIRCUIT.trip(error)
+        return {"ok": False, "state": "unreachable", "ms": round((time.monotonic() - started) * 1000), "error": str(error)[:200], **MONGO_CIRCUIT.status()}
 
 
 @api_router.post("/status", response_model=StatusCheck)
@@ -9750,6 +9911,7 @@ let inTargetSince = null;
 let lastInTargetTs = 0;
 let stepCompleted = false;
 let stepVoiceFinishedAt = 0;   // a step cannot complete until its instruction has been heard
+let stepInstructionToken = 0;  // only the latest step narration is allowed to unlock its target
 let running = false;
 let cameraStream = null;
 let confirmationAudioStream = null;
@@ -9903,22 +10065,45 @@ function unlockAudioPlayback(){
 
 function playBrowserVoice(text){
   return new Promise((resolve) => {
+    let settled=false, utterance=null, watchdog=null;
+    const finish=(status)=>{
+      if(settled) return;
+      settled=true;
+      if(watchdog) clearTimeout(watchdog);
+      if(utterance){ utterance.onend=null; utterance.onerror=null; }
+      if(stopActiveVoice===stop) stopActiveVoice=null;
+      resolve(status);
+    };
+    const stop=()=>{
+      try{ window.speechSynthesis.cancel(); }catch(e){}
+      finish("interrupted");
+    };
     if(!("speechSynthesis" in window) || !window.SpeechSynthesisUtterance){
-      resolve(false);
+      finish("unavailable");
       return;
     }
     try{
       window.speechSynthesis.cancel();
-      const utterance = new SpeechSynthesisUtterance(text);
+      utterance = new SpeechSynthesisUtterance(text);
       utterance.lang = "en-US";
       utterance.rate = 0.88;
       utterance.pitch = 1.0;
-      utterance.onend = () => resolve(true);
-      utterance.onerror = () => resolve(false);
+      utterance.onend = () => finish("completed");
+      utterance.onerror = () => {
+        window.speechSynthesis.cancel();
+        finish("unavailable");
+      };
+      stopActiveVoice=stop;
       window.speechSynthesis.speak(utterance);
-      setTimeout(() => resolve(true), Math.min(14000, Math.max(3500, text.length * 70)));
+      // This is only a deadlock guard. It never marks speech as complete: it
+      // first stops playback, then reports that voice was unavailable.
+      watchdog=setTimeout(()=>{
+        window.speechSynthesis.cancel();
+        finish("unavailable");
+      },Math.min(60000,Math.max(15000,text.length*220)));
     }catch(e){
-      resolve(false);
+      try{ window.speechSynthesis.cancel(); }catch(ignore){}
+      finish("unavailable");
     }
   });
 }
@@ -9930,31 +10115,43 @@ function playBrowserVoice(text){
 // listeners of the instruction that replaced it (that used to freeze the next
 // repetition's start for up to 45 seconds).
 let voiceSequence = 0;
+let activeVoiceSequence = 0;
 let stopActiveVoice = null;
 async function playVoice(text){
   if(!VOICE_GUIDANCE_ENABLED || !text){
     voiceText.textContent = "Voice guidance off · follow on-screen text";
-    return;
+    return "disabled";
   }
   const sequence = ++voiceSequence;
   if(stopActiveVoice) stopActiveVoice();
+  activeVoiceSequence=sequence;
   try{
-    voiceText.textContent = "Playing instruction…";
+    voiceText.textContent = "Listen to the full instruction…";
     const audioB64 = await fetchVoiceAudio(text);
-    if(sequence !== voiceSequence) return;   // superseded while the audio was being fetched
+    if(sequence !== voiceSequence) return "interrupted";
     if(stopActiveVoice) stopActiveVoice();
     audioEl.pause();
     audioEl.src = "data:audio/mpeg;base64," + audioB64;
-    await new Promise((resolve, reject) => {
+    const playbackStatus=await new Promise((resolve, reject) => {
       let settled = false;
-      let timeout = setTimeout(() => finish(resolve), 45000);
-      const onEnded = () => finish(resolve);
-      const onError = () => finish(() => reject(new Error("Audio element could not play the instruction")));
+      let timeout = setTimeout(() => finish(() => {
+        audioEl.pause();
+        reject(new Error("Audio instruction timed out"));
+      }), 60000);
+      const onEnded = () => finish(() => resolve("completed"));
+      const onError = () => finish(() => {
+        audioEl.pause();
+        reject(new Error("Audio element could not play the instruction"));
+      });
       const onMetadata = () => {
-        // Once the clip length is known, give up shortly after it should have ended.
+        // Allow the full clip plus a generous buffer. If this guard ever fires,
+        // stop the audio before falling back; never unlock over audible speech.
         if(Number.isFinite(audioEl.duration) && audioEl.duration > 0){
           clearTimeout(timeout);
-          timeout = setTimeout(() => finish(resolve), audioEl.duration * 1000 + 3000);
+          timeout = setTimeout(() => finish(() => {
+            audioEl.pause();
+            reject(new Error("Audio instruction did not finish"));
+          }), audioEl.duration * 1000 + 5000);
         }
       };
       const finish = callback => {
@@ -9967,7 +10164,10 @@ async function playVoice(text){
         if(stopActiveVoice === stop) stopActiveVoice = null;
         callback();
       };
-      const stop = () => finish(resolve);
+      const stop = () => finish(() => {
+        audioEl.pause();
+        resolve("interrupted");
+      });
       stopActiveVoice = stop;
       audioEl.addEventListener("ended", onEnded);
       audioEl.addEventListener("error", onError);
@@ -9977,12 +10177,21 @@ async function playVoice(text){
         playback.catch(error => { if(!settled && sequence === voiceSequence) finish(() => reject(error)); });
       }
     });
-    if(sequence === voiceSequence) voiceText.textContent = "Instruction ready";
+    if(sequence !== voiceSequence || playbackStatus !== "completed") return "interrupted";
+    if(activeVoiceSequence===sequence) activeVoiceSequence=0;
+    voiceText.textContent = "Instruction finished · get ready";
+    return "completed";
   }catch(e){
-    if(sequence !== voiceSequence) return;   // interrupted: the newer instruction is playing
+    audioEl.pause();
+    if(sequence !== voiceSequence) return "interrupted";
     voiceText.textContent = "Using device voice";
-    const spoke = await playBrowserVoice(text);
-    voiceText.textContent = spoke ? "Instruction ready" : "Voice unavailable — follow on-screen text";
+    const browserStatus = await playBrowserVoice(text);
+    if(sequence !== voiceSequence || browserStatus === "interrupted") return "interrupted";
+    if(activeVoiceSequence===sequence) activeVoiceSequence=0;
+    voiceText.textContent = browserStatus === "completed"
+      ? "Instruction finished · get ready"
+      : "Voice unavailable · follow the on-screen instruction";
+    return browserStatus;
   }
 }
 
@@ -10913,12 +11122,13 @@ const HAND_SCAN_INTERVAL_MS=0, HAND_BACKOFF_SCAN_INTERVAL_MS=180, HAND_BACKOFF_F
 let frameIntervalMs=33, lastLoopTs=0, lastHandScanTs=0;
 function handBackoffActive(){ return frameIntervalMs > 1000/MIN_SMOOTH_FPS; }
 function handFreshWindowMs(){ return handBackoffActive() ? HAND_BACKOFF_FRESH_MS : HAND_LANDMARK_FRESH_MS; }
-const TARGET_HOLD_GRACE_MS=350;     // same hold grace as the assessment
-function targetActivationReady(finishedAt,now){
-  return finishedAt > 0 && (now-finishedAt) >= TARGET_HOLD_GRACE_MS;
+const TARGET_ARM_DELAY_AFTER_VOICE_MS=700;
+const TARGET_HOLD_LOSS_GRACE_MS=350;
+function targetActivationReady(finishedAt,now,voiceIsActive=false){
+  return !voiceIsActive && finishedAt > 0 && (now-finishedAt) >= TARGET_ARM_DELAY_AFTER_VOICE_MS;
 }
 function exerciseTargetIsArmed(now=performance.now()){
-  return targetActivationReady(stepVoiceFinishedAt,now);
+  return targetActivationReady(stepVoiceFinishedAt,now,activeVoiceSequence!==0);
 }
 // Hand-opening and fist-closure scores, computed and smoothed exactly like the
 // initial assessment (finger straightness, fingertip spread, thumb-index
@@ -11223,11 +11433,13 @@ function drawOverlay(lm,handLm){
     const tx = target.x*canvas.width;
     const ty = target.y*canvas.height;
     const tr = effectiveExerciseTargetRadius(sub,lm)*Math.min(canvas.width,canvas.height);
-    const pulse = 1 + 0.08*Math.sin(performance.now()/250);
+    // A still, faint ring means "listen". Pulsing starts only when Alira has
+    // finished and the target can actually respond to the patient.
+    const pulse = armed ? 1 + 0.08*Math.sin(performance.now()/250) : 1;
     ctx.save();
     ctx.beginPath(); ctx.arc(tx,ty,tr*pulse,0,Math.PI*2);
     ctx.lineWidth=ASSESSMENT_OVERLAY_STYLE.targetEdgeWidth;
-    ctx.strokeStyle=armed ? ASSESSMENT_OVERLAY_STYLE.targetColor : "rgba(225,142,109,0.45)";
+    ctx.strokeStyle=armed ? ASSESSMENT_OVERLAY_STYLE.targetColor : "rgba(225,142,109,0.28)";
     ctx.setLineDash(armed ? [] : [10,8]);
     ctx.stroke();
     ctx.restore();
@@ -11370,6 +11582,7 @@ async function startRep(){
 }
 
 async function startSubStep(){
+  const instructionToken=++stepInstructionToken;
   const sub = CFG.cycle[currentSubStep];
   captionEl.textContent = sub.caption;
   stepStartTime = performance.now();
@@ -11377,8 +11590,20 @@ async function startSubStep(){
   tapBtn.disabled = true;
   prefetchVoice(CFG.cycle[currentSubStep + 1] && CFG.cycle[currentSubStep + 1].voice);
   const voiceForStep = currentSubStep;
-  await playVoice(sub.voice);
-  if(currentSubStep === voiceForStep) stepVoiceFinishedAt = performance.now();
+  const voiceStatus=await playVoice(sub.voice);
+  if(currentSubStep !== voiceForStep || instructionToken !== stepInstructionToken || voiceStatus === "interrupted") return;
+  // Discard any hold or gesture timing accumulated while Alira was speaking.
+  // Only a fresh post-instruction frame may begin the target hold.
+  inTargetSince=null;
+  lastInTargetTs=0;
+  handGateNearSince=null;
+  stepStartTime=performance.now();
+  stepVoiceFinishedAt=stepStartTime;
+  setTimeout(()=>{
+    if(currentSubStep===voiceForStep && instructionToken===stepInstructionToken && exerciseTargetIsArmed()){
+      voiceText.textContent="Your turn";
+    }
+  },TARGET_ARM_DELAY_AFTER_VOICE_MS);
   tapBtn.disabled = false;
 }
 
@@ -11848,7 +12073,7 @@ function loop(){
             if(navigator.vibrate) navigator.vibrate(60);
             setTimeout(() => advanceSubStep(), 250);
           }
-        }else if(inTargetSince != null && (now - lastInTargetTs) > TARGET_HOLD_GRACE_MS){
+        }else if(inTargetSince != null && (now - lastInTargetTs) > TARGET_HOLD_LOSS_GRACE_MS){
           // Grace: brief tracking jitter outside the circle does not reset the hold.
           inTargetSince = null;
         }
@@ -12022,6 +12247,8 @@ window.__rehynExerciseTrackingTest={
   nextVirtualObjectAnchor,
   handScanIntervalMs:HAND_SCAN_INTERVAL_MS,
   handOverlayStyle:ASSESSMENT_HAND_OVERLAY_STYLE,
+  targetArmDelayAfterVoiceMs:TARGET_ARM_DELAY_AFTER_VOICE_MS,
+  voiceIsActive:()=>activeVoiceSequence!==0,
 };
 window.__rehynExerciseLapCalibrationTest={
   diagnose:(landmarks)=>exerciseLapTargetCandidateStatus(landmarks),

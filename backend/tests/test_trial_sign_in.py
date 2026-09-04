@@ -10,6 +10,7 @@ from backend import server
 
 
 def test_login_rejects_missing_or_incorrect_trial_code(monkeypatch):
+    monkeypatch.setattr(server, "TRIAL_ACCESS_CHECK_ENABLED", True)
     monkeypatch.setattr(server, "REHYN_TRIAL_ACCESS_CODE", "test-trial-code")
 
     with TestClient(server.app) as client:
@@ -30,7 +31,38 @@ def test_login_rejects_missing_or_incorrect_trial_code(monkeypatch):
     assert missing.json()["detail"] == "The trial code is not valid."
 
 
+def test_testing_phase_signs_anyone_in_without_a_trial_code(monkeypatch):
+    """The check is off by default (REHYN_ENFORCE_TRIAL_CODE unset): sign-in works with
+    no code or a wrong code, and the check is the only thing that changes."""
+    assert server.TRIAL_ACCESS_CHECK_ENABLED is False
+    monkeypatch.setattr(server, "REHYN_TRIAL_ACCESS_CODE", "test-trial-code")
+
+    async def fake_get_or_create_user(email, name, role="patient"):
+        return {"id": "u_open_test", "email": email, "name": name, "role": role, "credits": 100}
+
+    async def fake_grant_trial_access(user):
+        return {**user, "trial_access_granted": True, "trial_access_granted_at": "2026-09-04T12:00:00+00:00"}
+
+    monkeypatch.setattr(server, "get_or_create_user", fake_get_or_create_user)
+    monkeypatch.setattr(server, "_grant_trial_access", fake_grant_trial_access)
+
+    with TestClient(server.app) as client:
+        no_code = client.post("/api/users/login", json={"email": "open@example.com", "name": "Open", "role": "patient"})
+        wrong_code = client.post("/api/users/login", json={"email": "open@example.com", "name": "Open", "role": "patient", "trial_code": "nope"})
+
+    assert no_code.status_code == 200 and no_code.json()["trial_access_granted"] is True
+    assert wrong_code.status_code == 200 and wrong_code.json()["trial_access_granted"] is True
+    # The frontend no longer blocks an empty code either.
+    frontend_root = server.ROOT_DIR.parent / "frontend"
+    auth = (frontend_root / "src" / "auth.ts").read_text(encoding="utf-8")
+    sign_in = (frontend_root / "app" / "sign-in.tsx").read_text(encoding="utf-8")
+    assert 'throw new Error("Enter your trial code to continue.")' not in auth
+    assert "!trialCode.trim()" not in sign_in
+    assert "optional while Rehyn is in testing" in sign_in
+
+
 def test_login_and_signup_grant_access_only_after_valid_code(monkeypatch):
+    monkeypatch.setattr(server, "TRIAL_ACCESS_CHECK_ENABLED", True)
     monkeypatch.setattr(server, "REHYN_TRIAL_ACCESS_CODE", "test-trial-code")
 
     async def fake_get_or_create_user(email, name, role="patient"):
@@ -98,6 +130,7 @@ def test_external_sign_in_link_can_open_the_trial_form_directly():
 
 
 def test_landing_page_handoff_is_short_lived_and_single_use(monkeypatch):
+    monkeypatch.setattr(server, "TRIAL_ACCESS_CHECK_ENABLED", True)
     monkeypatch.setattr(server, "REHYN_TRIAL_ACCESS_CODE", "test-trial-code")
 
     user = {
