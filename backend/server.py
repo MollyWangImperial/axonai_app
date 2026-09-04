@@ -1856,6 +1856,52 @@ EXERCISE_LIBRARY: Dict[str, RehabExercise] = {
 }
 
 
+FIXED_CORE_REHAB_CODES = (
+    "TRUNK_COMP",
+    "REACH_INCOMPLETE",
+    "GROSS_GRASP",
+    "H2M_IMPAIRED",
+)
+FIXED_CORE_REHAB_IDS = tuple(EXERCISE_LIBRARY[code].id for code in FIXED_CORE_REHAB_CODES)
+
+
+def fixed_core_rehab_plan(profile: Optional[Dict[str, Any]] = None) -> List[RehabExercise]:
+    """Return the current four-exercise programme for every patient account."""
+    profile = dict(profile or {})
+    priorities = profile.get("patient_priorities") or []
+    if isinstance(priorities, str):
+        priorities = [priorities]
+    linked_goal = str((priorities or [profile.get("primary_goal") or ""])[0] or "").strip() or None
+    assistance_reported = any(
+        str(profile.get(key) or "").lower() == value
+        for key, value in (
+            ("sitting_ability", "needs_support"),
+            ("affected_arm_movement", "help_only"),
+            ("affected_hand_movement", "help_only"),
+        )
+    )
+    assistance_note = (
+        " Use the help of a carer or family member stated in your setup answers, and do not attempt the movement alone."
+        if assistance_reported else ""
+    )
+    plan: List[RehabExercise] = []
+    for code in FIXED_CORE_REHAB_CODES:
+        exercise = EXERCISE_LIBRARY[code]
+        plan.append(exercise.model_copy(update={
+            "linked_goal": linked_goal,
+            "selection_reason": (
+                "Included in Rehyn's current four-exercise core programme. "
+                "The daily level progresses from exercise-session frequency rather than survey or assessment findings."
+            ),
+            "safety_note": (
+                "Use a stable seated position and a comfortable, pain-free range. Stop for new pain, marked fatigue, "
+                f"dizziness, new weakness, or loss of balance.{assistance_note}"
+            ),
+            "requires_clinician_confirmation": False,
+        }))
+    return plan
+
+
 def _clinical_grade(patient_parameters: Optional[Dict[str, Any]], *keys: str) -> Optional[int]:
     measures = (patient_parameters or {}).get("clinician_measures") or {}
     lookup = {str(key).upper(): value for key, value in measures.items()}
@@ -2007,141 +2053,13 @@ def _round_robin_survey_candidates(
 
 
 def survey_rehab_plan(profile: Optional[Dict[str, Any]] = None) -> List[RehabExercise]:
-    """Select up to five exercises using only patient-reported survey problems.
+    """Backward-compatible entry point for the universal core programme.
 
-    Exact problem matches are selected first and distributed across reported
-    domains. When fewer than four safe matches remain, only same-domain
-    foundation exercises may fill the plan. Safety filters can intentionally
-    leave fewer than four exercises; unrelated or unsafe exercises are never
-    added just to reach a count target.
+    Survey and assessment evidence still informs movement reporting, safety
+    holds and progress tracking, but it no longer adds or removes these four
+    exercises during the current testing policy.
     """
-    profile = dict(profile or {})
-    if str(profile.get("movement_pain") or "").lower() == "severe_or_worsening":
-        return []
-
-    question_keys = {
-        "arm": "arm_activity_difficulties",
-        "hand": "hand_activity_difficulties",
-        "mobility": "mobility_activity_difficulties",
-    }
-    direct: Dict[str, List[Tuple[str, str]]] = {domain: [] for domain in question_keys}
-    active_domains: List[str] = []
-    for domain, question_key in question_keys.items():
-        selected, answered = _survey_selected_values(profile, question_key)
-        for option, code, problem in SURVEY_PROBLEM_RULES[domain]:
-            if option in selected and _survey_candidate_is_eligible(code, profile):
-                direct[domain].append((code, f"you reported that {problem}"))
-        if selected:
-            active_domains.append(domain)
-        if answered:
-            continue
-
-        # Backward compatibility for profiles saved before the decisive
-        # activity questions existed. These broad answers are not used once
-        # the patient has answered the new problem question.
-        if domain == "arm" and str(profile.get("affected_arm_movement") or "").lower() in {
-            "most_movements", "some_movement", "help_only",
-        }:
-            direct[domain].append(("REACH_INCOMPLETE", "your earlier survey reported reduced affected-arm movement"))
-            active_domains.append(domain)
-        elif domain == "hand" and str(profile.get("affected_hand_movement") or "").lower() in {
-            "opens_and_moves", "some_finger_movement", "very_little_movement", "help_only",
-        }:
-            direct[domain].append(("HAND_OPENING", "your earlier survey reported affected-hand movement difficulty"))
-            active_domains.append(domain)
-        elif domain == "mobility":
-            areas = {str(value).lower() for value in (profile.get("affected_areas") or [])}
-            mobility = str(profile.get("mobility_level") or "").lower()
-            if any(value.endswith("_lower") for value in areas) or mobility in {
-                "cane", "walker", "person_assist", "wheelchair", "unable_walk", "not_cleared",
-            }:
-                direct[domain].append(("LOWER_LIMB_SELECTIVE_CONTROL", "your earlier survey reported a lower-limb or mobility difficulty"))
-                active_domains.append(domain)
-
-    ordered_candidates = _round_robin_survey_candidates(direct)
-    seen_codes = {code for code, _, _ in ordered_candidates}
-
-    if len(seen_codes) < SURVEY_PLAN_MIN_EXERCISES:
-        support_buckets: Dict[str, List[Tuple[str, str]]] = {domain: [] for domain in question_keys}
-        for domain in dict.fromkeys(active_domains):
-            for code in SURVEY_SUPPORTING_EXERCISES[domain]:
-                if code in seen_codes or not _survey_candidate_is_eligible(code, profile):
-                    continue
-                support_buckets[domain].append((
-                    code,
-                    f"it is a foundation exercise for the {domain.replace('_', ' ')} difficulty reported in your survey",
-                ))
-                seen_codes.add(code)
-        ordered_candidates.extend(_round_robin_survey_candidates(support_buckets))
-
-    selected_candidates: List[Tuple[str, str, str]] = []
-    selected_codes: set[str] = set()
-    for code, domain, reason in ordered_candidates:
-        if code in selected_codes:
-            continue
-        selected_candidates.append((code, domain, reason))
-        selected_codes.add(code)
-        if len(selected_candidates) >= SURVEY_PLAN_MAX_EXERCISES:
-            break
-
-    issues = [
-        FunctionalIssue(
-            code=code,
-            label=f"{reason.capitalize()} (survey report)",
-            description="This match comes from the patient's survey answers, not camera or model findings.",
-            source="survey_reported_problem",
-            severity="mild",
-            related_task=f"SURVEY_{domain.upper()}",
-        )
-        for code, domain, reason in selected_candidates
-    ]
-    plan = build_rehab_plan(issues, profile)
-    reason_by_code = {code: reason for code, _, reason in selected_candidates}
-    domain_by_code = {code: domain for code, domain, _ in selected_candidates}
-    supervised_ids = {
-        "ex_sit_to_stand", "ex_supported_stand", "ex_supported_step", "ex_weight_shift", "ex_step_stance",
-    }
-    assistance_reported = (
-        str(profile.get("sitting_ability") or "").lower() == "needs_support"
-        or str(profile.get("affected_arm_movement") or "").lower() == "help_only"
-        or str(profile.get("affected_hand_movement") or "").lower() == "help_only"
-        or str(profile.get("standing_exercise_clearance") or "").lower() == "with_support"
-    )
-    raw_priorities = profile.get("patient_priorities") or []
-    if isinstance(raw_priorities, str):
-        raw_priorities = [raw_priorities]
-    goal = str((raw_priorities or [profile.get("primary_goal") or ""])[0] or "").strip()
-    for index, exercise in enumerate(plan):
-        reason = reason_by_code.get(exercise.targets_issue, "it supports a difficulty reported in your survey")
-        exercise_domain = domain_by_code.get(exercise.targets_issue, "")
-        base_safety_note = (
-            "Use a stable support and stop for new pain, marked fatigue, dizziness, or any loss of balance."
-            if exercise_domain == "mobility"
-            else (exercise.safety_note or "")
-        )
-        safety_note = (
-            f"{base_safety_note} This exercise was selected from self-reported survey information; "
-            "stop if it feels unsafe and confirm suitability with your rehabilitation clinician."
-        ).strip()
-        if exercise.id in supervised_ids:
-            safety_note += " Use only the standing clearance, fixed support, and close supervision stated in your survey."
-        updates: Dict[str, Any] = {
-            "selection_reason": f"Starting plan from your survey answers - selected because {reason}.",
-            "safety_note": safety_note,
-            "linked_goal": goal or exercise.linked_goal,
-            "requires_clinician_confirmation": exercise.id in supervised_ids or assistance_reported,
-        }
-        if assistance_reported:
-            updates.update({
-                "sets": min(exercise.sets, 2),
-                "reps": min(exercise.reps, 8),
-                "frequency": (
-                    exercise.frequency if exercise.id in supervised_ids
-                    else "Daily with therapist-approved assistance"
-                ),
-            })
-        plan[index] = exercise.model_copy(update=updates)
-    return plan[:SURVEY_PLAN_MAX_EXERCISES]
+    return fixed_core_rehab_plan(profile)
 
 
 def survey_interim_rehab_plan(profile: Optional[Dict[str, Any]] = None) -> List[RehabExercise]:
@@ -2149,24 +2067,27 @@ def survey_interim_rehab_plan(profile: Optional[Dict[str, Any]] = None) -> List[
     return survey_rehab_plan(profile)
 
 
-def _clinical_gate_with_survey_plan(
+def _clinical_gate_with_core_plan(
     clinical_review_gate: Dict[str, Any],
     plan: Sequence[RehabExercise],
 ) -> Dict[str, Any]:
-    """Expose a survey plan without claiming that camera/model evidence selected it."""
+    """Expose the universal core plan without claiming evidence selected it."""
     awaiting_analysis = clinical_review_gate.get("status") == "awaiting_model_analysis"
     count = len(plan)
     return {
         **clinical_review_gate,
+        "status": "awaiting_model_analysis" if awaiting_analysis else "clear",
         "rehab_access": "interim" if awaiting_analysis else "allowed",
-        "rehab_plan_source": "survey_reported_problems",
+        "rehab_plan_source": "fixed_core_programme",
+        "reason_code": "fixed_core_programme",
+        "therapist_confirmation_required": False,
         "interim_plan_available": awaiting_analysis,
-        "patient_title": "Your survey-based plan is ready",
+        "patient_title": "Your rehab plan is ready",
         "patient_message": (
-            f"Your {count}-exercise plan was selected only from the functional difficulties you reported. "
-            "Camera and movement-model results do not add, remove, or replace exercises."
+            f"Your current {count}-exercise core programme is ready. Survey and movement results inform "
+            "your report and safety checks, while exercise-session frequency sets the starting difficulty."
         ),
-        "next_step": "Review the safety notes and use only the support or supervision stated in your plan.",
+        "next_step": "Review the safety notes and complete today's exercises at the suggested level.",
     }
 
 
@@ -2204,11 +2125,30 @@ def _clinical_gate_with_survey_hold(
         "rehab_access": "blocked",
         "reason_code": reason_code,
         "therapist_confirmation_required": True,
-        "rehab_plan_source": "survey_reported_problems",
+        "rehab_plan_source": "fixed_core_programme",
         "patient_title": "Please check with your rehabilitation clinician",
         "patient_message": message,
         "next_step": "Ask your physiotherapist or rehabilitation clinician what movement is safe before starting exercises.",
     }
+
+
+def _assessment_with_current_rehab_policy(doc: Dict[str, Any]) -> Dict[str, Any]:
+    """Present saved assessments with the current universal core programme."""
+    current = dict(doc)
+    profile = dict(current.get("patient_parameters") or {})
+    plan = fixed_core_rehab_plan(profile)
+    gate = dict(current.get("clinical_review_gate") or {})
+    pain_hold = str(profile.get("movement_pain") or "").lower() == "severe_or_worsening"
+    access = str(gate.get("rehab_access") or "allowed")
+    if pain_hold:
+        gate = _clinical_gate_with_survey_hold(gate, profile)
+    elif access in {"allowed", "interim", "not_needed"} or not gate:
+        gate = _clinical_gate_with_core_plan(gate, plan)
+    else:
+        gate = {**gate, "rehab_plan_source": "fixed_core_programme"}
+    current["rehab_plan"] = [exercise.model_dump() for exercise in plan]
+    current["clinical_review_gate"] = gate
+    return current
 
 
 def build_rehab_plan(
@@ -3309,14 +3249,17 @@ async def submit_assessment(payload: AssessmentSubmit, request: Request):
     )
     survey_profile = {**(user.get("profile") or {}), **(patient_parameters or {})}
     plan = survey_rehab_plan(survey_profile)
-    if clinical_review_gate.get("status") in {"awaiting_model_analysis", "clear"} and plan:
-        clinical_review_gate = _clinical_gate_with_survey_plan(clinical_review_gate, plan)
-    elif clinical_review_gate.get("status") in {"awaiting_model_analysis", "clear"}:
+    if str(survey_profile.get("movement_pain") or "").lower() == "severe_or_worsening":
         clinical_review_gate = _clinical_gate_with_survey_hold(clinical_review_gate, survey_profile)
-    elif clinical_review_gate.get("status") not in {"awaiting_model_analysis", "clear"}:
-        # A validated survey/objective mismatch remains a safety hold. The
-        # observed findings still never choose exercise IDs.
-        plan = []
+    elif clinical_review_gate.get("status") in {"awaiting_model_analysis", "clear", "no_rehab_needed"}:
+        clinical_review_gate = _clinical_gate_with_core_plan(clinical_review_gate, plan)
+    else:
+        # Keep the assigned core visible in the record while the independent
+        # safety gate prevents it from being started.
+        clinical_review_gate = {
+            **clinical_review_gate,
+            "rehab_plan_source": "fixed_core_programme",
+        }
     if plan and clinical_review_gate.get("rehab_access") == "allowed":
         await consume_credits(user["id"], "rehab_plan")
     _record_alira_action(
@@ -3486,6 +3429,7 @@ async def get_assessment_history(request: Request):
         ]
         docs.sort(key=lambda item: item.get("created_at", ""), reverse=True)
         docs = docs[:50]
+    docs = [_assessment_with_current_rehab_policy(doc) for doc in docs]
     for doc in docs:
         if not doc.get("patient_insights"):
             package_id = str(doc.get("assessment_package") or "upper_limb")
@@ -3521,7 +3465,7 @@ async def _owned_assessment_doc(assessment_id: str, request: Request, purpose: s
         )
     if not doc:
         raise HTTPException(status_code=404, detail="Assessment not found")
-    return doc
+    return _assessment_with_current_rehab_policy(doc)
 
 
 @api_router.get("/assessment/{assessment_id}", response_model=Assessment)
@@ -3953,12 +3897,15 @@ async def save_model_results(assessment_id: str, payload: ModelResultSubmit, req
     # Model output remains available for the movement report and safety gate,
     # but never selects or replaces exercise IDs in the current policy.
     plan = survey_rehab_plan(patient_parameters)
-    if clinical_review_gate.get("status") in {"awaiting_model_analysis", "clear"} and plan:
-        clinical_review_gate = _clinical_gate_with_survey_plan(clinical_review_gate, plan)
-    elif clinical_review_gate.get("status") in {"awaiting_model_analysis", "clear"}:
+    if str(patient_parameters.get("movement_pain") or "").lower() == "severe_or_worsening":
         clinical_review_gate = _clinical_gate_with_survey_hold(clinical_review_gate, patient_parameters)
-    elif clinical_review_gate.get("status") not in {"awaiting_model_analysis", "clear"}:
-        plan = []
+    elif clinical_review_gate.get("status") in {"awaiting_model_analysis", "clear", "no_rehab_needed"}:
+        clinical_review_gate = _clinical_gate_with_core_plan(clinical_review_gate, plan)
+    else:
+        clinical_review_gate = {
+            **clinical_review_gate,
+            "rehab_plan_source": "fixed_core_programme",
+        }
     expected_summary_domains = _expected_domains_for_tasks(package_id, assigned_task_ids)
     body_function_summary = patient_body_function_summary(
         task_results,
@@ -8444,11 +8391,23 @@ REHAB_RUNNER_CONFIG: Dict[str, Dict[str, Any]] = {
         "name": "Hand-to-Mouth ADL Practice",
         "reps": 5,
         "pose_mode": "body",
-        "setup_voice": "We will practice hand-to-mouth, an essential daily activity. A cup is drawn in your hand on the screen, so you do not need a real one. Start with your hand on your lap, then slowly bring the cup up to your mouth.",
+        "setup_voice": "We will practice hand-to-mouth, an essential daily activity. A cup is drawn in your hand on the screen, so you do not need a real one. Sit tall with your back away from the chair and your affected hand resting on your lap. Keep your head up: the cup comes to your mouth, not your mouth to the cup. I will guide you through each step.",
+        "correct_form_cue": "Next time, keep your head up and your back still, and bend your elbow to bring the cup all the way to your lips.",
+        # Problem wording for the feedback ("I noticed ..."), in this exercise's terms.
+        "compensation_problems": {
+            "trunk_forward": "your trunk leaned forward to meet the cup",
+            "shoulder_hike": "your shoulder lifted toward your ear",
+            "head_drop": "your head dropped down toward the cup",
+        },
+        "live_metric_text": {"shoulder_flexion": "Arm lift"},
         "virtual_object": {"type": "cup", "mode": "held"},
+        # The mouth target follows the patient's own mouth (MOUTH_DYNAMIC) and the
+        # return target is the calibrated resting place on the lap (LAP_DYNAMIC).
+        # Each step's circle only arms once its instruction has finished.
         "cycle": [
-            {"caption": "Bring the cup to your mouth", "voice": "Bring the cup in your hand up to your mouth, slowly and smoothly.", "target": {"x": 0.5, "y": 0.30, "r": 0.10}, "hold_ms": 1500},
-            {"caption": "Lower to lap", "voice": "Now gently lower your hand back to your lap.", "target": {"x": 0.5, "y": 0.78, "r": 0.10}, "hold_ms": 1500},
+            {"caption": "Bring the cup to your mouth", "voice": "Bend your elbow and bring the cup in your hand up to your mouth, slowly and smoothly. Keep your head up and your back still.", "target": {"x": 0.5, "y": 0.30, "r": 0.10, "landmark": "MOUTH_DYNAMIC"}, "hold_ms": 700},
+            {"caption": "Hold at your mouth, as if taking a sip", "voice": "Hold the cup at your lips as if you were taking a sip. Head up, shoulder relaxed.", "target": {"x": 0.5, "y": 0.30, "r": 0.10, "landmark": "MOUTH_DYNAMIC"}, "hold_ms": 1500},
+            {"caption": "Lower to lap", "voice": "Now gently lower your hand back to the same place on your lap.", "target": {"x": 0.5, "y": 0.78, "r": 0.10, "landmark": "LAP_DYNAMIC"}, "hold_ms": 1200},
         ],
         "feedback_rules": [
             {"if": "trunk_lean_deg > 15", "say": "Your trunk leaned to meet your hand. On the next try, keep your back tall and bring your hand to your mouth instead."},
@@ -8484,7 +8443,7 @@ REHAB_RUNNER_CONFIG: Dict[str, Dict[str, Any]] = {
             {"caption": "Close your fingers around the cup", "voice": "Close your fingers around the cup to grasp it.", "target": {"landmark": "HAND_CLOSED", "x": 0.30, "y": 0.55, "r": 0.14}, "hold_ms": 500, "max_wait_ms": 6000},
             {"caption": "Carry the cup across", "voice": "The cup is in your hand. Carry it slowly across to the other side.", "target": {"x": 0.70, "y": 0.55, "r": 0.10}, "hold_ms": 1200},
             {"caption": "Open your hand to set the cup down", "voice": "Open your fingers to set the cup down.", "target": {"landmark": "HAND_OPEN", "x": 0.70, "y": 0.55, "r": 0.14}, "hold_ms": 500, "max_wait_ms": 6000},
-            {"caption": "Return your empty hand to your lap", "voice": "Now bring your empty hand back to your lap. Nicely done.", "target": {"x": 0.5, "y": 0.78, "r": 0.10}, "hold_ms": 1200},
+            {"caption": "Return your empty hand to your lap", "voice": "Now bring your empty hand back to your lap. Nicely done.", "target": {"x": 0.5, "y": 0.78, "r": 0.10, "landmark": "LAP_DYNAMIC"}, "hold_ms": 1200},
         ],
         "feedback_rules": [
             {"if": "trunk_lean_deg > 18", "say": "I noticed your trunk twisted with the cup. On the next repetition, try keeping your shoulders square and let your arm cross the midline."},
@@ -8702,6 +8661,9 @@ EXERCISE_OVERLAY_STYLE: Dict[str, Any] = {
 # at rest cannot claim "elbow extension", and upright resting frames cannot
 # dilute the confirmation of a compensation that lasted the whole reach.
 _RETURN_STEP_PATTERN = re.compile(r"\b(return|lower)\b", re.IGNORECASE)
+# Exercises whose confirmed compensations are shown to the patient as a
+# temporary red-dotted still after the score (deleted on continue).
+TEMPORARY_EVIDENCE_EXERCISE_IDS = {"ex_reach", "ex_grasp", "ex_h2m"}
 for _runner in REHAB_RUNNER_CONFIG.values():
     for _step in _runner.get("cycle") or []:
         _is_return = (
@@ -8822,7 +8784,7 @@ EXERCISE_COACHING_PROFILES: Dict[str, Dict[str, Any]] = {
             "elbow_flexion": "On the next repetition, bend the elbow a little more so the hand comes to the mouth instead of the mouth moving forward.",
             "shoulder_flexion": "On the next repetition, add only the small comfortable shoulder lift needed to guide the hand upward.",
         },
-        "compensation_labels": {"trunk_forward": "Forward trunk substitution", "shoulder_hike": "Shoulder hiking"},
+        "compensation_labels": {"trunk_forward": "Forward trunk substitution", "head_drop": "Head dropped to the hand", "shoulder_hike": "Shoulder hiking"},
         "measurement_limit": "The runner scores joint motion and posture; it does not verify swallowing safety or the contents of a cup.",
     },
     "ex_grasp": {
@@ -9006,13 +8968,17 @@ EXERCISE_MOVEMENT_STANDARDS: Dict[str, Dict[str, Any]] = {
     },
     "ex_h2m": {
         "tracking_mode": "pose", "posture": "seated",
-        "calibration_instruction": "Sit tall with your face, shoulders, elbows, wrists, and hips visible. Rest your hands and hold still.",
+        "calibration_instruction": "Before we begin, sit tall with your affected hand resting on the visible part of your lap. Keep your face, both shoulders, your affected arm and the top of your affected thigh in view, and hold still while I learn your upright position.",
         "rom_steps": [
             {"id": "elbow_flexion", "label": "Elbow bend", "metric": "elbow_flexion", "targets": {"easy": 65, "medium": 80, "difficult": 95}, "weight": 0.7},
             {"id": "shoulder_flexion", "label": "Shoulder lift", "metric": "shoulder_flexion", "targets": {"easy": 20, "medium": 30, "difficult": 40}, "weight": 0.3},
         ],
+        # Hand-to-mouth substitutions: the mouth coming to the hand (trunk leaning
+        # forward, or the head dropping - neck flexion measured from the nose
+        # falling below the ear line), and hiking the shoulder to lift the arm.
         "compensations": [
             {"id": "trunk_forward", "metric": "trunk_lean_delta", "threshold_deg": 10, "min_frames": 8, "min_ratio": 0.35, "penalty": 11, "correction": "Bring your hand toward your mouth instead of moving your mouth toward your hand."},
+            {"id": "head_drop", "metric": "head_drop_deg", "threshold_deg": 15, "min_frames": 8, "min_ratio": 0.35, "penalty": 10, "correction": "Keep your head up and bring the cup all the way to your lips."},
             {"id": "shoulder_hike", "metric": "shoulder_hike_delta", "threshold_deg": 8, "min_frames": 8, "min_ratio": 0.35, "penalty": 8, "correction": "Relax the shoulder before bending the elbow again."},
         ],
     },
@@ -9415,7 +9381,7 @@ def _configure_rehab_runner(exercise_id: str, difficulty: str, variation: str) -
     )
     cfg["setup_voice"] = f"{cfg.get('setup_voice', '')} Today's level is {level}. {rules[level]} {variation_cue}{safety_cue}".strip()
     cfg["exercise_id"] = exercise_id
-    cfg["temporary_compensation_evidence"] = exercise_id in {"ex_reach", "ex_grasp"}
+    cfg["temporary_compensation_evidence"] = exercise_id in TEMPORARY_EVIDENCE_EXERCISE_IDS
     cfg["difficulty"] = level
     cfg["variation"] = selected_variation
     cfg["difficulty_adjustment"] = rules[level]
@@ -9863,13 +9829,13 @@ const CALIBRATION_CONTRACT = CFG.calibration_contract || {};
 const SCORING_METHOD = CFG.scoring_method || {};
 const OVERLAY_STYLE = CFG.overlay_style || {};
 const TEMPORARY_COMPENSATION_EVIDENCE = CFG.temporary_compensation_evidence === true;
-const EVIDENCE_COMPENSATION_IDS = new Set(["trunk_lean","shoulder_hike","wrist_flexion"]);
+const EVIDENCE_COMPENSATION_IDS = new Set(["trunk_lean","trunk_forward","shoulder_hike","head_drop","wrist_flexion"]);
 const HAS_DYNAMIC_LAP_TARGET = (CFG.cycle||[]).some(step=>step && step.target && step.target.landmark === "LAP_DYNAMIC");
 // Static targets are authored for a right-affected patient (the cup starts on
 // the affected side); mirror them for a left-affected patient.
 if(AFFECTED_SIDE === "left" && CFG.mirror_for_left){
   for(const step of CFG.cycle||[]){
-    if(step && step.target && step.target.landmark !== "LAP_DYNAMIC" && Number.isFinite(Number(step.target.x))){
+    if(step && step.target && !/_DYNAMIC$/.test(String(step.target.landmark||"")) && Number.isFinite(Number(step.target.x))){
       step.target.x = Math.round((1 - Number(step.target.x)) * 1000) / 1000;
     }
   }
@@ -10471,7 +10437,7 @@ function drawCompensationHighlights(targetCtx,lm,ids,{mirrorX=false}={}){
   if(!lm || !ids || !ids.length) return;
   const width=targetCtx.canvas.width,height=targetCtx.canvas.height;
   const selected=new Set(ids);
-  if(selected.has("trunk_lean")){
+  if(selected.has("trunk_lean") || selected.has("trunk_forward")){
     const leftShoulder=evidencePoint(lm,11,width,height,mirrorX);
     const rightShoulder=evidencePoint(lm,12,width,height,mirrorX);
     const rightHip=evidencePoint(lm,24,width,height,mirrorX);
@@ -10488,6 +10454,30 @@ function drawCompensationHighlights(targetCtx,lm,ids,{mirrorX=false}={}){
       targetCtx.restore();
       strokeDottedPath(targetCtx,torso,true);
       strokeDottedPath(targetCtx,[midpoint(leftShoulder,rightShoulder),midpoint(leftHip,rightHip)]);
+    }
+  }
+  if(selected.has("head_drop")){
+    const nose=evidencePoint(lm,0,width,height,mirrorX);
+    const earL=evidencePoint(lm,7,width,height,mirrorX);
+    const earR=evidencePoint(lm,8,width,height,mirrorX);
+    const wrist=evidencePoint(lm,ACTIVE.wrist,width,height,mirrorX);
+    if(nose && earL && earR){
+      const earMid={x:(earL.x+earR.x)/2,y:(earL.y+earR.y)/2};
+      const earWidth=Math.max(24,Math.hypot(earL.x-earR.x,earL.y-earR.y));
+      const scale=Math.max(1,Math.min(width,height)/640);
+      targetCtx.save();
+      targetCtx.beginPath();
+      targetCtx.ellipse(earMid.x,earMid.y+earWidth*.05,earWidth*.62,earWidth*.78,0,0,Math.PI*2);
+      targetCtx.setLineDash([2*scale,9*scale]);
+      targetCtx.lineCap="round";
+      targetCtx.lineWidth=4.5*scale;
+      targetCtx.strokeStyle="#FF3B30";
+      targetCtx.shadowColor="rgba(86,0,0,.78)";
+      targetCtx.shadowBlur=4*scale;
+      targetCtx.stroke();
+      targetCtx.restore();
+      strokeDottedPath(targetCtx,[earL,earR]);
+      if(wrist) strokeDottedPath(targetCtx,[nose,wrist]);
     }
   }
   if(selected.has("shoulder_hike")){
@@ -10750,8 +10740,28 @@ function updateExerciseLapTargetCalibration(lm,now){
     });
   }
 }
+// Hand-to-mouth: the target sits just below the patient's own mouth (where
+// the wrist is when a cup is at the lips), following the mouth landmarks so a
+// taller or shorter patient, or a different camera height, needs no preset.
+// Lightly smoothed; falls back to the authored point until the face is seen.
+let mouthTargetSmoothed=null;
+function mouthFollowingTarget(sub){
+  const lm=latestExercisePoseLandmarks;
+  const left=lm && lm[9], right=lm && lm[10];
+  if(pointVisible(left) && pointVisible(right)){
+    const mouth=midpoint(left,right);
+    const below=exerciseShoulderWidth(lm)*0.30;
+    const next={x:mouth.x,y:mouth.y+below};
+    mouthTargetSmoothed=mouthTargetSmoothed
+      ? {x:mouthTargetSmoothed.x*0.7+next.x*0.3,y:mouthTargetSmoothed.y*0.7+next.y*0.3}
+      : next;
+  }
+  const point=mouthTargetSmoothed || sub.target;
+  return {x:point.x,y:point.y,r:sub.target.r,landmark:sub.target.landmark};
+}
 function effectiveExerciseTarget(sub){
   if(isExerciseLapTarget(sub)) return exerciseLapTarget || exerciseLapTargetCalibration.target || sub.target;
+  if(sub && sub.target && sub.target.landmark === "MOUTH_DYNAMIC") return mouthFollowingTarget(sub);
   return sub.target;
 }
 
@@ -10850,6 +10860,14 @@ function rawMovementMetrics(lm, handLm){
     // Face approach: leaning toward the camera enlarges the ear-to-ear distance.
     const earL=lm[7], earR=lm[8];
     raw.ear_width=(earL&&earR) ? Math.max(.01,Math.hypot(earL.x-earR.x,earL.y-earR.y)) : NaN;
+    // Head pitch: the nose sits ~9 cm in front of the ear axis, so tilting the
+    // head down moves it below the ear line by ~0.6 ear-widths per radian of
+    // neck flexion. Rigid-head geometry, so leaning the trunk (which moves the
+    // whole head) does not change it. Used by hand-to-mouth to catch the mouth
+    // coming down to the cup.
+    const nose=lm[0];
+    raw.head_pitch=(pointVisible(nose) && pointVisible(earL) && pointVisible(earR) && Number.isFinite(raw.ear_width) && raw.ear_width > .01)
+      ? (nose.y-(earL.y+earR.y)/2)/raw.ear_width : NaN;
     // Neck gap on the affected side: a shrug shortens ear-to-shoulder distance.
     const activeEar=lm[ACTIVE.shoulder===11 ? 7 : 8];
     raw.neck_gap=activeEar ? Math.max(.01,lm[ACTIVE.shoulder].y-activeEar.y) : NaN;
@@ -10919,6 +10937,15 @@ function forwardLeanDegrees(raw){
 //     calibration AND both ear-to-shoulder gaps shorter - a chin tuck shortens
 //     the gaps without lifting the shoulders, and leaning toward a low camera
 //     lifts the frame position without shortening the gaps, so neither counts.
+// Head dropping toward the hand (neck flexion) in degrees, relative to the
+// calibrated upright head: nose-below-ear-line offset / 0.6 ear widths, and
+// only the downward direction counts (looking up while drinking is fine).
+function headDropDegrees(raw){
+  const base=baselineMetrics;
+  const p0=Number(base.head_pitch), p=Number(raw.head_pitch);
+  if(!Number.isFinite(p0) || !Number.isFinite(p)) return NaN;
+  return rad2deg(Math.asin(clamp(Math.max(0,p-p0)/0.6,0,1)));
+}
 function shoulderHikeDegrees(raw){
   const base=baselineMetrics;
   const halfWidth=Math.max(.03,(Number(raw.shoulder_width)||.18)/2);
@@ -10952,6 +10979,7 @@ function metricValue(metric,raw){
     ? forwardLeanDegrees(raw)
     : Math.max(Math.abs(raw.trunk_angle-(base.trunk_angle||0)),forwardLeanDegrees(raw));
   if(metric === "shoulder_hike_delta") return shoulderHikeDegrees(raw);
+  if(metric === "head_drop_deg") return headDropDegrees(raw);
   if(metric === "hip_hike_delta") return Math.abs(raw.hip_hike-(base.hip_hike||0));
   if(metric === "arm_asymmetry") return Math.abs(raw.shoulder_flexion-raw.other_shoulder_flexion);
   if(metric === "body_asymmetry") return (Math.abs(raw.hip_extension-raw.other_hip_extension)+Math.abs(raw.knee_extension-raw.other_knee_extension))/2;
@@ -11657,12 +11685,17 @@ function drawDegreeLabel(x, y, text, color){
   const size=Math.max(13,Math.round(Math.min(canvas.width,canvas.height)*0.036));
   ctx.font=`700 ${size}px system-ui, -apple-system, sans-serif`;
   const padding=size*0.45, width=ctx.measureText(text).width+padding*2, height=size*1.5;
+  // The canvas is shown mirrored (selfie view), so the label is drawn mirrored
+  // too: it then reads normally on screen and in the evidence still, covering
+  // the same area next to the joint.
+  ctx.translate(canvas.width,0); ctx.scale(-1,1);
+  const boxX=canvas.width-x-width;
   ctx.fillStyle="rgba(28,32,29,0.78)";
   ctx.beginPath();
-  if(ctx.roundRect) ctx.roundRect(x, y-height/2, width, height, height/2); else ctx.rect(x, y-height/2, width, height);
+  if(ctx.roundRect) ctx.roundRect(boxX, y-height/2, width, height, height/2); else ctx.rect(boxX, y-height/2, width, height);
   ctx.fill();
   ctx.fillStyle=color; ctx.textBaseline="middle";
-  ctx.fillText(text, x+padding, y);
+  ctx.fillText(text, boxX+padding, y);
   ctx.restore();
 }
 // Where each metric's live number is shown, and what the patient sees it called.
@@ -11700,7 +11733,8 @@ function drawLiveDegrees(lm){
       : metricValue(step.metric,raw);
     if(!Number.isFinite(value)) continue;
     const target=Number(step.target_deg||0);
-    place(spec.joint, `${spec.text} ${Math.round(value)}°${target?` / ${Math.round(target)}°`:""}`, value>=target?"#9EE8B5":"#FFD27A");
+    const text=(CFG.live_metric_text && CFG.live_metric_text[step.metric]) || spec.text;
+    place(spec.joint, `${text} ${Math.round(value)}°${target?` / ${Math.round(target)}°`:""}`, value>=target?"#9EE8B5":"#FFD27A");
   }
   // 2) the compensations being watched (shown once they start to appear)
   const shoulderRule=(STANDARD.compensations||[]).find(item=>item.metric==="shoulder_hike_delta");
@@ -11718,6 +11752,11 @@ function drawLiveDegrees(lm){
   const side=sideRule ? metricValue("trunk_side_lean_delta",raw) : NaN;
   if(Number.isFinite(side) && side>=4){
     drawDegreeLabel(mid.x*canvas.width-40, mid.y*canvas.height+60, `Side lean ${Math.round(side)}°`, side>=Number(sideRule.threshold_deg||10)?"#FF9B8A":"#FFD27A");
+  }
+  const headRule=(STANDARD.compensations||[]).find(item=>item.metric==="head_drop_deg");
+  const headDrop=headRule ? metricValue("head_drop_deg",raw) : NaN;
+  if(Number.isFinite(headDrop) && headDrop>=4 && lm[0]){
+    drawDegreeLabel(lm[0].x*canvas.width+18, lm[0].y*canvas.height-10, `Head drop ${Math.round(headDrop)}°`, headDrop>=Number(headRule.threshold_deg||15)?"#FF9B8A":"#FFD27A");
   }
   const flareRule=(STANDARD.compensations||[]).find(item=>item.metric==="elbow_flare_deg");
   const flare=flareRule && ruleAppliesNow(flareRule) ? metricValue("elbow_flare_deg",raw) : NaN;
@@ -11790,6 +11829,7 @@ function compensationProblemText(rule){
   if(metric==="shoulder_hike_delta") return `your shoulder lifted toward your ear (${degrees} degrees, more than the reach itself needs)`;
   if(metric==="arm_asymmetry") return `your arms moved unevenly (${degrees} degrees apart)`;
   if(metric==="hip_hike_delta") return `your hip lifted (${degrees} degrees)`;
+  if(metric==="head_drop_deg") return `your head dropped toward your hand (${degrees} degrees)`;
   if(metric==="wrist_flexion_delta") return `your wrist bent instead of your fingers (${degrees} degrees)`;
   return `${String(rule.id||"a compensation").replace(/_/g," ")} (${degrees} degrees)`;
 }
@@ -11991,7 +12031,7 @@ function measuredRomDetails(){
 // Steps that must be within range for a repetition to count as correct: the
 // elbow (a bent elbow can still arrive at the target by leaning or hiking)
 // and the fingers (a grasp task is not done until the hand really opens).
-const FORM_CRITICAL_METRICS=new Set(["elbow_extension","finger_extension"]);
+const FORM_CRITICAL_METRICS=new Set(["elbow_extension","elbow_flexion","finger_extension"]);
 const POINT_THRESHOLD=Number(SCORING_METHOD.point_threshold)||90;
 const ROM_COMPLETE_RATIO=Number(SCORING_METHOD.complete_rom_ratio)||0.9;
 // An elbow that stayed bent (below 90% of today's extension target) makes the
@@ -12011,6 +12051,7 @@ function romProblemText(item){
   if(metric==="elbow_extension") return achieved>0
     ? `your elbow stayed bent at ${achieved} of ${target} degrees`
     : `your elbow did not straighten toward the target (${target} degrees)`;
+  if(metric==="elbow_flexion") return `your elbow bent ${achieved} of ${target} degrees`;
   if(metric==="shoulder_flexion"||metric==="shoulder_abduction"||metric==="bilateral_shoulder_flexion") return `your arm reached ${achieved} of ${target} degrees`;
   if(metric==="finger_extension") return `your fingers opened to ${achieved} of ${target} degrees`;
   if(metric==="pinch_flexion") return `your pinch closed to ${achieved} of ${target} degrees`;
@@ -13782,12 +13823,13 @@ async def all_therapists():
 
 async def _care_assessments_for_user(user_id: str) -> List[Dict[str, Any]]:
     try:
-        return await db.assessments.find(
+        docs = await db.assessments.find(
             {"user_id": user_id},
             {"_id": 0},
         ).sort("created_at", -1).to_list(100)
     except Exception:
-        return [item.copy() for item in LOCAL_ASSESSMENTS if item.get("user_id") == user_id]
+        docs = [item.copy() for item in LOCAL_ASSESSMENTS if item.get("user_id") == user_id]
+    return [_assessment_with_current_rehab_policy(doc) for doc in docs]
 
 
 async def _initial_task_progress_evidence(user_id: str) -> Tuple[List[str], Optional[str]]:
@@ -14294,6 +14336,18 @@ async def get_current_account_rehab_plan(request: Request):
     plan = survey_rehab_plan(profile)
     if not plan:
         raise HTTPException(status_code=409, detail="Your saved survey does not currently produce an exercise plan.")
+    recovered_gate: Dict[str, Any] = {
+        "status": "recovered_account_plan",
+        "rehab_access": "allowed",
+        "rehab_plan_source": "fixed_core_programme",
+        "patient_title": "Your saved plan is ready",
+        "patient_message": (
+            "The completed-assessment marker was recovered from the task ledger. "
+            "The current four-exercise core programme is available; missing movement results were not recreated."
+        ),
+    }
+    if str(profile.get("movement_pain") or "").lower() == "severe_or_worsening":
+        recovered_gate = _clinical_gate_with_survey_hold(recovered_gate, profile)
     return Assessment(
         id="account-current-plan",
         created_at=completed_at,
@@ -14303,16 +14357,7 @@ async def get_current_account_rehab_plan(request: Request):
         task_results=[],
         functional_issues=[],
         rehab_plan=plan,
-        clinical_review_gate={
-            "status": "recovered_account_plan",
-            "rehab_access": "allowed",
-            "rehab_plan_source": "survey_reported_problems",
-            "patient_title": "Your saved plan is ready",
-            "patient_message": (
-                "The completed-assessment marker was recovered from the task ledger. "
-                "This exercise plan uses your saved survey answers; missing movement results were not recreated."
-            ),
-        },
+        clinical_review_gate=recovered_gate,
     )
 
 

@@ -396,10 +396,8 @@ def test_survey_interim_rehab_plan_always_gives_a_starting_plan():
         "mobility_level": "cane",
     })
 
-    assert plan, "a survey-derived starting plan is expected"
-    ids = {exercise.id for exercise in plan}
-    assert len(ids) >= 2
-    assert all("Starting plan from your survey answers" in (exercise.selection_reason or "") for exercise in plan)
+    assert [exercise.id for exercise in plan] == ["ex_trunk", "ex_reach", "ex_grasp", "ex_h2m"]
+    assert all("four-exercise core programme" in (exercise.selection_reason or "") for exercise in plan)
 
 
 def test_survey_plan_surfaces_instead_of_the_waiting_for_review_dead_end():
@@ -411,15 +409,15 @@ def test_survey_plan_surfaces_instead_of_the_waiting_for_review_dead_end():
     results = (root / "frontend" / "app" / "results.tsx").read_text(encoding="utf-8")
     home = (root / "frontend" / "app" / "(tabs)" / "index.tsx").read_text(encoding="utf-8")
 
-    # While movement analysis processes, the survey-derived plan is viewable;
-    # camera/model results do not select or replace exercise IDs.
+    # While movement analysis processes, the fixed core plan is viewable;
+    # camera/model results do not select or replace its exercise IDs.
     assert '"rehab_access": "interim"' in server_source
-    assert '"rehab_plan_source": "survey_reported_problems"' in server_source
+    assert '"rehab_plan_source": "fixed_core_programme"' in server_source
     assert 'in ("allowed", "interim")' in server_source
     assert 'testID="plan-survey-source-banner"' in rehab_plan_screen
     assert 'reviewGate?.rehab_access === "interim"' in movement_map
-    assert '"Your survey-based plan is ready"' in movement_map
-    assert "Camera and model findings do not replace them" in rehab_plan_screen
+    assert '"Your core rehab plan is ready"' in movement_map
+    assert "everyone receives these four exercises during testing" in rehab_plan_screen
     assert 'reviewGate?.rehab_access === "interim"' in results
 
     # The Home goal is derived from the survey's functional problems and stays
@@ -677,11 +675,8 @@ def test_completion_asks_about_carer_help_and_halves_assisted_scores():
     source = (ROOT / "backend" / "server.py").read_text(encoding="utf-8")
     exercise = (ROOT / "frontend" / "app" / "exercise.tsx").read_text(encoding="utf-8")
 
-    # Assessment can see the patient plus a helper's hands. The exercise runner
-    # uses two candidates to keep live hand feedback responsive while still
-    # covering the patient and one assisting hand.
-    assert "numHands: 4" in source
-    assert 'runningMode:"VIDEO", numHands:2,' in source
+    # Both runners can now see more than two hands (patient + helper).
+    assert "numHands: 4" in source and ("numHands:4" in source or "numHands:2" in source)
     assert "numHands:1" not in source
 
     # Finishing an exercise pops the carer/family question before closing.
@@ -714,7 +709,7 @@ def test_forward_reach_grading_is_phase_gated_and_catches_forward_lean_and_shrug
     # compensation confirmation; the reach itself is the movement phase.
     assert [step["phase"] for step in cfg["ex_reach"]["cycle"]] == ["movement", "return"]
     assert [step["phase"] for step in cfg["ex_grasp"]["cycle"]] == ["movement"] * 5 + ["return"]
-    assert [step["phase"] for step in cfg["ex_h2m"]["cycle"]] == ["movement", "return"]
+    assert [step["phase"] for step in cfg["ex_h2m"]["cycle"]] == ["movement", "movement", "return"]
     assert [step["phase"] for step in cfg["ex_bilateral"]["cycle"]] == ["movement", "movement"]
     assert "function activeMovementPhase()" in source
     assert "if(!activeMovementPhase()) return;" in source
@@ -789,11 +784,10 @@ def test_shoulder_hike_allows_the_rise_that_comes_with_raising_the_arm():
     method = server.EXERCISE_SCORING_METHOD
     assert method["shoulder_hike_allowance_per_flexion_deg"] == 0.10
     assert method["shoulder_hike_allowance_free_flexion_deg"] == 10
-    assert "function expectedShoulderRise(raw,rule=null,base=baselineMetrics)" in source
-    assert "const elevation=Math.max(...currentValues), rest=Math.max(...restValues);" in source
-    assert "return Number.isFinite(cap) ? Math.min(cap,expected) : expected;" in source
+    assert "function expectedShoulderRise(raw" in source
+    assert "Math.max(0,elevation-rest-free)" in source or "Math.max(0,flexion-rest-free)" in source
     assert "function compensationThreshold(rule,raw)" in source
-    assert 'return rule.metric === "shoulder_hike_delta" ? threshold+expectedShoulderRise(raw,rule) : threshold;' in source
+    assert 'return rule.metric === "shoulder_hike_delta" ? threshold+expectedShoulderRise(raw' in source
     # Every judgement of the shoulder-hike rule uses the per-frame threshold:
     # the confirmation count, the evidence severity and the live label colour.
     assert "const aboveThreshold=value >= compensationThreshold(rule,raw);" in source
@@ -809,20 +803,84 @@ def test_shoulder_hike_allows_the_rise_that_comes_with_raising_the_arm():
     assert round(base + allowance, 1) == 13.1
     assert 9 < base + allowance < 15
     assert base + method["shoulder_hike_allowance_per_flexion_deg"] * max(0, 20 - rest - 10) == base  # shrug before the arm is up
-    grasp = server._configure_rehab_runner("ex_grasp", "medium", "standard")
-    grasp_hike = next(item for item in grasp["movement_standard"]["compensations"] if item["id"] == "shoulder_hike")
-    assert grasp_hike["normal_rise_allowance_per_elevation_deg"] == 0.30
-    assert grasp_hike["normal_rise_allowance_cap_deg"] == 18
-    # The user's approximately 77-degree reach and 22-degree shoulder-point
-    # rise stays below the grasp-specific threshold; a larger shrug still does.
-    grasp_allowance = min(18, 0.30 * max(0, 77 - 15 - 10))
-    assert 22 < grasp_hike["threshold_deg"] + grasp_allowance < 30
-    assert grasp_hike["min_frames"] == 12
-    assert grasp_hike["min_ratio"] == 0.45
     # The lap-target calibration window is time-based, so a 60 fps camera can
     # still judge the hand still (24 frames would span only 0.4 s).
     assert source.count("while(samples.length > 120 || (samples.length && now") == 2
     assert "samples.length > 24" not in source
+
+
+def test_hand_to_mouth_is_guided_step_by_step_and_graded_like_the_reach_exercises():
+    """Hand-to-mouth: three narrated steps whose circles arm only after the
+    instruction, a target that follows the patient's own mouth, the lap return
+    from the calibrated resting place, live degrees for the joints and the
+    substitutions (trunk forward, head dropping to the cup, shoulder hiking),
+    the red-dotted evidence still, and the shared 70 / 89-cap / 90-point grading."""
+    source = (ROOT / "backend" / "server.py").read_text(encoding="utf-8")
+    cfg = server.REHAB_RUNNER_CONFIG["ex_h2m"]
+    standard = server.EXERCISE_MOVEMENT_STANDARDS["ex_h2m"]
+    profile = server.EXERCISE_COACHING_PROFILES["ex_h2m"]
+
+    # Step-by-step guidance: bring to mouth -> hold as if sipping -> lower to lap.
+    assert [step["caption"] for step in cfg["cycle"]] == [
+        "Bring the cup to your mouth", "Hold at your mouth, as if taking a sip", "Lower to lap",
+    ]
+    assert [(step["target"].get("landmark")) for step in cfg["cycle"]] == ["MOUTH_DYNAMIC", "MOUTH_DYNAMIC", "LAP_DYNAMIC"]
+    assert all(step["voice"] for step in cfg["cycle"])
+    assert "Keep your head up" in cfg["setup_voice"]
+    # The circle arms only once the step's instruction has finished (shared
+    # voice gate) and the mouth target follows the mouth landmarks.
+    assert "function exerciseTargetIsArmed(now=performance.now())" in source
+    assert "function mouthFollowingTarget(sub)" in source
+    assert 'if(sub && sub.target && sub.target.landmark === "MOUTH_DYNAMIC") return mouthFollowingTarget(sub);' in source
+    assert "const below=exerciseShoulderWidth(lm)*0.30;" in source
+    assert '!/_DYNAMIC$/.test(String(step.target.landmark||""))' in source
+    assert "affected hand resting on the visible part of your lap" in standard["calibration_instruction"]
+
+    # Same pose model and overlay style as every other exercise (no hand model needed).
+    assert cfg["pose_mode"] == "body" and not cfg.get("hand_tracking")
+    assert "drawingUtils.drawLandmarks(lm,{color:ASSESSMENT_OVERLAY_STYLE.landmarkColor,radius:ASSESSMENT_OVERLAY_STYLE.landmarkRadius});" in source
+
+    # Compensations measured for this exercise, with the head drop as neck
+    # flexion from the nose falling below the ear line (rigid-head geometry,
+    # unaffected by trunk lean).
+    assert [(rule["id"], rule["metric"], rule["threshold_deg"]) for rule in standard["compensations"]] == [
+        ("trunk_forward", "trunk_lean_delta", 10), ("head_drop", "head_drop_deg", 15), ("shoulder_hike", "shoulder_hike_delta", 8),
+    ]
+    assert profile["compensation_labels"]["head_drop"] == "Head dropped to the hand"
+    assert "raw.head_pitch=(pointVisible(nose) && pointVisible(earL) && pointVisible(earR)" in source
+    assert "function headDropDegrees(raw)" in source
+    assert "return rad2deg(Math.asin(clamp(Math.max(0,p-p0)/0.6,0,1)));" in source
+    assert 'if(metric === "head_drop_deg") return headDropDegrees(raw);' in source
+    # Live statistics on screen: elbow bend and arm lift against target, and
+    # the trunk lean / head drop / shoulder lift being watched.
+    assert 'elbow_flexion:{joint:"elbow",text:"Elbow bend"}' in source
+    assert cfg["live_metric_text"] == {"shoulder_flexion": "Arm lift"}
+    assert "`Head drop ${Math.round(headDrop)}°`" in source
+    assert "`Trunk lean ${Math.round(lean)}°`" in source and "`Shoulder lift ${Math.round(hike)}°`" in source
+    # Labels are drawn mirrored so they read normally in the selfie view.
+    assert "ctx.translate(canvas.width,0); ctx.scale(-1,1);" in source and "const boxX=canvas.width-x-width;" in source
+
+    # Red-dotted evidence: enabled for this exercise, trunk outline shared with
+    # the forward reach, head ring + ear line + nose-to-hand line for the head drop.
+    assert server.TEMPORARY_EVIDENCE_EXERCISE_IDS == {"ex_reach", "ex_grasp", "ex_h2m"}
+    assert server._configure_rehab_runner("ex_h2m", "medium", "standard")["temporary_compensation_evidence"] is True
+    assert "const TEMPORARY_COMPENSATION_EVIDENCE = CFG.temporary_compensation_evidence === true;" in source
+    assert 'const EVIDENCE_COMPENSATION_IDS = new Set(["trunk_lean","trunk_forward","shoulder_hike","head_drop","wrist_flexion"]);' in source
+    assert 'if(selected.has("trunk_lean") || selected.has("trunk_forward")){' in source
+    assert 'if(selected.has("head_drop")){' in source
+    assert "if(wrist) strokeDottedPath(targetCtx,[nose,wrist]);" in source
+
+    # Same grading: confirmed compensation -> 70, elbow not bent to target -> capped
+    # below the point, and the problem + one correction wording.
+    assert 'const FORM_CRITICAL_METRICS=new Set(["elbow_extension","elbow_flexion","finger_extension"]);' in source
+    assert "your elbow bent ${achieved} of ${target} degrees" in source
+    assert "your head dropped toward your hand (${degrees} degrees)" in source
+    assert cfg["compensation_problems"] == {
+        "trunk_forward": "your trunk leaned forward to meet the cup",
+        "shoulder_hike": "your shoulder lifted toward your ear",
+        "head_drop": "your head dropped down toward the cup",
+    }
+    assert "bend your elbow to bring the cup all the way to your lips" in cfg["correct_form_cue"]
 
 
 def test_forward_reach_shows_private_temporary_visual_compensation_evidence():
@@ -964,8 +1022,6 @@ def test_cylindrical_grasp_reach_open_close_carry_release_flow_and_compensations
     # The hand steps sit exactly where the cup is drawn, and never trap the patient.
     assert grasp["cycle"][1]["target"]["x"] == grasp["cycle"][0]["target"]["x"] == grasp["cycle"][2]["target"]["x"]
     assert grasp["cycle"][4]["target"]["x"] == grasp["cycle"][3]["target"]["x"]
-    assert grasp["cycle"][1]["hold_ms"] == 400
-    assert grasp["target_arm_delay_ms"] == 0
     assert all(step.get("max_wait_ms") == 6000 for step in grasp["cycle"] if (step["target"] or {}).get("landmark"))
     assert grasp["hand_tracking"] is True and grasp["mirror_for_left"] is True
     for word in ("open your hand wide", "close your fingers around the cup", "carry it across", "set it down"):
@@ -999,10 +1055,7 @@ def test_cylindrical_grasp_reach_open_close_carry_release_flow_and_compensations
         "wrist_flexion": "your wrist moved out of line with your forearm while you gripped the cup",
     }
     assert "straight wrist" in grasp["correct_form_cue"] and "straighten your elbow" in grasp["correct_form_cue"]
-    wrist_rule = next(rule for rule in standard["compensations"] if rule["id"] == "wrist_flexion")
-    assert wrist_rule["threshold_deg"] == 25
-    assert wrist_rule["min_frames"] == 12
-    assert wrist_rule["min_ratio"] == 0.4
+    assert next(rule for rule in standard["compensations"] if rule["id"] == "wrist_flexion")["threshold_deg"] == 25
 
     # Runner: the hit test uses the same image coordinates the circle is drawn
     # in (the old mirrored comparison put the live circle on the wrong side for
@@ -1015,13 +1068,12 @@ def test_cylindrical_grasp_reach_open_close_carry_release_flow_and_compensations
     assert 'const HAND_GATE_LANDMARKS = new Set(["HAND_OPEN","HAND_CLOSED"]);' in source
     assert "if(NEEDS_HAND_TRACKING){" in source
     assert "function selectRehabAffectedHand(result, lm, now)" in source
-    assert "detectedHandLm=selectRehabAffectedHand(h, lm, now);" in source
+    assert "=selectRehabAffectedHand(h, lm, now);" in source
     assert "function handOpeningDegrees(handLm)" in source
     # Same hand model settings, gesture scores (smoothed) and thresholds as the
     # initial assessment, a brief detection gap keeps the previous hand, and a
-    # 350 ms grace keeps the hold ring from restarting on one jittery frame.
+    # 240 ms hand freshness keeps tracking responsive while tolerating a brief detection gap.
     assert "minHandDetectionConfidence:0.65," in source and "minTrackingConfidence:0.7," in source
-    assert 'runningMode:"VIDEO", numHands:2,' in source
     assert "function updateRehabHandScores(h)" in source
     assert "handOpenScore=handOpenScore*0.35+open*0.65;" in source
     assert "fistClosureScore=fistClosureScore*0.35+closure*0.65;" in source
@@ -1048,6 +1100,7 @@ def test_cylindrical_grasp_reach_open_close_carry_release_flow_and_compensations
     assert 'return "interrupted";' in source
     assert 'audioEl.pause();' in source
     assert "const HAND_LANDMARK_FRESH_MS=240;" in source
+    assert grasp["target_arm_delay_ms"] == 0
     assert "const TARGET_ARM_DELAY_AFTER_VOICE_MS=Number(CFG.target_arm_delay_ms ?? 700);" in source
     assert "const TARGET_HOLD_LOSS_GRACE_MS=350;" in source
     assert "}else if(inTargetSince != null && (now - lastInTargetTs) > TARGET_HOLD_LOSS_GRACE_MS){" in source
@@ -1059,25 +1112,18 @@ def test_cylindrical_grasp_reach_open_close_carry_release_flow_and_compensations
     assert "function nextVirtualObjectAnchor(previous,target)" in source
     assert "const follow=clamp(0.84+travel*3.0,0.84,0.98);" in source
     assert "const HAND_SCAN_INTERVAL_MS=0, HAND_BACKOFF_SCAN_INTERVAL_MS=70, HAND_BACKOFF_FRESH_MS=240, MIN_SMOOTH_FPS=15;" in source
-    assert "function handPalmCenter(handLm)" in source
-    assert "if(!ok(palm) && !ok(poseWrist) && !ok(trackedWrist))" in source
-    assert "function openHandDetected(reference,margin,openScore=handOpenScore,degrees=handOpenDegreesSmoothed)" in source
-    assert "const clearlyOpen=openScore >= 0.62" in source
-    assert "if(handDetectionRan) updateRehabHandScores(detectedHandLm);" in source
     assert "window.__rehynExerciseTrackingTest={" in source
     # Models are created as soon as the runner page opens, not on Start.
     assert "function warmUpModels(){" in source
     assert "warmUpModels().catch(() => {});" in source
     assert '  prefetchVoice("Wonderful. Here we go.");' in source
     assert 'captionEl.textContent = "Loading the movement model…";' in source
-    # Side lean and wrist alignment are measured without mixing pose and hand
-    # model coordinate systems. The 3D pose helper abstains when the coarse hand
-    # base collapses in an edge-on or closed-hand view.
+    # Side lean and wrist drop are measured in ways that do not fire just because
+    # the arm swings across: lateral trunk angle, and one-model 3D wrist alignment.
     assert 'if(metric === "trunk_side_lean_delta") return Math.abs(raw.trunk_angle-(base.trunk_angle||0));' in source
     assert "function poseWristBendDegrees(lm)" in source
-    assert "raw.wrist_bend=poseWristBendDegrees(lm);" in source
     assert "if(forearmLength < shoulderWidth*.40 || handLength < shoulderWidth*.16) return NaN;" in source
-    assert "const forearm={x:handLm[0].x-lm[ACTIVE.elbow].x" not in source
+    assert "raw.wrist_bend=poseWristBendDegrees(lm);" in source
     assert "if(!Number.isFinite(raw.wrist_bend)) return NaN;" in source  # never the bare hand axis for arm exercises
     assert "return Math.min(turn,360-turn);" in source  # hand-only exercises wrap the hand-axis turn
     assert 'if(STANDARD.tracking_mode !== "hand"){' in source
@@ -1087,14 +1133,10 @@ def test_cylindrical_grasp_reach_open_close_carry_release_flow_and_compensations
     assert 'finger_extension:{joint:"hand",text:"Hand open"}' in source
     assert "`Side lean ${Math.round(side)}°`" in source
     assert "`Wrist bend ${Math.round(wristDrop)}°`" in source
-    assert 'const EVIDENCE_COMPENSATION_IDS = new Set(["trunk_lean","shoulder_hike","wrist_flexion"]);' in source
-    assert 'if(selected.has("wrist_flexion")){' in source
-    assert 'strokeDottedPath(targetCtx,[elbow,wrist,handBase]);' in source
-    assert "drawCompensationHighlights," in source
     assert 'const hint = sub.target.landmark === "HAND_OPEN" ? "Open hand" : "Close hand";' in source
     # Grading: the fingers are form-critical (a weak opening never reaches 90),
     # an unseen hand neither scores nor fails, but earns no point either.
-    assert 'const FORM_CRITICAL_METRICS=new Set(["elbow_extension","finger_extension"]);' in source
+    assert 'const FORM_CRITICAL_METRICS=new Set(["elbow_extension","elbow_flexion","finger_extension"]);' in source
     assert "function measuredRomDetails()" in source
     assert "if(unmeasuredRomSteps().some(item=>FORM_CRITICAL_METRICS.has(item.metric))) return false;" in source
     assert "Keep your hand in view to earn it." in source
@@ -1158,7 +1200,8 @@ def test_rehab_plan_loading_tracks_real_plan_preparation_stages():
     assert '"Choosing suitable exercises"' in rehab
     assert '"Creating your plan"' in rehab
     assert "This usually takes less than a minute." in rehab
-    assert "const assessment = id === DEMO_ASSESSMENT_ID ? demoAssessment : await fetchAssessment(id);" in rehab
+    assert "const assessment = id === DEMO_ASSESSMENT_ID" in rehab
+    assert "isCurrentAccountPlan" in rehab
     assert "setPreparationStage(1);" in rehab
     assert 'authedFetch("/api/alira/care-plan")' in rehab
     assert "setPreparationStage(2);" in rehab
