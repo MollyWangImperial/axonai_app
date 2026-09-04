@@ -786,10 +786,11 @@ def test_shoulder_hike_allows_the_rise_that_comes_with_raising_the_arm():
     method = server.EXERCISE_SCORING_METHOD
     assert method["shoulder_hike_allowance_per_flexion_deg"] == 0.10
     assert method["shoulder_hike_allowance_free_flexion_deg"] == 10
-    assert "function expectedShoulderRise(raw)" in source
-    assert "return SHOULDER_HIKE_ALLOWANCE_PER_FLEXION_DEG*Math.max(0,flexion-rest-free);" in source
+    assert "function expectedShoulderRise(raw,rule=null,base=baselineMetrics)" in source
+    assert "const elevation=Math.max(...currentValues), rest=Math.max(...restValues);" in source
+    assert "return Number.isFinite(cap) ? Math.min(cap,expected) : expected;" in source
     assert "function compensationThreshold(rule,raw)" in source
-    assert 'return rule.metric === "shoulder_hike_delta" ? threshold+expectedShoulderRise(raw) : threshold;' in source
+    assert 'return rule.metric === "shoulder_hike_delta" ? threshold+expectedShoulderRise(raw,rule) : threshold;' in source
     # Every judgement of the shoulder-hike rule uses the per-frame threshold:
     # the confirmation count, the evidence severity and the live label colour.
     assert "const aboveThreshold=value >= compensationThreshold(rule,raw);" in source
@@ -805,6 +806,16 @@ def test_shoulder_hike_allows_the_rise_that_comes_with_raising_the_arm():
     assert round(base + allowance, 1) == 13.1
     assert 9 < base + allowance < 15
     assert base + method["shoulder_hike_allowance_per_flexion_deg"] * max(0, 20 - rest - 10) == base  # shrug before the arm is up
+    grasp = server._configure_rehab_runner("ex_grasp", "medium", "standard")
+    grasp_hike = next(item for item in grasp["movement_standard"]["compensations"] if item["id"] == "shoulder_hike")
+    assert grasp_hike["normal_rise_allowance_per_elevation_deg"] == 0.30
+    assert grasp_hike["normal_rise_allowance_cap_deg"] == 18
+    # The user's approximately 77-degree reach and 22-degree shoulder-point
+    # rise stays below the grasp-specific threshold; a larger shrug still does.
+    grasp_allowance = min(18, 0.30 * max(0, 77 - 15 - 10))
+    assert 22 < grasp_hike["threshold_deg"] + grasp_allowance < 30
+    assert grasp_hike["min_frames"] == 12
+    assert grasp_hike["min_ratio"] == 0.45
     # The lap-target calibration window is time-based, so a 60 fps camera can
     # still judge the hand still (24 frames would span only 0.4 s).
     assert source.count("while(samples.length > 120 || (samples.length && now") == 2
@@ -950,6 +961,8 @@ def test_cylindrical_grasp_reach_open_close_carry_release_flow_and_compensations
     # The hand steps sit exactly where the cup is drawn, and never trap the patient.
     assert grasp["cycle"][1]["target"]["x"] == grasp["cycle"][0]["target"]["x"] == grasp["cycle"][2]["target"]["x"]
     assert grasp["cycle"][4]["target"]["x"] == grasp["cycle"][3]["target"]["x"]
+    assert grasp["cycle"][1]["hold_ms"] == 400
+    assert grasp["target_arm_delay_ms"] == 150
     assert all(step.get("max_wait_ms") == 6000 for step in grasp["cycle"] if (step["target"] or {}).get("landmark"))
     assert grasp["hand_tracking"] is True and grasp["mirror_for_left"] is True
     for word in ("open your hand wide", "close your fingers around the cup", "carry it across", "set it down"):
@@ -980,10 +993,13 @@ def test_cylindrical_grasp_reach_open_close_carry_release_flow_and_compensations
         "trunk_side_lean": "your body leaned to the side to carry the cup",
         "shoulder_hike": "your shoulder lifted toward your ear",
         "elbow_flare": "your elbow flared out and up instead of reaching forward",
-        "wrist_flexion": "your wrist bent inward instead of staying in line with your forearm while you gripped the cup",
+        "wrist_flexion": "your wrist moved out of line with your forearm while you gripped the cup",
     }
     assert "straight wrist" in grasp["correct_form_cue"] and "straighten your elbow" in grasp["correct_form_cue"]
-    assert next(rule for rule in standard["compensations"] if rule["id"] == "wrist_flexion")["threshold_deg"] == 25
+    wrist_rule = next(rule for rule in standard["compensations"] if rule["id"] == "wrist_flexion")
+    assert wrist_rule["threshold_deg"] == 25
+    assert wrist_rule["min_frames"] == 12
+    assert wrist_rule["min_ratio"] == 0.4
 
     # Runner: the hit test uses the same image coordinates the circle is drawn
     # in (the old mirrored comparison put the live circle on the wrong side for
@@ -1028,7 +1044,7 @@ def test_cylindrical_grasp_reach_open_close_carry_release_flow_and_compensations
     assert 'return "interrupted";' in source
     assert 'audioEl.pause();' in source
     assert "const HAND_LANDMARK_FRESH_MS=350;" in source
-    assert "const TARGET_ARM_DELAY_AFTER_VOICE_MS=700;" in source
+    assert "const TARGET_ARM_DELAY_AFTER_VOICE_MS=Number(CFG.target_arm_delay_ms ?? 700);" in source
     assert "const TARGET_HOLD_LOSS_GRACE_MS=350;" in source
     assert "}else if(inTargetSince != null && (now - lastInTargetTs) > TARGET_HOLD_LOSS_GRACE_MS){" in source
     # The carried cup follows the per-frame pose wrist (offset to the palm from
@@ -1045,10 +1061,14 @@ def test_cylindrical_grasp_reach_open_close_carry_release_flow_and_compensations
     assert "warmUpModels().catch(() => {});" in source
     assert '  prefetchVoice("Wonderful. Here we go.");' in source
     assert 'captionEl.textContent = "Loading the movement model…";' in source
-    # Side lean and wrist drop are measured in ways that do not fire just because
-    # the arm swings across: lateral trunk angle, and wrist bend against the forearm.
+    # Side lean and wrist alignment are measured without mixing pose and hand
+    # model coordinate systems. The 3D pose helper abstains when the coarse hand
+    # base collapses in an edge-on or closed-hand view.
     assert 'if(metric === "trunk_side_lean_delta") return Math.abs(raw.trunk_angle-(base.trunk_angle||0));' in source
-    assert "raw.wrist_bend=(fl >= sw*0.45 && hl >= sw*0.12)" in source  # image-plane only, foreshortening-guarded
+    assert "function poseWristBendDegrees(lm)" in source
+    assert "raw.wrist_bend=poseWristBendDegrees(lm);" in source
+    assert "if(forearmLength < shoulderWidth*.40 || handLength < shoulderWidth*.16) return NaN;" in source
+    assert "const forearm={x:handLm[0].x-lm[ACTIVE.elbow].x" not in source
     assert "if(!Number.isFinite(raw.wrist_bend)) return NaN;" in source  # never the bare hand axis for arm exercises
     assert "return Math.min(turn,360-turn);" in source  # hand-only exercises wrap the hand-axis turn
     assert 'if(STANDARD.tracking_mode !== "hand"){' in source

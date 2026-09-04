@@ -8463,6 +8463,7 @@ REHAB_RUNNER_CONFIG: Dict[str, Dict[str, Any]] = {
         # Pose plus the hand landmarker: the hand-opening and grasp steps are
         # confirmed from the fingers, not just from the wrist reaching the cup.
         "hand_tracking": True,
+        "target_arm_delay_ms": 150,
         # The cup starts on the affected side and is carried across the midline;
         # for a left-affected patient the targets are mirrored at runtime.
         "mirror_for_left": True,
@@ -8474,11 +8475,11 @@ REHAB_RUNNER_CONFIG: Dict[str, Dict[str, Any]] = {
             "trunk_side_lean": "your body leaned to the side to carry the cup",
             "shoulder_hike": "your shoulder lifted toward your ear",
             "elbow_flare": "your elbow flared out and up instead of reaching forward",
-            "wrist_flexion": "your wrist bent inward instead of staying in line with your forearm while you gripped the cup",
+            "wrist_flexion": "your wrist moved out of line with your forearm while you gripped the cup",
         },
         "cycle": [
             {"caption": "Reach to the cup", "voice": "Reach toward the cup on your screen with your affected hand.", "target": {"x": 0.30, "y": 0.55, "r": 0.10}, "hold_ms": 900},
-            {"caption": "Open your hand wide around the cup", "voice": "Now open your hand wide, ready to take the cup.", "target": {"landmark": "HAND_OPEN", "x": 0.30, "y": 0.55, "r": 0.14}, "hold_ms": 600, "max_wait_ms": 6000},
+            {"caption": "Open your hand wide around the cup", "voice": "Now open your hand wide, ready to take the cup.", "target": {"landmark": "HAND_OPEN", "x": 0.30, "y": 0.55, "r": 0.14}, "hold_ms": 400, "max_wait_ms": 6000},
             {"caption": "Close your fingers around the cup", "voice": "Close your fingers around the cup to grasp it.", "target": {"landmark": "HAND_CLOSED", "x": 0.30, "y": 0.55, "r": 0.14}, "hold_ms": 500, "max_wait_ms": 6000},
             {"caption": "Carry the cup across", "voice": "The cup is in your hand. Carry it slowly across to the other side.", "target": {"x": 0.70, "y": 0.55, "r": 0.10}, "hold_ms": 1200},
             {"caption": "Open your hand to set the cup down", "voice": "Open your fingers to set the cup down.", "target": {"landmark": "HAND_OPEN", "x": 0.70, "y": 0.55, "r": 0.14}, "hold_ms": 500, "max_wait_ms": 6000},
@@ -8832,7 +8833,7 @@ EXERCISE_COACHING_PROFILES: Dict[str, Dict[str, Any]] = {
             "shoulder_abduction": "On the next repetition, move the light object across with the arm while both shoulders stay square.",
             "hand_opening": "On the next repetition, open your fingers a little wider before you take the cup.",
         },
-        "compensation_labels": {"trunk_lean": "Trunk lean", "trunk_side_lean": "Trunk side lean", "shoulder_hike": "Shoulder hiking", "elbow_flare": "Elbow flare (arm abduction)", "wrist_flexion": "Wrist flexion while gripping"},
+        "compensation_labels": {"trunk_lean": "Trunk lean", "trunk_side_lean": "Trunk side lean", "shoulder_hike": "Shoulder hiking", "elbow_flare": "Elbow flare (arm abduction)", "wrist_flexion": "Wrist alignment while gripping"},
         "measurement_limit": "The camera score reflects arm transport, posture, and how far the fingers open and close around the on-screen cup; it cannot confirm grip force.",
     },
     "ex_handopen": {
@@ -9034,15 +9035,16 @@ EXERCISE_MOVEMENT_STANDARDS: Dict[str, Dict[str, Any]] = {
             {"id": "trunk_lean", "metric": "trunk_lean_delta", "threshold_deg": 12, "min_frames": 8, "min_ratio": 0.35, "penalty": 10, "correction": "Keep your shoulders square and move the light object with your arm."},
             # Side lean / rotation to get the cup across instead of moving the arm (carry and release).
             {"id": "trunk_side_lean", "metric": "trunk_side_lean_delta", "threshold_deg": 10, "min_frames": 8, "min_ratio": 0.3, "penalty": 8, "correction": "Keep your body upright and carry the cup across with your arm.", "steps": [3, 4]},
-            # Shoulder hiking (all movement steps).
-            {"id": "shoulder_hike", "metric": "shoulder_hike_delta", "threshold_deg": 9, "min_frames": 8, "min_ratio": 0.35, "penalty": 7, "correction": "Set the shoulder down before lifting the object again."},
+            # The pose shoulder naturally rises during unilateral arm elevation.
+            # Allow that camera-visible coupling while retaining a capped margin
+            # so a sustained shrug beyond the reach can still be identified.
+            {"id": "shoulder_hike", "metric": "shoulder_hike_delta", "threshold_deg": 9, "min_frames": 12, "min_ratio": 0.45, "normal_rise_allowance_per_elevation_deg": 0.30, "normal_rise_allowance_cap_deg": 18, "penalty": 7, "correction": "Set the shoulder down before lifting the object again."},
             # "Chicken wing": the arm abducts and the elbow rises above the hand to reach,
             # instead of the arm going forward (reach and grasp steps).
             {"id": "elbow_flare", "metric": "elbow_flare_deg", "threshold_deg": 45, "min_frames": 8, "min_ratio": 0.35, "penalty": 7, "correction": "Keep your elbow low and close to your body, and reach forward with your arm.", "steps": [0, 1, 2]},
-            # A flexed (dropped) wrist while gripping and carrying: the hand bends well
-            # away from the forearm line. Measured only when the forearm is side-on to
-            # the camera (grasp, carry and release steps).
-            {"id": "wrist_flexion", "metric": "wrist_flexion_delta", "threshold_deg": 25, "min_frames": 8, "min_ratio": 0.3, "penalty": 6, "correction": "Keep your wrist straight, in line with your forearm, as you grip and carry the cup.", "steps": [2, 3, 4]},
+            # Gross wrist-to-forearm alignment from one pose coordinate system.
+            # The detector abstains when the pose hand base is not reliable.
+            {"id": "wrist_flexion", "metric": "wrist_flexion_delta", "threshold_deg": 25, "min_frames": 12, "min_ratio": 0.4, "penalty": 6, "correction": "Keep your wrist straight, in line with your forearm, as you grip and carry the cup.", "steps": [2, 3, 4]},
         ],
     },
     "ex_handopen": {
@@ -10753,6 +10755,25 @@ function poseAlignmentDeviation(hip,knee,ankle){
   const length=Math.max(0.02,Math.hypot(hip.x-ankle.x,hip.y-ankle.y));
   return rad2deg(Math.atan2(Math.abs(knee.x-lineX),length));
 }
+function poseWristBendDegrees(lm){
+  if(!lm || !lm[ACTIVE.elbow] || !lm[ACTIVE.wrist]) return NaN;
+  const left=ACTIVE.wrist===15;
+  const indexTip=lm[left ? 19 : 20];
+  const pinkyTip=lm[left ? 17 : 18];
+  const elbow=lm[ACTIVE.elbow], wrist=lm[ACTIVE.wrist];
+  if(!pointVisible(elbow) || !pointVisible(wrist) || !pointVisible(indexTip) || !pointVisible(pinkyTip)) return NaN;
+  const handBase=midpoint(indexTip,pinkyTip);
+  const shoulderWidth=(lm[11]&&lm[12]) ? Math.max(.03,Math.hypot(lm[11].x-lm[12].x,lm[11].y-lm[12].y,(lm[11].z||0)-(lm[12].z||0))) : .18;
+  const forearmLength=Math.hypot(wrist.x-elbow.x,wrist.y-elbow.y,(wrist.z||0)-(elbow.z||0));
+  const handLength=Math.hypot(handBase.x-wrist.x,handBase.y-wrist.y,(handBase.z||0)-(wrist.z||0));
+  // A closed or edge-on hand can collapse the pose model's coarse finger
+  // endpoints onto the wrist. In that view the camera cannot support a wrist
+  // alignment judgment, so return no measurement instead of a false warning.
+  if(forearmLength < shoulderWidth*.40 || handLength < shoulderWidth*.16) return NaN;
+  const jointAngle=angle(elbow,wrist,handBase);
+  return Number.isFinite(jointAngle) ? Math.abs(180-jointAngle) : NaN;
+}
+
 function rawMovementMetrics(lm, handLm){
   const raw={};
   if(lm){
@@ -10832,20 +10853,10 @@ function rawMovementMetrics(lm, handLm){
     raw.finger_extension=median(fingerAngles);
     raw.pinch_flexion=((180-angle(handLm[2],handLm[3],handLm[4]))+(180-angle(handLm[5],handLm[6],handLm[8])))/2;
     raw.hand_axis=rad2deg(Math.atan2(handLm[9].y-handLm[0].y,handLm[9].x-handLm[0].x));
-    // Wrist bend relative to the forearm (0 = hand in line with the forearm):
-    // unlike the hand axis alone, this does not change when the whole arm
-    // swings across, so it can flag a dropped (flexed) wrist during a carry.
-    // Measured in the image plane only - pose depth and hand depth are on
-    // different scales - and only when the forearm and hand lie in that plane
-    // (a forearm pointing at the camera foreshortens and reads nonsense).
-    if(lm && lm[ACTIVE.elbow] && pointVisible(lm[ACTIVE.elbow]) && lm[11] && lm[12]){
-      const sw=Math.max(.03,Math.hypot(lm[11].x-lm[12].x,lm[11].y-lm[12].y));
-      const forearm={x:handLm[0].x-lm[ACTIVE.elbow].x,y:handLm[0].y-lm[ACTIVE.elbow].y};
-      const hand={x:handLm[9].x-handLm[0].x,y:handLm[9].y-handLm[0].y};
-      const fl=Math.hypot(forearm.x,forearm.y), hl=Math.hypot(hand.x,hand.y);
-      raw.wrist_bend=(fl >= sw*0.45 && hl >= sw*0.12)
-        ? rad2deg(Math.acos(clamp((forearm.x*hand.x+forearm.y*hand.y)/(fl*hl),-1,1))) : NaN;
-    }
+    // Use elbow, wrist and hand-base points from the pose model's one 3D
+    // coordinate system. Mixing a pose elbow with the hand model's 2D axis
+    // produced large false angles when the palm faced the camera.
+    raw.wrist_bend=poseWristBendDegrees(lm);
   }
   return raw;
 }
@@ -11101,16 +11112,22 @@ function ruleAppliesNow(rule){
 // its resting angle; a shrug before the arm is up meets the plain threshold.
 const SHOULDER_HIKE_ALLOWANCE_PER_FLEXION_DEG=Number(SCORING_METHOD.shoulder_hike_allowance_per_flexion_deg);
 const SHOULDER_HIKE_FREE_FLEXION_DEG=Number(SCORING_METHOD.shoulder_hike_allowance_free_flexion_deg);
-function expectedShoulderRise(raw){
-  if(CFG.pose_mode !== "body" || !Number.isFinite(SHOULDER_HIKE_ALLOWANCE_PER_FLEXION_DEG)) return 0;
-  const flexion=Number(raw && raw.shoulder_flexion), rest=Number(baselineMetrics.shoulder_flexion);
-  if(!Number.isFinite(flexion) || !Number.isFinite(rest)) return 0;
+function expectedShoulderRise(raw,rule=null,base=baselineMetrics){
+  const ruleAllowance=Number(rule && rule.normal_rise_allowance_per_elevation_deg);
+  const allowance=Number.isFinite(ruleAllowance) ? ruleAllowance : SHOULDER_HIKE_ALLOWANCE_PER_FLEXION_DEG;
+  if(CFG.pose_mode !== "body" || !Number.isFinite(allowance)) return 0;
+  const currentValues=[Number(raw && raw.shoulder_flexion),Number(raw && raw.shoulder_abduction)].filter(Number.isFinite);
+  const restValues=[Number(base && base.shoulder_flexion),Number(base && base.shoulder_abduction)].filter(Number.isFinite);
+  if(!currentValues.length || !restValues.length) return 0;
+  const elevation=Math.max(...currentValues), rest=Math.max(...restValues);
   const free=Number.isFinite(SHOULDER_HIKE_FREE_FLEXION_DEG) ? SHOULDER_HIKE_FREE_FLEXION_DEG : 10;
-  return SHOULDER_HIKE_ALLOWANCE_PER_FLEXION_DEG*Math.max(0,flexion-rest-free);
+  const expected=allowance*Math.max(0,elevation-rest-free);
+  const cap=Number(rule && rule.normal_rise_allowance_cap_deg);
+  return Number.isFinite(cap) ? Math.min(cap,expected) : expected;
 }
 function compensationThreshold(rule,raw){
   const threshold=Number(rule.threshold_deg||0);
-  return rule.metric === "shoulder_hike_delta" ? threshold+expectedShoulderRise(raw) : threshold;
+  return rule.metric === "shoulder_hike_delta" ? threshold+expectedShoulderRise(raw,rule) : threshold;
 }
 function resetRepMetrics(){
   clearTemporaryCompensationEvidence();
@@ -11237,7 +11254,7 @@ const HAND_SCAN_INTERVAL_MS=0, HAND_BACKOFF_SCAN_INTERVAL_MS=180, HAND_BACKOFF_F
 let frameIntervalMs=33, lastLoopTs=0, lastHandScanTs=0;
 function handBackoffActive(){ return frameIntervalMs > 1000/MIN_SMOOTH_FPS; }
 function handFreshWindowMs(){ return handBackoffActive() ? HAND_BACKOFF_FRESH_MS : HAND_LANDMARK_FRESH_MS; }
-const TARGET_ARM_DELAY_AFTER_VOICE_MS=700;
+const TARGET_ARM_DELAY_AFTER_VOICE_MS=Number(CFG.target_arm_delay_ms ?? 700);
 const TARGET_HOLD_LOSS_GRACE_MS=350;
 function targetActivationReady(finishedAt,now,voiceIsActive=false){
   return !voiceIsActive && finishedAt > 0 && (now-finishedAt) >= TARGET_ARM_DELAY_AFTER_VOICE_MS;
@@ -12356,6 +12373,9 @@ if(URL_PARAMS.get("test_mode") === "compensation_feedback"){
 window.__rehynExerciseScoringTest={
   isAdvancePhrase,
   metricValue,
+  poseWristBendDegrees,
+  expectedShoulderRise,
+  compensationThreshold,
   repRomDetails,
   computeRepScore,
   confirmedCompensations,
