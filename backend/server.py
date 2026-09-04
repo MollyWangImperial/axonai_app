@@ -4236,11 +4236,26 @@ POSE_RUNNER_HTML = r"""<!DOCTYPE html>
 
 <script>
 window.__rehynStartRequested = false;
+window.__rehynRunnerModuleReady = false;
+window.__rehynRunnerStartupWatchdog = null;
 const earlyStartButton = document.getElementById("startBtn");
 earlyStartButton.addEventListener("click", () => {
+  if(earlyStartButton.dataset.moduleFailed === "1"){
+    window.location.reload();
+    return;
+  }
   window.__rehynStartRequested = true;
-  earlyStartButton.textContent = "Opening camera...";
+  earlyStartButton.textContent = "Loading assessment...";
   earlyStartButton.setAttribute("aria-busy", "true");
+  clearTimeout(window.__rehynRunnerStartupWatchdog);
+  window.__rehynRunnerStartupWatchdog = window.setTimeout(() => {
+    if(window.__rehynRunnerModuleReady) return;
+    earlyStartButton.dataset.moduleFailed = "1";
+    earlyStartButton.textContent = "Reload assessment";
+    earlyStartButton.removeAttribute("aria-busy");
+    const copy = document.querySelector("#overlay p");
+    if(copy) copy.textContent = "The assessment tools did not finish loading. Check your connection, then reload this assessment.";
+  }, 15000);
 });
 </script>
 <script type="module">
@@ -4928,9 +4943,22 @@ async function loadTasks(){
   const taskQuery = new URLSearchParams({package:ASSESSMENT_PACKAGE});
   if(ASSIGNED_TASK_IDS.length) taskQuery.set("task_ids", ASSIGNED_TASK_IDS.join(","));
   if(LIBRARY_TEST_MODE) taskQuery.set("library_test", "1");
-  const res = await fetch(`${API_BASE}/assessment/tasks?${taskQuery.toString()}`, {
-    headers: CURRENT_USER_ID ? {"X-User-Id": CURRENT_USER_ID} : {},
-  });
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), 15000);
+  let res;
+  try{
+    res = await fetch(`${API_BASE}/assessment/tasks?${taskQuery.toString()}`, {
+      headers: CURRENT_USER_ID ? {"X-User-Id": CURRENT_USER_ID} : {},
+      signal: controller.signal,
+    });
+  }catch(error){
+    if(error && error.name === "AbortError"){
+      throw new Error("Loading your assessment tasks timed out. Check your connection and try again.");
+    }
+    throw error;
+  }finally{
+    window.clearTimeout(timeout);
+  }
   if(!res.ok){
     const detail = await res.text();
     throw new Error(`Task selection failed (${res.status}): ${detail.slice(0, 160)}`);
@@ -5061,7 +5089,7 @@ async function setupHand(){
     handLandmarker = await HandLandmarker.createFromOptions(filesetResolver, {
       baseOptions:{ modelAssetPath: "/vendor/mediapipe/models/hand_landmarker.task" },
       runningMode: "VIDEO",
-      numHands: 4,  # patient hands plus a helping carer hand or two
+      numHands: 4,  // Patient hands plus a helping carer hand or two.
       minHandDetectionConfidence: 0.65,
       minHandPresenceConfidence: 0.65,
       minTrackingConfidence: 0.7,
@@ -7998,7 +8026,7 @@ let startSetupInProgress = false;
 async function beginAssessmentSetup(){
   if(startSetupInProgress) return;
   startSetupInProgress = true;
-  startBtn.textContent = "Opening camera...";
+  startBtn.textContent = "Loading assessment...";
   startBtn.setAttribute("aria-busy", "true");
   const unlockPromise = unlockAudioPlayback();
   overlay.classList.add("hidden");
@@ -8006,12 +8034,14 @@ async function beginAssessmentSetup(){
   try{
     await ensureTasksLoaded();
   }catch(error){
+    const overlayCopy = overlay.querySelector("p");
+    if(overlayCopy) overlayCopy.textContent = String(error && error.message ? error.message : "The assessment could not load. Please try again.");
     overlay.classList.remove("hidden");
     startBtn.disabled = false;
     startBtn.textContent = "Try Camera Again";
     startBtn.removeAttribute("aria-busy");
     startSetupInProgress = false;
-    postRN({type:"camera_error", message:`Could not load assessment tasks: ${String(error)}`});
+    postRN({type:"assessment_start_error", message:`Could not load assessment tasks: ${String(error)}`});
     return;
   }
   const firstStep = tasks[currentTaskIdx] && tasks[currentTaskIdx].steps && tasks[currentTaskIdx].steps[0];
@@ -8037,6 +8067,7 @@ async function beginAssessmentSetup(){
     prefetchVoice(CALIBRATION_INSTRUCTION);
     prefetchVoice(CALIBRATION_COMPLETE_INSTRUCTION);
   }
+  startBtn.textContent = "Opening camera...";
   const camOk = await setupCamera();
   if(!camOk){
     calibratingAssessment = false;
@@ -8298,6 +8329,9 @@ exitBtn.addEventListener("click", () => {
   postRN({type:"exit"});
 });
 
+// Mark the whole module ready only after every listener has been installed.
+window.__rehynRunnerModuleReady = true;
+window.clearTimeout(window.__rehynRunnerStartupWatchdog);
 // inform RN we're ready
 postRN({type:"ready"});
 </script>
@@ -8391,8 +8425,11 @@ REHAB_RUNNER_CONFIG: Dict[str, Dict[str, Any]] = {
         "name": "Hand-to-Mouth ADL Practice",
         "reps": 5,
         "pose_mode": "body",
-        "setup_voice": "We will practice hand-to-mouth, an essential daily activity. A cup is drawn in your hand on the screen, so you do not need a real one. Sit tall with your back away from the chair and your affected hand resting on your lap. Keep your head up: the cup comes to your mouth, not your mouth to the cup. I will guide you through each step.",
-        "correct_form_cue": "Next time, keep your head up and your back still, and bend your elbow to bring the cup all the way to your lips.",
+        "setup_voice": "We will practice hand-to-mouth, an essential daily activity. A cup is drawn on your screen in front of you, so you do not need a real one. Sit tall with your back away from the chair and your affected hand resting on your lap. You will reach out and touch the cup, bring it up to your mouth, take a sip, put it back, and return your hand to your lap. Keep your head up: the cup comes to your mouth, not your mouth to the cup. I will guide you through each step.",
+        "correct_form_cue": "Next time, keep your head up and your back still: reach to the cup with your arm, then bend your elbow to bring it all the way to your lips.",
+        # The cup starts on the affected side in front of the patient; for a
+        # left-affected patient the static targets are mirrored at runtime.
+        "mirror_for_left": True,
         # Problem wording for the feedback ("I noticed ..."), in this exercise's terms.
         "compensation_problems": {
             "trunk_forward": "your trunk leaned forward to meet the cup",
@@ -8400,14 +8437,20 @@ REHAB_RUNNER_CONFIG: Dict[str, Dict[str, Any]] = {
             "head_drop": "your head dropped down toward the cup",
         },
         "live_metric_text": {"shoulder_flexion": "Arm lift"},
-        "virtual_object": {"type": "cup", "mode": "held"},
+        # The cup waits inside the first target ring, attaches to the hand once
+        # the patient has reached and touched it (grab_step), and is set down
+        # again at the put-back step (place_step) - the same carry mechanics as
+        # the grasp exercise.
+        "virtual_object": {"type": "cup", "mode": "carry", "grab_step": 0, "place_step": 3},
         # The mouth target follows the patient's own mouth (MOUTH_DYNAMIC) and the
         # return target is the calibrated resting place on the lap (LAP_DYNAMIC).
         # Each step's circle only arms once its instruction has finished.
         "cycle": [
-            {"caption": "Bring the cup to your mouth", "voice": "Bend your elbow and bring the cup in your hand up to your mouth, slowly and smoothly. Keep your head up and your back still.", "target": {"x": 0.5, "y": 0.30, "r": 0.10, "landmark": "MOUTH_DYNAMIC"}, "hold_ms": 700},
+            {"caption": "Reach out and touch the cup", "voice": "Reach forward with your affected hand and touch the cup inside the circle on your screen.", "target": {"x": 0.36, "y": 0.56, "r": 0.10}, "hold_ms": 900},
+            {"caption": "Bring the cup to your mouth", "voice": "The cup is in your hand. Bend your elbow and bring it up to your mouth, slowly and smoothly. Keep your head up and your back still.", "target": {"x": 0.5, "y": 0.30, "r": 0.10, "landmark": "MOUTH_DYNAMIC"}, "hold_ms": 700},
             {"caption": "Hold at your mouth, as if taking a sip", "voice": "Hold the cup at your lips as if you were taking a sip. Head up, shoulder relaxed.", "target": {"x": 0.5, "y": 0.30, "r": 0.10, "landmark": "MOUTH_DYNAMIC"}, "hold_ms": 1500},
-            {"caption": "Lower to lap", "voice": "Now gently lower your hand back to the same place on your lap.", "target": {"x": 0.5, "y": 0.78, "r": 0.10, "landmark": "LAP_DYNAMIC"}, "hold_ms": 1200},
+            {"caption": "Put the cup back down", "voice": "Now lower the cup and put it back down inside the circle.", "target": {"x": 0.36, "y": 0.56, "r": 0.10}, "hold_ms": 700},
+            {"caption": "Return your empty hand to your lap", "voice": "Now bring your empty hand back to the same place on your lap. Nicely done.", "target": {"x": 0.5, "y": 0.78, "r": 0.10, "landmark": "LAP_DYNAMIC"}, "hold_ms": 1200},
         ],
         "feedback_rules": [
             {"if": "trunk_lean_deg > 15", "say": "Your trunk leaned to meet your hand. On the next try, keep your back tall and bring your hand to your mouth instead."},
@@ -8779,7 +8822,7 @@ EXERCISE_COACHING_PROFILES: Dict[str, Dict[str, Any]] = {
     },
     "ex_h2m": {
         "training_focus": "Coordinated elbow flexion and shoulder lift for hand-to-mouth activity without moving the trunk toward the hand.",
-        "repetition_definition": "Bring the affected hand to the mouth target, hold briefly, then return to the calibrated lap/start point.",
+        "repetition_definition": "Reach to and touch the on-screen cup, bring it to the mouth target, hold briefly as if sipping, put the cup back, then return the empty hand to the calibrated lap/start point.",
         "rom_cues": {
             "elbow_flexion": "On the next repetition, bend the elbow a little more so the hand comes to the mouth instead of the mouth moving forward.",
             "shoulder_flexion": "On the next repetition, add only the small comfortable shoulder lift needed to guide the hand upward.",
@@ -8978,7 +9021,7 @@ EXERCISE_MOVEMENT_STANDARDS: Dict[str, Dict[str, Any]] = {
         # falling below the ear line), and hiking the shoulder to lift the arm.
         "compensations": [
             {"id": "trunk_forward", "metric": "trunk_lean_delta", "threshold_deg": 10, "min_frames": 8, "min_ratio": 0.35, "penalty": 11, "correction": "Bring your hand toward your mouth instead of moving your mouth toward your hand."},
-            {"id": "head_drop", "metric": "head_drop_deg", "threshold_deg": 15, "min_frames": 8, "min_ratio": 0.35, "penalty": 10, "correction": "Keep your head up and bring the cup all the way to your lips."},
+            {"id": "head_drop", "metric": "head_drop_deg", "threshold_deg": 15, "min_frames": 8, "min_ratio": 0.35, "penalty": 10, "steps": [1, 2], "correction": "Keep your head up and bring the cup all the way to your lips."},
             {"id": "shoulder_hike", "metric": "shoulder_hike_delta", "threshold_deg": 8, "min_frames": 8, "min_ratio": 0.35, "penalty": 8, "correction": "Relax the shoulder before bending the elbow again."},
         ],
     },

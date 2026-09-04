@@ -639,7 +639,7 @@ def test_object_exercises_draw_virtual_objects_on_screen():
     # The cup attaches once the fingers close around it (step 2) and is set down
     # once the hand opens at the far side (step 4).
     assert cfg["ex_grasp"]["virtual_object"] == {"type": "cup", "mode": "carry", "grab_step": 2, "place_step": 4}
-    assert cfg["ex_h2m"]["virtual_object"] == {"type": "cup", "mode": "held"}
+    assert cfg["ex_h2m"]["virtual_object"] == {"type": "cup", "mode": "carry", "grab_step": 0, "place_step": 3}
     assert cfg["ex_handopen"]["virtual_object"] == {"type": "ball", "mode": "hand_anchor"}
     assert cfg["ex_pinch"]["virtual_object"]["mode"] == "pick_place"
     assert set(cfg["ex_pinch"]["virtual_object"]["source"]) == {"x", "y"}
@@ -709,7 +709,7 @@ def test_forward_reach_grading_is_phase_gated_and_catches_forward_lean_and_shrug
     # compensation confirmation; the reach itself is the movement phase.
     assert [step["phase"] for step in cfg["ex_reach"]["cycle"]] == ["movement", "return"]
     assert [step["phase"] for step in cfg["ex_grasp"]["cycle"]] == ["movement"] * 5 + ["return"]
-    assert [step["phase"] for step in cfg["ex_h2m"]["cycle"]] == ["movement", "movement", "return"]
+    assert [step["phase"] for step in cfg["ex_h2m"]["cycle"]] == ["movement"] * 4 + ["return"]
     assert [step["phase"] for step in cfg["ex_bilateral"]["cycle"]] == ["movement", "movement"]
     assert "function activeMovementPhase()" in source
     assert "if(!activeMovementPhase()) return;" in source
@@ -820,11 +820,21 @@ def test_hand_to_mouth_is_guided_step_by_step_and_graded_like_the_reach_exercise
     standard = server.EXERCISE_MOVEMENT_STANDARDS["ex_h2m"]
     profile = server.EXERCISE_COACHING_PROFILES["ex_h2m"]
 
-    # Step-by-step guidance: bring to mouth -> hold as if sipping -> lower to lap.
+    # Step-by-step guidance: touch the cup inside its ring -> bring to mouth ->
+    # hold as if sipping -> put the cup back -> empty hand to lap. The cup waits
+    # in the first ring, attaches to the hand once touched, and is set down at
+    # the put-back step (carry mechanics shared with the grasp exercise).
     assert [step["caption"] for step in cfg["cycle"]] == [
-        "Bring the cup to your mouth", "Hold at your mouth, as if taking a sip", "Lower to lap",
+        "Reach out and touch the cup", "Bring the cup to your mouth", "Hold at your mouth, as if taking a sip",
+        "Put the cup back down", "Return your empty hand to your lap",
     ]
-    assert [(step["target"].get("landmark")) for step in cfg["cycle"]] == ["MOUTH_DYNAMIC", "MOUTH_DYNAMIC", "LAP_DYNAMIC"]
+    assert [(step["target"].get("landmark")) for step in cfg["cycle"]] == [None, "MOUTH_DYNAMIC", "MOUTH_DYNAMIC", None, "LAP_DYNAMIC"]
+    assert cfg["virtual_object"] == {"type": "cup", "mode": "carry", "grab_step": 0, "place_step": 3}
+    assert cfg["cycle"][0]["target"]["x"] == cfg["cycle"][3]["target"]["x"] == 0.36 and cfg["mirror_for_left"] is True
+    assert "touch the cup" in cfg["cycle"][0]["voice"] and "reach out and touch the cup" in cfg["setup_voice"]
+    # Looking down at the cup while reaching for it or putting it back is
+    # normal; the head drop is judged while the cup goes to the mouth.
+    assert next(rule for rule in standard["compensations"] if rule["id"] == "head_drop")["steps"] == [1, 2]
     assert all(step["voice"] for step in cfg["cycle"])
     assert "Keep your head up" in cfg["setup_voice"]
     # The circle arms only once the step's instruction has finished (shared
@@ -880,7 +890,7 @@ def test_hand_to_mouth_is_guided_step_by_step_and_graded_like_the_reach_exercise
         "shoulder_hike": "your shoulder lifted toward your ear",
         "head_drop": "your head dropped down toward the cup",
     }
-    assert "bend your elbow to bring the cup all the way to your lips" in cfg["correct_form_cue"]
+    assert "bend your elbow to bring it all the way to your lips" in cfg["correct_form_cue"]
 
 
 def test_forward_reach_shows_private_temporary_visual_compensation_evidence():
