@@ -28,7 +28,7 @@ def test_home_launches_standardized_initial_assessment():
     assert 'carePlanAssessment?.task_ids?.includes("L6")' in home
     assert '"Selected if safe"' in home
     assert '"Not assigned"' in home
-    assert 'authedFetch("/api/alira/care-plan")' in home
+    assert 'authedFetch(`/api/alira/care-plan${appDateQuery()}`)' in home
     assert '"Alira selected suitable tasks from your readiness answers."' in home
     assert 'pathname: "/session-check"' in home
 

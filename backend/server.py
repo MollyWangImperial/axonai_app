@@ -1,5 +1,5 @@
 from fastapi import FastAPI, APIRouter, File, HTTPException, Request, UploadFile
-from fastapi.responses import HTMLResponse, RedirectResponse, Response, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from starlette.staticfiles import StaticFiles
@@ -28,6 +28,8 @@ import secrets
 import sys
 import tempfile
 from datetime import datetime, timedelta, timezone
+
+import certifi
 
 try:
     from backend.rehab_assessment import (
@@ -173,12 +175,38 @@ MONGO_SERVER_SELECTION_TIMEOUT_MS = _mongo_timeout_ms(
     "MONGO_SERVER_SELECTION_TIMEOUT_MS", 1000 if _MONGO_IS_LOCAL else 5000
 )
 MONGO_CONNECT_TIMEOUT_MS = _mongo_timeout_ms("MONGO_CONNECT_TIMEOUT_MS", 1000 if _MONGO_IS_LOCAL else 5000)
-client = AsyncIOMotorClient(
-    mongo_url,
-    serverSelectionTimeoutMS=MONGO_SERVER_SELECTION_TIMEOUT_MS,
-    connectTimeoutMS=MONGO_CONNECT_TIMEOUT_MS,
+_MONGO_USES_TLS = mongo_url.startswith("mongodb+srv://") or bool(
+    re.search(r"(?:[?&](?:tls|ssl)=true)(?:&|$)", mongo_url, flags=re.IGNORECASE)
 )
+_mongo_client_options: Dict[str, Any] = {
+    "serverSelectionTimeoutMS": MONGO_SERVER_SELECTION_TIMEOUT_MS,
+    "connectTimeoutMS": MONGO_CONNECT_TIMEOUT_MS,
+}
+if _MONGO_USES_TLS:
+    # The slim production image does not guarantee an up-to-date system CA
+    # bundle. Use the pinned certifi bundle explicitly for Atlas TLS.
+    _mongo_client_options["tlsCAFile"] = certifi.where()
+client = AsyncIOMotorClient(mongo_url, **_mongo_client_options)
 _mongo_database = client[os.environ["DB_NAME"]]
+
+# Local JSON is useful for development without MongoDB. It is not durable on a
+# hosted Render service and must never be presented as saved patient progress.
+ALLOW_EPHEMERAL_PATIENT_STATE = _MONGO_IS_LOCAL and os.environ.get(
+    "ALLOW_EPHEMERAL_PATIENT_STATE", "1"
+).strip().lower() not in {"0", "false", "no"}
+
+
+def _require_durable_patient_store(context: str, error: BaseException) -> None:
+    if ALLOW_EPHEMERAL_PATIENT_STATE:
+        return
+    logger.error("Durable patient store unavailable during %s: %s", context, str(error)[:200])
+    raise HTTPException(
+        status_code=503,
+        detail=(
+            "Your saved Rehyn account is temporarily unavailable. "
+            "Nothing has been reset or marked incomplete. Please try again shortly."
+        ),
+    ) from error
 
 
 # When MongoDB is unreachable (cluster paused, IP access list, network), every
@@ -2277,14 +2305,26 @@ async def database_health():
     """Is MongoDB reachable from this server right now? (No patient data.)"""
     started = time.monotonic()
     if MONGO_CIRCUIT.is_open():
-        return {"ok": False, "state": "cooldown", "ms": 0, **MONGO_CIRCUIT.status()}
+        return JSONResponse(
+            status_code=503,
+            content={"ok": False, "state": "cooldown", "ms": 0, **MONGO_CIRCUIT.status()},
+        )
     try:
         await asyncio.wait_for(client.admin.command("ping"), timeout=MONGO_SERVER_SELECTION_TIMEOUT_MS / 1000 + 2)
         MONGO_CIRCUIT.clear()
         return {"ok": True, "state": "connected", "ms": round((time.monotonic() - started) * 1000), **MONGO_CIRCUIT.status()}
     except Exception as error:  # noqa: BLE001 - any failure means the database is not usable
         MONGO_CIRCUIT.trip(error)
-        return {"ok": False, "state": "unreachable", "ms": round((time.monotonic() - started) * 1000), "error": str(error)[:200], **MONGO_CIRCUIT.status()}
+        return JSONResponse(
+            status_code=503,
+            content={
+                "ok": False,
+                "state": "unreachable",
+                "ms": round((time.monotonic() - started) * 1000),
+                "error": str(error)[:200],
+                **MONGO_CIRCUIT.status(),
+            },
+        )
 
 
 @api_router.post("/status", response_model=StatusCheck)
@@ -2730,6 +2770,7 @@ async def save_task_progress(request: Request, package_id: str, task_id: str):
             upsert=True,
         )
     except Exception as exc:
+        _require_durable_patient_store("assessment task progress", exc)
         logger.warning(f"Mongo unavailable for task progress; using local fallback: {str(exc)[:120]}")
         LOCAL_TASK_PROGRESS.pop(_task_progress_key(user["id"], safe_package, "__reset__"), None)
         LOCAL_TASK_PROGRESS[_task_progress_key(user["id"], safe_package, task_id)] = record
@@ -2758,6 +2799,7 @@ async def get_task_progress(request: Request, package: str = "initial"):
         reset_recorded = any(str(item.get("task_id") or "") == "__reset__" for item in docs)
         completed = {str(item.get("task_id") or "") for item in docs}
     except Exception as exc:
+        _require_durable_patient_store("assessment task progress lookup", exc)
         logger.warning(f"Mongo unavailable for task progress lookup; using local fallback: {str(exc)[:120]}")
         reset_recorded = any(
             item.get("user_id") == user["id"]
@@ -2792,6 +2834,7 @@ async def reset_task_progress(request: Request, package: str = "initial"):
             "completed_at": datetime.now(timezone.utc).isoformat(),
         })
     except Exception as exc:
+        _require_durable_patient_store("assessment task progress reset", exc)
         logger.warning(f"Mongo unavailable for task progress reset; using local fallback: {str(exc)[:120]}")
         remove_keys = [
             key for key, item in LOCAL_TASK_PROGRESS.items()
@@ -3310,6 +3353,7 @@ async def submit_assessment(payload: AssessmentSubmit, request: Request):
         body_function_summary, {}, {}, model_analysis
     )
     doc["user_id"] = user["id"]
+    doc["account_email"] = str(user.get("email") or "").strip().lower()
     doc["assessment_trigger"] = access.get("trigger")
     doc["functional_issue_report_id"] = access.get("issue_report_id")
     try:
@@ -3317,6 +3361,7 @@ async def submit_assessment(payload: AssessmentSubmit, request: Request):
         # Keep the patient-facing fallback copy JSON-safe and unchanged.
         await db.assessments.insert_one(doc.copy())
     except Exception as e:
+        _require_durable_patient_store("assessment result", e)
         logger.warning(f"Mongo unavailable for assessment insert; using local fallback: {str(e)[:120]}")
         LOCAL_ASSESSMENTS.append(doc.copy())
         _persist_local_list(LOCAL_ASSESSMENTS_FILE, LOCAL_ASSESSMENTS)
@@ -3421,6 +3466,7 @@ async def get_assessment_history(request: Request):
             .to_list(50)
         )
     except Exception as e:
+        _require_durable_patient_store("assessment history", e)
         logger.warning(f"Mongo unavailable for assessment history; using local fallback: {str(e)[:120]}")
         docs = [
             {k: v for k, v in item.items() if k != "_id"}
@@ -12700,6 +12746,10 @@ class AliraActivitySubmit(BaseModel):
     # Repetitions done correctly (no compensation, score >= point threshold);
     # only these earn repetition points. Absent for legacy/tap clients.
     quality_reps: Optional[int] = Field(default=None, ge=0, le=500)
+    # Testing phase: the day was marked finished from the plan page with an
+    # entered score instead of being performed on camera. Recorded as-is so
+    # the activity can be told apart later.
+    testing_shortcut: bool = False
 
 
 class AliraFunctionalIssueSubmit(BaseModel):
@@ -13148,6 +13198,7 @@ async def _save_user_fields(
                 upsert=True,
             )
     except Exception as exc:
+        _require_durable_patient_store(context, exc)
         logger.warning(f"Mongo unavailable for {context}; using local fallback: {str(exc)[:120]}")
     _remember_local_user(merged)
     return merged
@@ -13162,6 +13213,7 @@ async def _find_or_create_user_account(email: str, name: str, role: str = "patie
     try:
         doc = await db.users.find_one({"email": email}, {"_id": 0})
     except Exception as e:
+        _require_durable_patient_store("account lookup", e)
         logger.warning(f"Mongo unavailable for user lookup; using local fallback: {str(e)[:120]}")
         mongo_available = False
         doc = None
@@ -13200,6 +13252,7 @@ async def _find_or_create_user_account(email: str, name: str, role: str = "patie
                 upsert=True,
             )
         except Exception as e:
+            _require_durable_patient_store("account creation", e)
             logger.warning(f"Mongo unavailable for user insert; using local fallback: {str(e)[:120]}")
     _remember_local_user(doc)
     return doc, True
@@ -13228,6 +13281,7 @@ async def _user_from_header(request_headers: Dict[str, str]) -> Optional[Dict[st
     try:
         user = await db.users.find_one({"id": uid}, {"_id": 0})
     except Exception as e:
+        _require_durable_patient_store("signed-in account lookup", e)
         logger.warning(f"Mongo unavailable for user header lookup; using local fallback: {str(e)[:120]}")
         return LOCAL_USERS.get(uid)
     local_user = LOCAL_USERS.get(uid)
@@ -13885,7 +13939,8 @@ async def _care_assessments_for_user(user_id: str) -> List[Dict[str, Any]]:
             {"user_id": user_id},
             {"_id": 0},
         ).sort("created_at", -1).to_list(100)
-    except Exception:
+    except Exception as exc:
+        _require_durable_patient_store("assessment history lookup", exc)
         docs = [item.copy() for item in LOCAL_ASSESSMENTS if item.get("user_id") == user_id]
     return [_assessment_with_current_rehab_policy(doc) for doc in docs]
 
@@ -13897,7 +13952,8 @@ async def _initial_task_progress_evidence(user_id: str) -> Tuple[List[str], Opti
             {"user_id": user_id, "package_id": "initial"},
             {"_id": 0, "task_id": 1, "completed_at": 1},
         ).to_list(200)
-    except Exception:
+    except Exception as exc:
+        _require_durable_patient_store("initial assessment evidence lookup", exc)
         records = [
             item.copy()
             for item in LOCAL_TASK_PROGRESS.values()
@@ -13944,7 +14000,8 @@ async def _care_check_ins_for_user(user_id: str) -> List[Dict[str, Any]]:
             {"user_id": user_id},
             {"_id": 0},
         ).sort("created_at", -1).to_list(100)
-    except Exception:
+    except Exception as exc:
+        _require_durable_patient_store("check-in history lookup", exc)
         return [item.copy() for item in (LOCAL_CARE_STATE.get(user_id) or {}).get("check_ins", [])]
 
 
@@ -13954,7 +14011,8 @@ async def _care_activities_for_user(user_id: str) -> List[Dict[str, Any]]:
             {"user_id": user_id},
             {"_id": 0},
         ).sort("completed_at", -1).to_list(200)
-    except Exception:
+    except Exception as exc:
+        _require_durable_patient_store("exercise activity lookup", exc)
         return [item.copy() for item in (LOCAL_CARE_STATE.get(user_id) or {}).get("activities", [])]
 
 
@@ -13964,8 +14022,33 @@ async def _care_issue_reports_for_user(user_id: str) -> List[Dict[str, Any]]:
             {"user_id": user_id},
             {"_id": 0},
         ).sort("created_at", -1).to_list(100)
-    except Exception:
+    except Exception as exc:
+        _require_durable_patient_store("functional issue lookup", exc)
         return [item.copy() for item in (LOCAL_CARE_STATE.get(user_id) or {}).get("functional_issue_reports", [])]
+
+
+APP_DATE_PATTERN = re.compile(r"^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$")
+
+
+def _as_of_now(as_of: Optional[str]) -> Optional[datetime]:
+    """The moment to evaluate date-dependent state at.
+
+    The app may pass the calendar date it is showing (``as_of=YYYY-MM-DD``):
+    during the testing phase a tester steps through days, and the care plan,
+    rewards and reminders must follow that date rather than the server clock.
+    The current time of day is kept so 'today' still moves with the wall clock.
+    """
+    if not as_of:
+        return None
+    value = str(as_of).strip()
+    if not APP_DATE_PATTERN.match(value):
+        raise HTTPException(status_code=422, detail="as_of must be a YYYY-MM-DD calendar date")
+    now = datetime.now(timezone.utc)
+    try:
+        day = datetime.strptime(value, "%Y-%m-%d").date()
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="as_of must be a valid calendar date") from exc
+    return datetime.combine(day, now.timetz())
 
 
 async def _adaptive_care_plan_for_user(
@@ -13974,6 +14057,8 @@ async def _adaptive_care_plan_for_user(
     check_ins: Optional[List[Dict[str, Any]]] = None,
     activities: Optional[List[Dict[str, Any]]] = None,
     issue_reports: Optional[List[Dict[str, Any]]] = None,
+    *,
+    now: Optional[datetime] = None,
 ) -> Dict[str, Any]:
     if assessments is None:
         assessments = await _care_assessments_for_user(user["id"])
@@ -14006,7 +14091,7 @@ async def _adaptive_care_plan_for_user(
         ]
     profile["_assessment_deferrals"] = dict(user.get("assessment_deferrals") or {})
     profile["_survey_report_viewed_at"] = user.get("survey_report_viewed_at")
-    return build_adaptive_care_plan(profile, assessments, check_ins, activities, issue_reports)
+    return build_adaptive_care_plan(profile, assessments, check_ins, activities, issue_reports, now=now)
 
 
 def _require_health_data_consent(user: Dict[str, Any]) -> None:
@@ -14055,6 +14140,7 @@ async def _persist_functional_issue_report(
     try:
         await db.alira_functional_issue_reports.insert_one(report.copy())
     except Exception as exc:
+        _require_durable_patient_store("functional issue report", exc)
         logger.warning("Mongo unavailable for Alira functional issue; using local fallback: %s", str(exc)[:120])
         state = dict(LOCAL_CARE_STATE.get(user["id"]) or {})
         state["functional_issue_reports"] = [*(state.get("functional_issue_reports") or []), report.copy()][-100:]
@@ -14132,6 +14218,7 @@ async def _persist_alira_check_in(user: Dict[str, Any], payload: AliraCheckInSub
     try:
         await db.alira_check_ins.insert_one(check_in.copy())
     except Exception as exc:
+        _require_durable_patient_store("Alira check-in", exc)
         logger.warning("Mongo unavailable for Alira check-in; using local fallback: %s", str(exc)[:120])
         state = dict(LOCAL_CARE_STATE.get(user["id"]) or {})
         state["check_ins"] = [*(state.get("check_ins") or []), check_in.copy()][-100:]
@@ -14226,7 +14313,14 @@ async def _persist_alira_activity(user: Dict[str, Any], payload: AliraActivitySu
         str(programme_id)
         for programme_id in ((pre_plan.get("caregiver_plan") or {}).get("daily_delivery") or {}).get("programme_ids") or []
     }
-    if payload.exercise_id not in approved_ids and payload.exercise_id not in caregiver_ids:
+    # Exercises the current care plan itself lists as approved (the core
+    # programme recovered from the account when no assessment document is
+    # stored) are approved too.
+    plan_ids = {
+        str(exercise_id)
+        for exercise_id in ((pre_plan.get("exercise_plan") or {}).get("approved_exercise_ids") or [])
+    }
+    if payload.exercise_id not in approved_ids and payload.exercise_id not in caregiver_ids and payload.exercise_id not in plan_ids:
         raise HTTPException(status_code=409, detail="This exercise is not in the patient's current approved plan.")
     completed_at = payload.completed_at or datetime.now(timezone.utc).isoformat()
     try:
@@ -14255,6 +14349,7 @@ async def _persist_alira_activity(user: Dict[str, Any], payload: AliraActivitySu
         "observed_response": payload.observed_response,
         "assisted": payload.assisted,
         "quality_reps": payload.quality_reps,
+        "testing_shortcut": bool(payload.testing_shortcut),
         "unassisted_average_score": unassisted_average_score if payload.assisted else None,
         "functional_domain": EXERCISE_FUNCTIONAL_DOMAINS.get(payload.exercise_id),
         "completed_at": completed_at,
@@ -14263,6 +14358,7 @@ async def _persist_alira_activity(user: Dict[str, Any], payload: AliraActivitySu
     try:
         await db.alira_activities.insert_one(activity.copy())
     except Exception as exc:
+        _require_durable_patient_store("exercise activity", exc)
         logger.warning("Mongo unavailable for Alira activity; using local fallback: %s", str(exc)[:120])
         state = dict(LOCAL_CARE_STATE.get(user["id"]) or {})
         state["activities"] = [*(state.get("activities") or []), activity.copy()][-200:]
@@ -14420,12 +14516,12 @@ async def get_current_account_rehab_plan(request: Request):
 
 
 @api_router.get("/alira/care-plan")
-async def get_alira_care_plan(request: Request):
+async def get_alira_care_plan(request: Request, as_of: Optional[str] = None):
     user = await _user_from_header(dict(request.headers))
     if not user:
         raise HTTPException(status_code=401, detail="Sign in required")
     _require_health_data_consent(user)
-    plan = await _adaptive_care_plan_for_user(user)
+    plan = await _adaptive_care_plan_for_user(user, now=_as_of_now(as_of)) if as_of else await _adaptive_care_plan_for_user(user)
     _record_alira_action(
         "care_plan_reviewed",
         source="app",
@@ -14611,8 +14707,13 @@ def _daily_checkin_response(date: str, checkins: Dict[str, Dict[str, Any]]) -> D
         "ok": True,
         "date": date,
         "status": entry.get("status") or "not_checked_in",
+        "medal_collected": bool(entry.get("medal_collected_at")),
         "days": [
-            {"date": day, "status": record.get("status") or "in_progress"}
+            {
+                "date": day,
+                "status": record.get("status") or "in_progress",
+                "medal": bool(record.get("medal_collected_at")),
+            }
             for day, record in sorted(checkins.items())
         ],
     }
@@ -14656,8 +14757,27 @@ async def complete_daily_checkin(payload: DailyCheckInSubmit, request: Request):
     return _daily_checkin_response(date, checkins)
 
 
+@api_router.post("/users/daily-checkin/medal")
+async def collect_daily_medal(payload: DailyCheckInSubmit, request: Request):
+    """The patient collects the day's medal on Home once the day's exercises
+    are complete; it then shows on that date of the calendar."""
+    user = await _user_from_header(dict(request.headers))
+    if not user:
+        raise HTTPException(status_code=401, detail="Sign in required")
+    date = _validated_checkin_date(payload.date)
+    checkins = dict(user.get("daily_checkins") or {})
+    entry = dict(checkins.get(date) or {})
+    if entry.get("status") != "complete":
+        raise HTTPException(status_code=409, detail="Today's exercises are not complete yet.")
+    if not entry.get("medal_collected_at"):
+        entry["medal_collected_at"] = datetime.now(timezone.utc).isoformat()
+        checkins[date] = entry
+        await _save_daily_checkins(user, checkins)
+    return _daily_checkin_response(date, checkins)
+
+
 @api_router.get("/users/rewards")
-async def get_user_rewards(request: Request):
+async def get_user_rewards(request: Request, as_of: Optional[str] = None):
     """Points, medals, and streak state (spec section 10). Effort-based:
     reduced-intensity and caregiver-assisted sessions earn the same points."""
     user = await _user_from_header(dict(request.headers))
@@ -14665,7 +14785,7 @@ async def get_user_rewards(request: Request):
         raise HTTPException(status_code=401, detail="Sign in required")
     activities = await _care_activities_for_user(user["id"])
     check_ins = await _care_check_ins_for_user(user["id"])
-    return compute_rewards(activities, check_ins, dict(user.get("daily_checkins") or {}))
+    return compute_rewards(activities, check_ins, dict(user.get("daily_checkins") or {}), now=_as_of_now(as_of))
 
 
 @api_router.post("/alira/navigation-events")
@@ -15456,6 +15576,94 @@ async def chat_proactive(req: ChatRequest, request: Request):
             },
         )
     return {"text": selected_message}
+
+
+class DailyReminderRequest(BaseModel):
+    session_id: str = Field(min_length=1, max_length=120)
+    date: str = Field(min_length=10, max_length=10)
+
+
+def _alira_daily_reminder_message(plan: Dict[str, Any], name: str = "", streak: int = 0) -> str:
+    monitoring = plan.get("daily_monitoring") or {}
+    remaining = [str(item) for item in (monitoring.get("remaining_exercise_ids_today") or [])]
+    completed = [str(item) for item in (monitoring.get("completed_exercise_ids_today") or [])]
+    greeting = f"Good to see you, {name}!" if name else "Good to see you!"
+    count = len(remaining)
+    exercises = "your exercise" if count == 1 else f"your {count} exercises" if count else "your exercises"
+    progress = (
+        f" You have already finished {len(completed)} today - nearly there."
+        if completed else ""
+    )
+    momentum = (
+        f" You are on a {streak}-day run, and every day you show up adds to it."
+        if streak >= 2 else ""
+    )
+    return (
+        f"{greeting} Today's plan is ready and {exercises} are waiting for you.{progress} "
+        "Please finish them before the end of today: only completed days are recorded, so if today "
+        "passes without them, today's scores are not saved and we lose track of the progress you are "
+        "making. A short session done today is worth far more than a perfect one planned for tomorrow. "
+        f"{momentum} You have got this - open today's plan and I will guide you through it, one exercise at a time."
+    ).replace("  ", " ")
+
+
+@api_router.post("/chat/daily-reminder")
+async def chat_daily_reminder(req: DailyReminderRequest, request: Request):
+    """Alira's once-a-day reminder to finish today's exercises.
+
+    Sent the first time the patient opens the app on a day when the initial
+    assessment is done and exercises remain; it is appended to the chat so it
+    reads as a message from Alira. The app date is the patient's calendar date
+    (or, in the testing phase, the date the tester has selected).
+    """
+    user = await _user_from_header(dict(request.headers))
+    if not user:
+        raise HTTPException(status_code=401, detail="Sign in required")
+    _require_health_data_consent(user)
+    reminder_date = _validated_checkin_date(req.date)
+    plan = await _adaptive_care_plan_for_user(user, now=_as_of_now(reminder_date))
+    account_state = plan.get("account_state") or {}
+    monitoring = plan.get("daily_monitoring") or {}
+    remaining = list(monitoring.get("remaining_exercise_ids_today") or [])
+    if not account_state.get("has_completed_initial_assessment") or not remaining:
+        return {"sent": False, "text": None, "reason": "initial_assessment_pending" if not account_state.get("has_completed_initial_assessment") else "no_exercises_remaining"}
+    profile = user.get("profile") or {}
+    name = (profile.get("preferred_name") or user.get("name") or "").split(" ")[0].strip()
+    session_filter = {"session_id": req.session_id, "user_id": user["id"]}
+    local_session_key = f"{user['id']}:{req.session_id}"
+    try:
+        sess = await db.chat_sessions.find_one(session_filter, {"_id": 0})
+    except Exception:
+        sess = LOCAL_CHAT_SESSIONS.get(local_session_key)
+    turns: List[Dict[str, Any]] = list((sess or {}).get("turns") or [])
+    already = next(
+        (turn for turn in turns if turn.get("role") == "assistant" and turn.get("daily_reminder_date") == reminder_date),
+        None,
+    )
+    if already:
+        return {"sent": False, "text": already.get("text"), "reason": "already_sent_today", "remaining_exercise_ids": remaining}
+    try:
+        rewards = compute_rewards(
+            await _care_activities_for_user(user["id"]),
+            await _care_check_ins_for_user(user["id"]),
+            dict(user.get("daily_checkins") or {}),
+            now=_as_of_now(reminder_date),
+        )
+        streak = int((rewards.get("streak") or {}).get("current_days") or 0)
+    except Exception:
+        streak = 0
+    text = _alira_daily_reminder_message(plan, name, streak)
+    now = datetime.now(timezone.utc).isoformat()
+    turns.append({"role": "assistant", "text": text, "ts": now, "daily_reminder_date": reminder_date})
+    await _save_chat_session(session_filter, local_session_key, req.session_id, user["id"], turns, now)
+    _record_alira_action(
+        "daily_exercise_reminder_sent",
+        source="app",
+        user_id=user["id"],
+        session_id=req.session_id,
+        details={"date": reminder_date, "remaining_exercise_ids": remaining},
+    )
+    return {"sent": True, "text": text, "reason": "sent", "remaining_exercise_ids": remaining}
 
 
 @api_router.get("/chat/proactive/messages")

@@ -8,10 +8,10 @@ import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 
 import { colors, radius, spacing } from "@/src/theme";
-import { storage } from "@/src/utils/storage";
 import TypingIndicator from "@/src/components/TypingIndicator";
 import { API_BASE as BASE } from "@/src/config";
 import { authedFetch } from "@/src/auth";
+import { getOrCreateChatSessionId } from "@/src/chatSession";
 import { fetchHistory } from "@/src/api";
 import { useDisplayPreferences } from "@/src/displayPreferences";
 import AliraLivingBackground from "@/src/components/AliraLivingBackground";
@@ -26,13 +26,8 @@ type Turn = {
   emergency_call_available?: boolean;
 };
 
-const SESSION_KEY = "alira_session_id";
 const LOCAL_GREETING = "Hi there! I'm Alira, your recovery companion. I'm here to support you - body, mind, and progress. How are you feeling today?";
 const companionImage = require("@/assets/images/alira-companion.png");
-
-function genId() {
-  return "s_" + Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
-}
 
 function formatTime(ts: string) {
   const d = new Date(ts);
@@ -139,9 +134,7 @@ export default function ChatScreen() {
 
   useEffect(() => {
     (async () => {
-      const storedId = await storage.getItem<string>(SESSION_KEY, "");
-      const id = storedId || genId();
-      if (!storedId) await storage.setItem(SESSION_KEY, id);
+      const id = await getOrCreateChatSessionId();
       setSessionId(id);
       try {
         const response = await authedFetch(`/api/chat/history?session_id=${encodeURIComponent(id)}`);

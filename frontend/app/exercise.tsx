@@ -7,6 +7,7 @@ import * as Haptics from "expo-haptics";
 import { colors, spacing, radius } from "@/src/theme";
 import { storage } from "@/src/utils/storage";
 import { SafetyStopStrip } from "@/src/components/SafetyStopStrip";
+import { appNow, loadAppDateOverride } from "@/src/appDate";
 import { localDateString } from "@/src/components/DailyCheckInCalendar";
 import { API_BASE as BASE } from "@/src/config";
 import { loadUserPreferences } from "@/src/userPreferences";
@@ -20,6 +21,7 @@ type ExerciseProgress = {
   sessions: number;
   last_session_scores?: number[];
   score_history?: { completed_at: string; average_score: number; repetition_scores: number[] }[];
+  day?: string;
 };
 
 const PROGRESS_KEY = (planId: string, exId: string) => `ex_progress_v1:${planId}:${exId}`;
@@ -48,6 +50,7 @@ export default function ExerciseScreen() {
   const url = `${BASE}/api/rehab/runner?exercise_id=${encodeURIComponent(exercise_id || "ex_maintenance")}&reps=${guidedReps}&difficulty=${sessionDifficulty}&variation=${sessionVariation}&affected_side=${affectedSide}&rehab_session_id=${encodeURIComponent(rehabSessionId)}&voice_guidance=${voiceGuidance ? "1" : "0"}`;
 
   useEffect(() => {
+    void loadAppDateOverride();
     void loadUserPreferences().then((saved) => setVoiceGuidance(saved.voiceGuidance));
   }, []);
 
@@ -59,14 +62,19 @@ export default function ExerciseScreen() {
       const prev: ExerciseProgress = raw
         ? JSON.parse(raw)
         : { completed_reps: 0, total_reps: totalAll, last_score: null, best_score: null, sessions: 0 };
+      // Today's plan starts from zero each day: repetitions from an earlier
+      // day are not carried into today's count (the score history is kept).
+      const today = localDateString();
+      const completedToday = prev.day === today ? prev.completed_reps : 0;
       const updated: ExerciseProgress = {
-        completed_reps: Math.min(totalAll, prev.completed_reps + newReps),
+        completed_reps: Math.min(totalAll, completedToday + newReps),
         total_reps: totalAll,
         last_score: prev.last_score,
         best_score: prev.best_score,
         sessions: prev.sessions,
         last_session_scores: prev.last_session_scores,
         score_history: prev.score_history,
+        day: today,
       };
       await storage.setItem(PROGRESS_KEY(planId, exercise_id), JSON.stringify(updated));
     } catch {/* */}
@@ -79,7 +87,7 @@ export default function ExerciseScreen() {
       const prev: ExerciseProgress = raw
         ? JSON.parse(raw)
         : { completed_reps: 0, total_reps: totalAll, last_score: null, best_score: null, sessions: 0 };
-      const completedAt = new Date().toISOString();
+      const completedAt = appNow().toISOString();
       const scoreHistory = averageScore == null
         ? prev.score_history || []
         : [
@@ -88,6 +96,8 @@ export default function ExerciseScreen() {
           ].slice(-60);
       const updated: ExerciseProgress = {
         ...prev,
+        day: localDateString(),
+        completed_reps: prev.day === localDateString() ? prev.completed_reps : 0,
         total_reps: totalAll,
         last_score: averageScore ?? prev.last_score,
         best_score: averageScore != null ? Math.max(prev.best_score ?? 0, averageScore) : prev.best_score,
@@ -139,7 +149,7 @@ export default function ExerciseScreen() {
                 average_score: rawAvg,
                 repetition_scores: arr,
                 assisted,
-                completed_at: new Date().toISOString(),
+                completed_at: appNow().toISOString(),
               }),
             });
           } catch {

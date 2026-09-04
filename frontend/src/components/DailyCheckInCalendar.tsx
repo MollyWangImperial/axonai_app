@@ -4,6 +4,7 @@ import { useFocusEffect, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 
+import { appDateString, formatLocalDate, parseLocalDate } from "@/src/appDate";
 import { authedFetch } from "@/src/auth";
 import { useDisplayPreferences } from "@/src/displayPreferences";
 import { getScreenCache, setScreenCache } from "@/src/screenCache";
@@ -19,11 +20,10 @@ export type DailyCheckInStatus = "not_checked_in" | "in_progress" | "complete";
 type DayRecord = { date: string; status: string };
 type CheckInState = { todayStatus: DailyCheckInStatus; days: Record<string, string> };
 
-export function localDateString(date = new Date()): string {
-  const y = date.getFullYear();
-  const m = `${date.getMonth() + 1}`.padStart(2, "0");
-  const d = `${date.getDate()}`.padStart(2, "0");
-  return `${y}-${m}-${d}`;
+// "Today" everywhere in the app is the app date (see src/appDate.ts): the real
+// calendar day, or the day a tester has stepped to during the testing phase.
+export function localDateString(date?: Date): string {
+  return date ? formatLocalDate(date) : appDateString();
 }
 
 const WEEKDAY_LABELS = ["M", "T", "W", "T", "F", "S", "S"];
@@ -165,7 +165,7 @@ export function DailyCheckInCalendar() {
   };
 
   const shownMonth = (() => {
-    const base = new Date();
+    const base = parseLocalDate(appDateString());
     return new Date(base.getFullYear(), base.getMonth() + monthOffset, 1);
   })();
   const monthLabel = shownMonth.toLocaleDateString(undefined, { month: "long", year: "numeric" });

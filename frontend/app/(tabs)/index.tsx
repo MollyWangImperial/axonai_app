@@ -17,6 +17,16 @@ import * as Haptics from "expo-haptics";
 
 import { Assessment, fetchHistory } from "@/src/api";
 import {
+  appDateQuery,
+  appDateString,
+  formatLocalDate,
+  isAppDateOverridden,
+  loadAppDateOverride,
+  parseLocalDate,
+  setAppDateOverride,
+  shiftedAppDate,
+} from "@/src/appDate";
+import {
   authedFetch,
   cacheAssessmentActivity,
   cacheDailyCheckInActivity,
@@ -26,6 +36,15 @@ import {
   getCachedUser,
   preferredNameKey,
 } from "@/src/auth";
+import { getOrCreateChatSessionId } from "@/src/chatSession";
+import {
+  AliraMessageModal,
+  AppDateStepper,
+  CalendarDay,
+  MedalAwardModal,
+  MedalCalendarModal,
+  ReassessmentDayModal,
+} from "@/src/components/DailyFlowModals";
 import { PointsCelebration, PointsCelebrationEvent, celebrationEvent } from "@/src/components/PointsCelebration";
 import { SurveyPrefaceModal } from "@/src/components/SurveyPrefaceModal";
 import { useDisplayPreferences } from "@/src/displayPreferences";
@@ -93,8 +112,14 @@ type HomeCarePlan = {
 type DailyCheckInState = {
   date: string;
   status: "not_checked_in" | "in_progress" | "complete";
-  days: { date: string; status: string }[];
+  medalCollected?: boolean;
+  days: { date: string; status: string; medal?: boolean }[];
 };
+
+// Once-per-day prompts (Alira's reminder, the re-assessment prompt) are
+// remembered per account and app date so they show on the first visit of a
+// day only.
+const dailyPromptKey = (kind: string, userId: string, date: string) => `home_daily_prompt_v1:${kind}:${userId}:${date}`;
 
 type RewardsSummary = {
   points: number;
@@ -140,11 +165,10 @@ type TrendDefinition = {
 const EMPTY_CHECK_IN: DailyCheckInState = { date: "", status: "not_checked_in", days: [] };
 const EMPTY_PROGRESS: ProgressSummary = { assessments: [] };
 
-function localDateString(date = new Date()) {
-  const year = date.getFullYear();
-  const month = `${date.getMonth() + 1}`.padStart(2, "0");
-  const day = `${date.getDate()}`.padStart(2, "0");
-  return `${year}-${month}-${day}`;
+// "Today" is the app date (src/appDate.ts): the real day, or the day a tester
+// has stepped to during the testing phase.
+function localDateString(date?: Date) {
+  return date ? formatLocalDate(date) : appDateString();
 }
 
 function deriveFunctionalGoal(profile: any): string {
@@ -372,13 +396,24 @@ export default function HomeScreen() {
   const [latestAssessmentId, setLatestAssessmentId] = useState(cached?.latestAssessmentId ?? "");
   const [latestAssessmentCreatedAt, setLatestAssessmentCreatedAt] = useState(cached?.latestAssessmentCreatedAt ?? "");
   const [loading, setLoading] = useState(!cached);
+  const [accountStateUnavailable, setAccountStateUnavailable] = useState(false);
   const [checkingIn, setCheckingIn] = useState(false);
   const [showWeek, setShowWeek] = useState(false);
   const [showSurveyPreface, setShowSurveyPreface] = useState(false);
   const [celebration, setCelebration] = useState<PointsCelebrationEvent | null>(null);
+  // Daily flow: Alira's reminder, the re-assessment-day prompt, today's medal
+  // and the calendar it lands on. One prompt at a time.
+  const [aliraReminder, setAliraReminder] = useState<string | null>(null);
+  const [showReassessment, setShowReassessment] = useState(false);
+  const [showMedal, setShowMedal] = useState(false);
+  const [collectingMedal, setCollectingMedal] = useState(false);
+  const [showCalendar, setShowCalendar] = useState(false);
+  const [calendarHighlight, setCalendarHighlight] = useState<string | undefined>(undefined);
+  const promptsEvaluatedFor = useRef<string>("");
 
   const load = useCallback(async () => {
     if (!getScreenCache<HomeScreenCache>("home")) setLoading(true);
+    await loadAppDateOverride();
     const user = await getCachedUser();
     const requestedDate = localDateString();
     // Rebind a cached account before parallel state requests. Without this,
@@ -387,24 +422,33 @@ export default function HomeScreen() {
     if (user?.id) await authedFetch("/api/users/consent").catch(() => null);
     const cachedActivity = user?.id ? await getCachedPatientActivity(user.id) : {};
     const [assessments, preferredName, initialTaskCache, initialCarePlanPayload, onboarding, checkInPayload, rewardsPayload, progressPayload] = await Promise.all([
-      fetchHistory().catch(() => []),
+      fetchHistory().catch(() => null),
       user?.id ? storage.getItem(preferredNameKey(user.id), "") : Promise.resolve(""),
       user?.id ? storage.getItem(completedTasksKey(user.id, "initial"), "") : Promise.resolve(""),
-      authedFetch("/api/alira/care-plan").then(async (response) => response.ok ? response.json() : null).catch(() => null),
+      authedFetch(`/api/alira/care-plan${appDateQuery()}`).then(async (response) => response.ok ? response.json() : null).catch(() => null),
       authedFetch("/api/users/onboarding").then(async (response) => response.ok ? response.json() : null).catch(() => null),
       authedFetch(`/api/users/daily-checkin?date=${encodeURIComponent(requestedDate)}`).then(async (response) => response.ok ? response.json() : null).catch(() => null),
-      authedFetch("/api/users/rewards").then(async (response) => response.ok ? response.json() : null).catch(() => null),
+      authedFetch(`/api/users/rewards${appDateQuery()}`).then(async (response) => response.ok ? response.json() : null).catch(() => null),
       authedFetch("/api/progress/summary").then(async (response) => response.ok ? response.json() : null).catch(() => null),
     ]);
     let carePlanPayload = initialCarePlanPayload;
     const nextHistory = Array.isArray(assessments) ? assessments : [];
+    if (user?.id && !carePlanPayload) {
+      // A 5xx/database outage is unknown state, never evidence that a patient
+      // has not assessed. Keep any cached completion and block destructive
+      // "start again" guidance until the account source of truth is reachable.
+      setAccountStateUnavailable(true);
+      setLoading(false);
+      return;
+    }
+    setAccountStateUnavailable(false);
     const accountAlreadyCompleted = Boolean(
       carePlanPayload?.account_state?.has_completed_initial_assessment || nextHistory.length,
     );
     const expectedInitialTaskIds = Array.isArray(carePlanPayload?.assessment?.task_ids)
       ? carePlanPayload.assessment.task_ids.filter(Boolean)
       : [];
-    const cachedInitialTaskIds = completedTaskIdsFromCache(initialTaskCache);
+    const cachedInitialTaskIds = completedTaskIdsFromCache(initialTaskCache || "");
     const completedInitialTaskSet = Boolean(
       !accountAlreadyCompleted
       && expectedInitialTaskIds.length
@@ -427,8 +471,8 @@ export default function HomeScreen() {
     const nextName = preferredName || user?.name?.split(" ")[0] || "there";
     const nextOwnGoal = String(onboarding?.profile?.primary_goal || "").trim();
     const nextDailyGoal = deriveFunctionalGoal(onboarding?.profile) || nextOwnGoal;
-    const serverCheckIn = checkInPayload
-      ? { date: checkInPayload.date || requestedDate, status: checkInPayload.status || "not_checked_in", days: checkInPayload.days || [] }
+    const serverCheckIn: DailyCheckInState = checkInPayload
+      ? { date: checkInPayload.date || requestedDate, status: checkInPayload.status || "not_checked_in", medalCollected: Boolean(checkInPayload.medal_collected), days: checkInPayload.days || [] }
       : EMPTY_CHECK_IN;
     const cachedCheckInStatus = cachedActivity.daily_check_ins?.[requestedDate];
     const nextCheckIn: DailyCheckInState = serverCheckIn.status !== "not_checked_in" || !cachedCheckInStatus
@@ -554,9 +598,9 @@ export default function HomeScreen() {
   const surveyDueLabel = formatShortDate(carePlan?.survey?.due_at);
   const hour = new Date().getHours();
   const greeting = hour < 12 ? "Good morning" : hour < 18 ? "Good afternoon" : "Good evening";
-  const todayLabel = new Date().toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long", year: "numeric" });
-  const recentCheckIns = checkIn.days.slice(-7);
   const todayIso = localDateString();
+  const todayLabel = parseLocalDate(todayIso).toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long", year: "numeric" });
+  const recentCheckIns = checkIn.days.slice(-7);
   const checkedInToday = checkIn.date === todayIso && checkIn.status !== "not_checked_in";
   const todayCheckInStatus = checkedInToday ? checkIn.status : "not_checked_in";
 
@@ -639,6 +683,101 @@ export default function HomeScreen() {
     else openDestination(nextStep?.destination);
   };
 
+  // Testing phase: step the app date from Home. Everything that asks "what is
+  // today?" (check-in, plan, reminders, medals, the server's care plan) follows.
+  const changeAppDate = useCallback(async (next: string | null) => {
+    Haptics.selectionAsync();
+    await setAppDateOverride(next);
+    setScreenCache("home", undefined);
+    setScreenCache("daily-checkin", undefined);
+    setScreenCache("daily-checkin-prompted", undefined);
+    setAliraReminder(null);
+    setShowReassessment(false);
+    setShowMedal(false);
+    setShowCalendar(false);
+    promptsEvaluatedFor.current = "";
+    await load();
+  }, [load]);
+
+  const assessmentDueDate = carePlanAssessment?.due_at ? String(carePlanAssessment.due_at).slice(0, 10) : "";
+  const calendarDays = useMemo(() => {
+    const map: Record<string, CalendarDay> = {};
+    for (const day of checkIn.days) map[day.date] = { status: day.status, medal: Boolean(day.medal) };
+    return map;
+  }, [checkIn.days]);
+  const todaysExercisesComplete = hasInitialAssessment && activeExerciseIds.length > 0 && remainingExerciseIds.length === 0;
+  const medalAvailable = todaysExercisesComplete && checkIn.date === todayIso && checkIn.status === "complete" && !checkIn.medalCollected;
+
+  // The daily prompts, evaluated once per app date after the data has loaded:
+  //  1. re-assessment day (the scheduled assessment is due and can start);
+  //  2. today's exercises are finished and the medal is waiting;
+  //  3. exercises remain: Alira's once-a-day reminder, also posted into the chat.
+  useEffect(() => {
+    if (loading || !carePlan) return;
+    if (promptsEvaluatedFor.current === todayIso) return;
+    promptsEvaluatedFor.current = todayIso;
+    let cancelled = false;
+    void (async () => {
+      const user = await getCachedUser();
+      const userId = user?.id || "anonymous";
+      if (hasInitialAssessment && followUpDue) {
+        const key = dailyPromptKey("reassessment", userId, todayIso);
+        const shown = await storage.getItem(key, "");
+        if (!shown && !cancelled) {
+          await storage.setItem(key, "1");
+          setShowReassessment(true);
+          return;
+        }
+      }
+      if (medalAvailable) {
+        if (!cancelled) setShowMedal(true);
+        return;
+      }
+      if (hasInitialAssessment && remainingExerciseIds.length > 0) {
+        const key = dailyPromptKey("alira-reminder", userId, todayIso);
+        const shown = await storage.getItem(key, "");
+        if (shown) return;
+        const sessionId = await getOrCreateChatSessionId();
+        const response = await authedFetch("/api/chat/daily-reminder", {
+          method: "POST",
+          body: JSON.stringify({ session_id: sessionId, date: todayIso }),
+        }).catch(() => null);
+        const payload = response?.ok ? await response.json().catch(() => null) : null;
+        if (cancelled || !payload?.text) return;
+        await storage.setItem(key, "1");
+        setAliraReminder(String(payload.text));
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [carePlan, followUpDue, hasInitialAssessment, loading, medalAvailable, remainingExerciseIds.length, todayIso]);
+
+  const collectMedal = useCallback(async () => {
+    if (collectingMedal) return;
+    setCollectingMedal(true);
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    const response = await authedFetch("/api/users/daily-checkin/medal", {
+      method: "POST",
+      body: JSON.stringify({ date: todayIso }),
+    }).catch(() => null);
+    const payload = response?.ok ? await response.json().catch(() => null) : null;
+    const nextCheckIn: DailyCheckInState = payload
+      ? { date: payload.date || todayIso, status: payload.status || "complete", medalCollected: Boolean(payload.medal_collected), days: payload.days || [] }
+      : {
+          ...checkIn,
+          medalCollected: true,
+          days: checkIn.days.some((day) => day.date === todayIso)
+            ? checkIn.days.map((day) => day.date === todayIso ? { ...day, medal: true } : day)
+            : [...checkIn.days, { date: todayIso, status: "complete", medal: true }],
+        };
+    setCheckIn(nextCheckIn);
+    const cachedHome = getScreenCache<HomeScreenCache>("home");
+    if (cachedHome) setScreenCache<HomeScreenCache>("home", { ...cachedHome, checkIn: nextCheckIn });
+    setCollectingMedal(false);
+    setShowMedal(false);
+    setCalendarHighlight(todayIso);
+    setShowCalendar(true);
+  }, [checkIn, collectingMedal, todayIso]);
+
   // Once today's assessment is finished, the middle step celebrates it and
   // the third step becomes today's exercises.
   const assessmentCompletedToday = Boolean(
@@ -684,6 +823,14 @@ export default function HomeScreen() {
               <View style={styles.brandIcon}><Ionicons name="pulse" size={22} color="#FFFFFF" /></View>
               <Text style={[styles.brand, { color: palette.text }]}>Rehyn</Text>
             </View>
+            {isWide ? (
+              <AppDateStepper
+                date={todayIso}
+                overridden={isAppDateOverridden()}
+                onShift={(days) => { void changeAppDate(shiftedAppDate(days)); }}
+                onReset={() => { void changeAppDate(null); }}
+              />
+            ) : null}
             <View style={styles.headerActions}>
               <Pressable testID="home-emergency-fast" accessibilityLabel="Stroke warning signs" onPress={() => router.push("/(tabs)/emergency" as never)} style={({ pressed }) => [styles.headerButton, { borderColor: palette.border, backgroundColor: palette.surface }, pressed && styles.pressed]}>
                 <Ionicons name="warning-outline" size={20} color="#E44C36" />
@@ -699,8 +846,32 @@ export default function HomeScreen() {
             </View>
           </View>
 
+          {!isWide ? (
+            <View style={styles.stepperRowCompact}>
+              <AppDateStepper
+                compact
+                date={todayIso}
+                overridden={isAppDateOverridden()}
+                onShift={(days) => { void changeAppDate(shiftedAppDate(days)); }}
+                onReset={() => { void changeAppDate(null); }}
+              />
+            </View>
+          ) : null}
+
           {loading ? (
             <View style={styles.loadingState}><ActivityIndicator size="large" color={colors.brandPrimary} /></View>
+          ) : accountStateUnavailable ? (
+            <View style={[styles.accountUnavailable, { backgroundColor: palette.surface, borderColor: palette.border }]} testID="home-account-state-unavailable">
+              <View style={[styles.accountUnavailableIcon, { backgroundColor: palette.soft }]}>
+                <Ionicons name="cloud-offline-outline" size={30} color={palette.brand} />
+              </View>
+              <Text style={[styles.accountUnavailableTitle, { color: palette.text }]}>Your saved progress is temporarily unavailable</Text>
+              <Text style={[styles.accountUnavailableText, { color: palette.muted }]}>Nothing has been reset. Rehyn will not ask you to repeat your assessment while your account record is unavailable.</Text>
+              <Pressable accessibilityRole="button" onPress={() => void load()} style={({ pressed }) => [styles.accountUnavailableButton, pressed && styles.pressed]}>
+                <Ionicons name="refresh" size={19} color="#FFFFFF" />
+                <Text style={styles.accountUnavailableButtonText}>Try again</Text>
+              </Pressable>
+            </View>
           ) : (
             <>
               <View style={[styles.welcomeRow, !isWide && styles.welcomeRowCompact]}>
@@ -842,6 +1013,10 @@ export default function HomeScreen() {
                     {todayCheckInStatus === "complete" ? "Daily plan complete" : todayCheckInStatus === "in_progress" ? "Daily check-in complete" : "Check in when ready"}
                     {isInitialAssessment ? "   •   Initial assessment ready" : assessmentDueLabel ? `   •   Next assessment ${assessmentDueLabel}` : ""}
                   </Text>
+                  <Pressable testID="home-open-calendar" accessibilityLabel="Open calendar" onPress={() => { setCalendarHighlight(undefined); setShowCalendar(true); }} style={({ pressed }) => [styles.weekCalendarButton, { borderColor: palette.border }, pressed && styles.pressed]}>
+                    <Ionicons name="medal-outline" size={18} color={palette.brand} />
+                    <Text style={[styles.weekToggleText, { color: palette.brand }]}>Calendar</Text>
+                  </Pressable>
                   <Pressable testID="home-week-toggle" onPress={() => setShowWeek((value) => !value)} style={styles.weekToggle}>
                     <Text style={[styles.weekToggleText, { color: palette.text }]}>{showWeek ? "Hide details" : "Show details"}</Text>
                     <Ionicons name={showWeek ? "chevron-up" : "chevron-down"} size={20} color={palette.text} />
@@ -851,8 +1026,8 @@ export default function HomeScreen() {
                   <View style={[styles.weekDetails, { borderTopColor: palette.border }]}>
                     <View style={styles.weekDays}>
                       {recentCheckIns.length ? recentCheckIns.map((day) => (
-                        <View key={day.date} style={[styles.weekDay, { backgroundColor: day.status === "complete" ? "#E5F2E9" : palette.soft }]}>
-                          <Ionicons name={day.status === "complete" ? "checkmark-circle" : "ellipse-outline"} size={17} color={day.status === "complete" ? "#1A7045" : palette.muted} />
+                        <View key={day.date} style={[styles.weekDay, { backgroundColor: day.medal ? "#FFF1C9" : day.status === "complete" ? "#E5F2E9" : palette.soft }]}>
+                          <Ionicons name={day.medal ? "medal" : day.status === "complete" ? "checkmark-circle" : "ellipse-outline"} size={17} color={day.medal ? "#8A5A00" : day.status === "complete" ? "#1A7045" : palette.muted} />
                           <Text style={[styles.weekDayText, { color: palette.text }]}>{formatShortDate(day.date)}</Text>
                         </View>
                       )) : <Text style={[styles.weekEmpty, { color: palette.muted }]}>Your check-in history will appear here.</Text>}
@@ -870,6 +1045,34 @@ export default function HomeScreen() {
       </ScrollView>
       <PointsCelebration event={celebration} onDone={() => setCelebration(null)} />
       <SurveyPrefaceModal visible={showSurveyPreface} onBegin={openSurveyChat} onClose={() => setShowSurveyPreface(false)} />
+      <ReassessmentDayModal
+        visible={showReassessment}
+        date={todayIso}
+        onStart={() => { setShowReassessment(false); startNextSession(); }}
+        onLater={() => setShowReassessment(false)}
+      />
+      <MedalAwardModal
+        visible={showMedal}
+        date={todayIso}
+        collecting={collectingMedal}
+        onCollect={() => { void collectMedal(); }}
+        onLater={() => setShowMedal(false)}
+      />
+      <MedalCalendarModal
+        visible={showCalendar}
+        today={todayIso}
+        days={calendarDays}
+        assessmentDate={assessmentDueDate || undefined}
+        highlightMedalDate={calendarHighlight}
+        onClose={() => setShowCalendar(false)}
+      />
+      <AliraMessageModal
+        visible={Boolean(aliraReminder)}
+        text={aliraReminder || ""}
+        onOpenPlan={() => { setAliraReminder(null); openExercisePlan(); }}
+        onOpenChat={() => { setAliraReminder(null); router.push("/(tabs)/chat" as never); }}
+        onLater={() => setAliraReminder(null)}
+      />
     </View>
   );
 }
@@ -883,12 +1086,20 @@ const styles = StyleSheet.create({
   brandIcon: { width: 43, height: 43, borderRadius: 8, backgroundColor: "#07593E", alignItems: "center", justifyContent: "center" },
   brand: { fontSize: 25, lineHeight: 31, fontWeight: "900" },
   headerActions: { flexDirection: "row", alignItems: "center", justifyContent: "flex-end", gap: spacing.sm, flexShrink: 1 },
+  stepperRowCompact: { alignItems: "center", marginTop: spacing.xs },
+  weekCalendarButton: { minHeight: 40, flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: spacing.sm, borderWidth: 1, borderRadius: radius.pill },
   headerButton: { minHeight: 46, minWidth: 46, borderRadius: radius.md, borderWidth: 1, paddingHorizontal: 16, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 9 },
   headerButtonText: { fontSize: 14, fontWeight: "800" },
   avatar: { width: 48, height: 48, borderRadius: 24, alignItems: "center", justifyContent: "center" },
   avatarText: { fontSize: 18, fontWeight: "900" },
   pressed: { opacity: 0.68 },
   loadingState: { minHeight: 560, alignItems: "center", justifyContent: "center" },
+  accountUnavailable: { minHeight: 360, marginTop: spacing.xl, borderWidth: 1, borderRadius: radius.md, padding: spacing.xl, alignItems: "center", justifyContent: "center" },
+  accountUnavailableIcon: { width: 64, height: 64, borderRadius: 32, alignItems: "center", justifyContent: "center" },
+  accountUnavailableTitle: { marginTop: spacing.md, fontSize: 24, lineHeight: 31, fontWeight: "900", textAlign: "center" },
+  accountUnavailableText: { maxWidth: 600, marginTop: spacing.sm, fontSize: 16, lineHeight: 23, textAlign: "center" },
+  accountUnavailableButton: { minHeight: 50, marginTop: spacing.lg, borderRadius: radius.md, paddingHorizontal: spacing.lg, backgroundColor: "#05603F", flexDirection: "row", alignItems: "center", justifyContent: "center", gap: spacing.sm },
+  accountUnavailableButtonText: { color: "#FFFFFF", fontSize: 15, lineHeight: 21, fontWeight: "900" },
   welcomeRow: { minHeight: 174, flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: spacing.xl, paddingVertical: spacing.md },
   welcomeRowCompact: { minHeight: 0, alignItems: "flex-start", gap: spacing.md },
   welcomeCopy: { flex: 1, minWidth: 0 },

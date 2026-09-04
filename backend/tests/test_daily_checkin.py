@@ -42,7 +42,7 @@ def test_check_in_marks_day_in_progress_and_completion_earns_check_mark(monkeypa
             started = client.post("/api/users/daily-checkin", json={"date": "2026-08-30"})
             assert started.status_code == 200
             assert started.json()["status"] == "in_progress"
-            assert started.json()["days"] == [{"date": "2026-08-30", "status": "in_progress"}]
+            assert started.json()["days"] == [{"date": "2026-08-30", "status": "in_progress", "medal": False}]
             sync_user()
 
             # Idempotent: a second tap does not reset the day.
@@ -63,7 +63,7 @@ def test_check_in_marks_day_in_progress_and_completion_earns_check_mark(monkeypa
             done = client.post("/api/users/daily-checkin/complete", json={"date": "2026-08-30"})
             assert done.status_code == 200
             assert done.json()["status"] == "complete"
-            assert done.json()["days"] == [{"date": "2026-08-30", "status": "complete"}]
+            assert done.json()["days"] == [{"date": "2026-08-30", "status": "complete", "medal": False}]
             sync_user()
 
             # Completing again stays complete; checking in later never downgrades.

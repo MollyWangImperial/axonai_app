@@ -10,6 +10,7 @@ import {
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   useWindowDimensions,
   View,
 } from "react-native";
@@ -20,9 +21,9 @@ import * as Haptics from "expo-haptics";
 import { colors, spacing, radius } from "@/src/theme";
 import { fetchAssessment, Assessment, RehabExercise } from "@/src/api";
 import { storage } from "@/src/utils/storage";
+import { appDateString, appNow, loadAppDateOverride } from "@/src/appDate";
 import { authedFetch, getUserId } from "@/src/auth";
 import PaywallModal from "@/src/components/PaywallModal";
-import { localDateString } from "@/src/components/DailyCheckInCalendar";
 import { DEMO_ASSESSMENT_ID, demoAssessment } from "@/src/demoAssessment";
 import { estimateRehabMinutes } from "@/src/rehabTiming";
 
@@ -34,6 +35,9 @@ type ExerciseProgress = {
   sessions: number;
   last_session_scores?: number[];
   score_history?: { completed_at: string; average_score: number; repetition_scores: number[] }[];
+  // The app date the completed repetitions belong to: today's plan starts
+  // from zero each day while the score history is kept.
+  day?: string;
 };
 
 type AdaptiveCarePlan = {
@@ -41,6 +45,8 @@ type AdaptiveCarePlan = {
   exercise_plan?: {
     action?: string;
     dose_change_percent?: number;
+    recommended_difficulty?: SessionDifficulty;
+    difficulty_reason?: string;
     reason?: string;
     prescriptions?: {
       exercise_id: string;
@@ -54,13 +60,6 @@ type AdaptiveCarePlan = {
 
 type PlanPreparationStage = 0 | 1 | 2;
 type SessionDifficulty = "easy" | "medium" | "difficult";
-type SessionVariation = "standard" | "alternate";
-
-type DailySessionChoice = {
-  date: string;
-  difficulty: SessionDifficulty;
-  variation: SessionVariation;
-};
 
 type ExerciseSessionOption = {
   exercise_id: string;
@@ -77,7 +76,6 @@ type ExerciseSessionOption = {
 
 type SessionOptionsResponse = {
   levels: SessionDifficulty[];
-  variations: SessionVariation[];
   exercises: ExerciseSessionOption[];
   safety_rule: string;
 };
@@ -93,44 +91,10 @@ const MINIMUM_STAGE_DURATION_MS = 420;
 const SUPPORTED_REACH_IMAGE = require("../assets/images/rehab-supported-forward-reach.png") as ImageSourcePropType;
 const HAND_OPENING_IMAGE = require("../assets/images/rehab-relaxed-hand-opening.png") as ImageSourcePropType;
 const PROGRESS_KEY = (planId: string, exId: string) => `ex_progress_v1:${planId}:${exId}`;
-const SESSION_VISITS_KEY = (planId: string) => `rehab_session_visits_v1:${planId}`;
-const DAILY_SESSION_CHOICE_KEY = (accountId: string) => `rehab_daily_session_choice_v1:${accountId}`;
 const PLAN_VIEWED_KEY = (accountId: string, planId: string) => `rehab_plan_viewed_v1:${accountId}:${planId}`;
 
 function isSessionDifficulty(value: unknown): value is SessionDifficulty {
   return value === "easy" || value === "medium" || value === "difficult";
-}
-
-function isSessionVariation(value: unknown): value is SessionVariation {
-  return value === "standard" || value === "alternate";
-}
-
-async function dailySessionChoiceKey(planId: string): Promise<string> {
-  const userId = await getUserId();
-  return DAILY_SESSION_CHOICE_KEY(userId || `plan:${planId}`);
-}
-
-async function loadTodaySessionChoice(planId: string): Promise<DailySessionChoice | null> {
-  const raw = await storage.getItem(await dailySessionChoiceKey(planId), "");
-  if (typeof raw !== "string" || !raw) return null;
-  try {
-    const saved = JSON.parse(raw) as Partial<DailySessionChoice>;
-    if (
-      saved.date !== localDateString()
-      || !isSessionDifficulty(saved.difficulty)
-      || !isSessionVariation(saved.variation)
-    ) return null;
-    return saved as DailySessionChoice;
-  } catch {
-    return null;
-  }
-}
-
-async function saveTodaySessionChoice(planId: string, choice: Omit<DailySessionChoice, "date">): Promise<void> {
-  await storage.setItem(
-    await dailySessionChoiceKey(planId),
-    JSON.stringify({ ...choice, date: localDateString() } satisfies DailySessionChoice),
-  );
 }
 
 async function claimFirstPlanAccess(planId: string): Promise<boolean> {
@@ -159,12 +123,6 @@ const DIFFICULTY_COPY: Record<SessionDifficulty, { label: string; summary: strin
   medium: { label: "Medium", summary: "Your usual dose and target position.", icon: "options-outline" },
   difficult: { label: "Difficult", summary: "A small dose increase and a higher or more precise target.", icon: "trending-up-outline" },
 };
-
-function nextDifficulty(level: SessionDifficulty): SessionDifficulty {
-  if (level === "easy") return "medium";
-  if (level === "medium") return "difficult";
-  return "difficult";
-}
 
 function exerciseImage(exercise: RehabExercise): ImageSourcePropType {
   const text = `${exercise.name} ${exercise.description} ${exercise.targets_issue}`.toLowerCase();
@@ -345,103 +303,6 @@ function RehabPlanPreparation({
   );
 }
 
-function RehabSessionPrompt({
-  visible,
-  currentDifficulty,
-  switchExercises,
-  increaseDifficulty,
-  switchRecommended,
-  onSwitchChange,
-  onIncreaseDifficultyChange,
-  onConfirm,
-  onBack,
-}: {
-  visible: boolean;
-  currentDifficulty: SessionDifficulty;
-  switchExercises: boolean;
-  increaseDifficulty: boolean;
-  switchRecommended: boolean;
-  onSwitchChange: (value: boolean) => void;
-  onIncreaseDifficultyChange: (value: boolean) => void;
-  onConfirm: () => void;
-  onBack: () => void;
-}) {
-  const canIncrease = currentDifficulty !== "difficult";
-  const choice = (
-    value: boolean,
-    selected: boolean,
-    onChange: (value: boolean) => void,
-    testID: string,
-  ) => (
-    <Pressable
-      onPress={() => onChange(value)}
-      style={[styles.promptChoice, selected && styles.promptChoiceSelected]}
-      accessibilityRole="radio"
-      accessibilityState={{ checked: selected }}
-      testID={testID}
-    >
-      <Ionicons
-        name={selected ? "radio-button-on" : "radio-button-off"}
-        size={23}
-        color={selected ? colors.brandPrimary : "#748078"}
-      />
-      <Text style={[styles.promptChoiceText, selected && styles.promptChoiceTextSelected]}>{value ? "Yes" : "No"}</Text>
-    </Pressable>
-  );
-
-  return (
-    <Modal visible={visible} transparent animationType="fade" onRequestClose={onBack}>
-      <View style={styles.promptBackdrop} testID="rehab-session-popup">
-        <ScrollView contentContainerStyle={styles.promptScroll} bounces={false}>
-          <View style={styles.promptCard} accessibilityViewIsModal>
-            <View style={styles.promptHeader}>
-              <View style={styles.promptIcon}><Ionicons name="options-outline" size={26} color={colors.brandPrimary} /></View>
-              <Pressable onPress={onBack} style={styles.promptClose} accessibilityLabel="Close rehab plan">
-                <Ionicons name="close" size={25} color="#526057" />
-              </Pressable>
-            </View>
-            <Text style={styles.promptEyebrow}>BEFORE TODAY&apos;S PLAN</Text>
-            <Text style={styles.promptTitle}>Would you like a small change today?</Text>
-            <Text style={styles.promptIntro}>Your current level is <Text style={styles.promptIntroStrong}>{DIFFICULTY_COPY[currentDifficulty].label}</Text>. Changes apply only to today&apos;s session.</Text>
-
-            <View style={styles.promptQuestion}>
-              <View style={styles.promptQuestionHeading}>
-                <Text style={styles.promptQuestionTitle}>Switch to a different set of exercises?</Text>
-                {switchRecommended && <View style={styles.recommendedTag}><Text style={styles.recommendedTagText}>Suggested today</Text></View>}
-              </View>
-              <Text style={styles.promptQuestionCopy}>Train the same goals with alternate versions of your planned movements.</Text>
-              <View style={styles.promptChoiceRow}>
-                {choice(false, !switchExercises, onSwitchChange, "session-switch-no")}
-                {choice(true, switchExercises, onSwitchChange, "session-switch-yes")}
-              </View>
-            </View>
-
-            <View style={[styles.promptQuestion, !canIncrease && styles.promptQuestionDisabled]}>
-              <Text style={styles.promptQuestionTitle}>Increase the difficulty for today?</Text>
-              <Text style={styles.promptQuestionCopy}>{canIncrease ? `This moves one small step to ${DIFFICULTY_COPY[nextDifficulty(currentDifficulty)].label}, with a slightly higher target or dose.` : "You are already at today's highest available level."}</Text>
-              <View style={styles.promptChoiceRow}>
-                {choice(false, !increaseDifficulty, onIncreaseDifficultyChange, "session-increase-no")}
-                <View style={[styles.promptChoiceWrap, !canIncrease && styles.promptDisabledChoice]} pointerEvents={canIncrease ? "auto" : "none"}>
-                  {choice(true, increaseDifficulty && canIncrease, onIncreaseDifficultyChange, "session-increase-yes")}
-                </View>
-              </View>
-            </View>
-
-            <View style={styles.promptSafety}>
-              <Ionicons name="shield-checkmark-outline" size={21} color="#A85006" />
-              <Text style={styles.promptSafetyText}>Keep the same support or guarding. Stop for new pain, dizziness, marked fatigue, or loss of balance.</Text>
-            </View>
-            <Pressable onPress={onConfirm} style={styles.sessionConfirm} testID="session-show-plan">
-              <Text style={styles.sessionConfirmText}>Show today&apos;s plan</Text>
-              <Ionicons name="arrow-forward" size={22} color="#FFFFFF" />
-            </Pressable>
-          </View>
-        </ScrollView>
-      </View>
-    </Modal>
-  );
-}
-
 export default function RehabPlanScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
@@ -450,27 +311,26 @@ export default function RehabPlanScreen() {
   const [data, setData] = useState<Assessment | null>(null);
   const [adaptiveCarePlan, setAdaptiveCarePlan] = useState<AdaptiveCarePlan | null>(null);
   const [loading, setLoading] = useState(true);
-  const [showPreparation, setShowPreparation] = useState(false);
+  const [showPreparation, setShowPreparation] = useState(entry === "assessment_complete");
   const [preparationStage, setPreparationStage] = useState<PlanPreparationStage>(0);
   const [progress, setProgress] = useState<Record<string, ExerciseProgress>>({});
   const [paywallOpen, setPaywallOpen] = useState(false);
   const [paywallReason, setPaywallReason] = useState<string | undefined>();
   const [demonstrationId, setDemonstrationId] = useState<string | null>(null);
   const [expandedPurposeIds, setExpandedPurposeIds] = useState<Set<string>>(new Set());
-  const [sessionOptions, setSessionOptions] = useState<ExerciseSessionOption[]>([]);
   const [sessionDifficulty, setSessionDifficulty] = useState<SessionDifficulty>("medium");
-  const [sessionVariation, setSessionVariation] = useState<SessionVariation>("standard");
-  const [increaseDifficulty, setIncreaseDifficulty] = useState(false);
-  const [sessionConfirmed, setSessionConfirmed] = useState(false);
-  const [switchRecommended, setSwitchRecommended] = useState(false);
-  const baseSessionPlanRef = React.useRef<Assessment | null>(null);
-  const baseSessionDifficultyRef = React.useRef<SessionDifficulty>("medium");
   // A new ID is created whenever this rehab-plan screen is entered. The first
   // exercise calibrates against it; later exercises reuse that calibration.
   // Leaving the plan and starting rehab again mounts a new screen and ID.
   const rehabSessionIdRef = React.useRef(
     `rehab-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
   );
+  // Testing phase: finish today's exercises with an entered score instead of
+  // performing them on camera, then collect the day's award on Home.
+  const [showTestingFinish, setShowTestingFinish] = useState(false);
+  const [testingScore, setTestingScore] = useState("85");
+  const [finishingForTesting, setFinishingForTesting] = useState(false);
+  const [showAwardPrompt, setShowAwardPrompt] = useState(false);
 
   const planId = id || "default";
   const isDemo = id === DEMO_ASSESSMENT_ID;
@@ -486,7 +346,9 @@ export default function RehabPlanScreen() {
         if (typeof raw === "string" && raw) {
           const saved = JSON.parse(raw) as ExerciseProgress;
           const adjustedTotal = ex.sets * ex.reps;
-          out[ex.id] = { ...saved, total_reps: adjustedTotal, completed_reps: Math.min(saved.completed_reps || 0, adjustedTotal) };
+          // Repetitions completed on an earlier day do not count for today's plan.
+          const completedToday = saved.day === appDateString() ? Math.min(saved.completed_reps || 0, adjustedTotal) : 0;
+          out[ex.id] = { ...saved, total_reps: adjustedTotal, completed_reps: completedToday };
         } else {
           out[ex.id] = { completed_reps: 0, total_reps: ex.sets * ex.reps, last_score: null, best_score: null, sessions: 0 };
         }
@@ -501,25 +363,27 @@ export default function RehabPlanScreen() {
     let cancelled = false;
     (async () => {
       try {
+        await loadAppDateOverride();
         if (id) {
           setLoading(true);
           setData(null);
-          setSessionConfirmed(false);
-          setSessionOptions([]);
-          setSessionVariation("standard");
-          setIncreaseDifficulty(false);
           setPreparationStage(0);
-          setShowPreparation(false);
-          const assessment = id === DEMO_ASSESSMENT_ID
+          // The assessment-complete route should never flash the generic
+          // spinner while the app is deciding whether this is first access.
+          setShowPreparation(enteredFromFreshAssessment);
+          const assessmentPromise = id === DEMO_ASSESSMENT_ID
             ? demoAssessment
             : isCurrentAccountPlan
-              ? await authedFetch("/api/rehab/current-plan").then(async (response) => {
+              ? authedFetch("/api/rehab/current-plan").then(async (response) => {
                   const body = await response.json().catch(() => null);
                   if (!response.ok) throw new Error(body?.detail || "No current plan is available.");
                   return body as Assessment;
                 })
-              : await fetchAssessment(id);
-          const firstAccess = id === DEMO_ASSESSMENT_ID || isCurrentAccountPlan ? false : await claimFirstPlanAccess(id);
+              : fetchAssessment(id);
+          const assessment = await assessmentPromise;
+          const firstAccess = id === DEMO_ASSESSMENT_ID || isCurrentAccountPlan
+            ? false
+            : await claimFirstPlanAccess(id);
           const shouldPrepare = enteredFromFreshAssessment && firstAccess;
           setShowPreparation(shouldPrepare);
           let stageStartedAt = Date.now();
@@ -544,7 +408,10 @@ export default function RehabPlanScreen() {
           stageStartedAt = Date.now();
           const adjustedAssessment = applyAdaptiveDose(assessment, carePlan);
           const doseChange = Number(carePlan?.exercise_plan?.dose_change_percent || 0);
-          const baseDifficulty: SessionDifficulty = doseChange < 0 ? "easy" : doseChange > 0 ? "difficult" : "medium";
+          const frequencyDifficulty = carePlan?.exercise_plan?.recommended_difficulty;
+          const baseDifficulty: SessionDifficulty = isSessionDifficulty(frequencyDifficulty)
+            ? frequencyDifficulty
+            : doseChange < 0 ? "easy" : doseChange > 0 ? "difficult" : "medium";
           let loadedSessionOptions: ExerciseSessionOption[] = [];
           try {
             const exerciseIds = adjustedAssessment.rehab_plan.map((exercise) => exercise.id).join(",");
@@ -556,34 +423,10 @@ export default function RehabPlanScreen() {
           } catch {
             // The plan remains usable with the generic difficulty descriptions.
           }
-          try {
-            const rawVisits = await storage.getItem(SESSION_VISITS_KEY(planId), "0");
-            const visits = Math.max(0, Number.parseInt(String(rawVisits || "0"), 10) || 0);
-            const recommendSwitch = (visits + 1) % 3 === 0;
-            if (!cancelled) {
-              setSwitchRecommended(recommendSwitch);
-            }
-          } catch {
-            if (!cancelled) {
-              setSwitchRecommended(false);
-            }
-          }
-
-          const savedChoice = await loadTodaySessionChoice(planId);
-          const selectedDifficulty = savedChoice?.difficulty || baseDifficulty;
-          const selectedVariation = savedChoice?.variation || "standard";
-          const sessionPlan = savedChoice
-            ? configureSessionPlan(adjustedAssessment, selectedDifficulty, loadedSessionOptions)
-            : adjustedAssessment;
+          const sessionPlan = configureSessionPlan(adjustedAssessment, baseDifficulty, loadedSessionOptions);
           if (cancelled) return;
-          baseSessionPlanRef.current = adjustedAssessment;
-          baseSessionDifficultyRef.current = baseDifficulty;
           setAdaptiveCarePlan(carePlan);
-          setSessionOptions(loadedSessionOptions);
-          setSessionDifficulty(selectedDifficulty);
-          setSessionVariation(selectedVariation);
-          setIncreaseDifficulty(false);
-          setSessionConfirmed(Boolean(savedChoice));
+          setSessionDifficulty(baseDifficulty);
           setData(sessionPlan);
           await loadProgress(sessionPlan);
           if (shouldPrepare) await waitForMinimumStageTime(stageStartedAt);
@@ -605,29 +448,6 @@ export default function RehabPlanScreen() {
     }, [data, loadProgress])
   );
 
-  useFocusEffect(
-    React.useCallback(() => {
-      let active = true;
-      void (async () => {
-        const savedChoice = await loadTodaySessionChoice(planId);
-        const basePlan = baseSessionPlanRef.current;
-        if (!active || savedChoice || !basePlan) return;
-        setSessionDifficulty(baseSessionDifficultyRef.current);
-        setSessionVariation("standard");
-        setIncreaseDifficulty(false);
-        setSessionConfirmed(false);
-        setData(basePlan);
-        const rawVisits = await storage.getItem(SESSION_VISITS_KEY(planId), "0");
-        const visits = Math.max(0, Number.parseInt(String(rawVisits || "0"), 10) || 0);
-        setSwitchRecommended((visits + 1) % 3 === 0);
-        await loadProgress(basePlan);
-      })();
-      return () => {
-        active = false;
-      };
-    }, [loadProgress, planId])
-  );
-
   const completedCount = Object.values(progress).filter((item) => item.completed_reps >= item.total_reps).length;
   const totalExercises = data?.rehab_plan.length || 0;
   const planPercent = Math.round((completedCount / Math.max(1, totalExercises)) * 100);
@@ -646,25 +466,74 @@ export default function RehabPlanScreen() {
     });
   };
 
-  const confirmSessionChoice = async () => {
-    if (!data) return;
-    const selectedDifficulty = increaseDifficulty ? nextDifficulty(sessionDifficulty) : sessionDifficulty;
-    const configuredPlan = configureSessionPlan(data, selectedDifficulty, sessionOptions);
-    await saveTodaySessionChoice(planId, {
-      difficulty: selectedDifficulty,
-      variation: sessionVariation,
-    });
-    setSessionDifficulty(selectedDifficulty);
-    setData(configuredPlan);
-    await loadProgress(configuredPlan);
+  // Records every exercise of today's plan as completed with the entered
+  // average score: the server activity (so the care plan, points and the
+  // journey scores see a finished day), the local progress (so this page
+  // shows FINISHED), and today's check-in mark. Testing phase only.
+  const finishTodayForTesting = async () => {
+    if (!data || finishingForTesting) return;
+    const parsed = Number.parseInt(testingScore, 10);
+    const score = Number.isFinite(parsed) ? Math.max(0, Math.min(100, parsed)) : 85;
+    setFinishingForTesting(true);
+    const completedAt = appNow().toISOString();
+    const today = appDateString();
     try {
-      const rawVisits = await storage.getItem(SESSION_VISITS_KEY(planId), "0");
-      const visits = Math.max(0, Number.parseInt(String(rawVisits || "0"), 10) || 0);
-      await storage.setItem(SESSION_VISITS_KEY(planId), String(visits + 1));
-    } catch {
-      // Session setup should still continue when local visit history is unavailable.
+      for (const exercise of data.rehab_plan) {
+        const totalReps = exercise.sets * exercise.reps;
+        const repetitionScores = Array.from({ length: totalReps }, () => score);
+        if (!isDemo) {
+          await authedFetch("/api/alira/activities", {
+            method: "POST",
+            body: JSON.stringify({
+              exercise_id: exercise.id,
+              plan_id: planId,
+              completed_reps: totalReps,
+              quality_reps: score >= 90 ? totalReps : 0,
+              average_score: score,
+              repetition_scores: repetitionScores,
+              assisted: false,
+              completed_at: completedAt,
+              testing_shortcut: true,
+            }),
+          }).catch(() => null);
+        }
+        try {
+          const raw = await storage.getItem(PROGRESS_KEY(planId, exercise.id), "");
+          const previous: ExerciseProgress = typeof raw === "string" && raw
+            ? JSON.parse(raw)
+            : { completed_reps: 0, total_reps: totalReps, last_score: null, best_score: null, sessions: 0 };
+          const updated: ExerciseProgress = {
+            ...previous,
+            day: today,
+            completed_reps: totalReps,
+            total_reps: totalReps,
+            last_score: score,
+            best_score: Math.max(previous.best_score ?? 0, score),
+            sessions: (previous.sessions || 0) + 1,
+            last_session_scores: repetitionScores,
+            score_history: [
+              ...(previous.score_history || []),
+              { completed_at: completedAt, average_score: score, repetition_scores: repetitionScores },
+            ].slice(-60),
+          };
+          await storage.setItem(PROGRESS_KEY(planId, exercise.id), JSON.stringify(updated));
+        } catch {
+          // The server activity is the durable record; the local card refreshes on focus.
+        }
+      }
+      if (!isDemo) {
+        await authedFetch("/api/users/daily-checkin/complete", {
+          method: "POST",
+          body: JSON.stringify({ date: today }),
+        }).catch(() => null);
+      }
+      await loadProgress(data);
+      void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      setShowTestingFinish(false);
+      setShowAwardPrompt(true);
+    } finally {
+      setFinishingForTesting(false);
     }
-    setSessionConfirmed(true);
   };
 
   const openGuidedExercise = async (exercise: RehabExercise) => {
@@ -693,12 +562,61 @@ export default function RehabPlanScreen() {
         sets: String(exercise.sets),
         reps: String(exercise.reps),
         difficulty: sessionDifficulty,
-        variation: sessionVariation,
+        variation: "standard",
         affected_side: data?.affected_side === "left" ? "left" : "right",
         rehab_session_id: rehabSessionIdRef.current,
       },
     });
   };
+
+  const testingFinishModal = (
+    <Modal visible={showTestingFinish} transparent animationType="fade" onRequestClose={() => setShowTestingFinish(false)}>
+      <View style={styles.dailyBackdrop}>
+        <View style={styles.dailyCard} testID="plan-testing-finish-popup">
+          <Text style={styles.dailyEyebrow}>TESTING ONLY</Text>
+          <Text style={styles.dailyTitle}>Finish today&apos;s exercises</Text>
+          <Text style={styles.dailyText}>Enter the average score to record for every exercise in today&apos;s plan. It is saved exactly as a finished session would be.</Text>
+          <TextInput
+            testID="plan-testing-score"
+            value={testingScore}
+            onChangeText={(value) => setTestingScore(value.replace(/[^0-9]/g, "").slice(0, 3))}
+            keyboardType="number-pad"
+            maxLength={3}
+            placeholder="0 - 100"
+            style={styles.scoreInput}
+            accessibilityLabel="Average score"
+          />
+          <Pressable disabled={finishingForTesting} onPress={() => { void finishTodayForTesting(); }} style={[styles.dailyPrimary, finishingForTesting && { opacity: 0.6 }]} testID="plan-testing-finish-confirm">
+            <Text style={styles.dailyPrimaryText}>{finishingForTesting ? "Saving..." : "Mark today as finished"}</Text>
+            <Ionicons name="checkmark" size={22} color="#FFFFFF" />
+          </Pressable>
+          <Pressable onPress={() => setShowTestingFinish(false)} style={styles.dailyLater} testID="plan-testing-finish-cancel">
+            <Text style={styles.dailyLaterText}>Cancel</Text>
+          </Pressable>
+        </View>
+      </View>
+    </Modal>
+  );
+
+  const awardPromptModal = (
+    <Modal visible={showAwardPrompt} transparent animationType="fade" onRequestClose={() => setShowAwardPrompt(false)}>
+      <View style={styles.dailyBackdrop}>
+        <View style={[styles.dailyCard, { alignItems: "center" }]} testID="plan-award-prompt">
+          <View style={styles.awardIcon}><Ionicons name="medal-outline" size={36} color="#B77A0E" /></View>
+          <Text style={styles.dailyEyebrow}>TODAY&apos;S EXERCISES FINISHED</Text>
+          <Text style={[styles.dailyTitle, { textAlign: "center" }]}>An award is waiting for you</Text>
+          <Text style={[styles.dailyText, { textAlign: "center" }]}>Well done - today&apos;s session is recorded. Return to the home page to collect today&apos;s medal.</Text>
+          <Pressable onPress={() => { setShowAwardPrompt(false); router.dismissTo("/"); }} style={styles.dailyPrimary} testID="plan-award-go-home">
+            <Text style={styles.dailyPrimaryText}>Go to the home page</Text>
+            <Ionicons name="home-outline" size={22} color="#FFFFFF" />
+          </Pressable>
+          <Pressable onPress={() => setShowAwardPrompt(false)} style={styles.dailyLater} testID="plan-award-stay">
+            <Text style={styles.dailyLaterText}>Stay on this page</Text>
+          </Pressable>
+        </View>
+      </View>
+    </Modal>
+  );
 
   if (loading && showPreparation) {
     return (
@@ -721,7 +639,7 @@ export default function RehabPlanScreen() {
 
   const planAccess = data.clinical_review_gate?.rehab_access || "allowed";
   const interimPlan = planAccess === "interim" && data.rehab_plan.length > 0;
-  const surveyBasedPlan = data.clinical_review_gate?.rehab_plan_source === "survey_reported_problems";
+  const fixedCorePlan = data.clinical_review_gate?.rehab_plan_source === "fixed_core_programme";
   if (adaptiveCarePlan?.safety?.blocks_exercise || (planAccess !== "allowed" && !interimPlan) || data.rehab_plan.length === 0) {
     const gate = data.clinical_review_gate;
     const adaptiveHold = Boolean(adaptiveCarePlan?.safety?.blocks_exercise);
@@ -761,17 +679,8 @@ export default function RehabPlanScreen() {
 
   return (
     <View style={styles.container}>
-      <RehabSessionPrompt
-        visible={!sessionConfirmed}
-        currentDifficulty={sessionDifficulty}
-        switchExercises={sessionVariation === "alternate"}
-        increaseDifficulty={increaseDifficulty}
-        switchRecommended={switchRecommended}
-        onSwitchChange={(value) => setSessionVariation(value ? "alternate" : "standard")}
-        onIncreaseDifficultyChange={setIncreaseDifficulty}
-        onConfirm={confirmSessionChoice}
-        onBack={() => router.back()}
-      />
+      {testingFinishModal}
+      {awardPromptModal}
       <View style={[styles.header, { paddingTop: insets.top + spacing.sm }]}>
         <Pressable onPress={() => router.back()} style={styles.backBtn} testID="plan-back" accessibilityLabel="Go back">
           <Ionicons name="chevron-back" size={26} color={colors.brandPrimary} />
@@ -782,11 +691,20 @@ export default function RehabPlanScreen() {
 
       <ScrollView contentContainerStyle={[styles.scrollContent, { paddingBottom: Math.max(insets.bottom, spacing.xl) }]}>
         <View style={styles.page}>
-          {surveyBasedPlan && (
+          {allComplete && (
+            <View style={styles.finishedBanner} testID="plan-finished-banner">
+              <Ionicons name="checkmark-circle" size={30} color="#FFFFFF" />
+              <View style={styles.finishedCopy}>
+                <Text style={styles.finishedTitle}>FINISHED</Text>
+                <Text style={styles.finishedText}>Today&apos;s exercises are complete. Return to Home to collect today&apos;s award.</Text>
+              </View>
+            </View>
+          )}
+          {fixedCorePlan && (
             <View style={styles.interimBanner} testID="plan-survey-source-banner">
               <Ionicons name="document-text-outline" size={18} color="#6B4A0B" />
               <Text style={styles.interimBannerText}>
-                Survey-based plan: these exercises come only from the functional difficulties you reported. Camera and model findings do not replace them.
+                Current core programme: everyone receives these four exercises during testing. Your completed-session frequency sets the suggested difficulty.
               </Text>
             </View>
           )}
@@ -800,7 +718,7 @@ export default function RehabPlanScreen() {
           <View style={styles.planIntro} testID="plan-progress-summary">
             <Text style={[styles.summaryTitle, !isWide && styles.summaryTitleNarrow]}>Today&apos;s plan</Text>
             <Text style={styles.summarySubtitle}>{totalExercises} exercise{totalExercises === 1 ? "" : "s"} · about {estimatedMinutes} minutes</Text>
-            <Text style={styles.sessionSummary}>{DIFFICULTY_COPY[sessionDifficulty].label} · {sessionVariation === "alternate" ? "alternate exercise set" : "familiar exercise set"}</Text>
+            <Text style={styles.sessionSummary}>{DIFFICULTY_COPY[sessionDifficulty].label} · planned exercise set</Text>
             <View style={styles.progressRow}>
               <View style={styles.progressTrack}>
                 <View style={[styles.progressFill, { width: `${Math.max(1, planPercent)}%` as `${number}%` }]} />
@@ -887,6 +805,13 @@ export default function RehabPlanScreen() {
             <Ionicons name="checkmark-circle-outline" size={21} color={allComplete ? "#FFFFFF" : "#A3A8A4"} />
             <Text style={[styles.finishButtonText, !allComplete && styles.finishButtonTextDisabled]}>Complete session</Text>
           </Pressable>
+
+          {!allComplete && (
+            <Pressable onPress={() => setShowTestingFinish(true)} style={styles.testingFinishButton} accessibilityRole="button" testID="plan-testing-finish">
+              <Ionicons name="flask-outline" size={19} color="#6B4A0B" />
+              <Text style={styles.testingFinishText}>Finish today&apos;s exercises (testing)</Text>
+            </Pressable>
+          )}
         </View>
       </ScrollView>
 
@@ -957,65 +882,6 @@ const styles = StyleSheet.create({
   backBtn: { width: 44, height: 44, alignItems: "center", justifyContent: "center" },
   headerTitle: { fontSize: 19, lineHeight: 24, fontWeight: "800", color: "#123E2D" },
   headerSpacer: { width: 44 },
-  sessionSetupScroll: { paddingHorizontal: spacing.md, paddingTop: spacing.xl, paddingBottom: 48 },
-  sessionSetupPage: { width: "100%", maxWidth: 920, alignSelf: "center" },
-  sessionSetupEyebrow: { fontSize: 13, lineHeight: 18, fontWeight: "800", color: "#4E7C62", letterSpacing: 0 },
-  sessionSetupTitle: { marginTop: spacing.xs, fontSize: 36, lineHeight: 44, fontWeight: "800", color: "#123E2D", letterSpacing: 0 },
-  sessionSetupIntro: { maxWidth: 720, marginTop: spacing.sm, fontSize: 17, lineHeight: 25, color: "#536159" },
-  sessionSectionTitle: { marginTop: spacing.xl, marginBottom: spacing.sm, fontSize: 20, lineHeight: 27, fontWeight: "800", color: "#173F30" },
-  sessionChoiceRow: { gap: spacing.sm },
-  sessionChoice: { minHeight: 92, flexDirection: "row", alignItems: "center", gap: spacing.md, padding: spacing.md, borderWidth: 1, borderColor: "#CBD4CC", borderRadius: radius.sm, backgroundColor: "#FFFFFF" },
-  sessionChoiceSelected: { borderWidth: 2, borderColor: colors.brandPrimary, backgroundColor: "#F0F7F2" },
-  sessionChoiceIcon: { width: 46, height: 46, borderRadius: 23, alignItems: "center", justifyContent: "center", backgroundColor: "#E7EFE9" },
-  sessionChoiceIconSelected: { backgroundColor: colors.brandPrimary },
-  sessionChoiceCopy: { flex: 1, minWidth: 0 },
-  sessionChoiceHeading: { flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: spacing.sm },
-  sessionChoiceLabel: { fontSize: 17, lineHeight: 23, fontWeight: "800", color: "#173F30" },
-  sessionChoiceDescription: { marginTop: 3, fontSize: 14, lineHeight: 20, color: "#5C6861" },
-  recommendedTag: { paddingHorizontal: spacing.sm, paddingVertical: 4, borderRadius: radius.pill, backgroundColor: "#DDEEDF" },
-  recommendedTagText: { fontSize: 11, lineHeight: 15, fontWeight: "800", color: "#2D6B45" },
-  difficultyRow: { flexDirection: "row", flexWrap: "wrap", gap: spacing.sm },
-  difficultyChoice: { flexGrow: 1, flexBasis: 220, minHeight: 138, padding: spacing.md, borderWidth: 1, borderColor: "#CBD4CC", borderRadius: radius.sm, backgroundColor: "#FFFFFF" },
-  difficultyChoiceSelected: { borderWidth: 2, borderColor: colors.brandPrimary, backgroundColor: "#F0F7F2" },
-  difficultyLabel: { marginTop: spacing.sm, fontSize: 18, lineHeight: 24, fontWeight: "800", color: "#173F30" },
-  difficultySummary: { marginTop: 4, fontSize: 13, lineHeight: 19, color: "#5C6861" },
-  sessionPreview: { marginTop: spacing.xl, borderTopWidth: 1, borderTopColor: "#D7DDD8" },
-  sessionPreviewTitle: { paddingTop: spacing.lg, paddingBottom: spacing.sm, fontSize: 20, lineHeight: 27, fontWeight: "800", color: "#173F30" },
-  sessionPreviewItem: { flexDirection: "row", alignItems: "flex-start", gap: spacing.sm, paddingVertical: spacing.md, borderBottomWidth: 1, borderBottomColor: "#E2E6E2" },
-  sessionPreviewIcon: { width: 38, height: 38, borderRadius: 19, alignItems: "center", justifyContent: "center", backgroundColor: "#E8F0EA" },
-  sessionPreviewCopy: { flex: 1, minWidth: 0 },
-  sessionPreviewName: { fontSize: 16, lineHeight: 22, fontWeight: "800", color: "#173F30" },
-  sessionPreviewDose: { marginTop: 3, fontSize: 14, lineHeight: 20, color: "#536159" },
-  sessionPreviewVariation: { marginTop: 4, fontSize: 13, lineHeight: 19, fontWeight: "700", color: colors.brandPrimary },
-  sessionPreviewSafety: { marginTop: 4, fontSize: 13, lineHeight: 19, fontWeight: "700", color: "#9A570F" },
-  sessionSafetyNote: { marginTop: spacing.lg, flexDirection: "row", alignItems: "flex-start", gap: spacing.sm, padding: spacing.md, borderWidth: 1, borderColor: "#E8C788", borderRadius: radius.sm, backgroundColor: "#FFF8EC" },
-  sessionSafetyNoteText: { flex: 1, fontSize: 14, lineHeight: 21, color: "#6D4A18" },
-  sessionConfirm: { width: "100%", maxWidth: 390, minHeight: 58, marginTop: spacing.xl, alignSelf: "center", paddingHorizontal: spacing.lg, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: spacing.sm, borderRadius: radius.sm, backgroundColor: colors.brandPrimary },
-  sessionConfirmText: { fontSize: 16, lineHeight: 22, fontWeight: "800", color: "#FFFFFF" },
-  promptBackdrop: { flex: 1, backgroundColor: "rgba(18, 36, 29, 0.58)" },
-  promptScroll: { flexGrow: 1, alignItems: "center", justifyContent: "center", padding: spacing.md },
-  promptCard: { width: "100%", maxWidth: 620, padding: spacing.lg, borderRadius: radius.sm, backgroundColor: "#FAFBF9", borderWidth: 1, borderColor: "#D3DBD4" },
-  promptHeader: { minHeight: 42, flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
-  promptIcon: { width: 44, height: 44, borderRadius: 22, alignItems: "center", justifyContent: "center", backgroundColor: "#E6EFE8" },
-  promptClose: { width: 44, height: 44, alignItems: "center", justifyContent: "center" },
-  promptEyebrow: { marginTop: spacing.sm, fontSize: 12, lineHeight: 17, fontWeight: "800", color: "#4E7C62", letterSpacing: 0 },
-  promptTitle: { marginTop: 4, fontSize: 28, lineHeight: 35, fontWeight: "800", color: "#123E2D", letterSpacing: 0 },
-  promptIntro: { marginTop: spacing.xs, fontSize: 15, lineHeight: 22, color: "#536159" },
-  promptIntroStrong: { fontWeight: "800", color: "#173F30" },
-  promptQuestion: { marginTop: spacing.md, paddingTop: spacing.md, borderTopWidth: 1, borderTopColor: "#DCE2DD" },
-  promptQuestionDisabled: { opacity: 0.68 },
-  promptQuestionHeading: { flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: spacing.xs },
-  promptQuestionTitle: { flexShrink: 1, fontSize: 18, lineHeight: 24, fontWeight: "800", color: "#173F30" },
-  promptQuestionCopy: { marginTop: 4, fontSize: 14, lineHeight: 20, color: "#5C6861" },
-  promptChoiceRow: { marginTop: spacing.sm, flexDirection: "row", gap: spacing.sm },
-  promptChoiceWrap: { flex: 1 },
-  promptChoice: { flex: 1, minHeight: 50, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: spacing.xs, borderWidth: 1, borderColor: "#C7D0C9", borderRadius: radius.sm, backgroundColor: "#FFFFFF" },
-  promptChoiceSelected: { borderWidth: 2, borderColor: colors.brandPrimary, backgroundColor: "#EDF5EF" },
-  promptChoiceText: { fontSize: 16, lineHeight: 22, fontWeight: "700", color: "#536159" },
-  promptChoiceTextSelected: { color: "#174D3A" },
-  promptDisabledChoice: { opacity: 0.45 },
-  promptSafety: { marginTop: spacing.md, flexDirection: "row", alignItems: "flex-start", gap: spacing.xs, padding: spacing.sm, borderRadius: radius.sm, backgroundColor: "#FFF8EC", borderWidth: 1, borderColor: "#E8C788" },
-  promptSafetyText: { flex: 1, fontSize: 13, lineHeight: 19, color: "#6D4A18" },
   scrollContent: { paddingHorizontal: spacing.md, paddingTop: spacing.lg },
   page: { width: "100%", maxWidth: 1100, alignSelf: "center" },
   interimBanner: { flexDirection: "row", alignItems: "flex-start", gap: spacing.xs, backgroundColor: "#FFF4DA", borderRadius: radius.sm, padding: spacing.sm, marginBottom: spacing.sm },
@@ -1074,6 +940,23 @@ const styles = StyleSheet.create({
   demoButtonText: { color: colors.brandPrimary, fontSize: 15, lineHeight: 21, fontWeight: "800" },
   guidedBtn: { minWidth: 192, minHeight: 50, paddingHorizontal: spacing.lg, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: spacing.sm, borderRadius: radius.sm, backgroundColor: colors.brandPrimary },
   guidedBtnText: { color: "#FFFFFF", fontSize: 15, lineHeight: 21, fontWeight: "800" },
+  finishedBanner: { flexDirection: "row", alignItems: "center", gap: spacing.sm, backgroundColor: "#0B7A3A", borderRadius: radius.sm, padding: spacing.md, marginBottom: spacing.sm },
+  finishedCopy: { flex: 1 },
+  finishedTitle: { color: "#FFFFFF", fontSize: 24, lineHeight: 28, fontWeight: "900", letterSpacing: 2 },
+  finishedText: { color: "#E8F5EC", fontSize: 14, lineHeight: 20, marginTop: 2, fontWeight: "600" },
+  testingFinishButton: { alignSelf: "center", marginTop: spacing.md, minHeight: 46, paddingHorizontal: spacing.md, borderRadius: radius.pill, borderWidth: 1.5, borderStyle: "dashed", borderColor: "#B65C09", backgroundColor: "#FFF4DA", flexDirection: "row", alignItems: "center", gap: 8 },
+  testingFinishText: { color: "#6B4A0B", fontSize: 14, fontWeight: "800" },
+  dailyBackdrop: { flex: 1, alignItems: "center", justifyContent: "center", padding: spacing.lg, backgroundColor: "rgba(18, 36, 29, 0.58)" },
+  dailyCard: { width: "100%", maxWidth: 440, padding: spacing.lg, borderRadius: radius.sm, backgroundColor: "#FAFBF9", borderWidth: 1, borderColor: "#D3DBD4", gap: spacing.xs },
+  dailyEyebrow: { fontSize: 12, lineHeight: 17, fontWeight: "800", color: "#4E7C62", letterSpacing: 0.4 },
+  dailyTitle: { fontSize: 22, lineHeight: 28, fontWeight: "900", color: "#123E2D" },
+  dailyText: { fontSize: 14, lineHeight: 21, color: "#4B5852" },
+  dailyPrimary: { alignSelf: "stretch", minHeight: 54, marginTop: spacing.sm, paddingHorizontal: spacing.lg, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: spacing.sm, borderRadius: radius.sm, backgroundColor: colors.brandPrimary },
+  dailyPrimaryText: { color: "#FFFFFF", fontSize: 16, lineHeight: 22, fontWeight: "800" },
+  dailyLater: { minHeight: 42, alignItems: "center", justifyContent: "center" },
+  dailyLaterText: { fontSize: 14, fontWeight: "700", color: "#5D6660" },
+  scoreInput: { minHeight: 56, borderWidth: 1.5, borderColor: "#B9C6BD", borderRadius: radius.sm, paddingHorizontal: spacing.md, fontSize: 24, fontWeight: "900", color: "#123E2D", backgroundColor: "#FFFFFF", textAlign: "center", marginTop: spacing.xs },
+  awardIcon: { width: 72, height: 72, borderRadius: 36, backgroundColor: "#FFF1C9", alignItems: "center", justifyContent: "center", marginBottom: 4 },
   finishButton: { width: "100%", maxWidth: 390, minHeight: 68, alignSelf: "center", marginTop: spacing.xl, borderRadius: radius.sm, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: spacing.sm, backgroundColor: colors.brandPrimary, paddingHorizontal: spacing.lg },
   finishButtonDisabled: { backgroundColor: "#E4E6E4" },
   finishButtonText: { color: "#FFFFFF", fontSize: 16, lineHeight: 22, fontWeight: "800" },
