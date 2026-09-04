@@ -8463,7 +8463,8 @@ REHAB_RUNNER_CONFIG: Dict[str, Dict[str, Any]] = {
         # Pose plus the hand landmarker: the hand-opening and grasp steps are
         # confirmed from the fingers, not just from the wrist reaching the cup.
         "hand_tracking": True,
-        "target_arm_delay_ms": 150,
+        # Arm every target on the first camera frame after its narration ends.
+        "target_arm_delay_ms": 0,
         # The cup starts on the affected side and is carried across the midline;
         # for a left-affected patient the targets are mirrored at runtime.
         "mirror_for_left": True,
@@ -9414,7 +9415,7 @@ def _configure_rehab_runner(exercise_id: str, difficulty: str, variation: str) -
     )
     cfg["setup_voice"] = f"{cfg.get('setup_voice', '')} Today's level is {level}. {rules[level]} {variation_cue}{safety_cue}".strip()
     cfg["exercise_id"] = exercise_id
-    cfg["temporary_compensation_evidence"] = exercise_id == "ex_reach"
+    cfg["temporary_compensation_evidence"] = exercise_id in {"ex_reach", "ex_grasp"}
     cfg["difficulty"] = level
     cfg["variation"] = selected_variation
     cfg["difficulty_adjustment"] = rules[level]
@@ -9861,8 +9862,8 @@ const HAS_SIDE_LEAN_RULE = (STANDARD.compensations||[]).some(rule=>rule.metric =
 const CALIBRATION_CONTRACT = CFG.calibration_contract || {};
 const SCORING_METHOD = CFG.scoring_method || {};
 const OVERLAY_STYLE = CFG.overlay_style || {};
-const TEMPORARY_COMPENSATION_EVIDENCE = CFG.exercise_id === "ex_reach" && CFG.temporary_compensation_evidence === true;
-const EVIDENCE_COMPENSATION_IDS = new Set(["trunk_lean","shoulder_hike"]);
+const TEMPORARY_COMPENSATION_EVIDENCE = CFG.temporary_compensation_evidence === true;
+const EVIDENCE_COMPENSATION_IDS = new Set(["trunk_lean","shoulder_hike","wrist_flexion"]);
 const HAS_DYNAMIC_LAP_TARGET = (CFG.cycle||[]).some(step=>step && step.target && step.target.landmark === "LAP_DYNAMIC");
 // Static targets are authored for a right-affected patient (the cup starts on
 // the affected side); mirror them for a left-affected patient.
@@ -10356,7 +10357,9 @@ async function setupPose(){
   if(NEEDS_HAND_TRACKING){
     handPromise=HandLandmarker.createFromOptions(fr,{
       baseOptions:{modelAssetPath:"/vendor/mediapipe/models/hand_landmarker.task"},
-      runningMode:"VIDEO", numHands:4,
+      // Two candidates cover the patient and a helper while keeping hand
+      // tracking responsive on lower-power phones and laptops.
+      runningMode:"VIDEO", numHands:2,
       minHandDetectionConfidence:0.65,
       minHandPresenceConfidence:0.65,
       minTrackingConfidence:0.7,
@@ -10511,6 +10514,28 @@ function drawCompensationHighlights(targetCtx,lm,ids,{mirrorX=false}={}){
       targetCtx.stroke();
       targetCtx.restore();
       if(otherShoulder) strokeDottedPath(targetCtx,[otherShoulder,shoulder]);
+    }
+  }
+  if(selected.has("wrist_flexion")){
+    const elbow=evidencePoint(lm,ACTIVE.elbow,width,height,mirrorX);
+    const wrist=evidencePoint(lm,ACTIVE.wrist,width,height,mirrorX);
+    const indexTip=evidencePoint(lm,ACTIVE.wrist===15 ? 19 : 20,width,height,mirrorX);
+    const pinkyTip=evidencePoint(lm,ACTIVE.wrist===15 ? 17 : 18,width,height,mirrorX);
+    const handBase=indexTip&&pinkyTip ? midpoint(indexTip,pinkyTip) : null;
+    if(elbow&&wrist&&handBase){
+      strokeDottedPath(targetCtx,[elbow,wrist,handBase]);
+      const scale=Math.max(1,Math.min(width,height)/640);
+      targetCtx.save();
+      targetCtx.beginPath();
+      targetCtx.arc(wrist.x,wrist.y,18*scale,0,Math.PI*2);
+      targetCtx.setLineDash([2*scale,9*scale]);
+      targetCtx.lineCap="round";
+      targetCtx.lineWidth=4.5*scale;
+      targetCtx.strokeStyle="#FF3B30";
+      targetCtx.shadowColor="rgba(86,0,0,.78)";
+      targetCtx.shadowBlur=4*scale;
+      targetCtx.stroke();
+      targetCtx.restore();
     }
   }
 }
@@ -11246,11 +11271,11 @@ function effectiveExerciseTargetRadius(sub,lm){
 let latestHandLandmarks=null;   // the affected hand in the latest frame (when hand tracking is on)
 let latestHandSeenAt=0;         // when it was last detected (a brief gap keeps the previous hand)
 let handGateNearSince=null;     // when the wrist first arrived at the cup for a hand-opening / grasp step
-const HAND_LANDMARK_FRESH_MS=350;   // same freshness window as the assessment
+const HAND_LANDMARK_FRESH_MS=240;
 // Match the assessment: scan the hand on every available frame while the
-// device is keeping up. If pose + hands fall below 15 fps, use the same 180 ms
-// backoff and keep the last reliable hand briefly so the overlay does not blink.
-const HAND_SCAN_INTERVAL_MS=0, HAND_BACKOFF_SCAN_INTERVAL_MS=180, HAND_BACKOFF_FRESH_MS=2600, MIN_SMOOTH_FPS=15;
+// device is keeping up. If pose + hands fall below 15 fps, cap hand inference
+// near 14 fps instead of reusing a visibly old result for several seconds.
+const HAND_SCAN_INTERVAL_MS=0, HAND_BACKOFF_SCAN_INTERVAL_MS=70, HAND_BACKOFF_FRESH_MS=240, MIN_SMOOTH_FPS=15;
 let frameIntervalMs=33, lastLoopTs=0, lastHandScanTs=0;
 function handBackoffActive(){ return frameIntervalMs > 1000/MIN_SMOOTH_FPS; }
 function handFreshWindowMs(){ return handBackoffActive() ? HAND_BACKOFF_FRESH_MS : HAND_LANDMARK_FRESH_MS; }
@@ -11267,11 +11292,9 @@ function exerciseTargetIsArmed(now=performance.now()){
 // spread; fingertip-to-palm distance), and decayed when the hand is lost.
 const HAND_OPEN_SCORE=0.45, HAND_CLOSED_SCORE=0.30;
 let handOpenScore=0, fistClosureScore=0, handOpenDegreesSmoothed=NaN;
-// The hand must visibly change shape at each hand step: "open" is judged
-// against the resting hand from calibration, "close" against the hand as it
-// was when the open step finished, and "release" against the closed grasp.
-// (Absolute thresholds alone can pass while the hand is still open, because a
-// hand seen edge-on projects as if it were closed.)
+// Closing must visibly change from the preceding open hand. Opening accepts
+// either a clear absolute open-hand posture or a change from the resting/closed
+// reference, so an already-open hand is not trapped after the voice finishes.
 let restHandOpenScore=null, restHandOpenSamples=[];
 let handOpenRef=null, handClosedRef=null;
 const HAND_CHANGE_MARGIN=0.25, HAND_OPEN_REST_MARGIN=0.10, HAND_CLOSE_DEGREES_DROP=30;
@@ -11302,16 +11325,29 @@ function updateRehabHandScores(h){
   const fingertipDistanceScore=clamp01((fingerSpread/handScale-1.15)/1.15);
   const thumbIndexSpreadScore=clamp01((dist(h[4],h[8])/handScale-0.35)/0.95);
   const open=clamp01(straightness*0.62+fingertipDistanceScore*0.28+thumbIndexSpreadScore*0.10);
-  handOpenScore=handOpenScore*0.6+open*0.4;
+  handOpenScore=handOpenScore*0.35+open*0.65;
   const palmCenter={x:(h[0].x+h[5].x+h[9].x+h[13].x+h[17].x)/5,y:(h[0].y+h[5].y+h[9].y+h[13].y+h[17].y)/5};
   const tipPalmDist=(dist(h[8],palmCenter)+dist(h[12],palmCenter)+dist(h[16],palmCenter)+dist(h[20],palmCenter))/4;
   const closure=clamp01((2.15-tipPalmDist/palmWidth)/0.85);
-  fistClosureScore=fistClosureScore*0.6+closure*0.4;
+  fistClosureScore=fistClosureScore*0.35+closure*0.65;
   const degrees=handOpeningDegrees(h);
   if(Number.isFinite(degrees)) handOpenDegreesSmoothed=Number.isFinite(handOpenDegreesSmoothed) ? handOpenDegreesSmoothed*0.6+degrees*0.4 : degrees;
 }
 function handIsFresh(now){
   return !!latestHandLandmarks && (now-latestHandSeenAt) <= handFreshWindowMs();
+}
+function handPalmCenter(handLm){
+  if(!handLm || handLm.length < 21) return null;
+  const points=[handLm[0],handLm[5],handLm[9],handLm[13],handLm[17]].filter(Boolean);
+  if(points.length < 4) return null;
+  return {
+    x:points.reduce((sum,point)=>sum+point.x,0)/points.length,
+    y:points.reduce((sum,point)=>sum+point.y,0)/points.length,
+  };
+}
+function openHandDetected(reference,margin,openScore=handOpenScore,degrees=handOpenDegreesSmoothed){
+  const clearlyOpen=openScore >= 0.62 && (!Number.isFinite(degrees) || degrees >= 130);
+  return clearlyOpen || (openScore > HAND_OPEN_SCORE && (reference == null || openScore > reference + margin));
 }
 function checkTarget(lm){
   const sub = CFG.cycle[currentSubStep];
@@ -11330,13 +11366,17 @@ function checkTarget(lm){
   const ok = (p) => p && Math.hypot(p.x-t.x, p.y-t.y) < R;
   const which = sub.target.landmark;
   if(HAND_GATE_LANDMARKS.has(which)){
-    // Hand-opening / grasp steps: the affected wrist must be at the cup AND the
-    // fingers must open (or close) far enough. If the fingers cannot get there,
+    // Hand-opening / grasp steps: the affected palm or wrist must be at the cup
+    // AND the fingers must open (or close) far enough. The palm centre matches
+    // how a patient naturally places an open hand around the displayed cup.
+    // If the fingers cannot get there,
     // the step still completes after max_wait_ms so nobody is stuck; the
     // shortfall is then named in the feedback.
-    const wrist = lm[ACTIVE.wrist] && pointVisible(lm[ACTIVE.wrist]) ? lm[ACTIVE.wrist] : (latestHandLandmarks && latestHandLandmarks[0]);
-    if(!ok(wrist)){ handGateNearSince=null; return false; }
     const now=performance.now();
+    const poseWrist=lm[ACTIVE.wrist] && pointVisible(lm[ACTIVE.wrist]) ? lm[ACTIVE.wrist] : null;
+    const trackedWrist=handIsFresh(now) && latestHandLandmarks ? latestHandLandmarks[0] : null;
+    const palm=handIsFresh(now) ? handPalmCenter(latestHandLandmarks) : null;
+    if(!ok(palm) && !ok(poseWrist) && !ok(trackedWrist)){ handGateNearSince=null; return false; }
     if(handGateNearSince == null) handGateNearSince=now;
     const waitedLongEnough = now-handGateNearSince >= Number(sub.max_wait_ms||6000);
     if(!handIsFresh(now)) return waitedLongEnough;
@@ -11345,7 +11385,7 @@ function checkTarget(lm){
       // rest, or - after a grasp - wider than the closed grasp was.
       const reference = handClosedRef ? handClosedRef.open : restHandOpenScore;
       const margin = handClosedRef ? HAND_CHANGE_MARGIN : HAND_OPEN_REST_MARGIN;
-      const opened = handOpenScore > HAND_OPEN_SCORE && (reference == null || handOpenScore > reference + margin);
+      const opened = openHandDetected(reference,margin);
       return opened || waitedLongEnough;
     }
     // Closing around the cup: the fingers must actually curl from the open
@@ -12152,6 +12192,8 @@ function loop(){
   const now = performance.now();
   let lm = null;
   let handLm = null;
+  let detectedHandLm = null;
+  let handDetectionRan = false;
   try{
     const r = landmarker.detectForVideo(video, now);
     if(r && r.landmarks && r.landmarks[0]) lm = r.landmarks[0];
@@ -12162,9 +12204,11 @@ function loop(){
     const scanInterval = handBackoffActive() ? HAND_BACKOFF_SCAN_INTERVAL_MS : HAND_SCAN_INTERVAL_MS;
     if(now - lastHandScanTs >= scanInterval){
       lastHandScanTs = now;
+      handDetectionRan = true;
       try{
         const h=handLandmarker.detectForVideo(video,now);
-        handLm=selectRehabAffectedHand(h, lm, now);
+        detectedHandLm=selectRehabAffectedHand(h, lm, now);
+        handLm=detectedHandLm;
       }catch(e){}
     }
     if(handLm){
@@ -12175,7 +12219,10 @@ function loop(){
     }else{
       latestHandLandmarks=null;
     }
-    updateRehabHandScores(handLm);
+    // Update gesture smoothing only from a new inference result. Replaying one
+    // stale landmark set on every animation frame made the displayed hand lag
+    // and could make a single old pose satisfy a multi-frame gesture gate.
+    if(handDetectionRan) updateRehabHandScores(detectedHandLm);
   }
   // A single bad frame must never stop the camera loop (the target circle,
   // live degrees and step detection all depend on it), so the frame work is
@@ -12376,12 +12423,15 @@ window.__rehynExerciseScoringTest={
   poseWristBendDegrees,
   expectedShoulderRise,
   compensationThreshold,
+  drawCompensationHighlights,
   repRomDetails,
   computeRepScore,
   confirmedCompensations,
 };
 window.__rehynExerciseTrackingTest={
   targetActivationReady,
+  handPalmCenter,
+  openHandDetected,
   nextVirtualObjectAnchor,
   handScanIntervalMs:HAND_SCAN_INTERVAL_MS,
   handOverlayStyle:ASSESSMENT_HAND_OVERLAY_STYLE,

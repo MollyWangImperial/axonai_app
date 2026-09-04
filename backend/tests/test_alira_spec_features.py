@@ -677,9 +677,12 @@ def test_completion_asks_about_carer_help_and_halves_assisted_scores():
     source = (ROOT / "backend" / "server.py").read_text(encoding="utf-8")
     exercise = (ROOT / "frontend" / "app" / "exercise.tsx").read_text(encoding="utf-8")
 
-    # Both runners can now see more than two hands (patient + helper).
-    assert "numHands: 4" in source and "numHands:4" in source
-    assert "numHands: 2" not in source and "numHands:1" not in source
+    # Assessment can see the patient plus a helper's hands. The exercise runner
+    # uses two candidates to keep live hand feedback responsive while still
+    # covering the patient and one assisting hand.
+    assert "numHands: 4" in source
+    assert 'runningMode:"VIDEO", numHands:2,' in source
+    assert "numHands:1" not in source
 
     # Finishing an exercise pops the carer/family question before closing.
     assert 'data-testid="exercise-assist-question"' in source
@@ -962,7 +965,7 @@ def test_cylindrical_grasp_reach_open_close_carry_release_flow_and_compensations
     assert grasp["cycle"][1]["target"]["x"] == grasp["cycle"][0]["target"]["x"] == grasp["cycle"][2]["target"]["x"]
     assert grasp["cycle"][4]["target"]["x"] == grasp["cycle"][3]["target"]["x"]
     assert grasp["cycle"][1]["hold_ms"] == 400
-    assert grasp["target_arm_delay_ms"] == 150
+    assert grasp["target_arm_delay_ms"] == 0
     assert all(step.get("max_wait_ms") == 6000 for step in grasp["cycle"] if (step["target"] or {}).get("landmark"))
     assert grasp["hand_tracking"] is True and grasp["mirror_for_left"] is True
     for word in ("open your hand wide", "close your fingers around the cup", "carry it across", "set it down"):
@@ -1012,15 +1015,16 @@ def test_cylindrical_grasp_reach_open_close_carry_release_flow_and_compensations
     assert 'const HAND_GATE_LANDMARKS = new Set(["HAND_OPEN","HAND_CLOSED"]);' in source
     assert "if(NEEDS_HAND_TRACKING){" in source
     assert "function selectRehabAffectedHand(result, lm, now)" in source
-    assert "handLm=selectRehabAffectedHand(h, lm, now);" in source
+    assert "detectedHandLm=selectRehabAffectedHand(h, lm, now);" in source
     assert "function handOpeningDegrees(handLm)" in source
     # Same hand model settings, gesture scores (smoothed) and thresholds as the
     # initial assessment, a brief detection gap keeps the previous hand, and a
     # 350 ms grace keeps the hold ring from restarting on one jittery frame.
     assert "minHandDetectionConfidence:0.65," in source and "minTrackingConfidence:0.7," in source
+    assert 'runningMode:"VIDEO", numHands:2,' in source
     assert "function updateRehabHandScores(h)" in source
-    assert "handOpenScore=handOpenScore*0.6+open*0.4;" in source
-    assert "fistClosureScore=fistClosureScore*0.6+closure*0.4;" in source
+    assert "handOpenScore=handOpenScore*0.35+open*0.65;" in source
+    assert "fistClosureScore=fistClosureScore*0.35+closure*0.65;" in source
     assert "const HAND_OPEN_SCORE=0.45, HAND_CLOSED_SCORE=0.30;" in source
     # Each hand step needs a real change of hand shape (open vs rest, close vs the
     # open hand, release vs the grasp) and cannot complete before its instruction
@@ -1043,7 +1047,7 @@ def test_cylindrical_grasp_reach_open_close_carry_release_flow_and_compensations
     assert 'return "completed";' in source
     assert 'return "interrupted";' in source
     assert 'audioEl.pause();' in source
-    assert "const HAND_LANDMARK_FRESH_MS=350;" in source
+    assert "const HAND_LANDMARK_FRESH_MS=240;" in source
     assert "const TARGET_ARM_DELAY_AFTER_VOICE_MS=Number(CFG.target_arm_delay_ms ?? 700);" in source
     assert "const TARGET_HOLD_LOSS_GRACE_MS=350;" in source
     assert "}else if(inTargetSince != null && (now - lastInTargetTs) > TARGET_HOLD_LOSS_GRACE_MS){" in source
@@ -1054,7 +1058,12 @@ def test_cylindrical_grasp_reach_open_close_carry_release_flow_and_compensations
     assert "let vobjAnchor = null;" in source and "let vobjPalmOffset = {x:0, y:0};" in source
     assert "function nextVirtualObjectAnchor(previous,target)" in source
     assert "const follow=clamp(0.84+travel*3.0,0.84,0.98);" in source
-    assert "const HAND_SCAN_INTERVAL_MS=0, HAND_BACKOFF_SCAN_INTERVAL_MS=180, HAND_BACKOFF_FRESH_MS=2600, MIN_SMOOTH_FPS=15;" in source
+    assert "const HAND_SCAN_INTERVAL_MS=0, HAND_BACKOFF_SCAN_INTERVAL_MS=70, HAND_BACKOFF_FRESH_MS=240, MIN_SMOOTH_FPS=15;" in source
+    assert "function handPalmCenter(handLm)" in source
+    assert "if(!ok(palm) && !ok(poseWrist) && !ok(trackedWrist))" in source
+    assert "function openHandDetected(reference,margin,openScore=handOpenScore,degrees=handOpenDegreesSmoothed)" in source
+    assert "const clearlyOpen=openScore >= 0.62" in source
+    assert "if(handDetectionRan) updateRehabHandScores(detectedHandLm);" in source
     assert "window.__rehynExerciseTrackingTest={" in source
     # Models are created as soon as the runner page opens, not on Start.
     assert "function warmUpModels(){" in source
@@ -1078,6 +1087,10 @@ def test_cylindrical_grasp_reach_open_close_carry_release_flow_and_compensations
     assert 'finger_extension:{joint:"hand",text:"Hand open"}' in source
     assert "`Side lean ${Math.round(side)}°`" in source
     assert "`Wrist bend ${Math.round(wristDrop)}°`" in source
+    assert 'const EVIDENCE_COMPENSATION_IDS = new Set(["trunk_lean","shoulder_hike","wrist_flexion"]);' in source
+    assert 'if(selected.has("wrist_flexion")){' in source
+    assert 'strokeDottedPath(targetCtx,[elbow,wrist,handBase]);' in source
+    assert "drawCompensationHighlights," in source
     assert 'const hint = sub.target.landmark === "HAND_OPEN" ? "Open hand" : "Close hand";' in source
     # Grading: the fingers are form-critical (a weak opening never reaches 90),
     # an unseen hand neither scores nor fails, but earns no point either.
