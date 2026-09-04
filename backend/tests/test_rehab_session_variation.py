@@ -180,7 +180,8 @@ def test_runner_pose_and_target_overlay_match_assessment_visual_geometry():
     assert 'effectiveExerciseTargetRadius(sub,lm)' in html
     assert 'const R = effectiveExerciseTargetRadius(sub,lm);' in html
     assert 'const tr = effectiveExerciseTargetRadius(sub,lm)*Math.min(canvas.width,canvas.height);' in html
-    assert 'ctx.strokeStyle=armed ? ASSESSMENT_OVERLAY_STYLE.targetColor : "rgba(225,142,109,0.45)";' in html
+    assert 'const pulse = armed ? 1 + 0.08*Math.sin(performance.now()/250) : 1;' in html
+    assert 'ctx.strokeStyle=armed ? ASSESSMENT_OVERLAY_STYLE.targetColor : "rgba(225,142,109,0.28)";' in html
     assert 'ctx.setLineDash(armed ? [] : [10,8]);' in html
     assert 'if(armed && inTargetSince){' in html
     assert 'sub.target.r * 1.55' not in html
