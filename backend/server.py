@@ -13424,7 +13424,13 @@ async def _consume_login_handoff(token: str) -> Dict[str, Any]:
         logger.warning(f"Mongo unavailable for login handoff completion; using local fallback: {str(exc)[:120]}")
         record = LOCAL_LOGIN_HANDOFFS.pop(digest, None)
 
-    if not record or record.get("expires_at", now) <= now:
+    expires_at = record.get("expires_at") if record else None
+    # BSON dates decode as naive UTC unless tz_aware is enabled on the client.
+    # Normalize before comparing so a valid MongoDB handoff is not consumed by
+    # a TypeError and then reported as expired on the next request.
+    if isinstance(expires_at, datetime) and expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    if not isinstance(expires_at, datetime) or expires_at <= now:
         LOCAL_LOGIN_HANDOFFS.pop(digest, None)
         raise HTTPException(status_code=401, detail="This sign-in link has expired. Please sign in again.")
 
