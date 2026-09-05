@@ -59,7 +59,7 @@ try:
     from backend.object_storage import task_video_object_storage
     from backend.patient_insights import build_patient_insights
     from backend.fast_screening import FAST_RUNNER_HTML, evaluate_fast_screen
-    from backend.encouragement import compute_rewards
+    from backend.encouragement import MEDALS as REWARD_MEDALS, compute_rewards
     from backend.daily_activity_metrics import build_daily_activity_metrics
     from backend.alira_care_orchestrator import (
         QUESTION_BANK as ALIRA_CARE_QUESTION_BANK,
@@ -104,7 +104,7 @@ except ImportError:
     from object_storage import task_video_object_storage
     from patient_insights import build_patient_insights
     from fast_screening import FAST_RUNNER_HTML, evaluate_fast_screen
-    from encouragement import compute_rewards
+    from encouragement import MEDALS as REWARD_MEDALS, compute_rewards
     from daily_activity_metrics import build_daily_activity_metrics
     from alira_care_orchestrator import (
         QUESTION_BANK as ALIRA_CARE_QUESTION_BANK,
@@ -13276,6 +13276,7 @@ ACCOUNT_STATE_FIELDS = (
     "initial_assessment_completion_source",
     "assessment_deferrals",
     "daily_checkins",
+    "reward_milestones_acknowledged",
     "survey_report_viewed_at",
     "deleted_at",
     "google",
@@ -14974,7 +14975,35 @@ async def get_user_rewards(request: Request, as_of: Optional[str] = None):
         raise HTTPException(status_code=401, detail="Sign in required")
     activities = await _care_activities_for_user(user["id"])
     check_ins = await _care_check_ins_for_user(user["id"])
-    return compute_rewards(activities, check_ins, dict(user.get("daily_checkins") or {}), now=_as_of_now(as_of))
+    rewards = compute_rewards(activities, check_ins, dict(user.get("daily_checkins") or {}), now=_as_of_now(as_of))
+    acknowledged = set(user.get("reward_milestones_acknowledged") or [])
+    for medal in rewards.get("medals") or []:
+        medal["celebrated"] = medal.get("id") in acknowledged
+    return rewards
+
+
+@api_router.post("/users/rewards/milestones/{milestone_id}/acknowledge")
+async def acknowledge_reward_milestone(milestone_id: str, request: Request):
+    user = await _user_from_header(dict(request.headers))
+    if not user:
+        raise HTTPException(status_code=401, detail="Sign in required")
+    milestone = next((item for item in REWARD_MEDALS if item["id"] == milestone_id), None)
+    if not milestone:
+        raise HTTPException(status_code=404, detail="Reward milestone not found")
+    activities = await _care_activities_for_user(user["id"])
+    check_ins = await _care_check_ins_for_user(user["id"])
+    rewards = compute_rewards(activities, check_ins, dict(user.get("daily_checkins") or {}))
+    if int(rewards.get("points") or 0) < int(milestone["threshold"]):
+        raise HTTPException(status_code=409, detail="Reward milestone has not been earned yet")
+    acknowledged = list(dict.fromkeys(user.get("reward_milestones_acknowledged") or []))
+    if milestone_id not in acknowledged:
+        acknowledged.append(milestone_id)
+        await _save_user_fields(
+            user,
+            {"reward_milestones_acknowledged": acknowledged},
+            context="reward milestone acknowledgement",
+        )
+    return {"ok": True, "milestone_id": milestone_id, "celebrated": True}
 
 
 @api_router.post("/alira/navigation-events")

@@ -45,6 +45,7 @@ import {
   MedalCalendarModal,
   ReassessmentDayModal,
 } from "@/src/components/DailyFlowModals";
+import { HundredPointCelebration } from "@/src/components/HundredPointCelebration";
 import { PointsCelebration, PointsCelebrationEvent, celebrationEvent } from "@/src/components/PointsCelebration";
 import { SurveyPrefaceModal } from "@/src/components/SurveyPrefaceModal";
 import { useDisplayPreferences } from "@/src/displayPreferences";
@@ -125,7 +126,23 @@ type RewardsSummary = {
   points: number;
   message?: string;
   streak?: { current_days?: number };
+  medals?: { id: string; name: string; threshold: number; earned: boolean; celebrated?: boolean }[];
 };
+
+type HundredPointAward = { name: string; points: number };
+
+const HUNDRED_POINT_MEDAL_ID = "first_100_points";
+const milestoneSeenKey = (userId: string, milestoneId: string) => `reward_milestone_seen_v1:${userId}:${milestoneId}`;
+
+async function claimHundredPointCelebration(userId: string, rewards: RewardsSummary | null): Promise<boolean> {
+  const milestone = rewards?.medals?.find((item) => item.id === HUNDRED_POINT_MEDAL_ID);
+  if (!milestone?.earned || milestone.celebrated) return false;
+  const key = milestoneSeenKey(userId, milestone.id);
+  if (await storage.getItem(key, false)) return false;
+  await storage.setItem(key, true);
+  void authedFetch(`/api/users/rewards/milestones/${milestone.id}/acknowledge`, { method: "POST" }).catch(() => null);
+  return true;
+}
 
 type ProgressPoint = {
   id: string;
@@ -401,6 +418,7 @@ export default function HomeScreen() {
   const [showWeek, setShowWeek] = useState(false);
   const [showSurveyPreface, setShowSurveyPreface] = useState(false);
   const [celebration, setCelebration] = useState<PointsCelebrationEvent | null>(null);
+  const [hundredPointAward, setHundredPointAward] = useState<HundredPointAward | null>(null);
   // Daily flow: Alira's reminder, the re-assessment-day prompt, today's medal
   // and the calendar it lands on. One prompt at a time.
   const [aliraReminder, setAliraReminder] = useState<string | null>(null);
@@ -524,10 +542,16 @@ export default function HomeScreen() {
     // the day board itself refreshes automatically on every focus.
     const previousHome = getScreenCache<HomeScreenCache>("home");
     const nextPoints = Number(rewardsPayload?.points ?? 0);
+    const showHundredPointAward = Boolean(
+      user?.id && await claimHundredPointCelebration(user.id, rewardsPayload),
+    );
+    if (showHundredPointAward) {
+      setHundredPointAward({ name: nextName, points: nextPoints });
+    }
     const lastCelebratedPoints = getScreenCache<number>("celebrated-points");
     if (lastCelebratedPoints == null) {
       setScreenCache<number>("celebrated-points", nextPoints);
-    } else if (nextPoints > lastCelebratedPoints) {
+    } else if (nextPoints > lastCelebratedPoints && !showHundredPointAward) {
       const previousIds = new Set((previousHome?.history || []).map((item) => item.id));
       const finishedAssessmentToday = nextHistory.some(
         (item) => !previousIds.has(item.id) && String(item.created_at || "").slice(0, 10) === localDateString(),
@@ -654,27 +678,32 @@ export default function HomeScreen() {
       body: JSON.stringify({ date: todayIso }),
     }).catch(() => null);
     if (response?.ok) {
+      const user = await getCachedUser();
       const payload = await response.json().catch(() => null);
       if (payload) {
         const status = payload.status === "complete" ? "complete" : "in_progress";
         setCheckIn({ date: payload.date || todayIso, status, days: payload.days || [] });
-        const user = await getCachedUser();
         if (user?.id) await cacheDailyCheckInActivity(user.id, todayIso, status);
       }
-      // Checking in earns points (2 per day): celebrate briefly, then the
-      // toast fades out on its own, and the badge refreshes right away.
-      setCelebration(celebrationEvent(2, "Checked in - great start to today!"));
+      let showedHundredPointAward = false;
       const rewardsResponse = await authedFetch("/api/users/rewards").catch(() => null);
       if (rewardsResponse?.ok) {
         const rewardsPayload = await rewardsResponse.json().catch(() => null);
         if (rewardsPayload) {
           setRewards(rewardsPayload);
           setScreenCache<number>("celebrated-points", Number(rewardsPayload.points ?? 0));
+          if (user?.id && await claimHundredPointCelebration(user.id, rewardsPayload)) {
+            showedHundredPointAward = true;
+            setHundredPointAward({ name: greetName || user.name?.split(" ")[0] || "there", points: Number(rewardsPayload.points ?? 100) });
+          }
         }
       }
+      // Checking in earns two points. The milestone overlay takes priority
+      // when these are the points that carry the account across 100.
+      if (!showedHundredPointAward) setCelebration(celebrationEvent(2, "Checked in - great start to today!"));
     }
     setCheckingIn(false);
-  }, [checkedInToday, checkingIn, todayIso]);
+  }, [checkedInToday, checkingIn, greetName, todayIso]);
 
   const openExercisePlan = () => {
     if (nextStep?.destination === "caregiver_plan") openDestination("caregiver_plan");
@@ -1044,6 +1073,12 @@ export default function HomeScreen() {
         </View>
       </ScrollView>
       <PointsCelebration event={celebration} onDone={() => setCelebration(null)} />
+      <HundredPointCelebration
+        visible={Boolean(hundredPointAward)}
+        name={hundredPointAward?.name || greetName}
+        points={hundredPointAward?.points || 100}
+        onClose={() => setHundredPointAward(null)}
+      />
       <SurveyPrefaceModal visible={showSurveyPreface} onBegin={openSurveyChat} onClose={() => setShowSurveyPreface(false)} />
       <ReassessmentDayModal
         visible={showReassessment}

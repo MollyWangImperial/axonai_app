@@ -294,6 +294,7 @@ def test_medal_ladder():
     rewards = compute_rewards([], [], {}, now=NOW)
     names = [medal["name"] for medal in rewards["medals"]]
     assert names == [
+        "100-Point Medal",
         "Persistence Pro",
         "Persistence Champion",
         "Persistence Master",
