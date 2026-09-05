@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Animated, Easing, Modal, Pressable, StyleSheet, Text, View } from "react-native";
+import { Animated, Easing, Modal, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 
-import { formatLocalDate, parseLocalDate } from "@/src/appDate";
+import { formatLocalDate, isCalendarDate, parseLocalDate } from "@/src/appDate";
 import { useDisplayPreferences } from "@/src/displayPreferences";
 import { colors, radius, spacing } from "@/src/theme";
 
@@ -25,6 +25,12 @@ function shortDate(value: string): string {
   return date.toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short" });
 }
 
+function shiftDate(value: string, days: number): string {
+  const date = parseLocalDate(value);
+  date.setDate(date.getDate() + days);
+  return formatLocalDate(date);
+}
+
 // ---------------------------------------------------------------- date stepper
 
 type AppDateStepperProps = {
@@ -33,9 +39,13 @@ type AppDateStepperProps = {
   onShift: (days: number) => void;
   onReset: () => void;
   compact?: boolean;
+  // Testing phase: the next re-assessment date, and a control to pin it.
+  assessmentDate?: string;
+  assessmentPinned?: boolean;
+  onSetAssessmentDate?: () => void;
 };
 
-export function AppDateStepper({ date, overridden, onShift, onReset, compact }: AppDateStepperProps) {
+export function AppDateStepper({ date, overridden, onShift, onReset, compact, assessmentDate, assessmentPinned, onSetAssessmentDate }: AppDateStepperProps) {
   const { palette } = useDisplayPreferences();
   return (
     <View style={styles.stepperWrap} testID="home-app-date-stepper">
@@ -59,7 +69,106 @@ export function AppDateStepper({ date, overridden, onShift, onReset, compact }: 
           <Text style={styles.stepperResetText}>Back to today</Text>
         </Pressable>
       ) : null}
+      {assessmentDate && onSetAssessmentDate ? (
+        <Pressable
+          testID="home-set-assessment-date"
+          accessibilityLabel="Set the re-assessment date for testing"
+          onPress={onSetAssessmentDate}
+          style={({ pressed }) => [styles.stepperAssessment, { borderColor: assessmentPinned ? "#B65C09" : palette.border, backgroundColor: palette.surface }, pressed && styles.pressed]}
+        >
+          <Ionicons name="clipboard-outline" size={13} color={assessmentPinned ? "#B65C09" : palette.muted} />
+          <Text style={[styles.stepperAssessmentText, { color: assessmentPinned ? "#B65C09" : palette.muted }]} numberOfLines={1} testID="home-assessment-date-value">
+            {`Re-assessment ${shortDate(assessmentDate)}${assessmentPinned ? " (testing)" : ""}`}
+          </Text>
+          <Text style={[styles.stepperAssessmentAction, { color: palette.brand }]}>Set date</Text>
+        </Pressable>
+      ) : null}
     </View>
+  );
+}
+
+// ------------------------------------------------- re-assessment date (testing)
+
+type AssessmentDateModalProps = {
+  visible: boolean;
+  appDate: string;
+  currentDate?: string;
+  pinned: boolean;
+  saving: boolean;
+  onSave: (date: string) => void;
+  onReset: () => void;
+  onClose: () => void;
+};
+
+export function AssessmentDateModal({ visible, appDate, currentDate, pinned, saving, onSave, onReset, onClose }: AssessmentDateModalProps) {
+  const { palette } = useDisplayPreferences();
+  const [value, setValue] = useState("");
+  useEffect(() => {
+    if (visible) setValue(shiftDate(appDate, 1));
+  }, [appDate, visible]);
+  const trimmed = value.trim();
+  const valid = isCalendarDate(trimmed);
+  const quickPicks = [
+    { key: "tomorrow", label: "Tomorrow", date: shiftDate(appDate, 1) },
+    { key: "3days", label: "In 3 days", date: shiftDate(appDate, 3) },
+    { key: "7days", label: "In 7 days", date: shiftDate(appDate, 7) },
+  ];
+  return (
+    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
+      <View style={styles.backdrop}>
+        <View style={[styles.card, { backgroundColor: palette.surface }]} testID="assessment-date-modal">
+          <View style={[styles.badge, { backgroundColor: palette.soft }]}>
+            <Ionicons name="calendar-outline" size={30} color={palette.brand} />
+          </View>
+          <Text style={[styles.kicker, { color: "#B65C09" }]}>TESTING</Text>
+          <Text style={[styles.title, { color: palette.text }]}>Set the re-assessment date</Text>
+          <Text style={[styles.body, { color: palette.muted }]}>
+            {currentDate ? `The plan currently expects the next assessment on ${shortDate(currentDate)}. ` : ""}
+            Choose the day the re-assessment prompt should appear, then step the app date to that day to see it. The pin clears itself once an assessment is completed.
+          </Text>
+          <View style={styles.quickRow}>
+            {quickPicks.map((pick) => (
+              <Pressable
+                key={pick.key}
+                testID={`assessment-date-quick-${pick.key}`}
+                onPress={() => setValue(pick.date)}
+                style={({ pressed }) => [styles.quickChip, { borderColor: trimmed === pick.date ? colors.brandPrimary : palette.border, backgroundColor: trimmed === pick.date ? palette.soft : palette.surface }, pressed && styles.pressed]}
+              >
+                <Text style={[styles.quickChipText, { color: palette.text }]}>{pick.label}</Text>
+                <Text style={[styles.quickChipDate, { color: palette.muted }]}>{shortDate(pick.date)}</Text>
+              </Pressable>
+            ))}
+          </View>
+          <TextInput
+            testID="assessment-date-input"
+            value={value}
+            onChangeText={setValue}
+            placeholder="YYYY-MM-DD"
+            placeholderTextColor={palette.muted}
+            autoCapitalize="none"
+            autoCorrect={false}
+            style={[styles.dateInput, { borderColor: valid || !trimmed ? palette.border : "#E44C36", color: palette.text, backgroundColor: palette.page }]}
+          />
+          <Pressable
+            testID="assessment-date-save"
+            disabled={!valid || saving}
+            onPress={() => onSave(trimmed)}
+            style={({ pressed }) => [styles.primary, (!valid || saving) && styles.disabled, pressed && styles.pressed]}
+          >
+            <Ionicons name="checkmark" size={19} color="#FFFFFF" />
+            <Text style={styles.primaryText}>{saving ? "Saving..." : valid ? `Set to ${shortDate(trimmed)}` : "Enter a date (YYYY-MM-DD)"}</Text>
+          </Pressable>
+          {pinned ? (
+            <Pressable testID="assessment-date-reset" disabled={saving} onPress={onReset} style={({ pressed }) => [styles.secondary, { borderColor: palette.border }, pressed && styles.pressed]}>
+              <Text style={[styles.secondaryText, { color: palette.text }]}>Back to the plan&apos;s own date</Text>
+            </Pressable>
+          ) : null}
+          <Pressable testID="assessment-date-cancel" onPress={onClose} style={styles.later}>
+            <Text style={[styles.laterText, { color: palette.muted }]}>Cancel</Text>
+          </Pressable>
+        </View>
+      </View>
+    </Modal>
   );
 }
 
@@ -341,6 +450,16 @@ const styles = StyleSheet.create({
   stepperCaption: { fontSize: 11, lineHeight: 14, fontWeight: "700", textAlign: "center" },
   stepperReset: { flexDirection: "row", alignItems: "center", gap: 4, minHeight: 26, paddingHorizontal: 8 },
   stepperResetText: { color: "#B65C09", fontSize: 12, fontWeight: "800" },
+  stepperAssessment: { flexDirection: "row", alignItems: "center", gap: 6, minHeight: 28, maxWidth: 420, borderWidth: 1, borderRadius: radius.pill, paddingHorizontal: 10 },
+  stepperAssessmentText: { fontSize: 12, fontWeight: "700", flexShrink: 1 },
+  stepperAssessmentAction: { fontSize: 12, fontWeight: "900" },
+  // re-assessment date (testing)
+  quickRow: { alignSelf: "stretch", flexDirection: "row", gap: 8, marginTop: 4 },
+  quickChip: { flex: 1, minHeight: 50, borderWidth: 1.5, borderRadius: radius.sm, alignItems: "center", justifyContent: "center", paddingHorizontal: 4 },
+  quickChipText: { fontSize: 13, fontWeight: "800" },
+  quickChipDate: { fontSize: 11, fontWeight: "600", marginTop: 1 },
+  dateInput: { alignSelf: "stretch", minHeight: 48, borderWidth: 1.5, borderRadius: radius.sm, paddingHorizontal: 14, fontSize: 16, fontWeight: "700", textAlign: "center", marginTop: 4 },
+  disabled: { opacity: 0.5 },
   // Alira message
   aliraHeader: { alignSelf: "stretch", flexDirection: "row", alignItems: "center", gap: spacing.sm },
   aliraAvatar: { width: 46, height: 46, borderRadius: 23, backgroundColor: colors.brandPrimary, alignItems: "center", justifyContent: "center" },

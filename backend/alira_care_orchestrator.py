@@ -8,7 +8,7 @@ approved clinical libraries; unsupported ideas remain non-active drafts.
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, Iterable, List, Optional, Sequence
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 
 CARE_POLICY_VERSION = "alira-care-v2"
@@ -1202,6 +1202,26 @@ def _due_at(last: Optional[Dict[str, Any]], days: int, now: datetime) -> datetim
     return (last_at + timedelta(days=days)) if last_at else now
 
 
+def _testing_assessment_override(raw: Any, latest_assessment: Optional[Dict[str, Any]]) -> Optional[datetime]:
+    """Testing phase: the re-assessment date a tester pinned from Home.
+
+    The pin (``{"date": "YYYY-MM-DD", "set_at": iso}``) replaces the cadence-based
+    due date until an assessment is completed after it was set - once the tester
+    has done the re-assessment, the plan's own schedule takes over again.
+    """
+    if not isinstance(raw, dict):
+        return None
+    try:
+        pinned = datetime.strptime(str(raw.get("date") or ""), "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+    set_at = _as_utc(raw.get("set_at"))
+    latest_at = _as_utc((latest_assessment or {}).get("created_at"))
+    if set_at and latest_at and latest_at >= set_at:
+        return None
+    return pinned
+
+
 def _assessment_packages(domains: Sequence[str], has_assessment: bool) -> List[str]:
     if not has_assessment:
         return ["initial"]
@@ -1304,6 +1324,15 @@ def _weekly_frequency(frequency: Any) -> int:
     return max(1, min(7, match)) if match else 3
 
 
+def _difficulty_from_session_frequency(session_days_last_7_days: int) -> Tuple[str, str]:
+    days = max(0, min(7, int(session_days_last_7_days or 0)))
+    if days <= 1:
+        return "easy", f"Easy is suggested because rehab was completed on {days} day{'s' if days != 1 else ''} in the last week."
+    if days <= 4:
+        return "medium", f"Medium is suggested because rehab was completed on {days} days in the last week."
+    return "difficult", f"Difficult is suggested because rehab was completed on {days} days in the last week."
+
+
 def _exercise_action(
     latest_check_in: Optional[Dict[str, Any]],
     latest_assessment: Optional[Dict[str, Any]],
@@ -1312,6 +1341,7 @@ def _exercise_action(
 ) -> Dict[str, Any]:
     active_plan = [dict(item) for item in (latest_assessment or {}).get("rehab_plan") or [] if item.get("id")]
     active_ids = [str(item["id"]) for item in active_plan]
+    recommended_difficulty, difficulty_reason = _difficulty_from_session_frequency(sessions_last_7_days)
     if safety["blocks_exercise"]:
         action = "hold"
         dose_change = 0
@@ -1390,6 +1420,13 @@ def _exercise_action(
     return {
         "action": action,
         "dose_change_percent": dose_change,
+        "recommended_difficulty": recommended_difficulty,
+        "difficulty_reason": difficulty_reason,
+        "difficulty_basis": {
+            "metric": "distinct_rehab_days_last_7_days",
+            "value": max(0, min(7, int(sessions_last_7_days or 0))),
+            "thresholds": {"easy": "0-1 days", "medium": "2-4 days", "difficult": "5-7 days"},
+        },
         "reason": reason,
         "approved_exercise_ids": active_ids,
         "prescriptions": prescriptions,
@@ -1731,6 +1768,9 @@ def build_adaptive_care_plan(
         domains.append(pending_domain)
     survey_due_at = _due_at(latest_check_in or plan_assessment, cadence["survey_days"], now)
     assessment_due_at = _due_at(plan_assessment, cadence["assessment_days"], now)
+    testing_due_override = _testing_assessment_override(profile.get("_next_assessment_override"), latest_assessment)
+    if testing_due_override:
+        assessment_due_at = testing_due_override
     survey_due = now >= survey_due_at
     scheduled_assessment_due = now >= assessment_due_at
     assessment_due = (scheduled_assessment_due or bool(pending_issue)) and not safety["blocks_assessment"]
@@ -1760,11 +1800,13 @@ def build_adaptive_care_plan(
         assessment_due_at = now
     latest_activity = _latest(activities, key="completed_at")
     latest_activity_at = _as_utc((latest_activity or {}).get("completed_at"))
-    sessions_last_7_days = sum(
-        1
+    session_days_last_7_days = {
+        completed_at.date()
         for item in activities
-        if (completed_at := _as_utc(item.get("completed_at"))) and now - completed_at <= timedelta(days=7)
-    )
+        if (completed_at := _as_utc(item.get("completed_at")))
+        and timedelta(0) <= now - completed_at <= timedelta(days=7)
+    }
+    sessions_last_7_days = len(session_days_last_7_days)
     completed_today = bool(latest_activity_at and latest_activity_at.date() == now.date())
 
     # Spec 1.2 / 5: an exercise round is one week of daily sessions. Completing
@@ -1929,6 +1971,7 @@ def build_adaptive_care_plan(
         "assessment": {
             "due": assessment_due,
             "due_at": assessment_due_at.isoformat(),
+            "testing_due_override": testing_due_override.date().isoformat() if testing_due_override else None,
             "cadence_days": cadence["assessment_days"],
             "packages": selection["packages"] if assessment_due else [],
             "recommended_packages": selection["packages"],

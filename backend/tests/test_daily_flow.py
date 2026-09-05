@@ -3,6 +3,7 @@ exercise reminder posted into the chat, the daily medal on the calendar, and
 the testing-phase shortcut that finishes today's exercises with a score."""
 
 import os
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -229,3 +230,76 @@ def test_app_wires_the_date_stepper_reminder_medal_calendar_and_finish_button():
     # Today's plan starts from zero each day.
     assert "const completedToday = saved.day === appDateString() ? Math.min(saved.completed_reps || 0, adjustedTotal) : 0;" in plan
     assert "const completedToday = prev.day === today ? prev.completed_reps : 0;" in exercise
+
+
+def test_testing_pin_brings_the_reassessment_forward_until_a_newer_assessment(monkeypatch):
+    """A tester pins the re-assessment to a date: the plan's due date follows it,
+    the prompt is due on that day (not before), the pin is ignored once an
+    assessment is completed after it was set, and `null` clears it."""
+    store = {"user": _user()}
+    _stub_care_data(monkeypatch, store)
+
+    def sync_user():
+        saved = server.LOCAL_USERS.get(USER_ID)
+        if saved:
+            store["user"] = saved
+
+    with TestClient(server.app) as client:
+        before = client.get("/api/alira/care-plan?as_of=2026-09-06").json()["assessment"]
+        assert before["testing_due_override"] is None
+        assert not before["due_at"].startswith("2026-09-07")
+
+        bad = client.post("/api/users/testing/next-assessment", json={"date": "2026-13-40"})
+        assert bad.status_code == 422
+
+        pinned = client.post("/api/users/testing/next-assessment", json={"date": "2026-09-07"})
+        assert pinned.status_code == 200
+        assert pinned.json()["next_assessment_override"]["date"] == "2026-09-07"
+        sync_user()
+        assert store["user"]["next_assessment_override"]["date"] == "2026-09-07"
+
+        day_before = client.get("/api/alira/care-plan?as_of=2026-09-06").json()["assessment"]
+        assert day_before["due_at"].startswith("2026-09-07") and day_before["testing_due_override"] == "2026-09-07"
+        assert day_before["due"] is False
+        on_the_day = client.get("/api/alira/care-plan?as_of=2026-09-07").json()["assessment"]
+        assert on_the_day["due"] is True and on_the_day["can_start"] is True
+        assert on_the_day["packages"], "the re-assessment package is selected once the pinned day arrives"
+        later = client.get("/api/alira/care-plan?as_of=2026-09-09").json()["assessment"]
+        assert later["due"] is True
+
+        # An assessment completed after the pin was set retires the pin: the
+        # plan's own cadence takes over again.
+        completed_after_pin = (datetime.now(timezone.utc) + timedelta(minutes=1)).isoformat()
+
+        async def assessments_after(_user_id):
+            return [{
+                "id": "a2",
+                "created_at": completed_after_pin,
+                "assessment_package": "upper_limb",
+                "rehab_plan": [{"id": "ex_trunk", "reps": 10, "sets": 3}],
+            }]
+
+        monkeypatch.setattr(server, "_care_assessments_for_user", assessments_after)
+        retired = client.get("/api/alira/care-plan?as_of=2026-09-07").json()["assessment"]
+        assert retired["testing_due_override"] is None
+        assert not retired["due_at"].startswith("2026-09-07")
+
+        cleared = client.post("/api/users/testing/next-assessment", json={"date": None})
+        assert cleared.status_code == 200 and cleared.json()["next_assessment_override"] is None
+        sync_user()
+        assert store["user"]["next_assessment_override"] is None
+
+
+def test_home_wires_the_reassessment_date_pin():
+    home = (ROOT / "frontend" / "app" / "(tabs)" / "index.tsx").read_text(encoding="utf-8")
+    modals = (ROOT / "frontend" / "src" / "components" / "DailyFlowModals.tsx").read_text(encoding="utf-8")
+    # A "Re-assessment <date> · Set date" row under the date stepper opens the pin modal.
+    assert 'testID="home-set-assessment-date"' in modals and 'testID="assessment-date-modal"' in modals
+    assert 'testID={`assessment-date-quick-${pick.key}`}' in modals and '{ key: "tomorrow", label: "Tomorrow", date: shiftDate(appDate, 1) }' in modals
+    assert 'testID="assessment-date-input"' in modals
+    assert 'testID="assessment-date-save"' in modals and 'testID="assessment-date-reset"' in modals
+    assert "<AssessmentDateModal" in home and 'authedFetch("/api/users/testing/next-assessment"' in home
+    # Saving the pin reloads Home and re-evaluates the daily prompts, so the
+    # re-assessment-day prompt appears as soon as the app date reaches the pin.
+    assert 'await storage.removeItem(dailyPromptKey("reassessment", user?.id || "anonymous", date));' in home
+    assert "assessmentPinned={assessmentDatePinned}" in home

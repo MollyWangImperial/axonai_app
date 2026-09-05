@@ -40,6 +40,7 @@ import { getOrCreateChatSessionId } from "@/src/chatSession";
 import {
   AliraMessageModal,
   AppDateStepper,
+  AssessmentDateModal,
   CalendarDay,
   MedalAwardModal,
   MedalCalendarModal,
@@ -80,6 +81,7 @@ function completedTaskIdsFromCache(raw: string): string[] {
 type CarePlanAssessment = {
   due?: boolean;
   due_at?: string;
+  testing_due_override?: string | null;
   can_start?: boolean;
   packages?: string[];
   recommended_packages?: string[];
@@ -428,6 +430,8 @@ export default function HomeScreen() {
   const [collectingMedal, setCollectingMedal] = useState(false);
   const [showCalendar, setShowCalendar] = useState(false);
   const [calendarHighlight, setCalendarHighlight] = useState<string | undefined>(undefined);
+  const [showAssessmentDate, setShowAssessmentDate] = useState(false);
+  const [savingAssessmentDate, setSavingAssessmentDate] = useState(false);
   const promptsEvaluatedFor = useRef<string>("");
 
   const load = useCallback(async () => {
@@ -735,6 +739,32 @@ export default function HomeScreen() {
   }, [load]);
 
   const assessmentDueDate = carePlanAssessment?.due_at ? String(carePlanAssessment.due_at).slice(0, 10) : "";
+  const assessmentDatePinned = Boolean(carePlanAssessment?.testing_due_override);
+
+  // Testing phase: pin the next re-assessment to a chosen date so the
+  // re-assessment-day prompt and the calendar can be checked without waiting
+  // out the plan's cadence. The server drops the pin once an assessment is
+  // completed after it was set; `null` clears it by hand.
+  const setNextAssessmentDate = useCallback(async (date: string | null) => {
+    if (savingAssessmentDate) return;
+    setSavingAssessmentDate(true);
+    const response = await authedFetch("/api/users/testing/next-assessment", {
+      method: "POST",
+      body: JSON.stringify({ date }),
+    }).catch(() => null);
+    setSavingAssessmentDate(false);
+    if (!response?.ok) return;
+    if (date) {
+      // Let the prompt show again on that day even if it was dismissed before.
+      const user = await getCachedUser();
+      await storage.removeItem(dailyPromptKey("reassessment", user?.id || "anonymous", date));
+    }
+    setShowAssessmentDate(false);
+    setShowReassessment(false);
+    setScreenCache("home", undefined);
+    promptsEvaluatedFor.current = "";
+    await load();
+  }, [load, savingAssessmentDate]);
   const calendarDays = useMemo(() => {
     const map: Record<string, CalendarDay> = {};
     for (const day of checkIn.days) map[day.date] = { status: day.status, medal: Boolean(day.medal) };
@@ -864,6 +894,9 @@ export default function HomeScreen() {
                 overridden={isAppDateOverridden()}
                 onShift={(days) => { void changeAppDate(shiftedAppDate(days)); }}
                 onReset={() => { void changeAppDate(null); }}
+                assessmentDate={hasInitialAssessment && assessmentDueDate ? assessmentDueDate : undefined}
+                assessmentPinned={assessmentDatePinned}
+                onSetAssessmentDate={() => setShowAssessmentDate(true)}
               />
             ) : null}
             <View style={styles.headerActions}>
@@ -889,6 +922,9 @@ export default function HomeScreen() {
                 overridden={isAppDateOverridden()}
                 onShift={(days) => { void changeAppDate(shiftedAppDate(days)); }}
                 onReset={() => { void changeAppDate(null); }}
+                assessmentDate={hasInitialAssessment && assessmentDueDate ? assessmentDueDate : undefined}
+                assessmentPinned={assessmentDatePinned}
+                onSetAssessmentDate={() => setShowAssessmentDate(true)}
               />
             </View>
           ) : null}
@@ -1095,6 +1131,16 @@ export default function HomeScreen() {
         date={todayIso}
         onStart={() => { setShowReassessment(false); startNextSession(); }}
         onLater={() => setShowReassessment(false)}
+      />
+      <AssessmentDateModal
+        visible={showAssessmentDate}
+        appDate={todayIso}
+        currentDate={assessmentDueDate || undefined}
+        pinned={assessmentDatePinned}
+        saving={savingAssessmentDate}
+        onSave={(date) => { void setNextAssessmentDate(date); }}
+        onReset={() => { void setNextAssessmentDate(null); }}
+        onClose={() => setShowAssessmentDate(false)}
       />
       <MedalAwardModal
         visible={!hundredPointAward && showMedal}
