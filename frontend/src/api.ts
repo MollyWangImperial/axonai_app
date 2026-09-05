@@ -317,6 +317,8 @@ export type Assessment = {
   created_at: string;
   affected_side: string;
   assessment_package?: AssessmentPackageId;
+  testing_shortcut?: boolean;
+  result_provenance?: "observed_assessment" | "generated_testing_sample" | string;
   assigned_task_ids?: string[];
   metrics?: FunctionalMetrics;
   patient_parameters?: { age_band?: string; [key: string]: unknown };
@@ -538,6 +540,15 @@ export async function fetchHistory(): Promise<Assessment[]> {
     throw new Error(body?.detail || "Could not load assessment history");
   }
   return res.json();
+}
+
+export async function completeInitialAssessmentForTesting(): Promise<Assessment> {
+  const res = await authedFetch("/api/assessment/complete-for-testing", { method: "POST" });
+  const body = await res.json().catch(() => null);
+  if (!res.ok) {
+    throw new Error(body?.detail || "Could not finish the assessment for testing");
+  }
+  return body as Assessment;
 }
 
 export async function fetchTaskVideos(packageId: AssessmentPackageId = "initial"): Promise<TaskVideo[]> {

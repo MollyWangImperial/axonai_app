@@ -1,10 +1,12 @@
 import { useState } from "react";
-import { Pressable, StyleSheet, Text, View } from "react-native";
+import { ActivityIndicator, Pressable, StyleSheet, Text, View } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 
+import { completeInitialAssessmentForTesting } from "@/src/api";
+import { cacheAssessmentActivity, getUserId } from "@/src/auth";
 import { colors, radius, spacing } from "@/src/theme";
 import { storage } from "@/src/utils/storage";
 
@@ -16,6 +18,9 @@ export default function SessionCheckScreen() {
   const params = useLocalSearchParams<{ target?: string; id?: string; mode?: string; package?: string; task_ids?: string }>();
   const [actor, setActor] = useState<SessionActor | null>(null);
   const [safetyAck, setSafetyAck] = useState(false);
+  const [finishingSample, setFinishingSample] = useState(false);
+  const [sampleError, setSampleError] = useState<string | null>(null);
+  const isInitialAssessment = params.target === "assessment" && params.mode !== "followup";
 
   const continueToSession = async () => {
     if (!actor || !safetyAck) return;
@@ -34,6 +39,26 @@ export default function SessionCheckScreen() {
         task_ids: params.task_ids || "",
       },
     });
+  };
+
+  const finishAssessmentForTesting = async () => {
+    if (finishingSample) return;
+    setFinishingSample(true);
+    setSampleError(null);
+    try {
+      const assessment = await completeInitialAssessmentForTesting();
+      const userId = await getUserId();
+      if (userId) {
+        await cacheAssessmentActivity(userId, assessment.id, assessment.created_at, true);
+      }
+      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      router.replace({ pathname: "/rehab-plan", params: { id: assessment.id, entry: "assessment_complete" } });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Could not skip the assessment for testing.";
+      setSampleError(message);
+    } finally {
+      setFinishingSample(false);
+    }
   };
 
   return (
@@ -65,9 +90,30 @@ export default function SessionCheckScreen() {
           </View>
         </Pressable>
       </View>
-      <Pressable testID="session-actor-continue" disabled={!actor || !safetyAck} onPress={continueToSession} style={[styles.continueButton, (!actor || !safetyAck) && { opacity: 0.4 }]}>
-        <Text style={styles.continueText}>Continue</Text>
-      </Pressable>
+      <View style={styles.footer}>
+        <Pressable testID="session-actor-continue" disabled={!actor || !safetyAck || finishingSample} onPress={continueToSession} style={[styles.continueButton, (!actor || !safetyAck || finishingSample) && { opacity: 0.4 }]}>
+          <Text style={styles.continueText}>Continue</Text>
+        </Pressable>
+        {isInitialAssessment && (
+          <>
+            <Pressable
+              testID="session-finish-sample-assessment"
+              accessibilityRole="button"
+              accessibilityLabel="Skip assessment and open rehab plan"
+              disabled={finishingSample}
+              onPress={finishAssessmentForTesting}
+              style={[styles.sampleButton, finishingSample && styles.buttonDisabled]}
+            >
+              {finishingSample
+                ? <ActivityIndicator color={colors.brandPrimary} />
+                : <Ionicons name="play-skip-forward-outline" size={20} color={colors.brandPrimary} />}
+              <Text style={styles.sampleButtonText}>{finishingSample ? "Preparing sample..." : "Skip assessment and open rehab plan"}</Text>
+            </Pressable>
+            <Text style={styles.sampleNote}>Testing only: creates a clearly labelled sample result and opens your rehab plan.</Text>
+            {sampleError && <Text style={styles.sampleError}>{sampleError}</Text>}
+          </>
+        )}
+      </View>
     </View>
   );
 }
@@ -86,6 +132,12 @@ const styles = StyleSheet.create({
   optionBody: { fontSize: 13, lineHeight: 18, color: colors.onSurfaceSecondary, marginTop: 2 },
   continueButton: { width: "100%", maxWidth: 560, alignSelf: "center", minHeight: 56, borderRadius: radius.md, backgroundColor: colors.brandPrimary, alignItems: "center", justifyContent: "center" },
   continueText: { color: colors.onBrandPrimary, fontSize: 17, fontWeight: "800" },
+  footer: { width: "100%", maxWidth: 560, alignSelf: "center", gap: spacing.sm },
+  sampleButton: { width: "100%", minHeight: 52, borderRadius: radius.md, borderWidth: 2, borderColor: colors.brandPrimary, backgroundColor: colors.surface, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: spacing.sm },
+  sampleButtonText: { color: colors.brandPrimary, fontSize: 16, fontWeight: "800" },
+  sampleNote: { color: colors.onSurfaceSecondary, fontSize: 12, lineHeight: 17, textAlign: "center" },
+  sampleError: { color: colors.error, fontSize: 13, lineHeight: 18, textAlign: "center", fontWeight: "700" },
+  buttonDisabled: { opacity: 0.6 },
   safetyCard: { flexDirection: "row", alignItems: "flex-start", gap: spacing.sm, marginTop: spacing.md, padding: spacing.md, borderRadius: radius.md, borderWidth: 2, borderColor: colors.border, backgroundColor: colors.surface },
   safetyCardActive: { borderColor: colors.brandPrimary, backgroundColor: colors.brandTertiary },
   safetyTitle: { fontSize: 15, fontWeight: "800", color: colors.onSurface },

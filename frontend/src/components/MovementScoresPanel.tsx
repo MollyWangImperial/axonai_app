@@ -76,7 +76,7 @@ function domainIcon(domain: DomainId, color: string, compact: boolean) {
   return <MaterialCommunityIcons name="walk" size={size} color={color} />;
 }
 
-export function MovementScoresPanel({ domains, metrics }: { domains: BodyFunctionDomainSummary[]; metrics?: FunctionalMetrics }) {
+export function MovementScoresPanel({ domains, metrics, isSample = false }: { domains: BodyFunctionDomainSummary[]; metrics?: FunctionalMetrics; isSample?: boolean }) {
   const { width } = useWindowDimensions();
   const { palette } = useDisplayPreferences();
   const compact = width < 760;
@@ -104,7 +104,11 @@ export function MovementScoresPanel({ domains, metrics }: { domains: BodyFunctio
       <View style={[styles.header, compact && styles.headerCompact]}>
         <View style={styles.headerCopy}>
           <Text style={[styles.title, compact && styles.titleCompact, { color: palette.text }]}>Your movement scores</Text>
-          <Text style={[styles.subtitle, compact && styles.subtitleCompact, { color: palette.muted }]}>Based on today&apos;s guided movement tasks. Higher means steadier movement.</Text>
+          <Text style={[styles.subtitle, compact && styles.subtitleCompact, { color: palette.muted }]}>
+            {isSample
+              ? "Generated for testing only. Higher sample values represent steadier movement."
+              : "Based on today's guided movement tasks. Higher means steadier movement."}
+          </Text>
         </View>
         <View style={styles.measureNote}>
           <Ionicons name="information-circle-outline" size={20} color="#38614B" />

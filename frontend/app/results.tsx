@@ -103,6 +103,9 @@ export default function ResultsScreen() {
   const [surveyPins, setSurveyPins] = useState<SurveyPin[]>(getScreenCache<SurveyPin[]>("survey-problems") ?? []);
   const [selectedMapDomain, setSelectedMapDomain] = useState<"upper_limb" | "hand" | "lower_limb" | null>(null);
   const isDemo = id === DEMO_ASSESSMENT_ID;
+  const isGeneratedSample = assessment?.testing_shortcut === true
+    || assessment?.result_provenance === "generated_testing_sample";
+  const isSample = isDemo || isGeneratedSample;
   const [profileAgeBand, setProfileAgeBand] = useState<string | null>(null);
 
   useEffect(() => {
@@ -245,8 +248,8 @@ export default function ResultsScreen() {
 
   const shareSnapshot = () => {
     void Share.share({
-      title: isDemo ? "Rehyn demo movement snapshot" : "My Rehyn movement snapshot",
-      message: isDemo ? "This is a sample Rehyn movement snapshot, not a patient result." : `${data?.insights.headline || "My movement assessment is complete."} ${mainTitle}.`,
+      title: isSample ? "Rehyn sample movement snapshot" : "My Rehyn movement snapshot",
+      message: isSample ? "This is a generated sample Rehyn movement snapshot, not a patient measurement." : `${data?.insights.headline || "My movement assessment is complete."} ${mainTitle}.`,
     });
   };
 
@@ -283,7 +286,7 @@ export default function ResultsScreen() {
         <View style={styles.headerCopy}>
           <Text style={[styles.headerTitle, isWide && styles.headerTitleWide]}>Movement snapshot</Text>
           <Text style={[styles.headerDate, isWide && styles.headerDateWide]}>{new Date(data.created_at).toLocaleDateString(undefined, { day: "numeric", month: "long", year: "numeric" })}</Text>
-          {isDemo && <View style={styles.samplePill}><Text style={styles.samplePillText}>Sample result</Text></View>}
+          {isSample && <View style={styles.samplePill}><Text style={styles.samplePillText}>Sample result</Text></View>}
         </View>
         <Pressable onPress={shareSnapshot} style={styles.headerButton} accessibilityLabel="Share movement snapshot"><Ionicons name="share-outline" size={23} color="#174834" /></Pressable>
       </View>
@@ -291,8 +294,8 @@ export default function ResultsScreen() {
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
         <View style={[styles.report, { width: reportWidth }]}>
           <DisclaimerBanner />
-          {isDemo && <View style={styles.demoBanner}><Ionicons name="sparkles" size={20} color="#675080" /><Text style={styles.demoBannerText}>Sample data for preview only. This is not your assessment result.</Text></View>}
-          <MovementScoresPanel domains={data.body_function_summary.domains} metrics={data.functional_metrics} />
+          {isSample && <View style={styles.demoBanner}><Ionicons name="sparkles" size={20} color="#675080" /><Text style={styles.demoBannerText}>Generated sample data for testing only. No camera movements were measured.</Text></View>}
+          <MovementScoresPanel domains={data.body_function_summary.domains} metrics={data.functional_metrics} isSample={isSample} />
           {isDemo
             ? <DailyActivitiesBoard activities={DEMO_DAILY_ACTIVITIES} title="What this means for daily life" sectionHeading />
             : <DailyActivitiesPanel title="What this means for daily life" sectionHeading />}

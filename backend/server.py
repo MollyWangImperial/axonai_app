@@ -738,6 +738,8 @@ class Assessment(BaseModel):
     created_at: str
     affected_side: str
     assessment_package: str = "upper_limb"
+    testing_shortcut: bool = False
+    result_provenance: str = "observed_assessment"
     assigned_task_ids: List[str] = Field(default_factory=list)
     patient_parameters: Dict[str, Any] = Field(default_factory=dict)
     task_results: List[TaskResult]
@@ -3191,26 +3193,154 @@ def _assessment_patient_parameters(
     return merged
 
 
+def _generated_testing_sample_task_results(
+    assigned_task_ids: Sequence[str],
+) -> Tuple[List[TaskResult], str]:
+    """Create a visibly synthetic, internally consistent movement sample."""
+    initial_tasks = {
+        str(task["id"]): task
+        for task in ASSESSMENT_PACKAGES["initial"]["tasks"]
+    }
+    variant_index = secrets.randbelow(4)
+    variant = ("steady", "building_hand_control", "building_walking_control", "building_reach_control")[variant_index]
+    shoulder_elevation = (82.0, 76.0, 88.0, 68.0)[variant_index]
+    trunk_lean = (19.5, 21.0, 20.0, 26.0)[variant_index]
+    hand_open = (0.88, 0.67, 0.81, 0.76)[variant_index]
+    pinch_control = (0.85, 0.64, 0.78, 0.72)[variant_index]
+    gait_symmetry = (0.86, 0.79, 0.68, 0.76)[variant_index]
+
+    results: List[TaskResult] = []
+    for task_id in assigned_task_ids:
+        task = initial_tasks.get(str(task_id))
+        if not task:
+            continue
+        steps = [
+            TaskStepResult(
+                step_id=str(step["id"]),
+                completed=True,
+                duration_ms=1400 + secrets.randbelow(901),
+                metrics={},
+            )
+            for step in task.get("steps", [])
+        ]
+        metrics: Dict[str, Any] = {"generated_testing_sample": True}
+        if task_id == "T1":
+            metrics.update({
+                "shoulder_elevation_deg": shoulder_elevation,
+                "trunk_lean_deg": trunk_lean,
+                "shoulder_hike": variant == "building_reach_control",
+            })
+        elif task_id == "T2":
+            metrics["shoulder_elevation_deg"] = shoulder_elevation
+        elif task_id in {"H1", "H4"}:
+            metrics["hand_open_score"] = hand_open
+        elif task_id == "H3":
+            metrics["pinch_score"] = pinch_control
+        elif task_id == "L6":
+            metrics.update({
+                "gait_bilateral_motion_symmetry": gait_symmetry,
+                "gait_full_body_visibility_ratio": 0.94,
+                "uploaded_video_duration_ms": 7200,
+            })
+        results.append(TaskResult(
+            task_id=str(task_id),
+            completed_steps=len(steps),
+            total_steps=len(steps),
+            duration_ms=sum(step.duration_ms for step in steps),
+            steps=steps,
+            metrics=metrics,
+        ))
+    return results, variant
+
+
+@api_router.post("/assessment/complete-for-testing", response_model=Assessment)
+async def complete_initial_assessment_for_testing(request: Request):
+    """Skip camera collection and persist a labelled sample for prototype testing."""
+    user = await _user_from_header(dict(request.headers))
+    if not user:
+        raise HTTPException(status_code=401, detail="Sign in required")
+    _require_health_data_consent(user)
+
+    existing = await _care_assessments_for_user(user["id"])
+    if existing:
+        latest = max(existing, key=lambda item: str(item.get("created_at") or ""))
+        earliest_created_at = min(
+            (str(item.get("created_at") or "") for item in existing if item.get("created_at")),
+            default=str(latest.get("created_at") or datetime.now(timezone.utc).isoformat()),
+        )
+        await _record_initial_assessment_completion(
+            user,
+            earliest_created_at,
+            source="testing_shortcut_existing_history",
+        )
+        _record_alira_action(
+            "assessment_testing_shortcut_opened_existing",
+            source="assessment_testing_shortcut",
+            user_id=user["id"],
+            status="completed",
+            details={"assessment_id": latest.get("id")},
+        )
+        return Assessment(**latest)
+
+    assigned_task_ids = _validated_assigned_task_ids("initial", None)
+    task_results, sample_variant = _generated_testing_sample_task_results(assigned_task_ids)
+    request.state.assessment_testing_shortcut = True
+    profile = user.get("profile") or {}
+    affected_side = "left" if str(profile.get("side_affected") or "").lower() == "left" else "right"
+    return await submit_assessment(
+        AssessmentSubmit(
+            task_results=task_results,
+            affected_side=affected_side,
+            assessment_package="initial",
+            assigned_task_ids=assigned_task_ids,
+            patient_parameters={"generated_testing_sample": True},
+            motion_data={
+                "schema_version": "generated-testing-sample-v1",
+                "generated_testing_sample": True,
+                "sample_variant": sample_variant,
+                "frames": [],
+            },
+        ),
+        request,
+    )
+
+
 @api_router.post("/assessment/submit", response_model=Assessment)
 async def submit_assessment(payload: AssessmentSubmit, request: Request):
     user = await _user_from_header(dict(request.headers))
     if not user:
         raise HTTPException(status_code=401, detail="Sign in required")
+    testing_shortcut = bool(getattr(request.state, "assessment_testing_shortcut", False))
     assigned_task_ids = _validated_assigned_task_ids(payload.assessment_package, payload.assigned_task_ids)
-    access = await _assessment_access_plan(user, payload.assessment_package, assigned_task_ids)
-    await consume_credits(user["id"], "assessment")
+    access = (
+        {
+            "due": True,
+            "trigger": "initial",
+            "packages": ["initial"],
+            "task_ids": assigned_task_ids,
+            "issue_report_id": None,
+        }
+        if testing_shortcut
+        else await _assessment_access_plan(user, payload.assessment_package, assigned_task_ids)
+    )
+    if not testing_shortcut:
+        await consume_credits(user["id"], "assessment")
     patient_parameters = _assessment_patient_parameters(payload.patient_parameters, user)
     assessment_id = str(uuid.uuid4())
     task_ids = [task.task_id for task in payload.task_results]
     if set(task_ids) != set(assigned_task_ids):
         raise HTTPException(status_code=422, detail="Submitted task results must match the assigned assessment tasks")
     patient_parameters["assigned_task_ids"] = assigned_task_ids
-    video_records = await _latest_task_videos(
+    video_records = {} if testing_shortcut else await _latest_task_videos(
         user["id"] if user else "",
         payload.assessment_package,
         task_ids,
     )
     model_analysis = build_model_analysis_manifest(assessment_id, task_ids, video_records)
+    if testing_shortcut:
+        model_analysis["status"] = "generated_testing_sample"
+        for task_state in model_analysis.get("tasks", []):
+            task_state["status"] = "generated_testing_sample"
     skipped_task_ids = {
         task.task_id for task in payload.task_results
         if bool((task.metrics or {}).get("walking_skipped"))
@@ -3219,14 +3349,15 @@ async def submit_assessment(payload: AssessmentSubmit, request: Request):
         if str(task_state.get("task_id")) in skipped_task_ids:
             task_state["status"] = "not_observed_patient_skipped"
     model_analysis["gpu_stage"] = {
-        "status": "queued" if LOCAL_GPU_WORKER_URL else "not_configured",
-        "device": "cuda:0" if LOCAL_GPU_WORKER_URL else None,
+        "status": "generated_testing_sample" if testing_shortcut else "queued" if LOCAL_GPU_WORKER_URL else "not_configured",
+        "device": None if testing_shortcut else "cuda:0" if LOCAL_GPU_WORKER_URL else None,
     }
     walking_video_ready = bool((video_records.get("L6") or {}).get("id"))
     walking_was_skipped = "L6" in skipped_task_ids
     model_analysis["musculoskeletal_stage"] = {
         "status": (
-            "queued" if LOCAL_GPU_WORKER_URL and walking_video_ready
+            "generated_testing_sample" if testing_shortcut
+            else "queued" if LOCAL_GPU_WORKER_URL and walking_video_ready
             else "not_observed_patient_skipped" if walking_was_skipped
             else "waiting_for_walking_video" if LOCAL_GPU_WORKER_URL
             else "not_configured"
@@ -3296,6 +3427,24 @@ async def submit_assessment(payload: AssessmentSubmit, request: Request):
     plan = survey_rehab_plan(survey_profile)
     if str(survey_profile.get("movement_pain") or "").lower() == "severe_or_worsening":
         clinical_review_gate = _clinical_gate_with_survey_hold(clinical_review_gate, survey_profile)
+    elif testing_shortcut:
+        clinical_review_gate = _clinical_gate_with_core_plan(
+            {
+                **clinical_review_gate,
+                "status": "clear",
+                "rehab_access": "allowed",
+                "reason_code": "generated_testing_sample",
+            },
+            plan,
+        )
+        clinical_review_gate.update({
+            "reason_code": "generated_testing_sample",
+            "patient_title": "Your sample rehab plan is ready",
+            "patient_message": (
+                "This testing shortcut created sample movement results without camera measurement. "
+                "The current four-exercise programme is the same for every patient account."
+            ),
+        })
     elif clinical_review_gate.get("status") in {"awaiting_model_analysis", "clear", "no_rehab_needed"}:
         clinical_review_gate = _clinical_gate_with_core_plan(clinical_review_gate, plan)
     else:
@@ -3305,11 +3454,11 @@ async def submit_assessment(payload: AssessmentSubmit, request: Request):
             **clinical_review_gate,
             "rehab_plan_source": "fixed_core_programme",
         }
-    if plan and clinical_review_gate.get("rehab_access") == "allowed":
+    if plan and clinical_review_gate.get("rehab_access") == "allowed" and not testing_shortcut:
         await consume_credits(user["id"], "rehab_plan")
     _record_alira_action(
         "rehab_plan_issued",
-        source="assessment_submit",
+        source="assessment_testing_shortcut" if testing_shortcut else "assessment_submit",
         user_id=user["id"],
         status="completed" if plan else "empty",
         details={
@@ -3327,6 +3476,8 @@ async def submit_assessment(payload: AssessmentSubmit, request: Request):
         created_at=datetime.now(timezone.utc).isoformat(),
         affected_side=payload.affected_side,
         assessment_package=payload.assessment_package,
+        testing_shortcut=testing_shortcut,
+        result_provenance="generated_testing_sample" if testing_shortcut else "observed_assessment",
         assigned_task_ids=assigned_task_ids,
         task_results=payload.task_results,
         functional_issues=issues,
@@ -3354,6 +3505,13 @@ async def submit_assessment(payload: AssessmentSubmit, request: Request):
     doc["patient_insights"] = build_patient_insights(
         body_function_summary, {}, {}, model_analysis
     )
+    if testing_shortcut:
+        doc["patient_insights"].update({
+            "badge": "Generated sample",
+            "headline": "Your sample movement snapshot is ready",
+            "summary": "These values were generated for testing and were not measured by the camera.",
+            "reporting_rule": "Generated sample data for product testing only; this is not a patient measurement or clinical result.",
+        })
     doc["user_id"] = user["id"]
     doc["account_email"] = str(user.get("email") or "").strip().lower()
     doc["assessment_trigger"] = access.get("trigger")
@@ -3372,7 +3530,7 @@ async def submit_assessment(payload: AssessmentSubmit, request: Request):
     await _mark_functional_issue_assessed(user["id"], access.get("issue_report_id"), assessment_id)
     _record_alira_action(
         "movement_snapshot_generated",
-        source="assessment_pipeline",
+        source="assessment_testing_shortcut" if testing_shortcut else "assessment_pipeline",
         user_id=user["id"],
         details={
             "assessment_id": assessment_id,
@@ -3381,7 +3539,7 @@ async def submit_assessment(payload: AssessmentSubmit, request: Request):
     )
     _record_alira_action(
         "assessment_completed",
-        source="assessment_runner",
+        source="assessment_testing_shortcut" if testing_shortcut else "assessment_runner",
         user_id=user["id"],
         details={
             "assessment_id": assessment_id,
@@ -3392,7 +3550,7 @@ async def submit_assessment(payload: AssessmentSubmit, request: Request):
             "exercise_ids": [exercise.id for exercise in plan],
         },
     )
-    if LOCAL_GPU_WORKER_URL and ANALYSIS_WORKER_TOKEN and (payload.motion_data or video_records):
+    if not testing_shortcut and LOCAL_GPU_WORKER_URL and ANALYSIS_WORKER_TOKEN and (payload.motion_data or video_records):
         asyncio.create_task(_queue_local_gpu_stage(
             assessment_id,
             payload.motion_data,
