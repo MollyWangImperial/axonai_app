@@ -157,6 +157,8 @@ def test_frontend_exposes_shortcut_and_labels_generated_results():
     assert 'testID="session-finish-sample-assessment"' in session_check
     assert "completeInitialAssessmentForTesting" in session_check
     assert "Skip assessment and open rehab plan" in session_check
+    assert "ScrollView" in session_check
+    assert session_check.index('testID="session-finish-sample-assessment"') < session_check.index('testID="session-actor-patient"')
     assert "No camera movements were measured" in results
     assert 'pathname: "/rehab-plan"' in session_check
     assert 'entry: "assessment_complete"' in session_check
