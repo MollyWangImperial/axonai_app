@@ -31,10 +31,9 @@ def test_login_rejects_missing_or_incorrect_trial_code(monkeypatch):
     assert missing.json()["detail"] == "The trial code is not valid."
 
 
-def test_testing_phase_signs_anyone_in_without_a_trial_code(monkeypatch):
-    """The check is off by default (REHYN_ENFORCE_TRIAL_CODE unset): sign-in works with
-    no code or a wrong code, and the check is the only thing that changes."""
-    assert server.TRIAL_ACCESS_CHECK_ENABLED is False
+def test_trial_code_is_required_by_default_with_explicit_development_override(monkeypatch):
+    assert server.TRIAL_ACCESS_CHECK_ENABLED is True
+    monkeypatch.setattr(server, "TRIAL_ACCESS_CHECK_ENABLED", False)
     monkeypatch.setattr(server, "REHYN_TRIAL_ACCESS_CODE", "test-trial-code")
 
     async def fake_get_or_create_user(email, name, role="patient"):
@@ -52,13 +51,14 @@ def test_testing_phase_signs_anyone_in_without_a_trial_code(monkeypatch):
 
     assert no_code.status_code == 200 and no_code.json()["trial_access_granted"] is True
     assert wrong_code.status_code == 200 and wrong_code.json()["trial_access_granted"] is True
-    # The frontend no longer blocks an empty code either.
+    # The patient-facing form must always ask for the code.
     frontend_root = server.ROOT_DIR.parent / "frontend"
     auth = (frontend_root / "src" / "auth.ts").read_text(encoding="utf-8")
     sign_in = (frontend_root / "app" / "sign-in.tsx").read_text(encoding="utf-8")
-    assert 'throw new Error("Enter your trial code to continue.")' not in auth
-    assert "!trialCode.trim()" not in sign_in
-    assert "optional while Rehyn is in testing" in sign_in
+    assert 'throw new Error("Enter your trial code to continue.")' in auth
+    assert "!trialCode.trim()" in sign_in
+    assert "Trial access is required to use Rehyn." in sign_in
+    assert "optional while Rehyn is in testing" not in sign_in
 
 
 def test_login_and_signup_grant_access_only_after_valid_code(monkeypatch):

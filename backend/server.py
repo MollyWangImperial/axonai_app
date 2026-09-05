@@ -12,7 +12,7 @@ import io
 import base64
 import logging
 from pathlib import Path
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, EmailStr, Field, field_validator
 from typing import List, Dict, Any, Optional, Sequence, Tuple
 import uuid
 import re
@@ -133,20 +133,22 @@ except Exception:
     OpenAITextToSpeech = None
 
 ROOT_DIR = Path(__file__).parent
-load_dotenv(ROOT_DIR / ".env", override=True)
+load_dotenv(ROOT_DIR / ".env", override=False)
 logger = logging.getLogger(__name__)
 REHYN_TRIAL_ACCESS_CODE = os.environ.get("REHYN_TRIAL_ACCESS_CODE", "").strip()
-# TESTING PHASE: the trial-code check is switched off so anyone can sign in.
-# To restore it, set REHYN_ENFORCE_TRIAL_CODE=1 on the server (Render ->
-# Environment) - the check itself is unchanged and still tested.
-TRIAL_ACCESS_CHECK_ENABLED = os.environ.get("REHYN_ENFORCE_TRIAL_CODE", "").strip().lower() in {"1", "true", "yes"}
+# Trial access is required unless an explicit development override disables it.
+TRIAL_ACCESS_CHECK_ENABLED = bool(os.environ.get("RENDER")) or os.environ.get(
+    "REHYN_ENFORCE_TRIAL_CODE", "1"
+).strip().lower() not in {"0", "false", "no"}
 
 
 def _require_trial_access_code(candidate: Optional[str]) -> None:
     if not TRIAL_ACCESS_CHECK_ENABLED:
         return
     supplied = str(candidate or "").strip()
-    if not REHYN_TRIAL_ACCESS_CODE or not supplied or not hmac.compare_digest(supplied, REHYN_TRIAL_ACCESS_CODE):
+    if not REHYN_TRIAL_ACCESS_CODE or not supplied or not hmac.compare_digest(
+        supplied.encode("utf-8"), REHYN_TRIAL_ACCESS_CODE.encode("utf-8")
+    ):
         raise HTTPException(status_code=403, detail="The trial code is not valid.")
 
 # MongoDB
@@ -13048,10 +13050,18 @@ EMERGENT_LLM_KEY = os.environ.get("EMERGENT_LLM_KEY", "")
 
 # ============ Users & Credits ============
 class UserSignup(BaseModel):
-    email: str
-    name: str
+    email: EmailStr
+    name: str = Field(min_length=1, max_length=120)
     role: str = "patient"  # "patient" | "therapist"
     trial_code: str = ""
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, value: str) -> str:
+        name = value.strip()
+        if not name:
+            raise ValueError("Enter your name to continue.")
+        return name
 
 
 class LoginHandoffCompletion(BaseModel):
@@ -13246,13 +13256,20 @@ async def _find_or_create_user_account(email: str, name: str, role: str = "patie
     }
     if mongo_available:
         try:
-            # Idempotent create: two first sign-ins racing each other cannot
-            # produce duplicate account documents ("id" comes from the filter).
+            # MongoDB's built-in unique _id makes concurrent first sign-ins for
+            # the same normalized email idempotent, even before optional indexes
+            # have been created after an outage.
             await db.users.update_one(
-                {"id": doc["id"]},
-                {"$setOnInsert": {key: value for key, value in doc.items() if key != "id"}},
+                {"_id": doc["id"]},
+                {"$setOnInsert": doc},
                 upsert=True,
             )
+            stored = await db.users.find_one({"_id": doc["id"]}, {"_id": 0})
+            if not stored:
+                raise RuntimeError("The new account could not be read back from MongoDB")
+            # A concurrent sign-in may already have saved progress. Return the
+            # durable document instead of the empty template from this request.
+            doc = {key: value for key, value in stored.items() if key != "_id"}
         except Exception as e:
             _require_durable_patient_store("account creation", e)
             logger.warning(f"Mongo unavailable for user insert; using local fallback: {str(e)[:120]}")
@@ -13271,6 +13288,7 @@ async def _grant_trial_access(user: Dict[str, Any]) -> Dict[str, Any]:
         {
             "trial_access_granted": True,
             "trial_access_granted_at": datetime.now(timezone.utc).isoformat(),
+            "last_login_at": datetime.now(timezone.utc).isoformat(),
         },
         context="trial-access update",
     )

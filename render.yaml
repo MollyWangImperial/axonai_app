@@ -10,8 +10,12 @@ services:
         sync: false
       - key: DB_NAME
         value: rehyn
+      - key: ALLOW_EPHEMERAL_PATIENT_STATE
+        value: "0"
       - key: REHYN_TRIAL_ACCESS_CODE
         sync: false
+      - key: REHYN_ENFORCE_TRIAL_CODE
+        value: "1"
       - key: OPENAI_API_KEY
         sync: false
       - key: TTS_VOICE

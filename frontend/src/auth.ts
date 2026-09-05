@@ -151,9 +151,8 @@ export async function signIn(email: string, name: string, role: "patient" | "the
     storage.getItem("active_user_obj_v1", ""),
   ]);
   const savedTrialCode = await storage.secureGet(TRIAL_ACCESS_KEY, "");
-  // TESTING PHASE: the trial code is optional (the server accepts sign-in
-  // without checking it until REHYN_ENFORCE_TRIAL_CODE is set again).
-  const accessCode = (trialCode || savedTrialCode || "").trim();
+  const accessCode = (trialCode ?? savedTrialCode ?? "").trim();
+  if (!accessCode) throw new Error("Enter your trial code to continue.");
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), SIGN_IN_TIMEOUT_MS);
   let r: Response;
@@ -173,7 +172,11 @@ export async function signIn(email: string, name: string, role: "patient" | "the
   }
   if (!r.ok) {
     const body = await r.json().catch(() => null);
-    throw new Error(body?.detail || "Sign-in failed. Try again.");
+    throw new Error(typeof body?.detail === "string"
+      ? body.detail
+      : r.status === 422
+        ? "Check your name and email address and try again."
+        : "Sign-in failed. Try again.");
   }
   const u: Me = await r.json();
   if (u.trial_access_granted !== true) throw new Error("Trial access could not be confirmed.");

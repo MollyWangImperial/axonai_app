@@ -333,6 +333,10 @@ export default function SignInScreen() {
       setErr("Enter a valid email address.");
       return;
     }
+    if (!trialCode.trim()) {
+      setErr("Enter your trial code to continue.");
+      return;
+    }
 
     setLoading(true);
     setErr(null);
@@ -575,7 +579,7 @@ export default function SignInScreen() {
                     <Ionicons name={showTrialCode ? "eye-off-outline" : "eye-outline"} size={22} color={MUTED} />
                   </Pressable>
                 </View>
-                <Text style={styles.trialHint}>The trial code is optional while Rehyn is in testing.</Text>
+                <Text style={styles.trialHint}>Trial access is required to use Rehyn.</Text>
 
                 {err ? <Text accessibilityRole="alert" testID="signin-error" style={styles.error}>{err}</Text> : null}
                 <Pressable testID="signin-submit" disabled={loading} onPress={submit} style={({ pressed }) => [styles.submitButton, loading && styles.disabled, pressed && !loading && styles.buttonPressed]}>
