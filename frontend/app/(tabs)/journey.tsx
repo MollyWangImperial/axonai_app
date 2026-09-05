@@ -57,6 +57,8 @@ export default function JourneyScreen() {
   const [loading, setLoading] = useState(!cached);
   const [showComposer, setShowComposer] = useState(false);
   const [draft, setDraft] = useState("");
+  const [savingEntry, setSavingEntry] = useState(false);
+  const [saveError, setSaveError] = useState("");
   const [demoMode, setDemoMode] = useState(cached?.demoMode ?? false);
   const [exercisesCompleted, setExercisesCompleted] = useState(cached?.exercisesCompleted ?? 0);
   const [sessionDays, setSessionDays] = useState(cached?.sessionDays ?? 0);
@@ -112,12 +114,20 @@ export default function JourneyScreen() {
   }, [action]));
 
   const saveEntry = async () => {
-    if (!draft.trim()) return;
-    const nextEntries = await addJournalEntry(draft);
-    setEntries(nextEntries);
-    setScreenCache<JourneyScreenCache>("journey", { history, entries: nextEntries, demoMode, exercisesCompleted, sessionDays, carePlan });
-    setDraft("");
-    setShowComposer(false);
+    if (!draft.trim() || savingEntry) return;
+    setSavingEntry(true);
+    setSaveError("");
+    try {
+      const nextEntries = await addJournalEntry(draft);
+      setEntries(nextEntries);
+      setScreenCache<JourneyScreenCache>("journey", { history, entries: nextEntries, demoMode, exercisesCompleted, sessionDays, carePlan });
+      setDraft("");
+      setShowComposer(false);
+    } catch (error) {
+      setSaveError(error instanceof Error ? error.message : "Your note could not be saved. Please try again.");
+    } finally {
+      setSavingEntry(false);
+    }
   };
 
   const askAlira = (prompt: string) => router.push({ pathname: "/chat", params: { prompt } });
@@ -263,7 +273,8 @@ export default function JourneyScreen() {
               <Pressable onPress={() => setShowComposer(false)}><Ionicons name="close" size={26} color={palette.text} /></Pressable>
             </View>
             <TextInput testID="journey-entry-input" value={draft} onChangeText={setDraft} multiline autoFocus placeholder="What felt different today?" placeholderTextColor={palette.muted} style={[styles.input, { backgroundColor: palette.soft, color: palette.text }]} />
-            <Pressable testID="journey-save-entry" disabled={!draft.trim()} onPress={saveEntry} style={[styles.saveButton, !draft.trim() && { opacity: 0.4 }]}>
+            {!!saveError && <Text accessibilityRole="alert" style={{ color: palette.text }}>{saveError}</Text>}
+            <Pressable testID="journey-save-entry" disabled={!draft.trim() || savingEntry} onPress={saveEntry} style={[styles.saveButton, (!draft.trim() || savingEntry) && { opacity: 0.4 }]}>
               <Text style={styles.saveButtonText}>Save entry</Text>
             </Pressable>
           </View>

@@ -26,6 +26,57 @@ Final result: passed.
 
 ---
 
+# Design QA: Affected-arm Movement Spectrum
+
+Source visual truth: `C:\Users\LENOVO\AppData\Local\Temp\codex-clipboard-9d330231-65b1-4bf5-8b33-672b4d24e007.png`
+
+Implementation evidence:
+
+- Desktop selected state: `D:\repos\axonai_app_conflict_290826_1558\.codex-qa\affected-arm-spectrum-desktop.png`
+- Local QA route: `http://localhost:4175/onboarding`
+- Reference: 1999 × 786 pixels. Implementation capture: 1999 × 782 pixels.
+- State: question 8 of 19, “With help” selected, default text scale, light theme.
+
+## Full-view comparison evidence
+
+- The final implementation and reference were inspected together at original resolution in a single comparison pass.
+- The content order matches the reference: question and safety helper, centered picture prompt, four-step movement spectrum, and two large secondary choices.
+- The four circular pictures use one consistent older patient, chair, palette, crop, and illustration treatment. The selected state uses the reference’s green halo, stronger border, and check badge.
+- The horizontal line and “More movement” / “Less movement” cues preserve the intended left-to-right meaning without changing the stored survey values.
+- Rehyn’s existing survey back control, step counter, sticky Continue action, and brand tokens are intentionally retained around the selected design.
+
+## Focused responsive comparison evidence
+
+- Desktop: image scale was increased after the first pass to match the reference’s dominant pictorial hierarchy and to keep labels directly below each picture.
+- Mobile at 390 × 844: the spectrum becomes a two-column picture grid with a compact direction key. All six radio choices remain reachable in the existing scroll container and there is no horizontal overflow.
+- The first mobile pass exposed cramped wrapping in “My arm was not affected.” The secondary-choice artwork, label, and indicator were rebalanced; the final label wraps cleanly to two lines.
+
+## Required fidelity surfaces
+
+- Typography: large, high-weight question and answer labels preserve the patient-facing hierarchy and remain readable on phone and desktop.
+- Spacing and layout: wide screens use the reference’s single horizontal spectrum; smaller screens wrap predictably without clipping.
+- Colors and states: the existing Rehyn green palette supplies the track, borders, halo, check state, and Continue action with sufficient contrast.
+- Image quality: six dedicated 640 × 640 transparent PNG assets are used; no emoji, CSS drawings, inline SVG artwork, or placeholder imagery substitutes for the patient illustrations.
+- Accessibility: every choice is a semantic radio with an explicit selected state and descriptive image label; controls remain large touch targets and keyboard focus remains visible.
+- Behavior: selecting another answer clears the previous radio state, enables Continue, and Continue advances to “Which arm movements are difficult in everyday life?”
+
+## Verification
+
+- Expo web production export: passed in an isolated worktree so unrelated user worktree deletions were not modified.
+- `frontend/app/onboarding.tsx` ESLint: passed.
+- `backend/tests/test_survey_exercise_plan.py`: 11 passed.
+- Browser console: zero application errors. One expected Expo Notifications web-support warning was observed on mobile.
+
+## Findings and history
+
+- P2 fixed: mobile secondary-choice copy wrapped one trailing character onto its own line.
+- P3 accepted: the attached concept omits the production survey’s persistent Continue action; the existing action is retained so the real flow remains explicit and consistent.
+- No remaining P0, P1, or P2 visual, interaction, accessibility, or responsive issues were found.
+
+Final result: passed.
+
+---
+
 # Design QA: Forward Reach Compensation Evidence
 
 Source visual truth: the phone-camera demonstration supplied in the conversation on 2026-09-03, showing a red dotted outline around an observed trunk and shoulder compensation.

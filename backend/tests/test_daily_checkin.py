@@ -116,4 +116,5 @@ def test_home_screen_wires_the_calendar_and_exercise_completion_earns_the_mark()
     assert 'checkIn.date === todayIso' in home
     assert 'testID: "daily-checkin-button"' in home
     assert 'testID="home-week-toggle"' in home
-    assert 'authedFetch("/api/users/daily-checkin/complete"' in exercise
+    assert 'path: "/api/users/daily-checkin/complete"' in exercise
+    assert 'queuePatientActivity(userId' in exercise

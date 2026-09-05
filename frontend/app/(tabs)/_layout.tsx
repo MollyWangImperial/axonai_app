@@ -1,11 +1,22 @@
 import { Tabs } from "expo-router";
+import { useEffect } from "react";
 import { Ionicons } from "@expo/vector-icons";
-import { Platform } from "react-native";
+import { AppState, Platform } from "react-native";
+import { subscribeAuthState } from "@/src/auth";
+import { flushPatientActivities } from "@/src/patientActivitySync";
 import { useDisplayPreferences } from "@/src/displayPreferences";
 
 export default function TabsLayout() {
   const isWeb = Platform.OS === "web";
   const { palette, scale } = useDisplayPreferences();
+  useEffect(() => {
+    const sync = () => { void flushPatientActivities(); };
+    sync();
+    const interval = setInterval(sync, 30000);
+    const subscription = AppState.addEventListener("change", (state) => { if (state === "active") sync(); });
+    const unsubscribe = subscribeAuthState(sync);
+    return () => { clearInterval(interval); subscription.remove(); unsubscribe(); };
+  }, []);
 
   return (
     <Tabs

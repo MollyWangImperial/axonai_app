@@ -102,6 +102,23 @@ def test_supported_reach_return_uses_the_assessment_lap_calibration_contract():
     assert calibration.index("updateExerciseLapTargetCalibration(lm,performance.now());") < calibration.index("const quality=trackingQuality")
 
 
+def test_grasp_return_reuses_the_calibrated_start_lap_target_for_every_variant():
+    for level in ("easy", "medium", "difficult"):
+        for variation in ("standard", "alternate"):
+            configured = server._configure_rehab_runner("ex_grasp", level, variation)
+            lap_step = next(
+                step
+                for step in configured["cycle"]
+                if step["caption"] == "Return your empty hand to your lap"
+            )
+            assert lap_step["target"]["landmark"] == "LAP_DYNAMIC"
+            assert lap_step["target"]["r"] == 0.10
+
+    html = server._rehab_runner_html("ex_grasp", prescribed_reps=3)
+    assert "return exerciseLapTarget || exerciseLapTargetCalibration.target || sub.target;" in html
+    assert "lap_target:exerciseLapTarget" in html
+
+
 def test_every_completed_repetition_shows_and_speaks_a_one_point_celebration():
     html = server._rehab_runner_html("ex_reach", prescribed_reps=3)
 

@@ -19,6 +19,7 @@ export type Me = {
   onboarding_complete?: boolean;
   profile?: Record<string, any> | null;
   initial_assessment_completed_at?: string | null;
+  daily_checkins?: Record<string, { status?: string }>;
 };
 
 export const USER_KEY = "active_user_id_v2";
@@ -238,6 +239,16 @@ export async function hydrateAccountStateFromServer(user: Me) {
   }
   if (user.initial_assessment_completed_at) {
     await cacheInitialAssessmentCompletion(user.id, user.initial_assessment_completed_at);
+  }
+  if (user.daily_checkins) {
+    await updateCachedPatientActivity(user.id, (current) => ({
+      ...current,
+      daily_check_ins: {
+        ...current.daily_check_ins,
+        ...Object.fromEntries(Object.entries(user.daily_checkins || {}).map(([day, entry]) =>
+          [day, entry.status === "complete" ? "complete" as const : "in_progress" as const])),
+      },
+    }));
   }
 }
 

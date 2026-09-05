@@ -23,6 +23,7 @@ import { fetchAssessment, Assessment, RehabExercise } from "@/src/api";
 import { storage } from "@/src/utils/storage";
 import { appDateString, appNow, loadAppDateOverride } from "@/src/appDate";
 import { authedFetch, getUserId } from "@/src/auth";
+import { exerciseProgressKey, loadAccountExerciseProgress } from "@/src/patientActivitySync";
 import PaywallModal from "@/src/components/PaywallModal";
 import { DEMO_ASSESSMENT_ID, demoAssessment } from "@/src/demoAssessment";
 import { estimateRehabMinutes } from "@/src/rehabTiming";
@@ -90,7 +91,7 @@ const MINIMUM_STAGE_DURATION_MS = 420;
 
 const SUPPORTED_REACH_IMAGE = require("../assets/images/rehab-supported-forward-reach.png") as ImageSourcePropType;
 const HAND_OPENING_IMAGE = require("../assets/images/rehab-relaxed-hand-opening.png") as ImageSourcePropType;
-const PROGRESS_KEY = (planId: string, exId: string) => `ex_progress_v1:${planId}:${exId}`;
+const PROGRESS_KEY = async (planId: string, exId: string) => exerciseProgressKey(await getUserId() || "signed-out", planId, exId);
 const PLAN_VIEWED_KEY = (accountId: string, planId: string) => `rehab_plan_viewed_v1:${accountId}:${planId}`;
 
 function isSessionDifficulty(value: unknown): value is SessionDifficulty {
@@ -314,6 +315,7 @@ export default function RehabPlanScreen() {
   const [showPreparation, setShowPreparation] = useState(entry === "assessment_complete");
   const [preparationStage, setPreparationStage] = useState<PlanPreparationStage>(0);
   const [progress, setProgress] = useState<Record<string, ExerciseProgress>>({});
+  const [progressSyncPending, setProgressSyncPending] = useState(false);
   const [paywallOpen, setPaywallOpen] = useState(false);
   const [paywallReason, setPaywallReason] = useState<string | undefined>();
   const [demonstrationId, setDemonstrationId] = useState<string | null>(null);
@@ -330,6 +332,7 @@ export default function RehabPlanScreen() {
   const [showTestingFinish, setShowTestingFinish] = useState(false);
   const [testingScore, setTestingScore] = useState("85");
   const [finishingForTesting, setFinishingForTesting] = useState(false);
+  const [saveError, setSaveError] = useState("");
   const [showAwardPrompt, setShowAwardPrompt] = useState(false);
 
   const planId = id || "default";
@@ -340,9 +343,11 @@ export default function RehabPlanScreen() {
 
   const loadProgress = React.useCallback(async (plan: Assessment) => {
     const out: Record<string, ExerciseProgress> = {};
+    const savedProgress = isDemo ? {} : await loadAccountExerciseProgress(planId, appDateString()).catch(() => null);
+    setProgressSyncPending(savedProgress === null);
     for (const ex of plan.rehab_plan) {
       try {
-        const raw = await storage.getItem(PROGRESS_KEY(planId, ex.id), "");
+        const raw = savedProgress?.[ex.id] ? JSON.stringify(savedProgress[ex.id]) : await storage.getItem(await PROGRESS_KEY(planId, ex.id), "");
         if (typeof raw === "string" && raw) {
           const saved = JSON.parse(raw) as ExerciseProgress;
           const adjustedTotal = ex.sets * ex.reps;
@@ -357,7 +362,7 @@ export default function RehabPlanScreen() {
       }
     }
     setProgress(out);
-  }, [planId]);
+  }, [isDemo, planId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -475,6 +480,7 @@ export default function RehabPlanScreen() {
     const parsed = Number.parseInt(testingScore, 10);
     const score = Number.isFinite(parsed) ? Math.max(0, Math.min(100, parsed)) : 85;
     setFinishingForTesting(true);
+    setSaveError("");
     const completedAt = appNow().toISOString();
     const today = appDateString();
     try {
@@ -482,9 +488,11 @@ export default function RehabPlanScreen() {
         const totalReps = exercise.sets * exercise.reps;
         const repetitionScores = Array.from({ length: totalReps }, () => score);
         if (!isDemo) {
-          await authedFetch("/api/alira/activities", {
+          const response = await authedFetch("/api/alira/activities", {
             method: "POST",
             body: JSON.stringify({
+              client_activity_id: `testing:${planId}:${today}:${exercise.id}`,
+              day: today,
               exercise_id: exercise.id,
               plan_id: planId,
               completed_reps: totalReps,
@@ -495,10 +503,11 @@ export default function RehabPlanScreen() {
               completed_at: completedAt,
               testing_shortcut: true,
             }),
-          }).catch(() => null);
+          });
+          if (!response.ok || (await response.json()).ok !== true) throw new Error("Your exercise could not be saved to your account. Please retry.");
         }
         try {
-          const raw = await storage.getItem(PROGRESS_KEY(planId, exercise.id), "");
+          const raw = await storage.getItem(await PROGRESS_KEY(planId, exercise.id), "");
           const previous: ExerciseProgress = typeof raw === "string" && raw
             ? JSON.parse(raw)
             : { completed_reps: 0, total_reps: totalReps, last_score: null, best_score: null, sessions: 0 };
@@ -516,21 +525,24 @@ export default function RehabPlanScreen() {
               { completed_at: completedAt, average_score: score, repetition_scores: repetitionScores },
             ].slice(-60),
           };
-          await storage.setItem(PROGRESS_KEY(planId, exercise.id), JSON.stringify(updated));
+          await storage.setItem(await PROGRESS_KEY(planId, exercise.id), JSON.stringify(updated));
         } catch {
           // The server activity is the durable record; the local card refreshes on focus.
         }
       }
       if (!isDemo) {
-        await authedFetch("/api/users/daily-checkin/complete", {
+        const response = await authedFetch("/api/users/daily-checkin/complete", {
           method: "POST",
           body: JSON.stringify({ date: today }),
-        }).catch(() => null);
+        });
+        if (!response.ok) throw new Error("Your completed day could not be saved. Please retry.");
       }
       await loadProgress(data);
       void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       setShowTestingFinish(false);
       setShowAwardPrompt(true);
+    } catch (error) {
+      setSaveError(error instanceof Error ? error.message : "Your activity could not be saved. Please retry.");
     } finally {
       setFinishingForTesting(false);
     }
@@ -586,6 +598,7 @@ export default function RehabPlanScreen() {
             style={styles.scoreInput}
             accessibilityLabel="Average score"
           />
+          {!!saveError && <Text accessibilityRole="alert" style={styles.dailyText}>{saveError}</Text>}
           <Pressable disabled={finishingForTesting} onPress={() => { void finishTodayForTesting(); }} style={[styles.dailyPrimary, finishingForTesting && { opacity: 0.6 }]} testID="plan-testing-finish-confirm">
             <Text style={styles.dailyPrimaryText}>{finishingForTesting ? "Saving..." : "Mark today as finished"}</Text>
             <Ionicons name="checkmark" size={22} color="#FFFFFF" />
@@ -691,6 +704,14 @@ export default function RehabPlanScreen() {
 
       <ScrollView contentContainerStyle={[styles.scrollContent, { paddingBottom: Math.max(insets.bottom, spacing.xl) }]}>
         <View style={styles.page}>
+          {progressSyncPending && (
+            <View style={styles.interimBanner} accessibilityLiveRegion="polite">
+              <Text style={styles.interimBannerText}>Account progress is waiting to sync. Your saved activity has not been reset.</Text>
+              <Pressable onPress={() => { void loadProgress(data); }} accessibilityLabel="Retry progress sync">
+                <Ionicons name="refresh" size={24} color={colors.brandPrimary} />
+              </Pressable>
+            </View>
+          )}
           {allComplete && (
             <View style={styles.finishedBanner} testID="plan-finished-banner">
               <Ionicons name="checkmark-circle" size={30} color="#FFFFFF" />

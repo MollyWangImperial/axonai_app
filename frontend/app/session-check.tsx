@@ -52,9 +52,9 @@ export default function SessionCheckScreen() {
         await cacheAssessmentActivity(userId, assessment.id, assessment.created_at, true);
       }
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      router.replace({ pathname: "/rehab-plan", params: { id: assessment.id, entry: "assessment_complete" } });
+      router.replace({ pathname: "/results", params: { id: assessment.id, entry: "assessment_complete" } });
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Could not skip the assessment for testing.";
+      const message = error instanceof Error ? error.message : "Could not finish the assessment for testing.";
       setSampleError(message);
     } finally {
       setFinishingSample(false);
@@ -75,26 +75,6 @@ export default function SessionCheckScreen() {
           <View style={styles.icon}><Ionicons name="people-outline" size={30} color={colors.brandPrimary} /></View>
           <Text style={styles.title}>Who is starting this session?</Text>
           <Text style={styles.subtitle}>This helps Alira give the right instructions and keeps the session record clear.</Text>
-          {isInitialAssessment && (
-            <View style={styles.sampleSection}>
-            <Pressable
-              testID="session-finish-sample-assessment"
-              accessibilityRole="button"
-              accessibilityLabel="Skip assessment and open rehab plan"
-              accessibilityHint="Creates a labelled sample result for testing without opening the camera"
-              disabled={finishingSample}
-              onPress={finishAssessmentForTesting}
-              style={[styles.sampleButton, finishingSample && styles.buttonDisabled]}
-            >
-              {finishingSample
-                ? <ActivityIndicator color={colors.brandPrimary} />
-                : <Ionicons name="play-skip-forward-outline" size={20} color={colors.brandPrimary} />}
-              <Text style={styles.sampleButtonText}>{finishingSample ? "Preparing sample..." : "Skip assessment and open rehab plan"}</Text>
-            </Pressable>
-            <Text style={styles.sampleNote}>Testing only: creates a clearly labelled sample result and opens your rehab plan.</Text>
-            {sampleError && <Text style={styles.sampleError}>{sampleError}</Text>}
-            </View>
-          )}
           <View style={styles.options}>
             <Pressable testID="session-actor-patient" onPress={() => setActor("patient")} style={[styles.option, actor === "patient" && styles.optionActive]}>
               <Ionicons name="person" size={25} color={actor === "patient" ? colors.brandPrimary : colors.onSurfaceSecondary} />
@@ -119,6 +99,26 @@ export default function SessionCheckScreen() {
           <Pressable testID="session-actor-continue" disabled={!actor || !safetyAck || finishingSample} onPress={continueToSession} style={[styles.continueButton, (!actor || !safetyAck || finishingSample) && { opacity: 0.4 }]}>
             <Text style={styles.continueText}>Continue</Text>
           </Pressable>
+          {isInitialAssessment && (
+            <>
+              <Pressable
+                testID="session-finish-sample-assessment"
+                accessibilityRole="button"
+                accessibilityLabel="Finish the assessment"
+                accessibilityHint="Creates a labelled sample result for testing without opening the camera"
+                disabled={finishingSample}
+                onPress={finishAssessmentForTesting}
+                style={[styles.sampleButton, finishingSample && styles.buttonDisabled]}
+              >
+                {finishingSample
+                  ? <ActivityIndicator color={colors.brandPrimary} />
+                  : <Ionicons name="play-skip-forward-outline" size={20} color={colors.brandPrimary} />}
+                <Text style={styles.sampleButtonText}>{finishingSample ? "Finishing..." : "Finish the assessment"}</Text>
+              </Pressable>
+              <Text style={styles.sampleNote}>Testing shortcut: skips the camera tasks and creates a clearly labelled sample snapshot.</Text>
+              {sampleError && <Text style={styles.sampleError}>{sampleError}</Text>}
+            </>
+          )}
         </View>
       </ScrollView>
     </View>
@@ -141,8 +141,7 @@ const styles = StyleSheet.create({
   optionBody: { fontSize: 13, lineHeight: 18, color: colors.onSurfaceSecondary, marginTop: 2 },
   continueButton: { width: "100%", maxWidth: 560, alignSelf: "center", minHeight: 56, borderRadius: radius.md, backgroundColor: colors.brandPrimary, alignItems: "center", justifyContent: "center" },
   continueText: { color: colors.onBrandPrimary, fontSize: 17, fontWeight: "800" },
-  footer: { width: "100%", maxWidth: 560, alignSelf: "center", marginTop: spacing.lg },
-  sampleSection: { width: "100%", gap: spacing.xs, marginTop: spacing.lg },
+  footer: { width: "100%", maxWidth: 560, alignSelf: "center", gap: spacing.sm, marginTop: spacing.lg },
   sampleButton: { width: "100%", minHeight: 52, borderRadius: radius.md, borderWidth: 2, borderColor: colors.brandPrimary, backgroundColor: colors.surface, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: spacing.sm },
   sampleButtonText: { color: colors.brandPrimary, fontSize: 16, fontWeight: "800" },
   sampleNote: { color: colors.onSurfaceSecondary, fontSize: 12, lineHeight: 17, textAlign: "center" },

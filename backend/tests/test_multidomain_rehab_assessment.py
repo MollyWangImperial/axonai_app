@@ -477,7 +477,9 @@ def test_routes_expose_packages_modeling_contract_and_multidomain_results(monkey
             for row in domain["rows"]
         }
         assert measurement_rows["LE_MMT"]["value"] == "2/5"
-        assert assessment["rehab_plan"] == []
+        assert [item["id"] for item in assessment["rehab_plan"]] == [
+            "ex_trunk", "ex_reach", "ex_grasp", "ex_h2m",
+        ]
         assert assessment["clinical_review_gate"]["status"] == "awaiting_model_analysis"
         assert assessment["rehabilitation_goals"]["method"] == "retrieval_augmented_rule_engine"
         snapshot_event = next(item for item in recorded_actions if item["action"] == "movement_snapshot_generated")
@@ -628,17 +630,17 @@ def test_supported_sitting_and_assisted_hand_movement_receive_a_starting_plan():
         "mobility_level": "not_cleared",
     })
 
-    exercise_ids = {exercise.id for exercise in plan}
-    assert "ex_reach" in exercise_ids
-    assert "ex_handopen" in exercise_ids
+    assert [exercise.id for exercise in plan] == ["ex_trunk", "ex_reach", "ex_grasp", "ex_h2m"]
+    assert all("carer or family member" in (exercise.safety_note or "") for exercise in plan)
 
 
 def test_completed_initial_collection_returns_domain_metrics_without_a_normal_rehab_plan(monkeypatch):
     task_ids = ["T1", "T2", "T3", "H1", "H3", "H4", "L6"]
+    user_id = f"u_initial_collection_{uuid.uuid4().hex}"
 
     async def user_from_header(_headers):
         return {
-            "id": "u_initial_collection",
+            "id": user_id,
             "consent": {"health_data_consent": True},
             "credits": 1000,
             "profile": {
@@ -659,7 +661,7 @@ def test_completed_initial_collection_returns_domain_metrics_without_a_normal_re
     with TestClient(server.app) as client:
         submitted = client.post(
             "/api/assessment/submit",
-            headers={"X-User-Id": "u_initial_collection"},
+            headers={"X-User-Id": user_id},
             json={
                 "assessment_package": "initial",
                 "assigned_task_ids": task_ids,
@@ -679,17 +681,13 @@ def test_completed_initial_collection_returns_domain_metrics_without_a_normal_re
         )
         assert submitted.status_code == 200
         assessment = submitted.json()
-        # New policy: the patient always has a plan. While the analysis is
-        # processing, a survey-derived starting plan is issued and marked
-        # "interim"; the observed plan replaces it automatically.
+        # The fixed core plan is available while movement analysis continues.
         assert assessment["clinical_review_gate"]["status"] == "awaiting_model_analysis"
         assert assessment["clinical_review_gate"]["rehab_access"] == "interim"
-        assert assessment["clinical_review_gate"]["rehab_plan_source"] == "survey_reported_problems"
-        assert assessment["rehab_plan"], "a survey-derived starting plan is expected"
-        assert all(
-            "Starting plan from your survey answers" in (exercise.get("selection_reason") or "")
-            for exercise in assessment["rehab_plan"]
-        )
+        assert assessment["clinical_review_gate"]["rehab_plan_source"] == "fixed_core_programme"
+        assert [item["id"] for item in assessment["rehab_plan"]] == [
+            "ex_trunk", "ex_reach", "ex_grasp", "ex_h2m",
+        ]
         assert assessment["body_function_summary"]["overall_status"] == "analysis_pending"
         assert assessment["metrics"]["reach_completion"] == 1.0
         assert assessment["metrics"]["domains"]["hand"]["step_completion_percent"] == 100
@@ -706,10 +704,11 @@ def test_completed_initial_collection_returns_domain_metrics_without_a_normal_re
 
 def test_screened_initial_collection_does_not_report_unassigned_walking(monkeypatch):
     task_ids = ["T1", "T2", "T3", "H1", "H3", "H4"]
+    user_id = f"u_screened_initial_{uuid.uuid4().hex}"
 
     async def user_from_header(_headers):
         return {
-            "id": "u_screened_initial",
+            "id": user_id,
             "consent": {"health_data_consent": True},
             "credits": 1000,
             "profile": {
@@ -731,7 +730,7 @@ def test_screened_initial_collection_does_not_report_unassigned_walking(monkeypa
     with TestClient(server.app) as client:
         submitted = client.post(
             "/api/assessment/submit",
-            headers={"X-User-Id": "u_screened_initial"},
+            headers={"X-User-Id": user_id},
             json={
                 "assessment_package": "initial",
                 "assigned_task_ids": task_ids,
@@ -1071,7 +1070,9 @@ def test_trusted_normal_model_result_removes_automatic_plan_when_survey_reports_
             assert summary["rehab_plan_ready"] is False
             assert summary["clinical_review_gate"]["rehab_access"] == "blocked"
         stored = next(item for item in server.LOCAL_ASSESSMENTS if item.get("id") == assessment_id)
-        assert stored["rehab_plan"] == []
+        assert [item["id"] for item in stored["rehab_plan"]] == [
+            "ex_trunk", "ex_reach", "ex_grasp", "ex_h2m",
+        ]
     finally:
         server.LOCAL_ASSESSMENTS[:] = [
             item for item in server.LOCAL_ASSESSMENTS if item.get("id") != assessment_id
@@ -1131,16 +1132,18 @@ def test_trusted_normal_model_result_marks_rehab_not_needed_without_reported_sym
                 headers={"X-Analysis-Worker-Token": "test-worker-token"},
             )
             assert accepted.status_code == 200
-            assert accepted.json()["clinical_review_status"] == "no_rehab_needed"
+            assert accepted.json()["clinical_review_status"] == "clear"
             summary = client.get(
                 f"/api/assessment/{assessment_id}/patient-summary",
                 headers={"X-User-Id": user_id},
             ).json()
-            assert summary["rehab_plan_ready"] is False
-            assert summary["clinical_review_gate"]["rehab_access"] == "not_needed"
+            assert summary["rehab_plan_ready"] is True
+            assert summary["clinical_review_gate"]["rehab_access"] == "allowed"
             assert summary["body_function_summary"]["overall_status"] == "no_observable_difficulty"
         stored = next(item for item in server.LOCAL_ASSESSMENTS if item.get("id") == assessment_id)
-        assert stored["rehab_plan"] == []
+        assert [item["id"] for item in stored["rehab_plan"]] == [
+            "ex_trunk", "ex_reach", "ex_grasp", "ex_h2m",
+        ]
     finally:
         server.LOCAL_ASSESSMENTS[:] = [
             item for item in server.LOCAL_ASSESSMENTS if item.get("id") != assessment_id

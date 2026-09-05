@@ -152,13 +152,16 @@ def test_testing_shortcut_reopens_existing_result_and_repairs_account_marker(mon
 def test_frontend_exposes_shortcut_and_labels_generated_results():
     root = Path(__file__).resolve().parents[2]
     session_check = (root / "frontend" / "app" / "session-check.tsx").read_text(encoding="utf-8")
+    task_intro = (root / "frontend" / "app" / "task-intro.tsx").read_text(encoding="utf-8")
     results = (root / "frontend" / "app" / "results.tsx").read_text(encoding="utf-8")
 
     assert 'testID="session-finish-sample-assessment"' in session_check
+    assert 'testID="task-intro-finish-sample-assessment"' in task_intro
     assert "completeInitialAssessmentForTesting" in session_check
-    assert "Skip assessment and open rehab plan" in session_check
+    assert "completeInitialAssessmentForTesting" in task_intro
+    assert "Finish the assessment" in session_check
     assert "ScrollView" in session_check
-    assert session_check.index('testID="session-finish-sample-assessment"') < session_check.index('testID="session-actor-patient"')
     assert "No camera movements were measured" in results
-    assert 'pathname: "/rehab-plan"' in session_check
+    assert 'pathname: "/results"' in session_check
     assert 'entry: "assessment_complete"' in session_check
+    assert 'entry: "assessment_complete"' in task_intro

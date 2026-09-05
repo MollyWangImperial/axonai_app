@@ -11,7 +11,8 @@ import { appNow, loadAppDateOverride } from "@/src/appDate";
 import { localDateString } from "@/src/components/DailyCheckInCalendar";
 import { API_BASE as BASE } from "@/src/config";
 import { loadUserPreferences } from "@/src/userPreferences";
-import { authedFetch } from "@/src/auth";
+import { getUserId } from "@/src/auth";
+import { exerciseProgressKey, flushPatientActivities, queuePatientActivity } from "@/src/patientActivitySync";
 
 type ExerciseProgress = {
   completed_reps: number;
@@ -24,8 +25,6 @@ type ExerciseProgress = {
   day?: string;
 };
 
-const PROGRESS_KEY = (planId: string, exId: string) => `ex_progress_v1:${planId}:${exId}`;
-
 export default function ExerciseScreen() {
   const router = useRouter();
   const { exercise_id, name, plan_id, sets, reps, difficulty, variation, affected_side, rehab_session_id, library_test } = useLocalSearchParams<{ exercise_id: string; name?: string; plan_id?: string; sets?: string; reps?: string; difficulty?: string; variation?: string; affected_side?: string; rehab_session_id?: string; library_test?: string }>();
@@ -35,6 +34,11 @@ export default function ExerciseScreen() {
   const [doneInfo, setDoneInfo] = useState<{ reps: number; avgScore: number | null } | null>(null);
   const [voiceGuidance, setVoiceGuidance] = useState(true);
   const scoresThisSession = useRef<number[]>([]);
+  const [account] = useState(() => getUserId());
+  const [attemptId] = useState(() => `exercise-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  const seenReps = useRef(new Set<number>());
+  const messages = useRef<Promise<void>>(Promise.resolve());
+  const [syncMessage, setSyncMessage] = useState("");
 
   const totalSets = parseInt(sets || "3", 10);
   const totalReps = parseInt(reps || "10", 10);
@@ -54,20 +58,27 @@ export default function ExerciseScreen() {
     void loadUserPreferences().then((saved) => setVoiceGuidance(saved.voiceGuidance));
   }, []);
 
-  const saveRepProgress = async (newReps: number) => {
+  const saveRepProgress = async (rep: number, score: number | null, pointEarned: boolean) => {
     if (isLibraryTest) return;
     if (!exercise_id) return;
+    const userId = await account;
+    if (!userId) throw new Error("Sign in to save your repetitions.");
+    const today = localDateString();
+    await queuePatientActivity(userId, {
+      id: `${attemptId}:rep:${rep}`, path: "/api/users/exercise-repetitions",
+      body: { exercise_id, plan_id: planId, session_id: attemptId, day: today, rep, total_reps: totalAll, score, point_earned: pointEarned },
+    });
+    void flushPatientActivities().then((saved) => setSyncMessage(saved ? "" : "Saved on this device. Waiting to sync to your account."));
     try {
-      const raw = await storage.getItem(PROGRESS_KEY(planId, exercise_id), "");
+      const raw = await storage.getItem(exerciseProgressKey(userId, planId, exercise_id), "");
       const prev: ExerciseProgress = raw
         ? JSON.parse(raw)
         : { completed_reps: 0, total_reps: totalAll, last_score: null, best_score: null, sessions: 0 };
       // Today's plan starts from zero each day: repetitions from an earlier
       // day are not carried into today's count (the score history is kept).
-      const today = localDateString();
       const completedToday = prev.day === today ? prev.completed_reps : 0;
       const updated: ExerciseProgress = {
-        completed_reps: Math.min(totalAll, completedToday + newReps),
+        completed_reps: Math.min(totalAll, completedToday + 1),
         total_reps: totalAll,
         last_score: prev.last_score,
         best_score: prev.best_score,
@@ -76,14 +87,16 @@ export default function ExerciseScreen() {
         score_history: prev.score_history,
         day: today,
       };
-      await storage.setItem(PROGRESS_KEY(planId, exercise_id), JSON.stringify(updated));
+      await storage.setItem(exerciseProgressKey(userId, planId, exercise_id), JSON.stringify(updated));
     } catch {/* */}
   };
 
   const saveSessionAverage = async (averageScore: number | null, repetitionScores: number[]) => {
     if (isLibraryTest || !exercise_id) return;
+    const userId = await account;
+    if (!userId) return;
     try {
-      const raw = await storage.getItem(PROGRESS_KEY(planId, exercise_id), "");
+      const raw = await storage.getItem(exerciseProgressKey(userId, planId, exercise_id), "");
       const prev: ExerciseProgress = raw
         ? JSON.parse(raw)
         : { completed_reps: 0, total_reps: totalAll, last_score: null, best_score: null, sessions: 0 };
@@ -105,23 +118,24 @@ export default function ExerciseScreen() {
         last_session_scores: repetitionScores,
         score_history: scoreHistory,
       };
-      await storage.setItem(PROGRESS_KEY(planId, exercise_id), JSON.stringify(updated));
+      await storage.setItem(exerciseProgressKey(userId, planId, exercise_id), JSON.stringify(updated));
     } catch {/* */}
   };
 
-  const onMessage = async (e: WebViewMessageEvent) => {
+  const handleMessage = async (e: WebViewMessageEvent) => {
     try {
       const msg = JSON.parse(e.nativeEvent.data);
       if (msg.type === "ready") setLoading(false);
       else if (msg.type === "rep_complete") {
+        const rep = Number(msg.rep);
+        if (!Number.isInteger(rep) || rep < 1 || seenReps.current.has(rep)) return;
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
         const score = typeof msg.score === "number" ? msg.score : null;
+        await saveRepProgress(rep, score, msg.point_earned === true);
+        seenReps.current.add(rep);
         if (score != null) {
           scoresThisSession.current.push(score);
         }
-        // Persist per-rep progress immediately so closing the screen mid-session
-        // doesn't lose work.
-        await saveRepProgress(1);
       } else if (msg.type === "exercise_complete") {
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
         const arr = scoresThisSession.current;
@@ -135,11 +149,14 @@ export default function ExerciseScreen() {
         const localScores = assisted ? arr.map((s) => Math.round(s / 2)) : [...arr];
         setDoneInfo({ reps: msg.reps || 0, avgScore: avg });
         if (!isLibraryTest) {
+          const userId = await account;
+          if (!userId) throw new Error("Sign in to save your exercise.");
           await saveSessionAverage(avg, localScores);
-          try {
-            await authedFetch("/api/alira/activities", {
-              method: "POST",
-              body: JSON.stringify({
+          await queuePatientActivity(userId, {
+              id: `${attemptId}:complete`, path: "/api/alira/activities",
+              body: {
+                client_activity_id: attemptId,
+                day: localDateString(),
                 exercise_id: exercise_id || "",
                 plan_id: planId,
                 completed_reps: Number(msg.reps || arr.length || 0),
@@ -150,20 +167,13 @@ export default function ExerciseScreen() {
                 repetition_scores: arr,
                 assisted,
                 completed_at: appNow().toISOString(),
-              }),
+              },
             });
-          } catch {
-            // Local exercise progress remains available and can sync on a later session.
-          }
-          try {
-            // Earn today's check mark on the daily check-in calendar.
-            await authedFetch("/api/users/daily-checkin/complete", {
-              method: "POST",
-              body: JSON.stringify({ date: localDateString() }),
+          await queuePatientActivity(userId, {
+              id: `${attemptId}:checkin`, path: "/api/users/daily-checkin/complete",
+              body: { date: localDateString() },
             });
-          } catch {
-            // The calendar refreshes from the server on the next Home focus.
-          }
+          void flushPatientActivities().then((saved) => setSyncMessage(saved ? "Saved to your account." : "Saved on this device. Waiting to sync to your account."));
         }
         setTimeout(() => router.back(), 2400);
       } else if (msg.type === "camera_error") {
@@ -171,7 +181,13 @@ export default function ExerciseScreen() {
       } else if (msg.type === "exit") {
         router.back();
       }
-    } catch {/* */}
+    } catch (error) {
+      setSyncMessage(error instanceof Error ? error.message : "Activity could not be saved. Please retry.");
+    }
+  };
+
+  const onMessage = (event: WebViewMessageEvent) => {
+    messages.current = messages.current.then(() => handleMessage(event));
   };
 
   return (
@@ -217,6 +233,7 @@ export default function ExerciseScreen() {
           </Pressable>
         </View>
       )}
+      {!!syncMessage && <Text accessibilityLiveRegion="polite" style={{ color: "#fff", backgroundColor: "#254c3e", padding: spacing.sm }}>{syncMessage}</Text>}
       <SafetyStopStrip />
     </View>
   );

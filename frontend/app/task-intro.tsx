@@ -5,8 +5,8 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 
-import { AssessmentPackageId, fetchTaskProgress, fetchTaskVideos, fetchTasks, resetTaskProgress } from "@/src/api";
-import { affectedSideKey, authedFetch, completedTasksKey, getUserId, savedTaskVideosKey } from "@/src/auth";
+import { AssessmentPackageId, completeInitialAssessmentForTesting, fetchTaskProgress, fetchTaskVideos, fetchTasks, resetTaskProgress } from "@/src/api";
+import { affectedSideKey, authedFetch, cacheAssessmentActivity, completedTasksKey, getUserId, savedTaskVideosKey } from "@/src/auth";
 import { colors, radius, spacing } from "@/src/theme";
 import { storage } from "@/src/utils/storage";
 
@@ -103,6 +103,8 @@ export default function TaskIntro() {
   const [error, setError] = useState<string | null>(null);
   const [showStartOver, setShowStartOver] = useState(false);
   const [helperConfirmed, setHelperConfirmed] = useState(false);
+  const [finishingSample, setFinishingSample] = useState(false);
+  const [sampleError, setSampleError] = useState<string | null>(null);
 
   useEffect(() => {
     (async () => {
@@ -259,6 +261,26 @@ export default function TaskIntro() {
         task_ids: taskIds.join(","),
       },
     });
+  };
+
+  const finishAssessmentForTesting = async () => {
+    if (finishingSample) return;
+    setFinishingSample(true);
+    setSampleError(null);
+    try {
+      const assessment = await completeInitialAssessmentForTesting();
+      const uid = userId || await getUserId();
+      if (uid) {
+        await cacheAssessmentActivity(uid, assessment.id, assessment.created_at, true);
+      }
+      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      router.replace({ pathname: "/results", params: { id: assessment.id, entry: "assessment_complete" } });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Could not finish the assessment for testing.";
+      setSampleError(message);
+    } finally {
+      setFinishingSample(false);
+    }
   };
 
   const confirmStartOver = () => {
@@ -420,9 +442,9 @@ export default function TaskIntro() {
         )}
         <Pressable
           testID="task-intro-begin"
-          disabled={loading || (helperConfirmationNeeded && !helperConfirmed)}
+          disabled={loading || finishingSample || (helperConfirmationNeeded && !helperConfirmed)}
           onPress={onBegin}
-          style={[styles.ctaBtn, (loading || (helperConfirmationNeeded && !helperConfirmed)) && { opacity: 0.4 }]}
+          style={[styles.ctaBtn, (loading || finishingSample || (helperConfirmationNeeded && !helperConfirmed)) && { opacity: 0.4 }]}
         >
           <Ionicons
             name={blockedByRecommendation ? "clipboard" : helperConfirmationNeeded && !helperConfirmed ? "people" : assessmentComplete && isInitial ? "home" : "videocam"}
@@ -439,6 +461,23 @@ export default function TaskIntro() {
               : completedCount > 0 ? "Continue Assessment" : isInitial ? "Begin Initial Assessment" : "Begin Movement Check-in"}
           </Text>
         </Pressable>
+        {isInitial && (
+          <>
+            <Pressable
+              testID="task-intro-finish-sample-assessment"
+              disabled={finishingSample}
+              onPress={finishAssessmentForTesting}
+              style={[styles.sampleBtn, finishingSample && { opacity: 0.6 }]}
+            >
+              {finishingSample
+                ? <ActivityIndicator color={colors.brandPrimary} />
+                : <Ionicons name="play-skip-forward-outline" size={20} color={colors.brandPrimary} />}
+              <Text style={styles.sampleBtnText}>{finishingSample ? "Finishing..." : "Finish the assessment"}</Text>
+            </Pressable>
+            <Text style={styles.sampleNote}>Testing shortcut: skips the camera tasks and creates a clearly labelled sample snapshot.</Text>
+            {sampleError && <Text style={styles.sampleError}>{sampleError}</Text>}
+          </>
+        )}
       </View>
 
       <Modal visible={showStartOver} transparent animationType="fade" onRequestClose={() => setShowStartOver(false)}>
@@ -466,7 +505,7 @@ const styles = StyleSheet.create({
   header: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: spacing.md, paddingBottom: spacing.sm, borderBottomWidth: 1, borderBottomColor: colors.divider },
   backBtn: { width: 40, height: 40, alignItems: "center", justifyContent: "center" },
   headerTitle: { fontSize: 17, fontWeight: "800", color: colors.onSurface },
-  scroll: { width: "100%", maxWidth: 620, alignSelf: "center", padding: spacing.lg, paddingBottom: 180 },
+  scroll: { width: "100%", maxWidth: 620, alignSelf: "center", padding: spacing.lg, paddingBottom: 270 },
   introIcon: { width: 56, height: 56, borderRadius: 28, alignItems: "center", justifyContent: "center", backgroundColor: colors.brandTertiary, marginBottom: spacing.md },
   title: { fontSize: 28, lineHeight: 34, fontWeight: "800", color: colors.onSurface },
   sub: { fontSize: 15, lineHeight: 22, color: colors.onSurfaceSecondary, marginTop: spacing.sm, marginBottom: spacing.lg },
@@ -501,6 +540,10 @@ const styles = StyleSheet.create({
   startOverText: { color: colors.brandPrimary, fontSize: 15, fontWeight: "800" },
   ctaBtn: { width: "100%", maxWidth: 620, alignSelf: "center", minHeight: 56, borderRadius: radius.md, backgroundColor: colors.brandPrimary, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: spacing.sm },
   ctaText: { color: colors.onBrandPrimary, fontSize: 17, fontWeight: "800" },
+  sampleBtn: { width: "100%", maxWidth: 620, alignSelf: "center", minHeight: 50, borderRadius: radius.md, borderWidth: 2, borderColor: colors.brandPrimary, backgroundColor: colors.surface, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: spacing.sm },
+  sampleBtnText: { color: colors.brandPrimary, fontSize: 16, fontWeight: "800" },
+  sampleNote: { width: "100%", maxWidth: 620, alignSelf: "center", color: colors.onSurfaceSecondary, fontSize: 12, lineHeight: 17, textAlign: "center" },
+  sampleError: { width: "100%", maxWidth: 620, alignSelf: "center", color: colors.error, fontSize: 13, lineHeight: 18, textAlign: "center", fontWeight: "700" },
   modalBackdrop: { flex: 1, alignItems: "center", justifyContent: "center", padding: spacing.lg, backgroundColor: "rgba(10,22,16,0.6)" },
   modalCard: { width: "100%", maxWidth: 440, borderRadius: radius.md, backgroundColor: colors.surface, padding: spacing.lg },
   modalTitle: { fontSize: 20, lineHeight: 26, fontWeight: "800", color: colors.onSurface },

@@ -57,6 +57,12 @@ const SITTING_INDEPENDENT = require("@/assets/images/survey-sitting-independent.
 const SITTING_SUPPORTED = require("@/assets/images/survey-sitting-supported.png");
 const SITTING_UNSAFE = require("@/assets/images/survey-sitting-unsafe.png");
 const SITTING_UNSURE = require("@/assets/images/survey-sitting-unsure.png");
+const ARM_MOVEMENT_MOST = require("@/assets/images/survey-arm-movement-most.png");
+const ARM_MOVEMENT_SOME = require("@/assets/images/survey-arm-movement-some.png");
+const ARM_MOVEMENT_HELP = require("@/assets/images/survey-arm-movement-help.png");
+const ARM_MOVEMENT_NONE = require("@/assets/images/survey-arm-movement-none.png");
+const ARM_MOVEMENT_UNAFFECTED = require("@/assets/images/survey-arm-movement-unaffected.png");
+const ARM_MOVEMENT_UNSURE = require("@/assets/images/survey-arm-movement-unsure.png");
 
 export default function OnboardingScreen() {
   const insets = useSafeAreaInsets();
@@ -97,6 +103,7 @@ export default function OnboardingScreen() {
   const useWideAffectedAreaLayout = width >= 1180;
   const useWideDominantHandLayout = width >= 900;
   const useWideSittingAbilityLayout = width >= 1000;
+  const useWideArmMovementLayout = width >= 1180;
 
   useEffect(() => {
     if (!startsFromSavedProfile) return;
@@ -437,6 +444,185 @@ export default function OnboardingScreen() {
         );
       }
 
+      if (step.key === "affected_arm_movement") {
+        const selectedMovement = values.affected_arm_movement;
+        const movementChoices = [
+          {
+            value: "most_movements",
+            label: "Lift and reach",
+            image: ARM_MOVEMENT_MOST,
+            imageLabel: "Person lifting and reaching one arm overhead independently",
+          },
+          {
+            value: "some_movement",
+            label: "Some movement",
+            image: ARM_MOVEMENT_SOME,
+            imageLabel: "Person raising one arm part of the way independently",
+          },
+          {
+            value: "help_only",
+            label: "With help",
+            image: ARM_MOVEMENT_HELP,
+            imageLabel: "Person moving one arm with support from another person",
+          },
+          {
+            value: "no_movement",
+            label: "No movement",
+            image: ARM_MOVEMENT_NONE,
+            imageLabel: "Person seated with both arms resting still",
+          },
+        ] as const;
+        const additionalChoices = [
+          {
+            value: "not_affected",
+            label: "My arm was not affected",
+            image: ARM_MOVEMENT_UNAFFECTED,
+            imageLabel: "Person smiling and giving two thumbs up",
+          },
+          {
+            value: "not_sure",
+            label: "I am not sure",
+            image: ARM_MOVEMENT_UNSURE,
+            imageLabel: "Person thinking with one hand under their chin",
+          },
+        ] as const;
+
+        const renderMovementChoice = (choice: typeof movementChoices[number]) => {
+          const active = selectedMovement === choice.value;
+          return (
+            <Pressable
+              key={choice.value}
+              testID={`onb-opt-affected_arm_movement-${choice.value}`}
+              accessibilityRole="radio"
+              accessibilityState={{ selected: active }}
+              accessibilityLabel={choice.label}
+              onPress={() => setVal("affected_arm_movement", choice.value)}
+              style={({ pressed }) => [
+                styles.armMovementChoice,
+                useWideArmMovementLayout && styles.armMovementChoiceWide,
+                pressed && styles.armMovementChoicePressed,
+              ]}
+            >
+              <View style={[
+                styles.armMovementPictureHalo,
+                useWideArmMovementLayout && styles.armMovementPictureHaloWide,
+                active && styles.armMovementPictureHaloActive,
+              ]}>
+                <View style={[
+                  styles.armMovementPicture,
+                  useWideArmMovementLayout && styles.armMovementPictureWide,
+                  active && styles.armMovementPictureActive,
+                ]}>
+                  <Image
+                    source={choice.image}
+                    resizeMode="contain"
+                    accessibilityLabel={choice.imageLabel}
+                    style={styles.armMovementImage}
+                  />
+                </View>
+                {active ? (
+                  <View style={styles.armMovementCheck}>
+                    <Ionicons name="checkmark" size={31} color={colors.onBrandPrimary} />
+                  </View>
+                ) : null}
+              </View>
+              <Text style={[styles.armMovementChoiceLabel, active && styles.armMovementChoiceLabelActive]}>{choice.label}</Text>
+            </Pressable>
+          );
+        };
+
+        return (
+          <View
+            testID="affected-arm-movement-selector"
+            accessibilityRole="radiogroup"
+            style={styles.armMovementLayout}
+          >
+            <Text style={[styles.armMovementPrompt, useWideArmMovementLayout && styles.armMovementPromptWide]}>
+              Which picture is closest to you?
+            </Text>
+
+            {!useWideArmMovementLayout ? (
+              <View style={styles.armMovementDirectionRow}>
+                <Ionicons name="arrow-back" size={27} color={colors.brandPrimary} />
+                <Text style={styles.armMovementDirectionText}>More movement</Text>
+                <View style={styles.armMovementDirectionLine} />
+                <Text style={styles.armMovementDirectionText}>Less movement</Text>
+                <Ionicons name="arrow-forward" size={27} color={colors.brandPrimary} />
+              </View>
+            ) : null}
+
+            <View style={[styles.armMovementSpectrum, useWideArmMovementLayout && styles.armMovementSpectrumWide]}>
+              {useWideArmMovementLayout ? (
+                <View style={styles.armMovementEndLabel}>
+                  <Text style={styles.armMovementEndLabelText}>More{"\n"}movement</Text>
+                  <Ionicons name="arrow-back" size={38} color={colors.brandPrimary} />
+                </View>
+              ) : null}
+              <View style={[styles.armMovementTrackArea, useWideArmMovementLayout && styles.armMovementTrackAreaWide]}>
+                {useWideArmMovementLayout ? <View pointerEvents="none" style={styles.armMovementTrack} /> : null}
+                <View style={[styles.armMovementChoices, useWideArmMovementLayout && styles.armMovementChoicesWide]}>
+                  {movementChoices.map(renderMovementChoice)}
+                </View>
+              </View>
+              {useWideArmMovementLayout ? (
+                <View style={styles.armMovementEndLabel}>
+                  <Ionicons name="arrow-forward" size={38} color={colors.brandPrimary} />
+                  <Text style={styles.armMovementEndLabelText}>Less{"\n"}movement</Text>
+                </View>
+              ) : null}
+            </View>
+
+            <View style={[styles.armMovementAdditionalChoices, useWideArmMovementLayout && styles.armMovementAdditionalChoicesWide]}>
+              {additionalChoices.map((choice) => {
+                const active = selectedMovement === choice.value;
+                return (
+                  <Pressable
+                    key={choice.value}
+                    testID={`onb-opt-affected_arm_movement-${choice.value}`}
+                    accessibilityRole="radio"
+                    accessibilityState={{ selected: active }}
+                    accessibilityLabel={choice.label}
+                    onPress={() => setVal("affected_arm_movement", choice.value)}
+                    style={({ pressed }) => [
+                      styles.armMovementAdditionalChoice,
+                      useWideArmMovementLayout && styles.armMovementAdditionalChoiceWide,
+                      active && styles.armMovementAdditionalChoiceActive,
+                      pressed && styles.armMovementChoicePressed,
+                    ]}
+                  >
+                    <Image
+                      source={choice.image}
+                      resizeMode="contain"
+                      accessibilityLabel={choice.imageLabel}
+                      style={[
+                        styles.armMovementAdditionalImage,
+                        useWideArmMovementLayout && styles.armMovementAdditionalImageWide,
+                      ]}
+                    />
+                    <Text style={[
+                      styles.armMovementAdditionalLabel,
+                      useWideArmMovementLayout && styles.armMovementAdditionalLabelWide,
+                      active && styles.armMovementChoiceLabelActive,
+                    ]}>{choice.label}</Text>
+                    <View style={[
+                      styles.armMovementAdditionalIndicator,
+                      useWideArmMovementLayout && styles.armMovementAdditionalIndicatorWide,
+                      active && styles.armMovementAdditionalIndicatorActive,
+                    ]}>
+                      {active ? (
+                        <Ionicons name="checkmark" size={29} color={colors.onBrandPrimary} />
+                      ) : choice.value === "not_sure" ? (
+                        <Ionicons name="help" size={28} color={colors.brandPrimary} />
+                      ) : null}
+                    </View>
+                  </Pressable>
+                );
+              })}
+            </View>
+          </View>
+        );
+      }
+
       return (
         <View style={styles.optionsCol}>
           {step.options!.map((o) => {
@@ -715,12 +901,14 @@ export default function OnboardingScreen() {
             step.key === "affected_areas" && useWideAffectedAreaLayout && styles.bodyAreaQuestion,
             step.key === "dominant_hand" && useWideDominantHandLayout && styles.dominantHandQuestionWide,
             step.key === "sitting_ability" && useWideSittingAbilityLayout && styles.sittingAbilityQuestionWide,
+            step.key === "affected_arm_movement" && useWideArmMovementLayout && styles.armMovementQuestionWide,
           ]} testID={`onb-q-${step.key}`}>{step.question}</Text>
           {step.helper && <Text style={[
             styles.helper,
             step.key === "affected_areas" && useWideAffectedAreaLayout && styles.bodyAreaHelper,
             step.key === "dominant_hand" && useWideDominantHandLayout && styles.dominantHandHelperWide,
             step.key === "sitting_ability" && useWideSittingAbilityLayout && styles.sittingAbilityHelperWide,
+            step.key === "affected_arm_movement" && useWideArmMovementLayout && styles.armMovementHelperWide,
           ]}>{step.helper}</Text>}
           <View style={{ height: spacing.lg }} />
           {loadingProfile ? <ActivityIndicator color={colors.brandPrimary} /> : renderInput()}
@@ -1018,6 +1206,48 @@ const styles = StyleSheet.create({
   sittingUnsureLabel: { flex: 1, minWidth: 0, color: colors.onSurface, fontSize: 18, lineHeight: 24, fontWeight: "800" },
   sittingAbilityQuestionWide: { fontSize: 34, lineHeight: 42 },
   sittingAbilityHelperWide: { fontSize: 18, lineHeight: 25 },
+  armMovementLayout: { width: "100%", alignItems: "center", gap: spacing.lg },
+  armMovementPrompt: { color: colors.brandPrimary, fontSize: 23, lineHeight: 30, fontWeight: "900", textAlign: "center" },
+  armMovementPromptWide: { fontSize: 30, lineHeight: 38 },
+  armMovementDirectionRow: { width: "100%", flexDirection: "row", alignItems: "center", justifyContent: "center", gap: spacing.xs, paddingHorizontal: spacing.xs },
+  armMovementDirectionText: { color: colors.brandPrimary, fontSize: 13, lineHeight: 18, fontWeight: "900", textAlign: "center" },
+  armMovementDirectionLine: { flex: 1, height: 3, borderRadius: 2, backgroundColor: colors.brandPrimary },
+  armMovementSpectrum: { width: "100%" },
+  armMovementSpectrumWide: { minHeight: 320, flexDirection: "row", alignItems: "center", justifyContent: "center" },
+  armMovementEndLabel: { width: 122, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: spacing.xs },
+  armMovementEndLabelText: { color: colors.brandPrimary, fontSize: 18, lineHeight: 24, fontWeight: "900", textAlign: "center" },
+  armMovementTrackArea: { width: "100%" },
+  armMovementTrackAreaWide: { flex: 1, width: "auto", position: "relative", justifyContent: "center" },
+  armMovementTrack: { position: "absolute", left: 92, right: 92, top: 126, height: 6, borderRadius: 3, backgroundColor: colors.brandPrimary },
+  armMovementChoices: { width: "100%", flexDirection: "row", flexWrap: "wrap", justifyContent: "center", alignItems: "flex-start", gap: spacing.md },
+  armMovementChoicesWide: { flexWrap: "nowrap", justifyContent: "space-between", gap: spacing.sm },
+  armMovementChoice: { width: "46%", minWidth: 142, maxWidth: 210, alignItems: "center", gap: spacing.sm },
+  armMovementChoiceWide: { flex: 1, width: "auto", minWidth: 0, maxWidth: 240 },
+  armMovementChoicePressed: { opacity: 0.78 },
+  armMovementPictureHalo: { width: 164, height: 164, borderRadius: 82, alignItems: "center", justifyContent: "center", backgroundColor: "transparent", position: "relative" },
+  armMovementPictureHaloWide: { width: 244, height: 244, borderRadius: 122 },
+  armMovementPictureHaloActive: { backgroundColor: "rgba(74, 120, 86, 0.14)" },
+  armMovementPicture: { width: 148, height: 148, borderRadius: 74, overflow: "hidden", borderWidth: 3, borderColor: colors.brandPrimary, backgroundColor: colors.surface },
+  armMovementPictureWide: { width: 224, height: 224, borderRadius: 112 },
+  armMovementPictureActive: { borderWidth: 5, borderColor: "#235E34" },
+  armMovementImage: { width: "100%", height: "100%" },
+  armMovementCheck: { position: "absolute", top: 1, right: 1, width: 49, height: 49, borderRadius: 25, alignItems: "center", justifyContent: "center", backgroundColor: "#246536", borderWidth: 3, borderColor: colors.surface },
+  armMovementChoiceLabel: { minHeight: 48, color: colors.onSurface, fontSize: 17, lineHeight: 23, fontWeight: "900", textAlign: "center" },
+  armMovementChoiceLabelActive: { color: colors.brandPrimary },
+  armMovementAdditionalChoices: { width: "100%", gap: spacing.sm },
+  armMovementAdditionalChoicesWide: { flexDirection: "row", alignItems: "stretch", gap: spacing.md },
+  armMovementAdditionalChoice: { width: "100%", minHeight: 112, flexDirection: "row", alignItems: "center", gap: spacing.md, paddingHorizontal: spacing.md, paddingVertical: spacing.sm, borderRadius: radius.md, borderWidth: 2, borderColor: colors.border, backgroundColor: "#F7F9F6" },
+  armMovementAdditionalChoiceWide: { flex: 1, width: "auto", minWidth: 0, minHeight: 146, paddingHorizontal: spacing.xl },
+  armMovementAdditionalChoiceActive: { borderColor: colors.brandPrimary, backgroundColor: "#EEF6F0" },
+  armMovementAdditionalImage: { flexShrink: 0, width: 80, height: 80 },
+  armMovementAdditionalImageWide: { width: 122, height: 122 },
+  armMovementAdditionalLabel: { flex: 1, minWidth: 0, color: colors.onSurface, fontSize: 17, lineHeight: 23, fontWeight: "900", textAlign: "center" },
+  armMovementAdditionalLabelWide: { fontSize: 21, lineHeight: 28 },
+  armMovementAdditionalIndicator: { flexShrink: 0, width: 44, height: 44, borderRadius: 22, alignItems: "center", justifyContent: "center", borderWidth: 2, borderColor: colors.brandPrimary, backgroundColor: colors.surface },
+  armMovementAdditionalIndicatorWide: { width: 52, height: 52, borderRadius: 26 },
+  armMovementAdditionalIndicatorActive: { backgroundColor: colors.brandPrimary },
+  armMovementQuestionWide: { fontSize: 34, lineHeight: 42 },
+  armMovementHelperWide: { fontSize: 18, lineHeight: 25 },
   optionsGrid: { flexDirection: "row", flexWrap: "wrap", gap: spacing.sm },
   chip: { maxWidth: "100%", flexDirection: "row", alignItems: "center", gap: 6, backgroundColor: colors.surfaceSecondary, paddingHorizontal: spacing.md, paddingVertical: 10, borderRadius: radius.pill, borderWidth: 2, borderColor: "transparent" },
   chipActive: { borderColor: colors.brandPrimary, backgroundColor: colors.brandTertiary },

@@ -89,6 +89,11 @@ export default function AssessmentScreen() {
           const packageId = (msg.package_id || packageParam || "upper_limb") as AssessmentPackageId;
           void markTaskVideoSaved(userIdRef.current, packageId, String(msg.task_id), Boolean(msg.cloud_saved));
         }
+      } else if (msg.type === "assessment_start_error") {
+        const detail = typeof msg.message === "string"
+          ? msg.message.replace(/^Could not load assessment tasks:\s*/, "")
+          : "The assessment could not start. Check your connection and try again.";
+        setError(detail);
       } else if (msg.type === "camera_error") {
         const detail = typeof msg.message === "string" ? msg.message : "";
         setError(detail.includes("secure HTTPS")

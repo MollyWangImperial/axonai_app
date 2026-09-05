@@ -37,40 +37,18 @@ def survey_profile(**overrides):
 
 
 @pytest.mark.parametrize(
-    ("field", "option", "exercise_id"),
-    [
-        ("arm_activity_difficulties", "reach_forward", "ex_reach"),
-        ("arm_activity_difficulties", "raise_arm", "ex_wallslide"),
-        ("arm_activity_difficulties", "hand_to_mouth", "ex_h2m"),
-        ("arm_activity_difficulties", "trunk_lean", "ex_trunk"),
-        ("arm_activity_difficulties", "shoulder_hike", "ex_scapdepress"),
-        ("arm_activity_difficulties", "use_both_arms", "ex_bilateral"),
-        ("hand_activity_difficulties", "open_release", "ex_handopen"),
-        ("hand_activity_difficulties", "grasp_hold", "ex_grasp"),
-        ("hand_activity_difficulties", "pinch_small_objects", "ex_pinch"),
-        ("mobility_activity_difficulties", "sitting_balance", "ex_sitting_balance"),
-        ("mobility_activity_difficulties", "knee_control", "ex_lower_selective"),
-        ("mobility_activity_difficulties", "foot_clearance", "ex_ankle_dorsiflexion"),
-        ("mobility_activity_difficulties", "sit_to_stand", "ex_sit_to_stand"),
-        ("mobility_activity_difficulties", "standing_balance", "ex_supported_stand"),
-        ("mobility_activity_difficulties", "weight_affected_leg", "ex_weight_shift"),
-        ("mobility_activity_difficulties", "start_step", "ex_supported_step"),
-        ("mobility_activity_difficulties", "step_balance", "ex_step_stance"),
-    ],
-)
-def test_each_reported_problem_has_one_direct_exercise_match(field, option, exercise_id):
-    plan = server.survey_rehab_plan(survey_profile(**{field: [option]}))
-
-    assert exercise_id in {exercise.id for exercise in plan}
-    assert all("survey answers" in (exercise.selection_reason or "") for exercise in plan)
-
-
-@pytest.mark.parametrize(
     "answers",
     [
-        {"arm_activity_difficulties": ["reach_forward"]},
-        {"hand_activity_difficulties": ["open_release"]},
-        {"mobility_activity_difficulties": ["knee_control"]},
+        {},
+        {"arm_activity_difficulties": ["none"], "hand_activity_difficulties": ["none"]},
+        {"arm_activity_difficulties": ["not_sure"], "movement_pain": "severe_or_worsening"},
+        {
+            "sitting_ability": "not_safe",
+            "affected_arm_movement": "no_movement",
+            "affected_hand_movement": "no_movement",
+            "mobility_level": "unable_walk",
+            "has_caregiver": False,
+        },
         {
             "arm_activity_difficulties": ["reach_forward", "raise_arm", "hand_to_mouth"],
             "hand_activity_difficulties": ["open_release", "grasp_hold", "pinch_small_objects"],
@@ -78,61 +56,26 @@ def test_each_reported_problem_has_one_direct_exercise_match(field, option, exer
         },
     ],
 )
-def test_safe_reported_difficulties_produce_a_deduplicated_four_or_five_exercise_plan(answers):
+def test_every_profile_receives_the_same_four_exercise_core_in_stable_order(answers):
     plan = server.survey_rehab_plan(survey_profile(**answers))
     ids = [exercise.id for exercise in plan]
 
-    assert 4 <= len(ids) <= 5
-    assert len(ids) == len(set(ids))
+    assert ids == ["ex_trunk", "ex_reach", "ex_grasp", "ex_h2m"]
+    assert tuple(ids) == server.FIXED_CORE_REHAB_IDS
+    assert all("four-exercise core programme" in (exercise.selection_reason or "") for exercise in plan)
+    assert all(exercise.requires_clinician_confirmation is False for exercise in plan)
 
 
-def test_compensation_exercises_are_not_used_as_unreported_fillers():
-    plan = server.survey_rehab_plan(survey_profile(arm_activity_difficulties=["reach_forward"]))
-    ids = {exercise.id for exercise in plan}
-
-    assert "ex_reach" in ids
-    assert "ex_trunk" not in ids
-    assert "ex_scapdepress" not in ids
-
-
-def test_survey_sentinels_and_severe_pain_are_not_positive_prescribing_evidence():
-    assert server.survey_rehab_plan(survey_profile(
-        arm_activity_difficulties=["not_sure"],
-        hand_activity_difficulties=["none"],
-        mobility_activity_difficulties=["none"],
-    )) == []
-    assert server.survey_rehab_plan(survey_profile(
-        arm_activity_difficulties=["reach_forward"],
-        movement_pain="severe_or_worsening",
-    )) == []
-
-
-def test_safety_filter_returns_fewer_than_four_instead_of_padding_with_unsafe_standing_work():
+def test_assistance_answers_change_safety_guidance_not_core_membership_or_dose():
     plan = server.survey_rehab_plan(survey_profile(
-        affected_arm_movement="not_affected",
-        arm_activity_difficulties=["none"],
-        affected_hand_movement="not_affected",
-        hand_activity_difficulties=["none"],
-        mobility_level="not_cleared",
-        mobility_activity_difficulties=["sit_to_stand"],
-        standing_exercise_clearance="not_cleared",
-        has_caregiver=False,
+        sitting_ability="needs_support",
+        affected_arm_movement="help_only",
+        affected_hand_movement="help_only",
     ))
 
-    assert len(plan) < 4
-    assert not ({exercise.id for exercise in plan} & {
-        "ex_sit_to_stand", "ex_supported_stand", "ex_weight_shift", "ex_supported_step", "ex_step_stance",
-    })
-
-
-def test_supervised_mobility_exercises_keep_confirmation_requirement():
-    plan = server.survey_rehab_plan(survey_profile(
-        mobility_activity_difficulties=["sit_to_stand", "standing_balance"],
-    ))
-    supervised = [exercise for exercise in plan if exercise.id in {"ex_sit_to_stand", "ex_supported_stand"}]
-
-    assert len(supervised) == 2
-    assert all(exercise.requires_clinician_confirmation for exercise in supervised)
+    assert [exercise.id for exercise in plan] == ["ex_trunk", "ex_reach", "ex_grasp", "ex_h2m"]
+    assert all((exercise.sets, exercise.reps) == (3, 10) for exercise in plan)
+    assert all("carer or family member" in (exercise.safety_note or "") for exercise in plan)
 
 
 def test_assessment_and_model_result_routes_both_use_the_survey_selector():
@@ -215,8 +158,9 @@ def test_validated_model_finding_does_not_change_survey_selected_exercise_ids(mo
         stored = next(item for item in server.LOCAL_ASSESSMENTS if item.get("id") == assessment_id)
         actual_ids = [exercise["id"] for exercise in stored["rehab_plan"]]
         assert actual_ids == expected_ids
+        assert actual_ids == ["ex_trunk", "ex_reach", "ex_grasp", "ex_h2m"]
         assert "ex_scapdepress" not in actual_ids
-        assert stored["clinical_review_gate"]["rehab_plan_source"] == "survey_reported_problems"
+        assert stored["clinical_review_gate"]["rehab_plan_source"] == "fixed_core_programme"
     finally:
         server.LOCAL_ASSESSMENTS[:] = [
             item for item in server.LOCAL_ASSESSMENTS if item.get("id") != assessment_id

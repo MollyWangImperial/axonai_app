@@ -694,6 +694,44 @@ def test_alira_autonomously_applies_only_incremental_approved_dose_changes():
     assert plan["autonomy"]["requires_per_decision_approval"] is False
 
 
+@pytest.mark.parametrize(
+    ("completed_days", "expected_level"),
+    [(0, "easy"), (1, "easy"), (2, "medium"), (4, "medium"), (5, "difficult"), (7, "difficult")],
+)
+def test_session_difficulty_is_selected_from_distinct_rehab_days(completed_days, expected_level):
+    activities = [
+        {"id": f"activity-{day}", "completed_at": iso_days_ago(day), "exercise_id": "ex_reach"}
+        for day in range(completed_days)
+    ]
+    plan = build_adaptive_care_plan(
+        ready_profile(months_since_stroke=8),
+        [assessment(days_ago=10, plan=[{"id": "ex_reach", "sets": 3, "reps": 10, "frequency": "Daily"}])],
+        [check_in(days_ago=0, sudden_change="no", function_change="about_the_same")],
+        activities,
+        now=NOW,
+    )
+
+    assert plan["exercise_plan"]["recommended_difficulty"] == expected_level
+    assert plan["exercise_plan"]["difficulty_basis"]["value"] == completed_days
+    assert plan["daily_monitoring"]["sessions_last_7_days"] == completed_days
+
+
+def test_multiple_exercises_completed_on_one_day_count_as_one_difficulty_day():
+    plan = build_adaptive_care_plan(
+        ready_profile(months_since_stroke=8),
+        [assessment(days_ago=10, plan=[{"id": "ex_reach"}])],
+        [check_in(days_ago=0, sudden_change="no", function_change="about_the_same")],
+        [
+            {"id": f"activity-{index}", "completed_at": NOW.isoformat(), "exercise_id": exercise_id}
+            for index, exercise_id in enumerate(("ex_trunk", "ex_reach", "ex_grasp", "ex_h2m"))
+        ],
+        now=NOW,
+    )
+
+    assert plan["exercise_plan"]["recommended_difficulty"] == "easy"
+    assert plan["exercise_plan"]["difficulty_basis"]["value"] == 1
+
+
 def test_novel_content_is_only_a_reviewable_draft():
     plan = build_adaptive_care_plan(
         {
@@ -764,7 +802,8 @@ def test_frontend_connects_voice_check_in_targeted_assessment_and_plan_guardrail
     assert "allowedPackages.includes(params.package as AssessmentPackageId)" in task_intro
     assert "prescriptions" in rehab_plan
     assert "blocks_exercise" in rehab_plan
-    assert 'authedFetch("/api/alira/activities"' in exercise
+    assert 'path: "/api/alira/activities"' in exercise
+    assert "queuePatientActivity" in exercise
     assert 'identifier: "adaptive_recovery_check_in"' in notifications
     assert 'identifier: "adaptive_movement_assessment"' in notifications
     assert "plan?.assessment?.due_at" in notifications
@@ -794,7 +833,7 @@ def test_task_intro_pauses_start_until_the_helper_is_confirmed_present():
     assert "helper_confirmation_required?: boolean" in task_intro
     assert 'testID="task-intro-helper-confirm"' in task_intro
     assert "recommendationResponse?.helper_confirmation_required && recommendationResponse?.task_ids?.length" in task_intro
-    assert "disabled={loading || (helperConfirmationNeeded && !helperConfirmed)}" in task_intro
+    assert "disabled={loading || finishingSample || (helperConfirmationNeeded && !helperConfirmed)}" in task_intro
     assert "if (helperConfirmationNeeded && !helperConfirmed) return;" in task_intro
     assert "A helper is with me now and will stay for the whole assessment." in task_intro
     assert "Confirm your helper is here first" in task_intro

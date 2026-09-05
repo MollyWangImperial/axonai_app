@@ -5,36 +5,32 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def test_rehab_plan_uses_targeted_yes_no_session_questions_and_passes_the_result():
+def test_rehab_plan_skips_patient_session_questions_and_uses_recommended_difficulty():
     source = (ROOT / "frontend" / "app" / "rehab-plan.tsx").read_text(encoding="utf-8")
 
-    assert "rehab-session-popup" in source
-    assert "Switch to a different set of exercises?" in source
-    assert "Increase the difficulty for today?" in source
-    assert "session-switch-yes" in source
-    assert "session-increase-yes" in source
-    assert "nextDifficulty(sessionDifficulty)" in source
+    assert "rehab-session-popup" not in source
+    assert "Switch to a different set of exercises?" not in source
+    assert "Increase the difficulty for today?" not in source
+    assert "session-switch-yes" not in source
+    assert "session-increase-yes" not in source
     assert "session-options" in source
+    assert "recommended_difficulty" in source
+    assert "isSessionDifficulty(frequencyDifficulty)" in source
+    assert "configureSessionPlan(adjustedAssessment, baseDifficulty, loadedSessionOptions)" in source
     assert "difficulty: sessionDifficulty" in source
-    assert "variation: sessionVariation" in source
+    assert 'variation: "standard"' in source
     assert "requires_same_support_at_all_levels" in source
 
 
-def test_rehab_session_choice_is_saved_once_per_account_and_local_day():
+def test_rehab_plan_does_not_store_or_reopen_the_removed_patient_choice_window():
     source = (ROOT / "frontend" / "app" / "rehab-plan.tsx").read_text(encoding="utf-8")
 
-    assert "DAILY_SESSION_CHOICE_KEY = (accountId: string)" in source
-    assert "const userId = await getUserId();" in source
-    assert "saved.date !== localDateString()" in source
-    assert "setSessionConfirmed(Boolean(savedChoice))" in source
-    assert "setSessionVariation(selectedVariation)" in source
-    assert "configureSessionPlan(adjustedAssessment, selectedDifficulty, loadedSessionOptions)" in source
-    assert "setSwitchRecommended((visits + 1) % 3 === 0)" in source
-
-    confirm_handler = source[source.index("const confirmSessionChoice") : source.index("const openGuidedExercise")]
-    assert "await saveTodaySessionChoice(planId" in confirm_handler
-    assert source.count("saveTodaySessionChoice(") == 2  # Definition plus confirm action only.
-    assert 'onBack={() => router.back()}' in source
+    assert "DAILY_SESSION_CHOICE_KEY" not in source
+    assert "loadTodaySessionChoice" not in source
+    assert "saveTodaySessionChoice" not in source
+    assert "sessionConfirmed" not in source
+    assert "sessionVariation" not in source
+    assert "confirmSessionChoice" not in source
 
 
 def test_exercise_screen_saves_session_average_and_repetition_scores():

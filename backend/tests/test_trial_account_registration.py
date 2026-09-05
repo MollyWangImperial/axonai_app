@@ -47,7 +47,7 @@ def payload(email="new@example.com", name="New Patient", code="registration-test
 
 @pytest.mark.parametrize("route", ["login", "signup", "login-handoff"])
 def test_each_sign_in_entry_point_persists_new_accounts(registration, route):
-    client, users, _ = registration
+    client, users, handoffs = registration
     response = client.post(f"/api/users/{route}", json=payload("New@Example.com", "  New Patient  "))
     assert response.status_code == 200
     assert len(users.documents) == 1
@@ -62,6 +62,7 @@ def test_each_sign_in_entry_point_persists_new_accounts(registration, route):
 
     if route == "login-handoff":
         token = response.json()["handoff_token"]
+        assert token not in handoffs.records
         completed = client.post("/api/users/login-handoff/complete", json={"token": token})
         assert completed.status_code == 200
         assert completed.json()["id"] == saved["id"]
@@ -130,6 +131,7 @@ def test_mongo_failure_never_reports_success_or_creates_a_device_only_account(re
         monkeypatch.setattr(handoffs, "insert_one", insert)
     response = client.post("/api/users/login-handoff", json=payload())
     assert response.status_code == 503
+    assert response.headers["retry-after"] == "5"
     assert "handoff_token" not in response.json()
     if failure in {"lookup", "write", "readback"}:
         assert server.LOCAL_USERS == {}

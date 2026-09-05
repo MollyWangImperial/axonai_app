@@ -182,10 +182,10 @@ def test_hosted_account_write_is_not_acknowledged_when_mongo_is_down(monkeypatch
     assert server.LOCAL_USERS == {}
 
 
-def test_database_health_is_unhealthy_while_durable_store_is_in_cooldown(monkeypatch):
-    breaker = server._MongoCircuitBreaker(cooldown_s=30)
-    breaker.trip(ServerSelectionTimeoutError("Atlas unavailable"))
-    monkeypatch.setattr(server, "MONGO_CIRCUIT", breaker)
+def test_database_health_is_unhealthy_when_its_authenticated_probe_fails(monkeypatch):
+    async def failed_probe():
+        return {"ok": False, "state": "unreachable"}
+    monkeypatch.setattr(server, "_probe_patient_database", failed_probe)
 
     response = asyncio.run(server.database_health())
 
