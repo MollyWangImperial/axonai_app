@@ -303,3 +303,15 @@ def test_home_wires_the_reassessment_date_pin():
     # re-assessment-day prompt appears as soon as the app date reaches the pin.
     assert 'await storage.removeItem(dailyPromptKey("reassessment", user?.id || "anonymous", date));' in home
     assert "assessmentPinned={assessmentDatePinned}" in home
+
+
+def test_home_phone_layout_does_not_shrink_steps_or_week_copy_into_columns():
+    home = (ROOT / "frontend" / "app" / "(tabs)" / "index.tsx").read_text(encoding="utf-8")
+
+    assert "const isPhone = width < 600;" in home
+    assert "compact={!isWide}" in home
+    assert 'dayStepCompact: { flexGrow: 0, flexShrink: 0, flexBasis: "auto", width: "100%"' in home
+    assert "weekSummaryRowCompact" in home
+    assert 'weekHeadingCopy: { flex: 1, minWidth: 0 }' in home
+    assert 'weekActionsCompact: { width: "100%"' in home
+    assert 'weekActionButtonCompact: { flex: 1, minWidth: 0' in home

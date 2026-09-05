@@ -26,6 +26,43 @@ Final result: passed.
 
 ---
 
+# Design QA: iPhone Home Layout
+
+Source bug reports:
+
+- `C:\Users\LENOVO\AppData\Local\Temp\codex-clipboard-75fbad6f-2f84-4ced-acbd-1b233216164d.jpg`
+- `C:\Users\LENOVO\AppData\Local\Temp\codex-clipboard-1e5dfb77-8a7e-4a76-97ff-335266a143d0.jpg`
+
+Combined comparison evidence:
+
+- Daily flow: `output/playwright/iphone-day-before-after.png`
+- Weekly summary: `output/playwright/iphone-week-before-after.png`
+
+## Viewport and state
+
+- The source captures are 1280 x 2781-pixel iPhone screenshots, approximately a 430 CSS-pixel viewport at phone pixel density.
+- The corrected implementation was inspected in WebKit at 430 x 932 CSS pixels and at 393 x 659 CSS pixels.
+- State: signed-in patient, not yet checked in today, initial assessment available, default text scale, light theme.
+
+## Comparison
+
+- Daily steps now use content-sized stacked rows on phone. The Check in button no longer collides with the next step's lock icon, and each title, status, description, and action remains within its own section.
+- The weekly summary now has a full-width heading and readable summary line. Calendar and Show details occupy a separate equal-width action row instead of compressing the summary into a one-character column.
+- The expanded weekly details and calendar dialog were checked separately at phone width; labels wrap normally and actions remain within the viewport.
+- Home, Journey, Alira, and My Time all reported document width equal to viewport width with no visible overflowing elements.
+- The iOS standalone-app status bar uses the non-overlay style so app content begins below the system status area.
+
+## Findings
+
+- P1 fixed: the weekly status sentence collapsed into a one-character-wide column and expanded the panel to nearly a full page.
+- P1 fixed: vertically flexible daily steps allowed the first action to overlap the following lock marker.
+- P2 fixed: phone header and points-badge sizing used desktop proportions and reduced available content width.
+- No remaining P0, P1, or P2 responsive issues were found in the four primary tabs, the weekly expanded state, or the calendar dialog.
+
+Final result: passed.
+
+---
+
 # Design QA: Affected-arm Movement Spectrum
 
 Source visual truth: `C:\Users\LENOVO\AppData\Local\Temp\codex-clipboard-9d330231-65b1-4bf5-8b33-672b4d24e007.png`

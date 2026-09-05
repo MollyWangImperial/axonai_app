@@ -51,6 +51,15 @@ def test_hosted_web_forces_fresh_app_shell_and_service_worker():
     assert "window.location.reload();" in pwa_injector
 
 
+def test_ios_pwa_reserves_the_status_bar_safe_area():
+    html = (ROOT / "frontend" / "app" / "+html.tsx").read_text(encoding="utf-8")
+    pwa_injector = (ROOT / "frontend" / "scripts" / "inject-pwa.js").read_text(encoding="utf-8")
+
+    expected = 'name="apple-mobile-web-app-status-bar-style" content="default"'
+    assert expected in html
+    assert expected in pwa_injector
+
+
 def test_patient_exit_actions_restore_existing_screens_without_replacing_them():
     results = (ROOT / "frontend" / "app" / "results.tsx").read_text(encoding="utf-8")
     movement_map = (ROOT / "frontend" / "app" / "movement-map.tsx").read_text(encoding="utf-8")

@@ -361,16 +361,17 @@ type DayStepProps = {
   badge: React.ReactNode;
   description: string;
   active?: boolean;
+  compact?: boolean;
   progress?: { completed: number; total: number };
   button?: { label: string; icon: React.ComponentProps<typeof Ionicons>["name"]; onPress: () => void; primary?: boolean; testID: string };
 };
 
-function DayStep({ icon, title, badge, description, active, progress, button }: DayStepProps) {
+function DayStep({ icon, title, badge, description, active, compact, progress, button }: DayStepProps) {
   const { palette, preferences } = useDisplayPreferences();
   const percentage = progress?.total ? Math.min(100, Math.round((progress.completed / progress.total) * 100)) : 0;
   const titleColor = preferences.darkMode ? palette.brand : palette.text;
   return (
-    <View style={styles.dayStep}>
+    <View style={[styles.dayStep, compact && styles.dayStepCompact]}>
       <View style={[styles.dayStepIcon, active && styles.dayStepIconActive]}>
         <Ionicons name={icon} size={28} color={active ? palette.brand : palette.muted} />
       </View>
@@ -404,6 +405,7 @@ export default function HomeScreen() {
   const { palette } = useDisplayPreferences();
   const { width } = useWindowDimensions();
   const isWide = width >= 900;
+  const isPhone = width < 600;
   const cached = getScreenCache<HomeScreenCache>("home");
   const [history, setHistory] = useState<Assessment[]>(cached?.history ?? []);
   const [greetName, setGreetName] = useState(cached?.greetName ?? "");
@@ -881,9 +883,9 @@ export default function HomeScreen() {
 
   return (
     <View style={[styles.container, { backgroundColor: palette.page }]}>
-      <ScrollView contentContainerStyle={[styles.page, { paddingTop: insets.top + spacing.sm }]} showsVerticalScrollIndicator={false}>
+      <ScrollView contentContainerStyle={[styles.page, isPhone && styles.pagePhone, { paddingTop: insets.top + spacing.sm }]} showsVerticalScrollIndicator={false}>
         <View style={styles.inner}>
-          <View style={styles.header}>
+          <View style={[styles.header, isPhone && styles.headerPhone]}>
             <View style={styles.brandRow}>
               <View style={styles.brandIcon}><Ionicons name="pulse" size={22} color="#FFFFFF" /></View>
               <Text style={[styles.brand, { color: palette.text }]}>Rehyn</Text>
@@ -945,16 +947,16 @@ export default function HomeScreen() {
             </View>
           ) : (
             <>
-              <View style={[styles.welcomeRow, !isWide && styles.welcomeRowCompact]}>
+              <View style={[styles.welcomeRow, !isWide && styles.welcomeRowCompact, isPhone && styles.welcomeRowPhone]}>
                 <View style={styles.welcomeCopy}>
-                  <Text style={[styles.welcomeTitle, { color: palette.text }]}>{greeting}, {greetName}</Text>
+                  <Text style={[styles.welcomeTitle, isPhone && styles.welcomeTitlePhone, { color: palette.text }]}>{greeting}, {greetName}</Text>
                   <Text style={[styles.goalLine, { color: palette.muted }]} testID="home-goal-line">Your goal: <Text style={[styles.goalStrong, { color: palette.brand }]}>{displayGoal}</Text></Text>
                   <Text style={[styles.dateLine, { color: palette.muted }]}>{todayLabel}</Text>
                 </View>
-                <View style={[styles.pointsBadge, { backgroundColor: palette.soft, borderColor: palette.brand }]} testID="home-points-badge">
-                  <Ionicons name="ribbon-outline" size={28} color={palette.brand} />
-                  <Text style={[styles.pointsValue, { color: palette.text }]}>{rewards?.points ?? 0}</Text>
-                  <Text style={[styles.pointsLabel, { color: palette.brand }]}>points</Text>
+                <View style={[styles.pointsBadge, isPhone && styles.pointsBadgePhone, { backgroundColor: palette.soft, borderColor: palette.brand }]} testID="home-points-badge">
+                  <Ionicons name="ribbon-outline" size={isPhone ? 22 : 28} color={palette.brand} />
+                  <Text style={[styles.pointsValue, isPhone && styles.pointsValuePhone, { color: palette.text }]}>{rewards?.points ?? 0}</Text>
+                  <Text style={[styles.pointsLabel, isPhone && styles.pointsLabelPhone, { color: palette.brand }]}>points</Text>
                 </View>
               </View>
 
@@ -981,6 +983,7 @@ export default function HomeScreen() {
                   icon={todayCheckInStatus === "not_checked_in" ? "sunny-outline" : "checkmark"}
                   title="Check in"
                   active={todayCheckInStatus !== "not_checked_in"}
+                  compact={!isWide}
                   badge={todayCheckInStatus === "not_checked_in" ? <StatusPill icon="ellipse-outline" label="Ready" tone="grey" /> : <StatusPill icon="checkmark-circle-outline" label={todayCheckInStatus === "complete" ? "Complete" : "Checked in"} />}
                   description={todayCheckInStatus === "not_checked_in" ? "Start today's recovery plan. Checking in earns 2 points." : todayCheckInStatus === "complete" ? "Today's plan is complete." : "Daily check-in complete. +2 points earned."}
                   button={todayCheckInStatus === "not_checked_in" ? { label: checkingIn ? "Checking in..." : "Check in", icon: "hand-right-outline", onPress: checkInForToday, testID: "daily-checkin-button" } : undefined}
@@ -989,6 +992,7 @@ export default function HomeScreen() {
                   <DayStep
                     icon="lock-closed-outline"
                     title="Your next step"
+                    compact={!isWide}
                     badge={<StatusPill icon="lock-closed-outline" label="Locked" tone="grey" />}
                     description="Check in first to see today's next step."
                   />
@@ -997,6 +1001,7 @@ export default function HomeScreen() {
                     icon={isInitialAssessment ? "clipboard-outline" : primaryComplete ? "checkmark" : "fitness-outline"}
                     title={primaryTitle}
                     active
+                    compact={!isWide}
                     badge={<StatusPill icon={primaryComplete ? "checkmark-circle-outline" : "ellipse-outline"} label={primaryComplete ? "Complete" : "In progress"} />}
                     description={primaryDescription}
                     progress={activeExerciseIds.length ? { completed: completedExerciseIds.length, total: activeExerciseIds.length } : undefined}
@@ -1007,6 +1012,7 @@ export default function HomeScreen() {
                   <DayStep
                     icon="lock-closed-outline"
                     title="Later today"
+                    compact={!isWide}
                     badge={<StatusPill icon="lock-closed-outline" label="Locked" tone="grey" />}
                     description={!checkedInToday
                       ? "Check in to unlock your day."
@@ -1017,6 +1023,7 @@ export default function HomeScreen() {
                   icon={isInitialAssessment || walkingOutstanding ? "videocam-outline" : carePlan?.survey?.due ? "chatbubble-ellipses-outline" : "calendar-outline"}
                   title={isInitialAssessment ? "Walking observation" : walkingOutstanding ? "Walking video" : carePlan?.survey?.due ? "Short check-in" : "Next assessment"}
                   active={Boolean(initialWalkingAssigned || carePlan?.survey?.due || followUpDue)}
+                  compact={!isWide}
                   badge={isInitialAssessment
                     ? initialWalkingAssigned
                       ? <StatusPill icon="checkmark-circle-outline" label="Selected if safe" />
@@ -1077,21 +1084,35 @@ export default function HomeScreen() {
               </Pressable>
 
               <View style={[styles.weekPanel, { backgroundColor: palette.surface, borderColor: palette.border }]} testID="home-week-panel">
-                <View style={styles.weekSummaryRow}>
-                  <View style={[styles.weekIcon, { backgroundColor: palette.soft }]}><Ionicons name="calendar-outline" size={21} color={palette.brand} /></View>
-                  <Text style={[styles.weekTitle, { color: palette.text }]}>Your week</Text>
-                  <Text style={[styles.weekSummary, { color: palette.muted }]}>
-                    {todayCheckInStatus === "complete" ? "Daily plan complete" : todayCheckInStatus === "in_progress" ? "Daily check-in complete" : "Check in when ready"}
-                    {isInitialAssessment ? "   •   Initial assessment ready" : assessmentDueLabel ? `   •   Next assessment ${assessmentDueLabel}` : ""}
-                  </Text>
-                  <Pressable testID="home-open-calendar" accessibilityLabel="Open calendar" onPress={() => { setCalendarHighlight(undefined); setShowCalendar(true); }} style={({ pressed }) => [styles.weekCalendarButton, { borderColor: palette.border }, pressed && styles.pressed]}>
-                    <Ionicons name="medal-outline" size={18} color={palette.brand} />
-                    <Text style={[styles.weekToggleText, { color: palette.brand }]}>Calendar</Text>
-                  </Pressable>
-                  <Pressable testID="home-week-toggle" onPress={() => setShowWeek((value) => !value)} style={styles.weekToggle}>
-                    <Text style={[styles.weekToggleText, { color: palette.text }]}>{showWeek ? "Hide details" : "Show details"}</Text>
-                    <Ionicons name={showWeek ? "chevron-up" : "chevron-down"} size={20} color={palette.text} />
-                  </Pressable>
+                <View style={[styles.weekSummaryRow, !isWide && styles.weekSummaryRowCompact]}>
+                  <View style={[styles.weekHeading, !isWide && styles.weekHeadingCompact]}>
+                    <View style={[styles.weekIcon, { backgroundColor: palette.soft }]}><Ionicons name="calendar-outline" size={21} color={palette.brand} /></View>
+                    <View style={styles.weekHeadingCopy}>
+                      <Text style={[styles.weekTitle, { color: palette.text }]}>Your week</Text>
+                      {!isWide ? (
+                        <Text style={[styles.weekSummary, styles.weekSummaryCompact, { color: palette.muted }]}>
+                          {todayCheckInStatus === "complete" ? "Daily plan complete" : todayCheckInStatus === "in_progress" ? "Daily check-in complete" : "Check in when ready"}
+                          {isInitialAssessment ? " · Initial assessment ready" : assessmentDueLabel ? ` · Next assessment ${assessmentDueLabel}` : ""}
+                        </Text>
+                      ) : null}
+                    </View>
+                  </View>
+                  {isWide ? (
+                    <Text style={[styles.weekSummary, { color: palette.muted }]}>
+                      {todayCheckInStatus === "complete" ? "Daily plan complete" : todayCheckInStatus === "in_progress" ? "Daily check-in complete" : "Check in when ready"}
+                      {isInitialAssessment ? "   •   Initial assessment ready" : assessmentDueLabel ? `   •   Next assessment ${assessmentDueLabel}` : ""}
+                    </Text>
+                  ) : null}
+                  <View style={[styles.weekActions, !isWide && styles.weekActionsCompact]}>
+                    <Pressable testID="home-open-calendar" accessibilityLabel="Open calendar" onPress={() => { setCalendarHighlight(undefined); setShowCalendar(true); }} style={({ pressed }) => [styles.weekCalendarButton, !isWide && styles.weekActionButtonCompact, { borderColor: palette.border }, pressed && styles.pressed]}>
+                      <Ionicons name="medal-outline" size={18} color={palette.brand} />
+                      <Text style={[styles.weekToggleText, { color: palette.brand }]}>Calendar</Text>
+                    </Pressable>
+                    <Pressable testID="home-week-toggle" onPress={() => setShowWeek((value) => !value)} style={({ pressed }) => [styles.weekToggle, !isWide && styles.weekActionButtonCompact, !isWide && { borderColor: palette.border }, pressed && styles.pressed]}>
+                      <Text style={[styles.weekToggleText, { color: palette.text }]}>{showWeek ? "Hide details" : "Show details"}</Text>
+                      <Ionicons name={showWeek ? "chevron-up" : "chevron-down"} size={20} color={palette.text} />
+                    </Pressable>
+                  </View>
                 </View>
                 {showWeek ? (
                   <View style={[styles.weekDetails, { borderTopColor: palette.border }]}>
@@ -1171,8 +1192,10 @@ export default function HomeScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1 },
   page: { paddingHorizontal: spacing.md, paddingBottom: 112 },
+  pagePhone: { paddingHorizontal: spacing.sm },
   inner: { width: "100%", maxWidth: 1420, alignSelf: "center" },
   header: { minHeight: 72, flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: spacing.md },
+  headerPhone: { minHeight: 64, gap: spacing.sm },
   brandRow: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
   brandIcon: { width: 43, height: 43, borderRadius: 8, backgroundColor: "#07593E", alignItems: "center", justifyContent: "center" },
   brand: { fontSize: 25, lineHeight: 31, fontWeight: "900" },
@@ -1193,24 +1216,30 @@ const styles = StyleSheet.create({
   accountUnavailableButtonText: { color: "#FFFFFF", fontSize: 15, lineHeight: 21, fontWeight: "900" },
   welcomeRow: { minHeight: 174, flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: spacing.xl, paddingVertical: spacing.md },
   welcomeRowCompact: { minHeight: 0, alignItems: "flex-start", gap: spacing.md },
+  welcomeRowPhone: { alignItems: "center", gap: spacing.sm },
   welcomeCopy: { flex: 1, minWidth: 0 },
   welcomeTitle: { fontSize: 31, lineHeight: 38, fontWeight: "900" },
+  welcomeTitlePhone: { fontSize: 25, lineHeight: 32 },
   goalLine: { marginTop: 7, fontSize: 16, lineHeight: 23, fontWeight: "500" },
   goalStrong: { fontWeight: "900" },
   dateLine: { marginTop: 9, fontSize: 15, lineHeight: 21 },
   pointsBadge: { width: 138, height: 138, borderRadius: 69, borderWidth: 1.5, borderColor: "#2B8A53", alignItems: "center", justifyContent: "center" },
+  pointsBadgePhone: { width: 94, height: 94, borderRadius: 47 },
   pointsValue: { marginTop: -2, fontSize: 44, lineHeight: 48, fontWeight: "900" },
+  pointsValuePhone: { fontSize: 29, lineHeight: 32 },
   pointsLabel: { fontSize: 16, lineHeight: 21, fontWeight: "900" },
+  pointsLabelPhone: { fontSize: 12, lineHeight: 16 },
   sectionHeadingRow: { marginTop: spacing.xs, marginBottom: spacing.sm },
   sectionTitle: { fontSize: 29, lineHeight: 35, fontWeight: "900" },
   sectionSubtitle: { marginTop: 2, fontSize: 15, lineHeight: 21 },
   dayBoard: { minHeight: 318, borderWidth: 1, borderRadius: radius.md, paddingHorizontal: spacing.md, paddingVertical: spacing.md, flexDirection: "row", position: "relative", overflow: "hidden" },
-  dayBoardCompact: { flexDirection: "column", gap: spacing.lg },
+  dayBoardCompact: { minHeight: 0, flexDirection: "column", gap: spacing.lg, paddingHorizontal: spacing.sm },
   dayConnectorSegment: { position: "absolute", top: 61, height: 3, backgroundColor: "#15803D" },
   dayConnectorLeft: { left: "16%", right: "50%" },
   dayConnectorRight: { left: "50%", right: "16%" },
   dayConnectorInactive: { backgroundColor: "#D4DDD7" },
   dayStep: { flex: 1, minWidth: 0, alignItems: "center", paddingHorizontal: spacing.md, zIndex: 1 },
+  dayStepCompact: { flexGrow: 0, flexShrink: 0, flexBasis: "auto", width: "100%", paddingHorizontal: spacing.sm, paddingVertical: spacing.sm },
   dayStepIcon: { width: 62, height: 62, borderRadius: 31, borderWidth: 1.5, borderColor: "#667169", backgroundColor: "#FFFFFF", alignItems: "center", justifyContent: "center" },
   dayStepIconActive: { borderWidth: 3, borderColor: "#0B7A3A" },
   dayStepTitle: { marginTop: 12, fontSize: 19, lineHeight: 24, fontWeight: "900", textAlign: "center" },
@@ -1245,10 +1274,18 @@ const styles = StyleSheet.create({
   progressLinkText: { fontSize: 14, lineHeight: 20, fontWeight: "900" },
   weekPanel: { marginTop: spacing.sm, borderWidth: 1, borderRadius: radius.md, overflow: "hidden" },
   weekSummaryRow: { minHeight: 66, paddingHorizontal: spacing.md, flexDirection: "row", alignItems: "center", gap: spacing.sm },
+  weekSummaryRowCompact: { minHeight: 0, flexDirection: "column", alignItems: "stretch", paddingVertical: spacing.md },
+  weekHeading: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
+  weekHeadingCompact: { width: "100%" },
+  weekHeadingCopy: { flex: 1, minWidth: 0 },
   weekIcon: { width: 42, height: 42, borderRadius: 21, alignItems: "center", justifyContent: "center" },
   weekTitle: { fontSize: 17, lineHeight: 22, fontWeight: "900" },
   weekSummary: { flex: 1, minWidth: 0, marginLeft: spacing.md, fontSize: 13, lineHeight: 19 },
-  weekToggle: { minHeight: 42, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, paddingHorizontal: spacing.sm },
+  weekSummaryCompact: { flex: 0, marginLeft: 0, marginTop: 2 },
+  weekActions: { flexDirection: "row", alignItems: "center", gap: spacing.xs },
+  weekActionsCompact: { width: "100%", marginTop: spacing.xs },
+  weekActionButtonCompact: { flex: 1, minWidth: 0, borderWidth: 1 },
+  weekToggle: { minHeight: 42, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, paddingHorizontal: spacing.sm, borderRadius: radius.pill },
   weekToggleText: { fontSize: 13, fontWeight: "800" },
   weekDetails: { borderTopWidth: 1, padding: spacing.md, gap: spacing.md },
   weekDays: { flexDirection: "row", flexWrap: "wrap", gap: spacing.sm },
