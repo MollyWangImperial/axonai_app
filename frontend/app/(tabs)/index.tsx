@@ -1072,29 +1072,29 @@ export default function HomeScreen() {
           )}
         </View>
       </ScrollView>
-      <PointsCelebration event={celebration} onDone={() => setCelebration(null)} />
+      <PointsCelebration event={hundredPointAward ? null : celebration} onDone={() => setCelebration(null)} />
       <HundredPointCelebration
         visible={Boolean(hundredPointAward)}
         name={hundredPointAward?.name || greetName}
         points={hundredPointAward?.points || 100}
         onClose={() => setHundredPointAward(null)}
       />
-      <SurveyPrefaceModal visible={showSurveyPreface} onBegin={openSurveyChat} onClose={() => setShowSurveyPreface(false)} />
+      <SurveyPrefaceModal visible={!hundredPointAward && showSurveyPreface} onBegin={openSurveyChat} onClose={() => setShowSurveyPreface(false)} />
       <ReassessmentDayModal
-        visible={showReassessment}
+        visible={!hundredPointAward && showReassessment}
         date={todayIso}
         onStart={() => { setShowReassessment(false); startNextSession(); }}
         onLater={() => setShowReassessment(false)}
       />
       <MedalAwardModal
-        visible={showMedal}
+        visible={!hundredPointAward && showMedal}
         date={todayIso}
         collecting={collectingMedal}
         onCollect={() => { void collectMedal(); }}
         onLater={() => setShowMedal(false)}
       />
       <MedalCalendarModal
-        visible={showCalendar}
+        visible={!hundredPointAward && showCalendar}
         today={todayIso}
         days={calendarDays}
         assessmentDate={assessmentDueDate || undefined}
@@ -1102,7 +1102,7 @@ export default function HomeScreen() {
         onClose={() => setShowCalendar(false)}
       />
       <AliraMessageModal
-        visible={Boolean(aliraReminder)}
+        visible={!hundredPointAward && Boolean(aliraReminder)}
         text={aliraReminder || ""}
         onOpenPlan={() => { setAliraReminder(null); openExercisePlan(); }}
         onOpenChat={() => { setAliraReminder(null); router.push("/(tabs)/chat" as never); }}
