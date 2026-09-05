@@ -54,7 +54,7 @@ def test_reward_ladder_earns_the_first_medal_at_100_points():
 
     assert rewards["points"] == 100
     assert rewards["medals"][0] == {
-        "id": "first_100_points",
+        "id": "hundred_point_medal",
         "name": "100-Point Medal",
         "threshold": 100,
         "earned": True,
@@ -83,10 +83,10 @@ def test_acknowledging_earned_milestone_persists_to_the_account(monkeypatch):
     monkeypatch.setattr(server, "_care_check_ins_for_user", no_check_ins)
     monkeypatch.setattr(server, "_save_user_fields", save_fields)
 
-    response = asyncio.run(server.acknowledge_reward_milestone("first_100_points", _request()))
+    response = asyncio.run(server.acknowledge_reward_milestone("hundred_point_medal", _request()))
 
-    assert response == {"ok": True, "milestone_id": "first_100_points", "celebrated": True}
-    assert saved["reward_milestones_acknowledged"] == ["first_100_points"]
+    assert response == {"ok": True, "milestone_id": "hundred_point_medal", "celebrated": True}
+    assert saved["reward_milestones_acknowledged"] == ["hundred_point_medal"]
 
 
 def test_home_celebration_is_animated_audible_and_has_no_music_panel():
@@ -98,9 +98,10 @@ def test_home_celebration_is_animated_audible_and_has_no_music_panel():
     assert "useAudioPlayer" in component and "celebrationFanfare" in component
     assert "Animated.spring(medalScale" in component
     assert "Music playing" not in component
-    assert "claimHundredPointCelebration" in home
+    assert "shouldShowHundredPointCelebration" in home
+    assert "acknowledgeHundredPointCelebration" in home
     assert "reward_milestone_seen_v1" in home
-    assert "/api/users/rewards/milestones/${milestone.id}/acknowledge" in home
+    assert "/api/users/rewards/milestones/${milestoneId}/acknowledge" in home
     assert 'visible={Boolean(hundredPointAward)}' in home
     assert 'visible={!hundredPointAward && showMedal}' in home
     assert 'event={hundredPointAward ? null : celebration}' in home

@@ -129,19 +129,20 @@ type RewardsSummary = {
   medals?: { id: string; name: string; threshold: number; earned: boolean; celebrated?: boolean }[];
 };
 
-type HundredPointAward = { name: string; points: number };
+type HundredPointAward = { name: string; points: number; userId: string; milestoneId: string };
 
-const HUNDRED_POINT_MEDAL_ID = "first_100_points";
+const HUNDRED_POINT_MEDAL_ID = "hundred_point_medal";
 const milestoneSeenKey = (userId: string, milestoneId: string) => `reward_milestone_seen_v1:${userId}:${milestoneId}`;
 
-async function claimHundredPointCelebration(userId: string, rewards: RewardsSummary | null): Promise<boolean> {
+async function shouldShowHundredPointCelebration(userId: string, rewards: RewardsSummary | null): Promise<boolean> {
   const milestone = rewards?.medals?.find((item) => item.id === HUNDRED_POINT_MEDAL_ID);
   if (!milestone?.earned || milestone.celebrated) return false;
-  const key = milestoneSeenKey(userId, milestone.id);
-  if (await storage.getItem(key, false)) return false;
-  await storage.setItem(key, true);
-  void authedFetch(`/api/users/rewards/milestones/${milestone.id}/acknowledge`, { method: "POST" }).catch(() => null);
-  return true;
+  return !(await storage.getItem(milestoneSeenKey(userId, milestone.id), false));
+}
+
+async function acknowledgeHundredPointCelebration(userId: string, milestoneId: string) {
+  await storage.setItem(milestoneSeenKey(userId, milestoneId), true);
+  void authedFetch(`/api/users/rewards/milestones/${milestoneId}/acknowledge`, { method: "POST" }).catch(() => null);
 }
 
 type ProgressPoint = {
@@ -543,10 +544,10 @@ export default function HomeScreen() {
     const previousHome = getScreenCache<HomeScreenCache>("home");
     const nextPoints = Number(rewardsPayload?.points ?? 0);
     const showHundredPointAward = Boolean(
-      user?.id && await claimHundredPointCelebration(user.id, rewardsPayload),
+      user?.id && await shouldShowHundredPointCelebration(user.id, rewardsPayload),
     );
-    if (showHundredPointAward) {
-      setHundredPointAward({ name: nextName, points: nextPoints });
+    if (showHundredPointAward && user?.id) {
+      setHundredPointAward({ name: nextName, points: nextPoints, userId: user.id, milestoneId: HUNDRED_POINT_MEDAL_ID });
     }
     const lastCelebratedPoints = getScreenCache<number>("celebrated-points");
     if (lastCelebratedPoints == null) {
@@ -692,9 +693,14 @@ export default function HomeScreen() {
         if (rewardsPayload) {
           setRewards(rewardsPayload);
           setScreenCache<number>("celebrated-points", Number(rewardsPayload.points ?? 0));
-          if (user?.id && await claimHundredPointCelebration(user.id, rewardsPayload)) {
+          if (user?.id && await shouldShowHundredPointCelebration(user.id, rewardsPayload)) {
             showedHundredPointAward = true;
-            setHundredPointAward({ name: greetName || user.name?.split(" ")[0] || "there", points: Number(rewardsPayload.points ?? 100) });
+            setHundredPointAward({
+              name: greetName || user.name?.split(" ")[0] || "there",
+              points: Number(rewardsPayload.points ?? 100),
+              userId: user.id,
+              milestoneId: HUNDRED_POINT_MEDAL_ID,
+            });
           }
         }
       }
@@ -1077,7 +1083,11 @@ export default function HomeScreen() {
         visible={Boolean(hundredPointAward)}
         name={hundredPointAward?.name || greetName}
         points={hundredPointAward?.points || 100}
-        onClose={() => setHundredPointAward(null)}
+        onClose={() => {
+          const award = hundredPointAward;
+          setHundredPointAward(null);
+          if (award) void acknowledgeHundredPointCelebration(award.userId, award.milestoneId);
+        }}
       />
       <SurveyPrefaceModal visible={!hundredPointAward && showSurveyPreface} onBegin={openSurveyChat} onClose={() => setShowSurveyPreface(false)} />
       <ReassessmentDayModal

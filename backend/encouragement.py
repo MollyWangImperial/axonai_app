@@ -28,7 +28,7 @@ POINTS_PER_CHECKIN_TAP = 2
 ROUND_LENGTH_DAYS = 7
 
 MEDALS = (
-    {"id": "first_100_points", "name": "100-Point Medal", "threshold": 100},
+    {"id": "hundred_point_medal", "name": "100-Point Medal", "threshold": 100},
     {"id": "persistence_pro", "name": "Persistence Pro", "threshold": 200},
     {"id": "persistence_champion", "name": "Persistence Champion", "threshold": 500},
     {"id": "persistence_master", "name": "Persistence Master", "threshold": 1000},
