@@ -221,6 +221,7 @@ export type PatientAssessmentSummary = {
 };
 
 export type FunctionalMetrics = {
+  task_quality?: AssessmentTaskQuality;
   shoulder_flexion_deg?: number | null;
   trunk_lean_deg?: number | null;
   reach_completion?: number | null;
@@ -251,6 +252,20 @@ export type FunctionalMetrics = {
       video_duration_seconds?: number | null;
     };
   };
+};
+
+export type AssessmentTaskQuality = {
+  version: string;
+  modules: Record<"upper_limb" | "hand" | "lower_limb", {score: number | null; maximum: number; task_count: number; measured_tasks: number}>;
+  tasks: {
+    task_id: string; label: string; domain: string; score: number | null; module_weight: number; earned_module_points: number | null;
+    assisted: boolean; measured_steps: number; total_steps: number;
+    steps: {
+      step_id: string; label: string; completed: boolean; duration_ms: number; score: number | null; status: string;
+      criteria: {metric: string; label: string; target: number; observed: number | null; unit: string}[];
+      compensations: {id: string; label: string; cue: string; status: string}[];
+    }[];
+  }[];
 };
 
 export type BodyFunctionDomainSummary = {

@@ -134,6 +134,7 @@ export function HundredPointCelebration({ visible, name, points, onClose }: Hund
           <View style={[styles.copy, compact && styles.copyCompact]}>
             <Text style={[styles.kicker, { color: palette.brand }]}>100 POINT MILESTONE</Text>
             <Text style={[styles.title, { color: palette.text }]}>Wonderful work, {displayName}!</Text>
+            <Text style={[styles.body, { color: palette.text, fontWeight: "700" }]}>Rehyn Consistency Champion</Text>
             <Text style={[styles.body, { color: palette.muted }]}>You reached {points} points. Your steady effort has earned this medal.</Text>
             <Pressable
               accessibilityRole="button"

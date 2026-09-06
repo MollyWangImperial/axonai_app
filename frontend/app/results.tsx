@@ -9,6 +9,7 @@ import { Assessment, fetchAssessment, fetchPatientAssessmentSummary, FunctionalI
 import { authedFetch } from "@/src/auth";
 import { ActivityMetric, DailyActivitiesBoard, DailyActivitiesPanel } from "@/src/components/DailyActivitiesPanel";
 import { MovementScoresPanel } from "@/src/components/MovementScoresPanel";
+import { AssessmentTaskStatistics } from "@/src/components/AssessmentTaskStatistics";
 import { getScreenCache, setScreenCache } from "@/src/screenCache";
 import { getAgeAnatomyPresentation, loadPatientAgeBand } from "@/src/ageAnatomy";
 import { colors, radius, spacing } from "@/src/theme";
@@ -296,6 +297,7 @@ export default function ResultsScreen() {
           <DisclaimerBanner />
           {isSample && <View style={styles.demoBanner}><Ionicons name="sparkles" size={20} color="#675080" /><Text style={styles.demoBannerText}>Generated sample data for testing only. No camera movements were measured.</Text></View>}
           <MovementScoresPanel domains={data.body_function_summary.domains} metrics={data.functional_metrics} isSample={isSample} />
+          <AssessmentTaskStatistics quality={data.functional_metrics?.task_quality} />
           {isDemo
             ? <DailyActivitiesBoard activities={DEMO_DAILY_ACTIVITIES} title="What this means for daily life" sectionHeading />
             : <DailyActivitiesPanel title="What this means for daily life" sectionHeading />}

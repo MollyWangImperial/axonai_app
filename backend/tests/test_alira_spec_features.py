@@ -242,30 +242,30 @@ def test_points_reward_effort_and_rounds():
     activities = [activity(days_ago) for days_ago in range(1, 8)]
     rewards = compute_rewards(activities, [], {}, now=NOW)
     assert rewards["breakdown"]["repetitions_completed"] == 35
-    assert rewards["breakdown"]["points_per_repetition"] == 1
+    assert rewards["breakdown"]["points_per_repetition"] == 0
     assert rewards["breakdown"]["session_days"] == 7
     assert rewards["breakdown"]["rounds_completed"] == 1
-    assert rewards["points"] == 7 * 5 + 7 * 20 + 50
+    assert rewards["points"] == 0  # Individual activities and rounds are not plan-completion awards.
     assert rewards["effort_based"] is True
     assert rewards["reduced_intensity_counts"] is True
 
 
-def test_each_completed_repetition_earns_one_point():
+def test_repetitions_are_counted_without_extra_points():
     activities = [activity(1, completed_reps=3), activity(2, completed_reps=8)]
     rewards = compute_rewards(activities, [], {}, now=NOW)
     assert rewards["breakdown"]["exercises_completed"] == 2
     assert rewards["breakdown"]["repetitions_completed"] == 11
-    assert rewards["points"] == 11 + 2 * 20
+    assert rewards["points"] == 0
 
 
-def test_caregiver_routine_keeps_its_flat_five_point_reward():
+def test_individual_caregiver_routine_does_not_add_extra_points():
     rewards = compute_rewards([activity(1, exercise_id="CG_UPPER_LIMB", completed_reps=1)], [], {}, now=NOW)
     assert rewards["breakdown"]["caregiver_routines_completed"] == 1
-    assert rewards["breakdown"]["points_per_caregiver_routine"] == 5
-    assert rewards["points"] == 5 + 20
+    assert rewards["breakdown"]["points_per_caregiver_routine"] == 0
+    assert rewards["points"] == 0
 
 
-def test_only_correct_repetitions_earn_points():
+def test_movement_quality_does_not_change_reward_points():
     activities = [
         {"exercise_id": "ex_reach", "completed_reps": 5, "quality_reps": 2, "completed_at": (NOW - timedelta(days=1)).isoformat()},
         # Legacy client without a quality count keeps the old behaviour.
@@ -274,10 +274,10 @@ def test_only_correct_repetitions_earn_points():
     rewards = compute_rewards(activities, {}, now=NOW)
     # Reporting all 5 reps as correct would earn exactly 3 more repetition points.
     all_correct = [dict(activities[0], quality_reps=5), activities[1]]
-    assert compute_rewards(all_correct, {}, now=NOW)["points"] - rewards["points"] == 3
+    assert compute_rewards(all_correct, {}, now=NOW)["points"] == rewards["points"]
     # A compensated session (no correct reps) earns no repetition points at all.
     none_correct = [dict(activities[0], quality_reps=0), activities[1]]
-    assert rewards["points"] - compute_rewards(none_correct, {}, now=NOW)["points"] == 2
+    assert rewards["points"] == compute_rewards(none_correct, {}, now=NOW)["points"]
 
 
 def test_streak_freeze_for_chosen_rest_day():
@@ -294,10 +294,10 @@ def test_medal_ladder():
     rewards = compute_rewards([], [], {}, now=NOW)
     names = [medal["name"] for medal in rewards["medals"]]
     assert names == [
-        "100-Point Medal",
-        "Persistence Pro",
-        "Persistence Champion",
-        "Persistence Master",
+        "Rehyn Consistency Champion",
+        "Rehyn Dedication Star",
+        "Rehyn Perseverance Champion",
+        "Rehyn Perseverance Master",
     ]
     assert all(medal["earned"] is False for medal in rewards["medals"])
 
@@ -761,7 +761,7 @@ def test_forward_reach_grading_is_phase_gated_and_catches_forward_lean_and_shrug
     assert "function repEarnsPoint(score)" in source
     assert "if(pointEarned) qualityReps += 1;" in source
     assert "<strong>No point this time</strong>" in source
-    assert '"That repetition did not earn a point yet."' in source
+    assert '"Repetition complete. Thank you for your effort."' in source
     assert "quality_reps: qualityReps" in source
     exercise = (ROOT / "frontend" / "app" / "exercise.tsx").read_text(encoding="utf-8")
     assert "quality_reps: typeof msg.quality_reps" in exercise
@@ -1160,7 +1160,7 @@ def test_cylindrical_grasp_reach_open_close_carry_release_flow_and_compensations
     assert 'const FORM_CRITICAL_METRICS=new Set(["elbow_extension","elbow_flexion","finger_extension"]);' in source
     assert "function measuredRomDetails()" in source
     assert "if(unmeasuredRomSteps().some(item=>FORM_CRITICAL_METRICS.has(item.metric))) return false;" in source
-    assert "Keep your hand in view to earn it." in source
+    assert "Keep your hand in view for feedback." in source
     assert "I could not see your affected hand clearly enough to check your grip." in source
     configured = server._configure_rehab_runner("ex_grasp", "medium", "standard")
     assert configured["hand_tracking"] is True
@@ -1182,11 +1182,11 @@ def test_earning_points_pops_a_fading_congratulations_toast():
     # Exercise repetitions use the runner's feedback window so the score,
     # correction, and one-point reward remain in one place.
     assert "celebrationEvent(2" in home
-    assert "celebrationEvent(5" in caregiver
+    assert "celebrationEvent(10" in caregiver
     assert "celebrationEvent(5" not in exercise
     assert 'msg.type === "rep_complete"' in exercise
-    for source in (home, caregiver):
-        assert "<PointsCelebration event={celebration} onDone={() => setCelebration(null)} />" in source
+    assert "<PointsCelebration event={celebration} onDone={() => setCelebration(null)} />" in caregiver
+    assert "event={hundredPointAward ? null : celebration}" in home
 
 
 def test_safety_strip_and_rewards_and_preview_are_wired():

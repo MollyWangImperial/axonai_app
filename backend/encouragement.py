@@ -1,10 +1,8 @@
 """Encouragement mechanism (spec section 10).
 
-Points reward safe participation and personal progress. A camera-guided
-repetition earns its point only when performed correctly (no confirmed
-compensatory pattern and a quality score at or above the point threshold);
-compensated repetitions are scored 70 and coached instead. Caregiver-delivered
-routines and tap-confirmed repetitions keep earning their points.
+Rewards are separate from movement-quality grades: 10 per completed daily
+plan, 20 per completed assessment and 2 per daily check-in. Repetitions,
+individual routines and weekly rounds do not add bonus points.
 
 Streaks include streak freezes: a day is never counted as broken when the
 patient chose a rest or recovery day, reported heavy fatigue, or reported
@@ -17,21 +15,22 @@ from __future__ import annotations
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, List, Mapping, Optional, Sequence
 
-ENCOURAGEMENT_VERSION = "rehyn-encouragement-1.1"
+ENCOURAGEMENT_VERSION = "rehyn-encouragement-2.0"
 
-POINTS_PER_REPETITION = 1
-POINTS_PER_CAREGIVER_ROUTINE = 5
+POINTS_PER_REPETITION = 0
+POINTS_PER_CAREGIVER_ROUTINE = 0
 LEGACY_REPETITIONS_PER_EXERCISE = 5
-POINTS_PER_SESSION_DAY = 20
-POINTS_PER_ROUND = 50
+POINTS_PER_SESSION_DAY = 10
+POINTS_PER_ASSESSMENT = 20
+POINTS_PER_ROUND = 0
 POINTS_PER_CHECKIN_TAP = 2
 ROUND_LENGTH_DAYS = 7
 
 MEDALS = (
-    {"id": "hundred_point_medal", "name": "100-Point Medal", "threshold": 100},
-    {"id": "persistence_pro", "name": "Persistence Pro", "threshold": 200},
-    {"id": "persistence_champion", "name": "Persistence Champion", "threshold": 500},
-    {"id": "persistence_master", "name": "Persistence Master", "threshold": 1000},
+    {"id": "hundred_point_medal", "name": "Rehyn Consistency Champion", "threshold": 100},
+    {"id": "persistence_pro", "name": "Rehyn Dedication Star", "threshold": 200},
+    {"id": "persistence_champion", "name": "Rehyn Perseverance Champion", "threshold": 500},
+    {"id": "persistence_master", "name": "Rehyn Perseverance Master", "threshold": 1000},
 )
 
 
@@ -74,6 +73,7 @@ def compute_rewards(
     check_ins: Optional[Sequence[Mapping[str, Any]]] = None,
     daily_checkins: Optional[Mapping[str, Mapping[str, Any]]] = None,
     *,
+    assessments: Optional[Sequence[Mapping[str, Any]]] = None,
     now: Optional[datetime] = None,
 ) -> Dict[str, Any]:
     now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
@@ -85,7 +85,6 @@ def compute_rewards(
     exercise_count = 0
     repetition_count = 0
     caregiver_routine_count = 0
-    activity_points = 0
     for activity in activities:
         completed = _as_utc(activity.get("completed_at"))
         if not completed:
@@ -100,25 +99,12 @@ def compute_rewards(
             except (TypeError, ValueError):
                 completed_repetitions = 0
         repetition_count += completed_repetitions
-        # Only correctly performed repetitions earn points when the client
-        # reports them (no compensation, score at or above the threshold);
-        # older clients that do not report quality keep the legacy behaviour.
-        raw_quality = activity.get("quality_reps")
-        if raw_quality is None:
-            rewarded_repetitions = completed_repetitions
-        else:
-            try:
-                rewarded_repetitions = max(0, min(completed_repetitions, int(raw_quality)))
-            except (TypeError, ValueError):
-                rewarded_repetitions = 0
         if str(activity.get("exercise_id") or "").startswith("CG_"):
             caregiver_routine_count += 1
-            activity_points += POINTS_PER_CAREGIVER_ROUTINE
-        else:
-            activity_points += rewarded_repetitions * POINTS_PER_REPETITION
         session_days.add(completed.date())
 
     tap_days = 0
+    completed_plan_days = set()
     for day, record in daily_checkins.items():
         try:
             date.fromisoformat(str(day))
@@ -126,12 +112,33 @@ def compute_rewards(
             continue
         if (record or {}).get("status") in {"in_progress", "complete"}:
             tap_days += 1
+        if (record or {}).get("status") == "complete":
+            completed_plan_days.add(day)
+
+    # A stored assessment id is the award identity. Test shortcuts and unfinished
+    # collections do not earn assessment points; retries cannot double the award.
+    completed_assessments = set()
+    for assessment in assessments or []:
+        if assessment.get("testing_shortcut") or assessment.get("result_provenance") == "generated_testing_sample":
+            continue
+        tasks = assessment.get("task_results") or []
+        summary = assessment.get("patient_summary") or {}
+        complete = summary.get("collection_complete") is True or (bool(tasks) and all(
+            (task.get("metrics") or {}).get("walking_skipped") or (
+                int(task.get("total_steps") or 0) > 0
+                and len(task.get("steps") or []) >= int(task.get("total_steps") or 0)
+            ) for task in tasks
+        ))
+        expected = set(assessment.get("assigned_task_ids") or [])
+        if expected and not expected.issubset({task.get("task_id") for task in tasks}):
+            complete = False
+        if complete and assessment.get("id") and assessment.get("created_at"):
+            completed_assessments.add(assessment["id"])
 
     rounds_completed = len(session_days) // ROUND_LENGTH_DAYS
     points = (
-        activity_points
-        + len(session_days) * POINTS_PER_SESSION_DAY
-        + rounds_completed * POINTS_PER_ROUND
+        len(completed_plan_days) * POINTS_PER_SESSION_DAY
+        + len(completed_assessments) * POINTS_PER_ASSESSMENT
         + tap_days * POINTS_PER_CHECKIN_TAP
     )
 
@@ -176,6 +183,9 @@ def compute_rewards(
             "session_days": len(session_days),
             "rounds_completed": rounds_completed,
             "check_in_days": tap_days,
+            "completed_plan_days": len(completed_plan_days),
+            "assessments_completed": len(completed_assessments),
+            "points_per_assessment": POINTS_PER_ASSESSMENT,
             "points_per_repetition": POINTS_PER_REPETITION,
             "points_per_caregiver_routine": POINTS_PER_CAREGIVER_ROUTINE,
             "points_per_session_day": POINTS_PER_SESSION_DAY,

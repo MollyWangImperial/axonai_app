@@ -300,7 +300,7 @@ export function MedalAwardModal({ visible, date, collecting, onCollect, onLater 
           <Animated.View style={{ transform: [{ scale: pop }] }}>
             <MedalArt />
           </Animated.View>
-          <Text style={[styles.title, { color: palette.text }]}>You earned today&apos;s medal</Text>
+          <Text style={[styles.title, { color: palette.text }]}>Rehyn Daily Achiever</Text>
           <Text style={[styles.body, { color: palette.muted }]}>
             {longDate(date)}. Every completed day is a step your recovery can build on. Collect the medal to add it to your calendar.
           </Text>

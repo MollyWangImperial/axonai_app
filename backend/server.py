@@ -62,6 +62,7 @@ try:
     from backend.patient_insights import build_patient_insights
     from backend.fast_screening import FAST_RUNNER_HTML, evaluate_fast_screen
     from backend.encouragement import MEDALS as REWARD_MEDALS, compute_rewards
+    from backend.assessment_quality import VERSION as ASSESSMENT_QUALITY_VERSION, COMPENSATIONS as ASSESSMENT_COMPENSATIONS, build_rubrics, score_assessment
     from backend.daily_activity_metrics import build_daily_activity_metrics
     from backend.alira_care_orchestrator import (
         QUESTION_BANK as ALIRA_CARE_QUESTION_BANK,
@@ -107,6 +108,7 @@ except ImportError:
     from patient_insights import build_patient_insights
     from fast_screening import FAST_RUNNER_HTML, evaluate_fast_screen
     from encouragement import MEDALS as REWARD_MEDALS, compute_rewards
+    from assessment_quality import VERSION as ASSESSMENT_QUALITY_VERSION, COMPENSATIONS as ASSESSMENT_COMPENSATIONS, build_rubrics, score_assessment
     from daily_activity_metrics import build_daily_activity_metrics
     from alira_care_orchestrator import (
         QUESTION_BANK as ALIRA_CARE_QUESTION_BANK,
@@ -1274,6 +1276,9 @@ ASSESSMENT_PACKAGES: Dict[str, Dict[str, Any]] = {
 }
 
 
+ASSESSMENT_RUBRICS = build_rubrics([task for package in ASSESSMENT_PACKAGES.values() for task in package["tasks"]])
+
+
 def _validated_assigned_task_ids(package_id: str, requested: Optional[List[str]]) -> List[str]:
     package = ASSESSMENT_PACKAGES.get(package_id)
     if not package:
@@ -1516,7 +1521,7 @@ def _progress_task_domain(task_id: str) -> str:
     return "upper_limb"
 
 
-def build_functional_metrics(task_results: Sequence[Any]) -> Dict[str, Any]:
+def build_functional_metrics(task_results: Sequence[Any], assigned_task_ids=None) -> Dict[str, Any]:
     """Derive stable patient-facing progress metrics from saved task evidence."""
     tasks = list(task_results)
 
@@ -1572,6 +1577,7 @@ def build_functional_metrics(task_results: Sequence[Any]) -> Dict[str, Any]:
     shoulder_hike = any(bool(row.get("shoulder_hike")) for row in records("upper_limb"))
 
     return {
+        "task_quality": score_assessment(tasks, ASSESSMENT_RUBRICS, assigned_task_ids),
         "shoulder_flexion_deg": round(shoulder_elevation, 1) if shoulder_elevation is not None else None,
         "trunk_lean_deg": round(trunk_lean, 1) if trunk_lean is not None else None,
         "reach_completion": reach_completion,
@@ -3443,7 +3449,7 @@ async def submit_assessment(payload: AssessmentSubmit, request: Request):
         logger.warning("Ignoring client-supplied musculoskeletal outputs; trusted worker ingestion is required")
     trusted_model_outputs: Dict[str, Any] = {}
     issues = derive_functional_issues(payload.task_results)
-    functional_metrics = build_functional_metrics(payload.task_results)
+    functional_metrics = build_functional_metrics(payload.task_results, assigned_task_ids)
     domain_assessments = build_domain_assessments(payload.task_results)
     expected_summary_domains = _expected_domains_for_tasks(payload.assessment_package, assigned_task_ids)
     body_function_summary = patient_body_function_summary(
@@ -3827,7 +3833,8 @@ async def get_patient_assessment_summary(assessment_id: str, request: Request):
             doc.get("affected_side", "right"),
             doc.get("model_analysis") or {},
         ),
-        "functional_metrics": doc.get("metrics") or build_functional_metrics(doc.get("task_results", [])),
+        "functional_metrics": {**(doc.get("metrics") or build_functional_metrics(doc.get("task_results", []))),
+                               "task_quality": score_assessment(doc.get("task_results", []), ASSESSMENT_RUBRICS, assigned_task_ids)},
         "insights": doc.get("patient_insights") or build_patient_insights(
             body_function_summary,
             doc.get("musculoskeletal_outputs") or {},
@@ -4870,6 +4877,9 @@ const PREVIOUSLY_COMPLETED_TASK_IDS = new Set(
   (URL_PARAMS.get("completed_tasks") || "").split(",").map(value => value.trim()).filter(Boolean)
 );
 const AFFECTED_SIDE = URL_PARAMS.get("affected_side") === "left" ? "left" : "right";
+const assessmentQuality = new RehynAssessmentQuality.Tracker(window.REHYN_ASSESSMENT_RUBRIC, AFFECTED_SIDE);
+let lastQualityPoseAt = -1;
+let lastQualityCaption = "";
 const IS_MOBILE_CAPTURE_DEVICE = CAMERA_DEVICE_CLASS !== "web";
 const TASK_VIDEO_DB_NAME = "rehyn-task-videos-v1";
 const TASK_VIDEO_STORE_NAME = "task-videos";
@@ -6074,6 +6084,9 @@ async function startStep(){
   nearMissEvents = [];
   correctionVoicePlaying = false;
   stepMetrics = {};
+  assessmentQuality.reset(window.REHYN_ASSESSMENT_RUBRIC.tasks[task.id]?.steps.find(rule => rule.id === step.id));
+  document.getElementById("assessmentQualityStatus").textContent = "";
+  lastQualityCaption = "";
   trunkLeanMax = 0;
   shoulderFlexionMax = 0;
   shoulderHikeDetected = false;
@@ -6757,7 +6770,7 @@ function computeMetrics(landmarks){
   const affectedShoulder = state.affected.shoulder;
   const unaffectedShoulder = state.unaffected.shoulder;
   const shoulderElevationDelta = unaffectedShoulder.y - affectedShoulder.y;
-  if(shoulderElevationDelta > Math.max(0.015, state.shoulderWidth * 0.10)) shoulderHikeDetected = true;
+  // Warnings are confirmed against calibrated posture by assessmentQuality.
   kneeExtensionMaxDeg = Math.max(kneeExtensionMaxDeg, state.affectedKneeAngle);
   ankleDorsiflexionMax = Math.max(ankleDorsiflexionMax, state.affected.heel.y - state.affected.toe.y);
   shoulderElevationMaxDeg = Math.max(shoulderElevationMaxDeg, state.shoulderElevation);
@@ -7893,6 +7906,7 @@ function drawOverlay(landmarks){
     drawingUtils.drawConnectors(latestHandLandmarks, HAND_CONNECTIONS, {color:"rgba(127,229,163,0.88)", lineWidth:2});
     drawingUtils.drawLandmarks(latestHandLandmarks, {color:"rgba(217,229,220,0.72)", radius:1.4});
   }
+  if(!calibratingAssessment && !stepCompleted && voiceFinishedAt > 0) assessmentQuality.draw(ctx, landmarks, canvas.width, canvas.height);
   if(calibratingAssessment){
     lapStatus.classList.add("hidden");
     if(lapTargetCalibration.ready && lapTargetCalibration.target){
@@ -8031,13 +8045,17 @@ function nextStep(skipped=false){
     };
   }
   const stepDurationMs = Math.round(performance.now() - stepStartTime);
+  const qualityEvidence = assessmentQuality.snapshot();
+  const leanEvidence = qualityEvidence.compensations.trunk_lean;
+  const confirmedTrunkLean = leanEvidence?.max_streak_ms >= 500 ? leanEvidence.max_value : 0;
   taskResults[currentTaskIdx].steps.push({
     step_id: step.id,
     completed: !skipped,
     failure_code: skipped && step.failure_phenotype ? step.failure_phenotype.code : null,
     duration_ms: stepDurationMs,
     metrics: {
-      trunk_lean_deg: Math.round(trunkLeanMax),
+      quality: qualityEvidence,
+      trunk_lean_deg: leanEvidence?.eligible_ms >= 500 ? Math.round(confirmedTrunkLean) : null,
       shoulder_flexion_ratio: +shoulderFlexionMax.toFixed(2),
       shoulder_hike: shoulderHikeDetected,
       hand_open_score: +handOpenScore.toFixed(2),
@@ -8055,8 +8073,8 @@ function nextStep(skipped=false){
   taskResults[currentTaskIdx].duration_ms += stepDurationMs;
 
   // aggregate metrics
-  if(trunkLeanMax > (taskResults[currentTaskIdx].metrics.trunk_lean_deg||0))
-    taskResults[currentTaskIdx].metrics.trunk_lean_deg = Math.round(trunkLeanMax);
+  if(confirmedTrunkLean > (taskResults[currentTaskIdx].metrics.trunk_lean_deg||0))
+    taskResults[currentTaskIdx].metrics.trunk_lean_deg = Math.round(confirmedTrunkLean);
   if(shoulderHikeDetected) taskResults[currentTaskIdx].metrics.shoulder_hike = true;
   Object.assign(taskResults[currentTaskIdx].metrics, lowerBalanceMetricSnapshot(latestPoseLandmarks, step, stepDurationMs, skipped));
   Object.assign(taskResults[currentTaskIdx].metrics, handMetricSnapshot());
@@ -8106,6 +8124,27 @@ async function celebrateAndAdvance(){
   celebrateLabel.textContent = `Task ${currentTaskIdx + 1} of ${tasks.length} complete`;
   celebrateTitle.textContent = pick.title;
   celebrateMsg.textContent = pick.msg;
+  const statistics = document.getElementById("assessmentTaskStatistics");
+  statistics.replaceChildren();
+  for(const savedStep of taskResults[currentTaskIdx].steps){
+    const rule = window.REHYN_ASSESSMENT_RUBRIC.tasks[finishedTask.id]?.steps.find(item=>item.id===savedStep.step_id);
+    const row = document.createElement("div");
+    row.className = "assessment-stat-row";
+    const title = document.createElement("strong");
+    title.textContent = `${rule?.label || savedStep.step_id} - ${(savedStep.duration_ms/1000).toFixed(1)} s`;
+    row.appendChild(title);
+    const detail = document.createElement("div");
+    const q=savedStep.metrics.quality || {};
+    detail.textContent = (rule?.criteria || []).map(c=>{
+      const measured=q.measurements?.[c.metric];
+      const ratio=c.unit==="ratio", scale=ratio?100:1, unit=ratio?"%":c.unit==="deg"?" degrees":"";
+      return `${c.label}: ${measured?.samples>=5 && Number.isFinite(measured.value) ? Math.round(measured.value*scale)+unit : "Not measured"} / ${Math.round(c.target*scale)}${unit}`;
+    }).join("; ");
+    row.appendChild(detail);
+    const cues=Object.entries(q.compensations || {}).filter(([id,c])=>c.max_streak_ms>=500 && c.max_value>window.REHYN_ASSESSMENT_RUBRIC.compensations[id].threshold).map(([id])=>window.REHYN_ASSESSMENT_RUBRIC.compensations[id].cue);
+    if(cues.length){const warning=document.createElement("p");warning.className="assessment-quality-warning";warning.textContent=cues.join(" ");row.appendChild(warning);}
+    statistics.appendChild(row);
+  }
   renderCelebrateDots();
   celebrateEl.classList.remove("hidden");
   // give browser a tick so the transition fires
@@ -8132,6 +8171,11 @@ async function celebrateAndAdvance(){
   // Ensure overlay is visible for at least ~2.4s for tactile/emotional pacing
   const minDisplayMs = 2400;
   if(voiceMs < minDisplayMs) await new Promise(r => setTimeout(r, minDisplayMs - voiceMs));
+  const reviewButton = document.getElementById("assessmentStatisticsContinue");
+  reviewButton.textContent = hasNext ? "Continue to next task" : "Save assessment and view results";
+  reviewButton.disabled = false;
+  await new Promise(resolve => reviewButton.addEventListener("click", resolve, {once:true}));
+  reviewButton.disabled = true;
 
   // Hide overlay and advance
   celebrateEl.classList.remove("show");
@@ -8273,6 +8317,19 @@ function loop(){
   }
   if(calibratingAssessment) updatePreAssessmentCalibrationUI(landmarks);
   computeHandMetrics();
+  const inTarget = !calibratingAssessment && !correctionVoicePlaying && checkTarget(landmarks);
+  if(lastPoseScanTs !== lastQualityPoseAt){
+    lastQualityPoseAt = lastPoseScanTs;
+    if(calibratingAssessment || (!assessmentQuality.baseline && voiceFinishedAt === 0)) assessmentQuality.calibrate(landmarks, latestPoseWorldLandmarks);
+    if(!calibratingAssessment && voiceFinishedAt > 0 && !stepCompleted && !celebrateEl.classList.contains("show")){
+      const freshHand = now - latestHandSeenAt <= 150 ? latestHandLandmarks : null;
+      assessmentQuality.sample({pose:landmarks,world:latestPoseWorldLandmarks,hand:freshHand,handOpen:handOpenScore,handClosed:fistClosureScore,pinch:pinchScore,gaitAlternations:gaitAlternationCount,inTarget,now});
+      const active=assessmentQuality.active();
+      if(active.includes("shoulder_hike")) shoulderHikeDetected=true;
+      const qualityCaption=active.map(id=>window.REHYN_ASSESSMENT_RUBRIC.compensations[id].cue).join(" ");
+      if(qualityCaption!==lastQualityCaption){document.getElementById("assessmentQualityStatus").textContent=qualityCaption;lastQualityCaption=qualityCaption;}
+    }
+  }
   updateTargetAttemptTracking(landmarks);
   captureMotionFrame(now);
   detectAxonAIMarker(now);
@@ -8286,7 +8343,6 @@ function loop(){
   }
 
   // check target hit — with a small "grace period" so brief jitter doesn't reset the hold
-  const inTarget = correctionVoicePlaying ? false : checkTarget(landmarks);
   const step = getCurrentStep();
   if(step){
     if(inTarget){
@@ -8626,6 +8682,24 @@ postRN({type:"ready"});
 </body>
 </html>
 """
+
+
+_assessment_quality_script = (ROOT_DIR / "assessment_quality.js").read_text(encoding="utf-8")
+POSE_RUNNER_HTML = POSE_RUNNER_HTML.replace("</head>", """<style>
+#assessmentQualityStatus{color:#fff;background:#8a2424;border-radius:8px;max-width:900px;margin:6px auto;padding:8px 12px;font-size:16px;line-height:1.4}
+#assessmentQualityStatus:empty{display:none}
+#celebrate{overflow:auto;padding:24px 16px;box-sizing:border-box;justify-content:flex-start;background:#244d3c}
+#celebrate .star{font-size:48px;flex-shrink:0}
+#celebrate h2,#celebrate p{margin:0}
+#celebrate .msg{max-width:640px}
+@media(max-width:600px){#celebrate{gap:10px}#celebrate .star{font-size:36px}#celebrate h2{font-size:23px}}
+#assessmentTaskStatistics{width:min(760px,100%);text-align:left;font-size:16px;line-height:1.5}
+.assessment-stat-row{border-bottom:1px solid #ffffff55;padding:10px 0}
+.assessment-quality-warning{color:#fff;border-left:4px dotted #ff8080;padding-left:10px;margin:6px 0}
+#assessmentStatisticsContinue{min-height:48px;flex-shrink:0;padding:12px 24px;margin-top:20px;border-radius:8px;background:#fff;color:#104734;border:0;font-size:18px;font-weight:700}
+</style><script>""" + _assessment_quality_script + "\nwindow.REHYN_ASSESSMENT_RUBRIC=" + json.dumps({"version": ASSESSMENT_QUALITY_VERSION, "compensations": ASSESSMENT_COMPENSATIONS, "tasks": ASSESSMENT_RUBRICS}) + ";</script></head>")
+POSE_RUNNER_HTML = POSE_RUNNER_HTML.replace('<div class="dotsMini" id="celebrateDots"></div>', '<div class="dotsMini" id="celebrateDots"></div><div id="assessmentTaskStatistics"></div><button id="assessmentStatisticsContinue" disabled>Continue</button>')
+POSE_RUNNER_HTML = POSE_RUNNER_HTML.replace('<div id="ui">', '<div id="ui"><div id="assessmentQualityStatus" role="status" aria-live="polite"></div>')
 
 
 @api_router.get("/pose/runner", response_class=HTMLResponse)
@@ -10076,7 +10150,7 @@ REHAB_RUNNER_HTML_TEMPLATE = r"""<!DOCTYPE html>
     <div class="step" id="fbStep">Rep 1 complete</div>
     <div class="reward" id="fbReward" role="status" aria-live="polite">
       <span class="rewardStar" aria-hidden="true">&#11088;</span>
-      <span class="rewardCopy"><strong>+1 point</strong><span>Great repetition!</span></span>
+      <span class="rewardCopy"><strong>Repetition complete</strong><span>Great effort!</span></span>
     </div>
     <div class="title" id="fbTitle">Here's what I noticed</div>
     <div class="evidence hidden" id="fbEvidence" data-testid="temporary-compensation-evidence">
@@ -12450,15 +12524,14 @@ async function showFeedback(){
   const confirmed=confirmedCompensations();
   const cameraScored = lastRepScore != null;
   const label = cameraScored ? scoreLabel(lastRepScore) : "Well done";
-  // Tap/guided reps (no camera score) keep earning their point; camera-scored
-  // reps earn it only when done correctly.
+  // Movement quality is recorded separately from the daily-plan reward.
   const pointEarned = cameraScored ? repEarnsPoint(lastRepScore) : true;
   if(pointEarned) qualityReps += 1;
   fbReward.innerHTML = pointEarned
-    ? '<span class="rewardStar" aria-hidden="true">&#11088;</span><span class="rewardCopy"><strong>+1 point</strong><span>Great repetition!</span></span>'
+    ? '<span class="rewardStar" aria-hidden="true">&#11088;</span><span class="rewardCopy"><strong>Repetition complete</strong><span>Great repetition!</span></span>'
     : (cameraScored && pointBlockedByVisibility()
-      ? '<span class="rewardStar" aria-hidden="true">&#128161;</span><span class="rewardCopy"><strong>No point this time</strong><span>Keep your hand in view to earn it.</span></span>'
-      : '<span class="rewardStar" aria-hidden="true">&#128161;</span><span class="rewardCopy"><strong>No point this time</strong><span>Correct the movement to earn it.</span></span>');
+      ? '<span class="rewardCopy"><strong>Repetition complete</strong><span>Keep your hand in view for feedback.</span></span>'
+      : '<span class="rewardCopy"><strong>Repetition complete</strong><span>Use the feedback for your next repetition.</span></span>');
   fbStep.textContent = `Repetition ${currentRep+1} of ${CFG.reps} complete · ${label}`;
   fbTitle.textContent = cameraScored ? `Your score: ${lastRepScore}/100` : "Repetition complete";
   fbBody.textContent = feedback;
@@ -12471,7 +12544,8 @@ async function showFeedback(){
     rep:currentRep+1,
     total:CFG.reps,
     score:lastRepScore,
-    point_earned:pointEarned,
+    point_earned:false,
+    movement_correct:pointEarned,
     feedback,
     rom_metrics:repRomDetails(),
     compensations:confirmed.map(rule=>({id:rule.id,correction:rule.correction})),
@@ -12479,7 +12553,7 @@ async function showFeedback(){
   });
 
   // Voice: feedback + ask for "yes"
-  const rewardVoice = pointEarned ? "Great repetition. You earned one point." : "That repetition did not earn a point yet.";
+  const rewardVoice = "Repetition complete. Thank you for your effort.";
   const feedbackVoice = cameraScored
     ? `${rewardVoice} Your score is ${lastRepScore} out of 100. ${label}. ${feedback} When you're ready, tap continue, or say yes to keep going.`
     : `${rewardVoice} ${label}. ${feedback} When you're ready, tap continue, or say yes to keep going.`;
@@ -15239,6 +15313,13 @@ async def complete_daily_checkin(payload: DailyCheckInSubmit, request: Request):
         raise HTTPException(status_code=401, detail="Sign in required")
     date = _validated_checkin_date(payload.date)
     checkins = dict(user.get("daily_checkins") or {})
+    plan = await _adaptive_care_plan_for_user(user, now=_as_of_now(date))
+    monitoring = plan.get("daily_monitoring") or {}
+    caregiver = (plan.get("caregiver_plan") or {}).get("daily_delivery") or {}
+    complete = caregiver.get("completed_today") if caregiver.get("required_today") else monitoring.get("current_round_complete")
+    if not complete:
+        # Older clients call this after each exercise, not just the final one.
+        return _daily_checkin_response(date, checkins)
     entry = dict(checkins.get(date) or {"checked_in_at": datetime.now(timezone.utc).isoformat()})
     if entry.get("status") != "complete":
         entry["status"] = "complete"
@@ -15267,6 +15348,21 @@ async def collect_daily_medal(payload: DailyCheckInSubmit, request: Request):
     return _daily_checkin_response(date, checkins)
 
 
+async def _reward_assessments_for_user(user_id: str) -> List[Dict[str, Any]]:
+    # Rewards cover the whole account history, not the care planner's latest 100.
+    # Do not load videos, motion frames or model outputs for this count.
+    try:
+        return await db.assessments.find({"user_id": user_id}, {
+            "_id": 0, "id": 1, "created_at": 1, "testing_shortcut": 1,
+            "result_provenance": 1, "assigned_task_ids": 1,
+            "task_results.task_id": 1, "task_results.total_steps": 1,
+            "task_results.steps.step_id": 1, "task_results.metrics.walking_skipped": 1,
+        }).to_list(None)
+    except Exception as exc:
+        _require_durable_patient_store("assessment rewards lookup", exc)
+        return [doc for doc in LOCAL_ASSESSMENTS if doc.get("user_id") == user_id]
+
+
 @api_router.get("/users/rewards")
 async def get_user_rewards(request: Request, as_of: Optional[str] = None):
     """Points, medals, and streak state (spec section 10). Effort-based:
@@ -15276,7 +15372,7 @@ async def get_user_rewards(request: Request, as_of: Optional[str] = None):
         raise HTTPException(status_code=401, detail="Sign in required")
     activities = await _care_activities_for_user(user["id"])
     check_ins = await _care_check_ins_for_user(user["id"])
-    rewards = compute_rewards(activities, check_ins, dict(user.get("daily_checkins") or {}), now=_as_of_now(as_of))
+    rewards = compute_rewards(activities, check_ins, dict(user.get("daily_checkins") or {}), assessments=await _reward_assessments_for_user(user["id"]), now=_as_of_now(as_of))
     acknowledged = set(user.get("reward_milestones_acknowledged") or [])
     for medal in rewards.get("medals") or []:
         medal["celebrated"] = medal.get("id") in acknowledged
@@ -15293,7 +15389,7 @@ async def acknowledge_reward_milestone(milestone_id: str, request: Request):
         raise HTTPException(status_code=404, detail="Reward milestone not found")
     activities = await _care_activities_for_user(user["id"])
     check_ins = await _care_check_ins_for_user(user["id"])
-    rewards = compute_rewards(activities, check_ins, dict(user.get("daily_checkins") or {}))
+    rewards = compute_rewards(activities, check_ins, dict(user.get("daily_checkins") or {}), assessments=await _reward_assessments_for_user(user["id"]))
     if int(rewards.get("points") or 0) < int(milestone["threshold"]):
         raise HTTPException(status_code=409, detail="Reward milestone has not been earned yet")
     acknowledged = list(dict.fromkeys(user.get("reward_milestones_acknowledged") or []))
@@ -16171,6 +16267,7 @@ async def chat_daily_reminder(req: DailyReminderRequest, request: Request):
             await _care_activities_for_user(user["id"]),
             await _care_check_ins_for_user(user["id"]),
             dict(user.get("daily_checkins") or {}),
+            assessments=await _care_assessments_for_user(user["id"]),
             now=_as_of_now(reminder_date),
         )
         streak = int((rewards.get("streak") or {}).get("current_days") or 0)

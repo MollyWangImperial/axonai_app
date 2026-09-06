@@ -122,15 +122,16 @@ export default function CaregiverPlanScreen() {
       setDoneIds(nextDone);
       setObservingId(null);
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      // Each delivered routine earns points - celebrate, then fade out.
-      setCelebration(celebrationEvent(5, "Routine delivered - thank you!"));
       const allIds = plan?.daily_delivery?.programme_ids ?? plan?.programmes.map((item) => item.id) ?? [];
       if (allIds.length > 0 && allIds.every((id) => nextDone.includes(id))) {
         // Every routine is delivered: the day earns its calendar check mark.
-        await authedFetch("/api/users/daily-checkin/complete", {
+        const completed = await authedFetch("/api/users/daily-checkin/complete", {
           method: "POST",
           body: JSON.stringify({ date: localDateString() }),
-        }).catch(() => null);
+        });
+        if (completed.ok && (await completed.json()).status === "complete") {
+          setCelebration(celebrationEvent(10, "Today's plan complete - thank you!"));
+        }
       }
     } catch (e: any) {
       setError(String(e?.message || e));

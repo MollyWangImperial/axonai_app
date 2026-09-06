@@ -50,12 +50,12 @@ def _hundred_point_activities():
 
 
 def test_reward_ladder_earns_the_first_medal_at_100_points():
-    rewards = compute_rewards(_hundred_point_activities(), [], {})
+    rewards = compute_rewards([], [], {}, assessments=_five_assessments())
 
     assert rewards["points"] == 100
     assert rewards["medals"][0] == {
         "id": "hundred_point_medal",
-        "name": "100-Point Medal",
+        "name": "Rehyn Consistency Champion",
         "threshold": 100,
         "earned": True,
         "progress": 1.0,
@@ -74,6 +74,9 @@ def test_acknowledging_earned_milestone_persists_to_the_account(monkeypatch):
     async def no_check_ins(_user_id):
         return []
 
+    async def assessments(_user_id):
+        return _five_assessments()
+
     async def save_fields(user, fields, **_kwargs):
         saved.update(fields)
         return {**user, **fields}
@@ -81,12 +84,18 @@ def test_acknowledging_earned_milestone_persists_to_the_account(monkeypatch):
     monkeypatch.setattr(server, "_user_from_header", signed_in_user)
     monkeypatch.setattr(server, "_care_activities_for_user", activities)
     monkeypatch.setattr(server, "_care_check_ins_for_user", no_check_ins)
+    monkeypatch.setattr(server, "_reward_assessments_for_user", assessments)
     monkeypatch.setattr(server, "_save_user_fields", save_fields)
 
     response = asyncio.run(server.acknowledge_reward_milestone("hundred_point_medal", _request()))
 
     assert response == {"ok": True, "milestone_id": "hundred_point_medal", "celebrated": True}
     assert saved["reward_milestones_acknowledged"] == ["hundred_point_medal"]
+
+
+def _five_assessments():
+    return [{"id": f"assessment-{i}", "created_at": "2026-09-06T12:00:00Z",
+             "task_results": [{"task_id": "T1", "total_steps": 1, "steps": [{"completed": True}]}]} for i in range(5)]
 
 
 def test_home_celebration_is_animated_audible_and_has_no_music_panel():

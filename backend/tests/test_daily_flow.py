@@ -53,6 +53,7 @@ def _stub_care_data(monkeypatch, store, *, activities=None):
     store.setdefault("activities", list(activities or []))
     monkeypatch.setattr(server, "_user_from_header", user_from_header)
     monkeypatch.setattr(server, "_care_assessments_for_user", assessments)
+    monkeypatch.setattr(server, "_reward_assessments_for_user", assessments)
     monkeypatch.setattr(server, "_care_check_ins_for_user", empty)
     monkeypatch.setattr(server, "_care_activities_for_user", activity_rows)
     monkeypatch.setattr(server, "_care_issue_reports_for_user", empty)
@@ -155,6 +156,9 @@ def test_daily_medal_needs_a_complete_day_and_then_shows_on_the_calendar(monkeyp
     with TestClient(server.app) as client:
         too_early = client.post("/api/users/daily-checkin/medal", json={"date": "2026-09-12"})
         assert too_early.status_code == 409
+        incomplete = client.post("/api/users/daily-checkin/complete", json={"date": "2026-09-12"})
+        assert incomplete.json()["status"] != "complete"
+        store["activities"] = [_activity("ex_trunk", "2026-09-12T10:00:00+00:00"), _activity("ex_reach", "2026-09-12T11:00:00+00:00")]
         client.post("/api/users/daily-checkin/complete", json={"date": "2026-09-12"})
         sync_user()
         collected = client.post("/api/users/daily-checkin/medal", json={"date": "2026-09-12"})

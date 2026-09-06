@@ -22,48 +22,12 @@ const DOMAIN_LABELS: Record<DomainId, string> = {
   lower_limb: "Lower limb",
 };
 
-function clampScore(value: number) {
-  return Math.max(0, Math.min(100, Math.round(value)));
-}
-
-function average(values: (number | null | undefined)[]) {
-  const available = values.filter((value): value is number => typeof value === "number" && Number.isFinite(value));
-  if (!available.length) return null;
-  return available.reduce((total, value) => total + value, 0) / available.length;
-}
-
 function domainScore(domain: BodyFunctionDomainSummary, metrics?: FunctionalMetrics): number | null {
-  if (domain.status === "not_observed") return null;
-  const findingsPenalty = Math.min(40, domain.findings_count * 20);
-
-  if (domain.domain === "upper_limb") {
-    const domainMetrics = metrics?.domains?.upper_limb;
-    if (!domainMetrics?.observed) return null;
-    const completion = domainMetrics.step_completion_percent ?? domain.step_completion_percent;
-    const compensationPenalty = domainMetrics.shoulder_hike_detected ? 8 : 0;
-    return clampScore(completion - findingsPenalty - compensationPenalty);
-  }
-
-  if (domain.domain === "hand") {
-    const domainMetrics = metrics?.domains?.hand;
-    if (!domainMetrics?.observed) return null;
-    const control = average([domainMetrics.hand_opening_percent, domainMetrics.pinch_control_percent])
-      ?? domainMetrics.step_completion_percent
-      ?? domain.step_completion_percent;
-    return clampScore(control - findingsPenalty);
-  }
-
-  const domainMetrics = metrics?.domains?.lower_limb;
-  if (!domainMetrics?.observed) return null;
-  if (domainMetrics.skipped) return null;
-  const walking = domainMetrics.bilateral_motion_symmetry_percent
-    ?? domainMetrics.step_completion_percent
-    ?? domain.step_completion_percent;
-  return clampScore(walking - findingsPenalty);
+  return metrics?.task_quality?.modules?.[domain.domain]?.score ?? null;
 }
 
 function scoreTone(score: number | null) {
-  if (score === null) return { status: "Not observed", color: "#6D7771", soft: "#E5E8E6" };
+  if (score === null) return { status: "Not fully measured", color: "#6D7771", soft: "#E5E8E6" };
   if (score >= 80) return { status: "Moving well", color: "#17603F", soft: "#DDE9DD" };
   if (score >= 65) return { status: "Steady", color: "#27714D", soft: "#DDE9DD" };
   return { status: "Building control", color: "#C47A00", soft: "#F5E6C3" };
