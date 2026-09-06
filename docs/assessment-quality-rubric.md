@@ -57,7 +57,8 @@ account's calendar date and unique assessment id, respectively.
 
 ## Verification
 
-- 134 focused Python tests and five Node tracking tests passed.
+- 133 focused Python tests and five Node tracking tests passed after integrating
+  the latest shared-branch update.
 - Production web build and ESLint on edited UI files passed.
 - Desktop Chrome and iPhone-sized WebKit checked with synthetic local fixtures:
   results expansion, task feedback, scrolling, continuation and no horizontal

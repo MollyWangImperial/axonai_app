@@ -13572,9 +13572,8 @@ async def _find_or_create_user_account(email: str, name: str, role: str = "patie
     }
     if mongo_available:
         try:
-            # MongoDB's built-in unique _id makes concurrent first sign-ins for
-            # the same normalized email idempotent, even before optional indexes
-            # have been created after an outage.
+            # MongoDB's built-in unique _id makes first sign-ins idempotent even
+            # before our optional indexes have been created after an outage.
             await db.users.update_one(
                 {"_id": doc["id"]},
                 {"$setOnInsert": doc},
@@ -13584,7 +13583,7 @@ async def _find_or_create_user_account(email: str, name: str, role: str = "patie
             if not stored:
                 raise RuntimeError("The new account could not be read back from MongoDB")
             # A concurrent sign-in may already have saved progress. Return the
-            # durable document instead of the empty template from this request.
+            # stored document, not the empty account template we started with.
             doc = {key: value for key, value in stored.items() if key != "_id"}
         except Exception as e:
             _require_durable_patient_store("account creation", e)
