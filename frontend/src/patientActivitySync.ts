@@ -1,10 +1,10 @@
-import { getUserId } from "@/src/auth";
+import { getAccountGeneration, getUserId, notifyAuthStateChanged, refreshAccountState } from "@/src/auth";
 import { API_BASE } from "@/src/config";
 import { storage } from "@/src/utils/storage";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
 type ActivityPath = "/api/users/exercise-repetitions" | "/api/alira/activities" | "/api/users/daily-checkin/complete";
-type PendingActivity = { id: string; path: ActivityPath; body: Record<string, unknown> };
+type PendingActivity = { id: string; path: ActivityPath; body: Record<string, unknown>; generation?: number };
 const pendingKey = (userId: string) => `pending_patient_activity_v1:${API_BASE}:${encodeURIComponent(userId)}:`;
 export const exerciseProgressKey = (userId: string, planId: string, exerciseId: string) =>
   `ex_progress_v2:${userId}:${planId}:${exerciseId}`;
@@ -26,10 +26,15 @@ export async function patientRequest(userId: string, path: string, init: Request
   const timeout = setTimeout(() => controller.abort(), 10000);
   try {
     // Pin the account for the whole request, including if the user signs out.
-    return await fetch(`${API_BASE}${path}`, {
+    const response = await fetch(`${API_BASE}${path}`, {
       ...init, signal: controller.signal,
-      headers: { "Content-Type": "application/json", "X-User-Id": userId },
+      headers: { "Content-Type": "application/json", "X-User-Id": userId, "X-Account-Generation": String(await getAccountGeneration(userId)) },
     });
+    if (response.status === 409 && (await response.clone().json().catch(() => ({}))).code === "ACCOUNT_RESET") {
+      await refreshAccountState();
+      notifyAuthStateChanged();
+    }
+    return response;
   } finally {
     clearTimeout(timeout);
   }
@@ -39,7 +44,7 @@ export async function queuePatientActivity(userId: string, activity: PendingActi
   // One key per event avoids losing a repetition when two tabs write together.
   // Use the throwing storage API: a failed read/write must not look like an
   // empty queue and erase records that have not reached MongoDB yet.
-  await AsyncStorage.setItem(pendingKey(userId) + encodeURIComponent(activity.id), JSON.stringify(activity));
+  await AsyncStorage.setItem(pendingKey(userId) + encodeURIComponent(activity.id), JSON.stringify({ ...activity, generation: await getAccountGeneration(userId) }));
 }
 
 export async function flushPatientActivities(): Promise<boolean> {
@@ -51,6 +56,10 @@ export async function flushPatientActivities(): Promise<boolean> {
     try {
       const pending = await readPending(userId);
       for (const item of pending) {
+        if ((item.generation || 0) !== await getAccountGeneration(userId)) {
+          await AsyncStorage.removeItem(pendingKey(userId) + encodeURIComponent(item.id));
+          continue;
+        }
         const response = await patientRequest(userId, item.path, { method: "POST", body: JSON.stringify(item.body) });
         if (!response.ok || (await response.json()).ok !== true) return false;
         await AsyncStorage.removeItem(pendingKey(userId) + encodeURIComponent(item.id));

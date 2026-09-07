@@ -11,7 +11,7 @@ import {
   useAudioRecorder,
 } from "expo-audio";
 
-import { authedFetch, getUserId } from "@/src/auth";
+import { authedFetch, getAccountGeneration, getUserId } from "@/src/auth";
 import { API_BASE as BASE } from "@/src/config";
 import { colors, radius, spacing } from "@/src/theme";
 import { storage } from "@/src/utils/storage";
@@ -100,7 +100,7 @@ function TurnBasedAliraCallScreen() {
     const userId = await getUserId();
     const response = await fetch(`${BASE}/api/stt/transcribe`, {
       method: "POST",
-      headers: userId ? { "X-User-Id": userId } : undefined,
+      headers: userId ? { "X-User-Id": userId, "X-Account-Generation": String(await getAccountGeneration(userId)) } : undefined,
       body: form,
     });
     const data = await response.json().catch(() => ({}));

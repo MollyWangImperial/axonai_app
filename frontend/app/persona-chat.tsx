@@ -8,7 +8,7 @@ import { colors, spacing, radius } from "@/src/theme";
 import { storage } from "@/src/utils/storage";
 import TypingIndicator from "@/src/components/TypingIndicator";
 import PaywallModal from "@/src/components/PaywallModal";
-import { authedFetch } from "@/src/auth";
+import { authedFetch, getCachedUser } from "@/src/auth";
 import { API_BASE as BASE } from "@/src/config";
 
 type Turn = { role: "user" | "assistant"; text: string; ts: string };
@@ -32,7 +32,10 @@ export default function PersonaChatScreen() {
   useEffect(() => {
     (async () => {
       if (!persona_id) return;
-      const sessKey = `persona_session_${persona_id}`;
+      const user = await getCachedUser();
+      const sessKey = user?.account_reset_at
+        ? `persona_session_v2:${user.id}:${persona_id}`
+        : `persona_session_${persona_id}`;
       let id = await storage.getItem(sessKey);
       if (!id) {
         id = "s_" + Math.random().toString(36).slice(2, 10) + Date.now().toString(36);

@@ -2,6 +2,7 @@ import { storage } from "@/src/utils/storage";
 import { clearScreenCache } from "@/src/screenCache";
 import { API_BASE as BASE } from "@/src/config";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import { accountGenerationKey, clearAccountJourneyCache } from "@/src/accountResetStorage";
 
 export type Me = {
   id: string;
@@ -20,6 +21,8 @@ export type Me = {
   profile?: Record<string, any> | null;
   initial_assessment_completed_at?: string | null;
   daily_checkins?: Record<string, { status?: string }>;
+  account_generation?: number;
+  account_reset_at?: string;
 };
 
 export const USER_KEY = "active_user_id_v2";
@@ -28,6 +31,15 @@ const BACKEND_USER_KEY = `backend_user_id_v1:${BASE}`;
 const TRIAL_ACCESS_KEY = `trial_access_code_v1:${BASE}`;
 const SIGN_IN_TIMEOUT_MS = 15000;
 const authStateListeners = new Set<() => void>();
+const sessionGenerations = new Map<string, number>();
+
+export async function getAccountGeneration(userId: string): Promise<number> {
+  if (!sessionGenerations.has(userId)) {
+    const cached = await getCachedUser();
+    sessionGenerations.set(userId, cached?.id === userId ? cached.account_generation || 0 : 0);
+  }
+  return sessionGenerations.get(userId)!;
+}
 
 export function subscribeAuthState(listener: () => void) {
   authStateListeners.add(listener);
@@ -182,7 +194,7 @@ export async function signIn(email: string, name: string, role: "patient" | "the
   const u: Me = await r.json();
   if (u.trial_access_granted !== true) throw new Error("Trial access could not be confirmed.");
   const normalizedEmail = email.trim().toLowerCase();
-  for (const raw of [previousUserRaw, legacyUserRaw]) {
+  for (const raw of u.account_reset_at ? [] : [previousUserRaw, legacyUserRaw]) {
     try {
       const previous = JSON.parse(raw || "{}");
       if (
@@ -231,6 +243,13 @@ export async function completeSignInHandoff(token: string): Promise<Me> {
 // browser storage - and the routing gates keep working if a later request fails.
 export async function hydrateAccountStateFromServer(user: Me) {
   if (!user?.id || user.role === "therapist") return;
+  const generation = user.account_generation || 0;
+  const previous = await storage.getItem(accountGenerationKey(user.id), 0);
+  if (generation !== previous) {
+    await clearAccountJourneyCache(user.id);
+    if (!await storage.setItem(accountGenerationKey(user.id), generation)) throw new Error("Could not refresh account storage. Please retry.");
+  }
+  sessionGenerations.set(user.id, generation);
   if (user.consent_accepted === true) {
     await storage.setItem(consentAcceptedKey(user.id), "1");
   }
@@ -353,6 +372,8 @@ async function migrateAccountCache(previousUserId: string, nextUserId: string) {
 }
 
 export async function recoverSingleAccountCache(userId: string) {
+  const user = await getCachedUser();
+  if (user?.account_reset_at || user?.is_new_account) return;
   try {
     const [currentRaw, legacyRaw] = await Promise.all([
       storage.getItem(USER_OBJ, ""),
@@ -392,8 +413,14 @@ export async function authedFetch(path: string, init: RequestInit = {}): Promise
   const uid = appUserId || await storage.getItem(BACKEND_USER_KEY, "");
   const headers = new Headers(init.headers as any);
   if (uid && !headers.has("X-User-Id")) headers.set("X-User-Id", uid);
+  if (uid) headers.set("X-Account-Generation", String(await getAccountGeneration(uid)));
   headers.set("Content-Type", "application/json");
   const response = await fetch(`${BASE}${path}`, { ...init, headers });
+  if (response.status === 409 && (await response.clone().json().catch(() => ({}))).code === "ACCOUNT_RESET") {
+    await refreshAccountState();
+    notifyAuthStateChanged();
+    return response;
+  }
   if (response.status !== 401 || path === "/users/login") return response;
 
   const cached = await getCachedUser();
@@ -417,12 +444,12 @@ export async function authedFetch(path: string, init: RequestInit = {}): Promise
     });
     if (!login.ok) return response;
     const rebound: Me = await login.json();
-    if (rebound.id !== cached.id) await migrateAccountCache(cached.id, rebound.id);
+    if (!rebound.account_reset_at && rebound.id !== cached.id) await migrateAccountCache(cached.id, rebound.id);
     await storage.setItem(USER_KEY, rebound.id);
     await storage.setItem(USER_OBJ, JSON.stringify(rebound));
     await storage.setItem(BACKEND_USER_KEY, rebound.id);
     await hydrateAccountStateFromServer(rebound);
-    if (onboardingComplete && cachedProfile && rebound.onboarding_complete !== true) {
+    if (!rebound.account_reset_at && onboardingComplete && cachedProfile && rebound.onboarding_complete !== true) {
       await fetch(`${BASE}/api/users/onboarding`, {
         method: "POST",
         headers: { "Content-Type": "application/json", "X-User-Id": rebound.id },
@@ -430,6 +457,9 @@ export async function authedFetch(path: string, init: RequestInit = {}): Promise
       }).catch(() => null);
     }
     headers.set("X-User-Id", rebound.id);
+    // Never replay a pre-reset write into the new account journey.
+    if ((rebound.account_generation || 0) !== (cached.account_generation || 0)) return response;
+    headers.set("X-Account-Generation", String(rebound.account_generation || 0));
     return fetch(`${BASE}${path}`, { ...init, headers });
   } catch {
     return response;
@@ -439,4 +469,56 @@ export async function authedFetch(path: string, init: RequestInit = {}): Promise
 export async function fetchBalance(): Promise<{ credits: number; user_id?: string; costs: Record<string, number> }> {
   const r = await authedFetch("/api/credits/balance");
   return r.json();
+}
+
+export async function refreshAccountState(): Promise<Me | null> {
+  const cached = await getCachedUser();
+  if (!cached) return null;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 10000);
+  try {
+    const response = await fetch(`${BASE}/api/users/me`, { signal: controller.signal, headers: { "X-User-Id": cached.id } });
+    if (!response.ok) return cached;
+    const user: Me = await response.json();
+    await hydrateAccountStateFromServer(user);
+    await storage.setItem(USER_OBJ, JSON.stringify(user));
+    if ((user.account_generation || 0) !== (cached.account_generation || 0)) notifyAuthStateChanged();
+    return user;
+  } catch {
+    return cached;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+export async function resetAccount(): Promise<void> {
+  const user = await getCachedUser();
+  if (!user) throw new Error("Sign in before resetting your account.");
+  const key = `pending_account_reset_v1:${user.id}`;
+  let requestId = await storage.getItem(key, "");
+  if (!requestId) {
+    requestId = `reset_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+    if (!await storage.setItem(key, requestId)) throw new Error("Could not prepare the reset. Please retry.");
+  }
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 60000);
+  try {
+    const response = await authedFetch("/api/users/account/reset", {
+      method: "POST", signal: controller.signal,
+      body: JSON.stringify({ confirmation: "RESET", request_id: requestId }),
+    });
+    const result = await response.json();
+    if (!response.ok || result.ok !== true) throw new Error(result.detail || "Reset could not finish. Please retry.");
+    const fresh: Me = result.user;
+    if (fresh?.id !== user.id || !fresh.account_reset_at) throw new Error("Reset could not be verified. Please retry.");
+    await hydrateAccountStateFromServer(fresh);
+    if (!await storage.setItem(USER_OBJ, JSON.stringify(fresh))) throw new Error("Could not refresh your account. Reopen Rehyn to finish.");
+    await storage.removeItem(key);
+    notifyAuthStateChanged();
+  } catch (error) {
+    if (controller.signal.aborted) throw new Error("Reset is taking longer than expected. Retry to finish the same reset.");
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
 }

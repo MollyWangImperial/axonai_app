@@ -29,6 +29,7 @@ import hmac
 import secrets
 import sys
 import tempfile
+import weakref
 from datetime import datetime, timedelta, timezone
 
 import certifi
@@ -78,6 +79,7 @@ try:
         validate_check_in_answers,
     )
     from backend.alira_action_log import AliraActionLogger
+    from backend.account_reset import AccountResetRequest, reset_patient_account
     from backend.rehab_games import game_catalog, rehab_game_html
 except ImportError:
     from rehab_assessment import (
@@ -124,6 +126,7 @@ except ImportError:
         validate_check_in_answers,
     )
     from alira_action_log import AliraActionLogger
+    from account_reset import AccountResetRequest, reset_patient_account
     from rehab_games import game_catalog, rehab_game_html
 
 try:
@@ -4861,6 +4864,8 @@ let lastMotionSampleTs = 0;
 const MOTION_SAMPLE_INTERVAL_MS = 100;
 const MAX_MOTION_FRAMES = 2400;
 const CURRENT_USER_ID = URL_PARAMS.get("uid") || "";
+const ACCOUNT_GENERATION = URL_PARAMS.get("account_generation") || "0";
+const ACCOUNT_HEADERS = {"X-User-Id": CURRENT_USER_ID, "X-Account-Generation": ACCOUNT_GENERATION};
 const ASSESSMENT_PACKAGE = URL_PARAMS.get("package") || "upper_limb";
 const LIBRARY_TEST_MODE = URL_PARAMS.get("library_test") === "1";
 if(LIBRARY_TEST_MODE){
@@ -4929,7 +4934,7 @@ function persistTaskProgress(taskId){
   const query = new URLSearchParams({package_id: ASSESSMENT_PACKAGE, task_id: taskId});
   const request = fetch(`${API_BASE}/assessment/task-progress?${query.toString()}`, {
     method:"POST",
-    headers:{"X-User-Id": CURRENT_USER_ID},
+    headers:ACCOUNT_HEADERS,
   }).then(response => {
     if(!response.ok) throw new Error(`Task progress save failed (${response.status})`);
     return response.json();
@@ -5033,6 +5038,7 @@ function uploadTaskVideoThroughBackend(recording, blob, durationMs, onUploadProg
     request.open("POST", `${API_BASE}/assessment/task-videos?${query.toString()}`);
     request.setRequestHeader("Content-Type", blob.type || recording.mimeType || "video/webm");
     request.setRequestHeader("X-User-Id", CURRENT_USER_ID);
+    request.setRequestHeader("X-Account-Generation", ACCOUNT_GENERATION);
     if(request.upload && typeof onUploadProgress === "function"){
       request.upload.onprogress = event => {
         if(event.lengthComputable && event.total > 0){
@@ -5095,7 +5101,7 @@ async function uploadTaskVideoToCloud(recording, blob, durationMs, onUploadProgr
   try{
     const ticketResponse = await fetch(`${API_BASE}/assessment/task-videos/upload-ticket?${ticketQuery.toString()}`, {
       method:"POST",
-      headers:{"X-User-Id":CURRENT_USER_ID},
+      headers:ACCOUNT_HEADERS,
     });
     if(ticketResponse.status === 503){
       return uploadTaskVideoThroughBackend(recording, blob, durationMs, onUploadProgress);
@@ -5105,7 +5111,7 @@ async function uploadTaskVideoToCloud(recording, blob, durationMs, onUploadProgr
     await putTaskVideoDirectly(ticket.upload_url, blob, ticket.content_type, onUploadProgress);
     const completed = await fetch(`${API_BASE}/assessment/task-videos/complete`, {
       method:"POST",
-      headers:{"Content-Type":"application/json", "X-User-Id":CURRENT_USER_ID},
+      headers:{"Content-Type":"application/json", ...ACCOUNT_HEADERS},
       body:JSON.stringify({
         video_id:ticket.video_id,
         object_key:ticket.object_key,
@@ -5246,7 +5252,7 @@ async function loadTasks(){
   let res;
   try{
     res = await fetch(`${API_BASE}/assessment/tasks?${taskQuery.toString()}`, {
-      headers: CURRENT_USER_ID ? {"X-User-Id": CURRENT_USER_ID} : {},
+      headers: CURRENT_USER_ID ? ACCOUNT_HEADERS : {},
       signal: controller.signal,
     });
   }catch(error){
@@ -8215,7 +8221,7 @@ async function finishAssessment(){
       await Promise.allSettled(Array.from(pendingTaskProgressSaves));
     }
     const res = await fetch(`${API_BASE}/assessment/submit`,{
-      method:"POST", headers:{"Content-Type":"application/json", ...(CURRENT_USER_ID ? {"X-User-Id": CURRENT_USER_ID} : {})},
+      method:"POST", headers:{"Content-Type":"application/json", ...(CURRENT_USER_ID ? ACCOUNT_HEADERS : {})},
       body: JSON.stringify({
         task_results: taskResults.filter(Boolean),
         affected_side: AFFECTED_SIDE,
@@ -13132,7 +13138,7 @@ async def persona_chat(req: PersonaChatRequest, request: Request):
     turns.append({"role": "assistant", "text": reply_text, "ts": now})
     await db.chat_sessions.update_one(
         {"session_id": storage_session},
-        {"$set": {"session_id": storage_session, "turns": turns, "updated_at": now}},
+        {"$set": {"session_id": storage_session, "user_id": user["id"], "turns": turns, "updated_at": now}},
         upsert=True,
     )
     # Paywall hint after 5 free user messages with an AI therapist
@@ -13413,6 +13419,8 @@ def _local_only_account_fields(
     """Account state that reached the local fallback but never reached MongoDB."""
     if not local_user or local_user.get("id") != mongo_user.get("id"):
         return {}
+    if mongo_user.get("account_reset_at") or mongo_user.get("reset_pending"):
+        return {}
     return {
         key: local_user[key]
         for key in ACCOUNT_STATE_FIELDS
@@ -13443,8 +13451,13 @@ async def _save_user_fields(
     if push:
         update["$push"] = dict(push)
     try:
-        result = await db.users.update_one({"id": user["id"]}, update)
+        result = await db.users.update_one({
+            "id": user["id"], "account_generation": user.get("account_generation"), "reset_pending": None,
+        }, update)
         if getattr(result, "matched_count", None) == 0:
+            current = await db.users.find_one({"id": user["id"]}, {"_id": 0})
+            if current and (current.get("reset_pending") or current.get("account_generation") != user.get("account_generation")):
+                raise HTTPException(409, "The account was reset. Reopen Rehyn before continuing.")
             # The filter already supplies "id" for the inserted document.
             on_insert = {
                 key: value
@@ -13456,6 +13469,8 @@ async def _save_user_fields(
                 {**update, "$setOnInsert": on_insert} if on_insert else update,
                 upsert=True,
             )
+    except HTTPException:
+        raise
     except Exception as exc:
         _require_durable_patient_store(context, exc)
         logger.warning(f"Mongo unavailable for {context}; using local fallback: {str(exc)[:120]}")
@@ -13561,6 +13576,8 @@ async def _user_from_header(request_headers: Dict[str, str]) -> Optional[Dict[st
     recovered = _local_only_account_fields(user, local_user)
     if recovered:
         user = await _save_user_fields(user, recovered, context="local account recovery")
+    if user.get("reset_pending"):
+        raise HTTPException(503, "Account reset is unfinished. Open Settings and retry Reset account.")
     return user
 
 
@@ -14024,6 +14041,58 @@ async def me(request: Request):
     if not user:
         raise HTTPException(status_code=401, detail="Sign in required")
     return {**user, **_account_state(user, is_new_account=False)}
+
+
+async def _delete_account_videos(user_id: str):
+    videos = await db.task_video_objects.find({"user_id": user_id}).to_list(None)
+    for video in videos:
+        if video.get("object_key"):
+            await asyncio.to_thread(task_video_object_storage.delete, video["object_key"])
+        await db.task_video_objects.delete_one({"id": video["id"], "user_id": user_id})
+    files = await db.task_videos.files.find({"metadata.user_id": user_id}).to_list(None)
+    for video in files:
+        await task_video_bucket.delete(video["_id"])
+    for video in _local_task_video_metadata():
+        if video.get("user_id") != user_id:
+            continue
+        for suffix in (".bin", ".json"):
+            path = (TASK_VIDEO_FALLBACK_DIR / f"{video['id']}{suffix}").resolve()
+            if path.parent != TASK_VIDEO_FALLBACK_DIR.resolve():
+                raise ValueError("Invalid local task video path")
+            path.unlink(missing_ok=True)
+
+
+async def _clear_account_local_state(user_id: str):
+    LOCAL_ASSESSMENTS[:] = [item for item in LOCAL_ASSESSMENTS if item.get("user_id") != user_id]
+    for records in (LOCAL_TASK_PROGRESS, LOCAL_CHAT_SESSIONS, LOCAL_LOGIN_HANDOFFS):
+        for key, item in list(records.items()):
+            if item.get("user_id") == user_id:
+                records.pop(key, None)
+    LOCAL_CARE_STATE.pop(user_id, None)
+    LOCAL_USERS.pop(user_id, None)
+    _persist_local_dict(LOCAL_USERS_FILE, LOCAL_USERS)
+    _persist_local_list(LOCAL_ASSESSMENTS_FILE, LOCAL_ASSESSMENTS)
+    _persist_local_dict(LOCAL_TASK_PROGRESS_FILE, LOCAL_TASK_PROGRESS)
+    _persist_local_dict(LOCAL_CARE_STATE_FILE, LOCAL_CARE_STATE)
+
+
+@api_router.post("/users/account/reset")
+async def reset_account(payload: AccountResetRequest, request: Request):
+    user_id = request.headers.get("x-user-id")
+    if not user_id:
+        raise HTTPException(401, "Sign in required")
+    try:
+        fresh = await reset_patient_account(
+            db, user_id, payload,
+            delete_videos=_delete_account_videos, clear_local=_clear_account_local_state,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.warning("Account reset interrupted: %s", type(exc).__name__)
+        raise HTTPException(503, "Reset could not finish. Check your connection and retry Reset account.") from exc
+    _remember_local_user(fresh)
+    return {"ok": True, "user": {**fresh, **_account_state(fresh, is_new_account=True)}}
 
 
 @api_router.get("/credits/balance")
@@ -16242,6 +16311,43 @@ async def chat_proactive_messages(request: Request, n: int = 3):
 
 # Mount routes
 # (deferred to end-of-file after Phase C routes)
+
+# Serialize a patient's mutations with their reset in this API process. Mongo's
+# durable marker also blocks other instances while cleanup is incomplete.
+_account_mutation_locks = weakref.WeakValueDictionary()
+
+
+class AccountResetGuardMiddleware:
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+        request = Request(scope)
+        uid = request.headers.get("x-user-id")
+        if not uid or request.method in {"GET", "HEAD", "OPTIONS"}:
+            return await self.app(scope, receive, send)
+        lock = _account_mutation_locks.setdefault(uid, asyncio.Lock())
+        async with lock:
+            error = None
+            if request.url.path != "/api/users/account/reset":
+                try:
+                    user = await _user_from_header(dict(request.headers))
+                    if user and str(user.get("account_generation") or 0) != request.headers.get("x-account-generation", "0"):
+                        error = JSONResponse(status_code=409, content={"detail": "This account was reset. Reopen Rehyn before continuing.", "code": "ACCOUNT_RESET"})
+                except HTTPException as exc:
+                    error = JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+                except Exception:
+                    error = JSONResponse(status_code=503, content={"detail": "Saved account is temporarily unavailable. Please retry."})
+            if error is not None:
+                return await error(scope, receive, send)
+            # Retain the lock through streamed chat responses and their final
+            # persistence, not just until the HTTP response headers are sent.
+            return await self.app(scope, receive, send)
+
+
+app.add_middleware(AccountResetGuardMiddleware)
 
 app.add_middleware(
     CORSMiddleware,

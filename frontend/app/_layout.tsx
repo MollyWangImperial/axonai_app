@@ -1,13 +1,13 @@
 import { Stack, useRouter, useSegments } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
 import * as Notifications from "expo-notifications";
-import { useEffect, useRef } from "react";
-import { LogBox, Platform } from "react-native";
+import { useEffect, useRef, useState } from "react";
+import { AppState, LogBox, Platform } from "react-native";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 
 import { useIconFonts } from "@/src/hooks/use-icon-fonts";
-import { getCachedUser, authedFetch, cachePatientOnboarding, onboardingCompleteKey, recoverSingleAccountCache, hasAcceptedConsent, hasPendingConsent, clearPendingConsent, setConsentAccepted } from "@/src/auth";
+import { getCachedUser, authedFetch, cachePatientOnboarding, onboardingCompleteKey, recoverSingleAccountCache, hasAcceptedConsent, hasPendingConsent, clearPendingConsent, setConsentAccepted, refreshAccountState, subscribeAuthState, USER_OBJ } from "@/src/auth";
 import { preloadAssessmentMediaPipe } from "@/src/assessmentPreload";
 import { storage } from "@/src/utils/storage";
 import { DisplayPreferencesProvider, useDisplayPreferences } from "@/src/displayPreferences";
@@ -22,7 +22,7 @@ function AuthGate() {
   const seg0 = segments[0] || "";
   useEffect(() => {
     (async () => {
-      const u = await getCachedUser();
+      const u = await refreshAccountState();
       // Only the sign-in screen and its privacy notice are available before authentication.
       const unauthenticatedRoutes = ["sign-in", "privacy-policy"];
       const signedInLegalRoutes = ["sign-in", "consent", "privacy-policy", "terms-of-use", "data-permissions", "movement-videos"];
@@ -49,7 +49,7 @@ function AuthGate() {
         let consentOk = await hasAcceptedConsent(u.id);
         if (consentOk) {
           await clearPendingConsent();
-        } else if (await hasPendingConsent()) {
+        } else if (!u.account_reset_at && await hasPendingConsent()) {
           try {
             await setConsentAccepted(u.id);
             await clearPendingConsent();
@@ -145,11 +145,34 @@ export default function RootLayout() {
 
 function AppStack() {
   const { palette } = useDisplayPreferences();
+  const [accountEpoch, setAccountEpoch] = useState("");
+  useEffect(() => {
+    const update = () => { void getCachedUser().then((user) => setAccountEpoch(`${user?.id || ""}:${user?.account_generation || 0}`)); };
+    update();
+    const unsubscribe = subscribeAuthState(update);
+    const onStorage = (event: StorageEvent) => {
+      if (event.key !== USER_OBJ || !event.oldValue || !event.newValue) return;
+      try {
+        const before = JSON.parse(JSON.parse(event.oldValue));
+        const after = JSON.parse(JSON.parse(event.newValue));
+        if (before.id === after.id && before.account_generation !== after.account_generation) window.location.replace("/");
+      } catch { /* Unrelated or malformed storage must not navigate the app. */ }
+    };
+    if (Platform.OS === "web") window.addEventListener("storage", onStorage);
+    const subscription = AppState.addEventListener("change", (state) => {
+      if (state === "active") void refreshAccountState();
+    });
+    return () => {
+      unsubscribe();
+      subscription.remove();
+      if (Platform.OS === "web") window.removeEventListener("storage", onStorage);
+    };
+  }, []);
   return (
     <>
-      <AuthGate />
+      <AuthGate key={`gate:${accountEpoch}`} />
       <NotificationRouteHandler />
-      <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: palette.page } }} />
+      <Stack key={accountEpoch} screenOptions={{ headerShown: false, contentStyle: { backgroundColor: palette.page } }} />
     </>
   );
 }

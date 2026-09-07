@@ -9,6 +9,7 @@ import { configureFastQuickAccess, DEFAULT_SETTINGS, ensurePermission, loadSetti
 import { loadUserPreferences, saveUserPreference, TEXT_SIZES, textScaleFor, TextSizePreference, UserPreferences } from "@/src/userPreferences";
 import { DisplayPalette, useDisplayPreferences } from "@/src/displayPreferences";
 import { PATIENT_SURVEY_STEPS } from "@/src/patientSurvey";
+import { ResetAccountControl } from "@/src/components/ResetAccountControl";
 
 type Palette = DisplayPalette;
 
@@ -182,6 +183,8 @@ export default function SettingsScreen() {
               palette={palette}
               scale={scale}
             />
+            <Divider palette={palette} />
+            <ResetAccountControl scale={scale} />
           </SettingsGroup>
 
           <SettingsGroup label="DEMO" palette={palette}>

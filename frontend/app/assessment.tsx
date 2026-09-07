@@ -6,7 +6,7 @@ import { useLocalSearchParams, useRouter } from "expo-router";
 import * as Haptics from "expo-haptics";
 import { colors, spacing, radius } from "@/src/theme";
 import { AssessmentPackageId, POSE_RUNNER_URL } from "@/src/api";
-import { cacheAssessmentActivity, completedTasksKey, getUserId, savedTaskVideosKey } from "@/src/auth";
+import { cacheAssessmentActivity, completedTasksKey, getAccountGeneration, getUserId, savedTaskVideosKey } from "@/src/auth";
 import { storage } from "@/src/utils/storage";
 import { SafetyStopStrip } from "@/src/components/SafetyStopStrip";
 import { loadUserPreferences } from "@/src/userPreferences";
@@ -60,6 +60,7 @@ export default function AssessmentScreen() {
       const selectedStartTask = typeof startTaskParam === "string" ? startTaskParam : "";
       const query = new URLSearchParams();
       if (uid) query.set("uid", uid);
+      if (uid) query.set("account_generation", String(await getAccountGeneration(uid)));
       query.set("package", selectedPackage);
       query.set("affected_side", affectedSideParam === "left" ? "left" : "right");
       query.set("voice_guidance", preferences.voiceGuidance ? "1" : "0");
