@@ -37,3 +37,15 @@ def test_both_runners_build_a_silent_wav_for_ios_user_gesture_unlock():
     assert server.REHAB_RUNNER_HTML_TEMPLATE.count("function unlockAudioPlayback()") == 1
     assert "view.setUint32(24, sampleRate, true);" in server.POSE_RUNNER_HTML
     assert "view.setUint32(24, sampleRate, true);" in server.REHAB_RUNNER_HTML_TEMPLATE
+    primer = ".then(() => new Promise(resolve => setTimeout(resolve, 180)))"
+    assert server.POSE_RUNNER_HTML.count(primer) == 1
+    assert server.REHAB_RUNNER_HTML_TEMPLATE.count(primer) == 1
+
+
+def test_assessment_offers_a_user_gesture_voice_retry_when_playback_is_blocked():
+    source = server.POSE_RUNNER_HTML
+    assert 'voiceText.textContent = "Tap here to replay the voice instruction";' in source
+    assert 'voiceText.classList.add("voiceRetry");' in source
+    assert 'audioUnlockPromise = null;' in source
+    assert 'await unlockAudioPlayback();' in source
+    assert 'await playVoice(text);' in source

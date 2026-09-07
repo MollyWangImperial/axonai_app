@@ -4330,6 +4330,7 @@ POSE_RUNNER_HTML = r"""<!DOCTYPE html>
   #voiceWave span:nth-child(4){animation-delay:.45s;height:12px}
   @keyframes wave{0%,100%{transform:scaleY(0.5)}50%{transform:scaleY(1.2)}}
   #voiceText{font-size:13px;color:#D9E5DC}
+  #voiceText.voiceRetry{pointer-events:auto;cursor:pointer;color:#fff;text-decoration:underline;text-underline-offset:3px;font-weight:750}
   #skipBtn{margin-top:12px;background:#4A7856;color:#fff;border:none;width:100%;padding:14px;border-radius:16px;font-weight:700;font-size:16px;cursor:pointer}
   #overlay{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:#0c100eee;text-align:center;padding:24px;flex-direction:column;gap:16px;pointer-events:auto;z-index:10}
   #overlay h1{font-size:22px;font-weight:700}
@@ -5915,6 +5916,10 @@ function unlockAudioPlayback(){
   audioEl.src = silentUrl;
   const playback = audioEl.play();
   audioUnlockPromise = Promise.resolve(playback)
+    // Let the short silent clip actually play before reusing this element.
+    // Pausing as soon as play() resolved did not reliably retain the user
+    // gesture on Safari after camera and model setup finished.
+    .then(() => new Promise(resolve => setTimeout(resolve, 180)))
     .then(() => {
       audioEl.pause();
       audioEl.currentTime = 0;
@@ -5967,11 +5972,28 @@ function prefetchUpcomingVoice(){
   }
 }
 
+function clearVoiceRetry(){
+  voiceText.classList.remove("voiceRetry");
+  voiceText.onclick = null;
+}
+
+function offerVoiceRetry(text){
+  voiceText.textContent = "Tap here to replay the voice instruction";
+  voiceText.classList.add("voiceRetry");
+  voiceText.onclick = async () => {
+    clearVoiceRetry();
+    audioUnlockPromise = null;
+    await unlockAudioPlayback();
+    await playVoice(text);
+  };
+}
+
 async function playVoice(text){
   if(!VOICE_GUIDANCE_ENABLED){
     voiceText.textContent = "Voice guidance off · follow on-screen text";
     return;
   }
+  clearVoiceRetry();
   try{
     voiceText.textContent = "Playing instruction…";
     const audioB64 = await fetchVoiceAudio(text);
@@ -5999,7 +6021,11 @@ async function playVoice(text){
   }catch(e){
     voiceText.textContent = "Using device voice";
     const spoke = await playBrowserVoice(text);
-    voiceText.textContent = spoke ? "Instruction ready · follow the target" : "Voice unavailable — follow on-screen text";
+    if(spoke){
+      voiceText.textContent = "Instruction ready · follow the target";
+    }else{
+      offerVoiceRetry(text);
+    }
     postRN({type:"voice_error", message:String(e)});
   }
 }
@@ -10478,6 +10504,10 @@ function unlockAudioPlayback(){
   audioEl.src = silentUrl;
   const playback = audioEl.play();
   audioUnlockPromise = Promise.resolve(playback)
+    // Let the short silent clip actually play before reusing this element.
+    // Pausing as soon as play() resolved did not reliably retain the user
+    // gesture on Safari after camera and model setup finished.
+    .then(() => new Promise(resolve => setTimeout(resolve, 180)))
     .then(() => {
       audioEl.pause();
       audioEl.currentTime = 0;

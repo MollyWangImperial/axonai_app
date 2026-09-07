@@ -1,5 +1,5 @@
 import { storage } from "@/src/utils/storage";
-import { getUserId } from "@/src/auth";
+import { getAccountGeneration, getUserId } from "@/src/auth";
 
 export const DARK_MODE_KEY = "rehyn_dark_mode_v1";
 export const TEXT_SIZE_KEY = "rehyn_text_size_v1";
@@ -11,6 +11,8 @@ export const DEMO_MODE_KEY = "rehyn_demo_mode_v1";
 export const BRIGHTNESS_KEY = "rehyn_brightness_v1";
 export const DARKNESS_KEY = "rehyn_dark_depth_v1";
 export const darkModeKey = (userId: string) => `${DARK_MODE_KEY}:${userId}`;
+export const voiceGuidanceKey = (userId: string, accountGeneration: number) =>
+  `${VOICE_GUIDANCE_KEY}:${userId}:${accountGeneration}`;
 
 export const TEXT_SIZES = ["Comfortable", "Large", "Extra large"] as const;
 export type TextSizePreference = (typeof TEXT_SIZES)[number];
@@ -48,12 +50,19 @@ export function subscribeUserPreferences(listener: (preferences: UserPreferences
 
 export async function loadUserPreferences(): Promise<UserPreferences> {
   const userId = await getUserId();
+  const accountGeneration = userId ? await getAccountGeneration(userId) : 0;
+  const legacyVoiceGuidance = await storage.getItem(VOICE_GUIDANCE_KEY, DEFAULT_USER_PREFERENCES.voiceGuidance);
+  const voiceGuidanceFallback = accountGeneration > 0
+    ? DEFAULT_USER_PREFERENCES.voiceGuidance
+    : legacyVoiceGuidance !== false;
   const [darkMode, textSize, voiceGuidance, shareAssessments, shareCareCircle, usageAnalytics, demoMode, brightness, darkness] = await Promise.all([
     userId
       ? storage.getItem(darkModeKey(userId), DEFAULT_USER_PREFERENCES.darkMode)
       : Promise.resolve(DEFAULT_USER_PREFERENCES.darkMode),
     storage.getItem(TEXT_SIZE_KEY, DEFAULT_USER_PREFERENCES.textSize),
-    storage.getItem(VOICE_GUIDANCE_KEY, DEFAULT_USER_PREFERENCES.voiceGuidance),
+    userId
+      ? storage.getItem(voiceGuidanceKey(userId, accountGeneration), voiceGuidanceFallback)
+      : Promise.resolve(legacyVoiceGuidance),
     storage.getItem(SHARE_ASSESSMENTS_KEY, DEFAULT_USER_PREFERENCES.shareAssessments),
     storage.getItem(SHARE_CARE_CIRCLE_KEY, DEFAULT_USER_PREFERENCES.shareCareCircle),
     storage.getItem(USAGE_ANALYTICS_KEY, DEFAULT_USER_PREFERENCES.usageAnalytics),
@@ -87,8 +96,13 @@ export async function saveUserPreference<K extends keyof UserPreferences>(key: K
     brightness: BRIGHTNESS_KEY,
     darkness: DARKNESS_KEY,
   };
-  const userId = key === "darkMode" ? await getUserId() : null;
-  const storageKey = key === "darkMode" && userId ? darkModeKey(userId) : storageKeys[key];
+  const userId = key === "darkMode" || key === "voiceGuidance" ? await getUserId() : null;
+  const accountGeneration = key === "voiceGuidance" && userId ? await getAccountGeneration(userId) : 0;
+  const storageKey = key === "darkMode" && userId
+    ? darkModeKey(userId)
+    : key === "voiceGuidance" && userId
+      ? voiceGuidanceKey(userId, accountGeneration)
+      : storageKeys[key];
   await storage.setItem(storageKey, value);
   const preferences = await loadUserPreferences();
   preferenceListeners.forEach((listener) => listener(preferences));

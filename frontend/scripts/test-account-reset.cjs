@@ -49,6 +49,9 @@ const response = (data, status = 200) => new Response(JSON.stringify(data), { st
   await storage.setItem('patient_activity_v1:qa-other', 'other progress');
   await storage.setItem('persona_session_legacy', 'not-owned-by-this-account');
   await storage.setItem('rehyn_text_size_v1', 'Large');
+  await storage.setItem('rehyn_voice_guidance_v1', false);
+  const preferences = load('src/userPreferences.ts', '@/src/userPreferences');
+  assert.equal((await preferences.loadUserPreferences()).voiceGuidance, false, 'an existing account keeps its saved voice setting');
   assert.equal(cache.belongsToResetAccount('patient_activity_v1:qa-one-more', 'qa-one'), false);
   assert.equal(cache.belongsToResetAccount('pending_patient_activity_v1:http://qa.invalid:qa-one:rep', 'qa-one'), true);
 
@@ -77,6 +80,10 @@ const response = (data, status = 200) => new Response(JSON.stringify(data), { st
   assert.equal(await storage.getItem('trial_access_code_v1:http://qa.invalid'), 'keep-access');
   assert.equal((await auth.getCachedUser()).id, 'qa-one');
   assert.equal(await auth.getAccountGeneration('qa-one'), 1);
+  assert.equal((await preferences.loadUserPreferences()).voiceGuidance, true, 'a reset generation must start with voice guidance on');
+  await preferences.saveUserPreference('voiceGuidance', false);
+  assert.equal(await storage.getItem(preferences.voiceGuidanceKey('qa-one', 1), true), false);
+  assert.equal((await preferences.loadUserPreferences()).voiceGuidance, false, 'the reset account may still turn voice guidance off');
 
   // New progress survives later hydrations of the same generation.
   await storage.setItem(auth.onboardingCompleteKey(user.id), '1');
@@ -93,5 +100,5 @@ const response = (data, status = 200) => new Response(JSON.stringify(data), { st
     return response({ ok: true });
   };
   await auth.authedFetch('/api/users/onboarding', { method: 'POST' });
-  console.log('PASS: scoped cleanup, retained identity, failed reset, idempotent retry, cache recovery, generation headers');
+  console.log('PASS: scoped cleanup, retained identity, reset voice default, failed reset, idempotent retry, cache recovery, generation headers');
 })().catch(error => { console.error(error); process.exitCode = 1; });
