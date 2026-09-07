@@ -51,11 +51,44 @@ def test_sustained_compensation_affects_only_that_step_and_assistance_halves_tas
 def test_missing_tasks_and_tracking_are_not_excluded_to_inflate_score():
     q = score_assessment([task("T1")], ASSESSMENT_RUBRICS, ["T1", "T2"])
     assert q["modules"]["upper_limb"]["score"] is None
+    assert q["modules"]["upper_limb"]["earned_score"] == 50
     assert q["tasks"][0]["module_weight"] == 50
     for invalid in [None, math.nan, True]:
         reach = task("T1")
         reach["steps"][0]["metrics"]["quality"]["measurements"]["arm_elevation"]["value"] = invalid
         assert score_assessment([reach], ASSESSMENT_RUBRICS)["tasks"][0]["score"] is None
+
+
+def test_partial_mouth_step_preserves_upper_limb_points_and_equal_task_shares():
+    mouth = task("T3")
+    mouth["steps"][1]["metrics"] = {}
+    quality = score_assessment([task("T1"), task("T2"), mouth, task("H1")], ASSESSMENT_RUBRICS,
+                               ["T1", "T2", "T3", "H1", "L6"])
+    upper = quality["modules"]["upper_limb"]
+    assert upper["score"] is None
+    assert upper["earned_score"] == 91.7
+    assert (upper["measured_steps"], upper["total_steps"]) == (11, 12)
+    mouth_score = quality["tasks"][2]
+    assert mouth_score["earned_score"] == 75
+    assert mouth_score["steps"][1]["score"] is None
+    assert [t["module_weight"] for t in quality["tasks"][:3]] == [33.33] * 3
+    assert mouth_score["earned_module_points"] == 25
+    assert quality["modules"]["hand"]["score"] == 100
+    assert quality["modules"]["lower_limb"]["earned_score"] is None
+
+    mouth["metrics"] = {"assisted": True}
+    assisted = score_assessment([mouth], ASSESSMENT_RUBRICS)
+    assert assisted["tasks"][0]["earned_score"] == 37.5
+
+
+def test_zero_measured_score_is_distinct_from_missing_evidence():
+    reach = task("T1", 0)
+    for step in reach["steps"]:
+        step["completed"] = False
+    assert score_assessment([reach], ASSESSMENT_RUBRICS)["modules"]["upper_limb"]["earned_score"] == 0
+    for step in reach["steps"]:
+        step["metrics"] = {}
+    assert score_assessment([reach], ASSESSMENT_RUBRICS)["modules"]["upper_limb"]["earned_score"] is None
 
 
 def test_old_assessment_remains_completed_but_does_not_invent_rom():
@@ -131,6 +164,16 @@ def test_quality_evidence_and_scores_survive_account_save_and_reload(monkeypatch
     assert reloaded["functional_metrics"]["task_quality"] == saved.metrics["task_quality"]
     assert reloaded["functional_metrics"]["task_quality"]["modules"]["upper_limb"]["score"] == 80
     assert completed == [(user["id"], saved.created_at)]
+
+    # Reopening an older saved snapshot recomputes partial points from its
+    # original evidence, even when the stored aggregate score is unavailable.
+    stored[0]["task_results"][0]["steps"][0]["metrics"] = {}
+    stored[0]["metrics"]["task_quality"] = {"modules": {"upper_limb": {"score": None}}}
+    partial = asyncio.run(server.get_patient_assessment_summary(saved.id, request))
+    module = partial["functional_metrics"]["task_quality"]["modules"]["upper_limb"]
+    assert module["score"] is None
+    assert module["earned_score"] == 60
+    assert module["measured_steps"] == 3
 
 
 def test_between_task_celebration_is_brief_and_advances_without_a_button():

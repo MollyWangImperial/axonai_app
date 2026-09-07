@@ -18,25 +18,31 @@ export function AssessmentTaskStatistics({ quality }: { quality?: AssessmentTask
       <Text style={[styles.heading, { color: palette.text }]}>Assessment task statistics</Text>
       {quality.tasks.map(task => {
         const open = expanded === task.task_id;
+        const score = task.score ?? task.earned_score ?? null;
         return <View key={task.task_id} style={[styles.task, { borderColor: palette.border }]}>
-          <Pressable onPress={() => setExpanded(open ? null : task.task_id)} accessibilityRole="button" accessibilityState={{ expanded: open }} style={styles.toggle} testID={`task-statistics-${task.task_id}`}>
+          <Pressable onPress={() => setExpanded(open ? null : task.task_id)} accessibilityRole="button" accessibilityState={{ expanded: open }} aria-expanded={open} style={styles.toggle} testID={`task-statistics-${task.task_id}`}>
             <View style={styles.copy}>
               <Text style={[styles.title, { color: palette.text }]}>{task.label}</Text>
-              <Text style={[styles.body, { color: palette.muted }]}>{task.score === null ? "Not fully measured" : `${task.score}/100`} · {task.measured_steps}/{task.total_steps} steps measured</Text>
-              <Text style={[styles.body, { color: palette.muted }]}>{task.earned_module_points ?? "-"} / {task.module_weight} module points{task.assisted ? " · Assisted" : ""}</Text>
-              {task.steps.some(step => step.status === "limited_view") && <Text style={[styles.body, { color: palette.muted }]}>Limited camera view for some posture checks</Text>}
             </View>
             <Ionicons name={open ? "chevron-up" : "chevron-down"} size={24} color={palette.text} />
           </Pressable>
-          {open && task.steps.map(step => <View key={step.step_id} style={[styles.step, { borderColor: palette.border }]}>
-            <Text style={[styles.title, { color: palette.text }]}>{step.label}</Text>
-            <Text style={[styles.body, { color: palette.muted }]}>{step.score === null ? "Not measured" : `${step.score}/100`} · {(step.duration_ms / 1000).toFixed(1)} s · {step.completed ? "Target reached" : "Target not reached"}</Text>
-            {step.criteria.map(rule => <Text key={rule.metric} style={[styles.body, { color: palette.text }]}>{rule.label}: {measurement(rule.observed, rule.unit)} · Reference {measurement(rule.target, rule.unit)}</Text>)}
-            {step.compensations.map(check => <View key={check.id} style={check.status === "detected" ? styles.warning : undefined}>
-              <Text style={[styles.body, { color: check.status === "detected" ? palette.text : palette.muted }]}>{check.label}: {check.status === "detected" ? "Observed" : check.status === "not_measured" ? "Not measured in this view" : "Not detected"}</Text>
-              {check.status === "detected" && <Text style={[styles.body, { color: palette.text }]}>{check.cue}</Text>}
+          {open && <View testID={`task-statistics-details-${task.task_id}`}>
+            <View style={styles.summary}>
+              <Text style={[styles.body, { color: palette.muted }]}>{score === null ? "Not measured" : `${score}/100${task.score === null ? " - Partial score" : ""}`} · {task.measured_steps}/{task.total_steps} steps measured</Text>
+              <Text style={[styles.body, { color: palette.muted }]}>{task.earned_module_points ?? "-"} / {task.module_weight} module points{task.assisted ? " · Assisted" : ""}</Text>
+              {task.score === null && score !== null && <Text style={[styles.body, { color: palette.muted }]}>Points recorded so far; unmeasured steps are not scored.</Text>}
+              {task.steps.some(step => step.status === "limited_view") && <Text style={[styles.body, { color: palette.muted }]}>Limited camera view for some posture checks</Text>}
+            </View>
+            {task.steps.map(step => <View key={step.step_id} style={[styles.step, { borderColor: palette.border }]}>
+              <Text style={[styles.title, { color: palette.text }]}>{step.label}</Text>
+              <Text style={[styles.body, { color: palette.muted }]}>{step.score === null ? "Not measured" : `${step.score}/100`} · {(step.duration_ms / 1000).toFixed(1)} s · {step.completed ? "Target reached" : "Target not reached"}</Text>
+              {step.criteria.map(rule => <Text key={rule.metric} style={[styles.body, { color: palette.text }]}>{rule.label}: {measurement(rule.observed, rule.unit)} · Reference {measurement(rule.target, rule.unit)}</Text>)}
+              {step.compensations.map(check => <View key={check.id} style={check.status === "detected" ? styles.warning : undefined}>
+                <Text style={[styles.body, { color: check.status === "detected" ? palette.text : palette.muted }]}>{check.label}: {check.status === "detected" ? "Observed" : check.status === "not_measured" ? "Not measured in this view" : "Not detected"}</Text>
+                {check.status === "detected" && <Text style={[styles.body, { color: palette.text }]}>{check.cue}</Text>}
+              </View>)}
             </View>)}
-          </View>)}
+          </View>}
         </View>;
       })}
     </View>
@@ -51,6 +57,7 @@ const styles = StyleSheet.create({
   copy: { flex: 1, minWidth: 0 },
   title: { fontSize: 18, lineHeight: 25, fontWeight: "700" },
   body: { fontSize: 15, lineHeight: 22, marginTop: 4 },
+  summary: { paddingBottom: 14, paddingHorizontal: 8 },
   step: { borderTopWidth: 1, paddingVertical: 14, paddingHorizontal: 8, gap: 4 },
   warning: { borderLeftWidth: 3, borderStyle: "dotted", borderColor: "#C94242", paddingLeft: 10, marginTop: 8 },
 });

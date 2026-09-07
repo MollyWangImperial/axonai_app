@@ -256,10 +256,13 @@ export type FunctionalMetrics = {
 
 export type AssessmentTaskQuality = {
   version: string;
-  modules: Record<"upper_limb" | "hand" | "lower_limb", {score: number | null; maximum: number; task_count: number; measured_tasks: number}>;
+  modules: Record<"upper_limb" | "hand" | "lower_limb", {
+    score: number | null; earned_score?: number | null; maximum: number; task_count: number; measured_tasks: number;
+    measured_steps?: number; total_steps?: number;
+  }>;
   tasks: {
     task_id: string; label: string; domain: string; score: number | null; module_weight: number; earned_module_points: number | null;
-    assisted: boolean; measured_steps: number; total_steps: number;
+    earned_score?: number | null; assisted: boolean; measured_steps: number; total_steps: number;
     steps: {
       step_id: string; label: string; completed: boolean; duration_ms: number; score: number | null; status: string;
       criteria: {metric: string; label: string; target: number; observed: number | null; unit: string}[];

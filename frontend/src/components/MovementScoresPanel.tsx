@@ -14,6 +14,7 @@ type ScorePresentation = {
   status: string;
   color: string;
   soft: string;
+  coverage?: string;
 };
 
 const DOMAIN_LABELS: Record<DomainId, string> = {
@@ -21,10 +22,6 @@ const DOMAIN_LABELS: Record<DomainId, string> = {
   hand: "Hand control",
   lower_limb: "Lower limb",
 };
-
-function domainScore(domain: BodyFunctionDomainSummary, metrics?: FunctionalMetrics): number | null {
-  return metrics?.task_quality?.modules?.[domain.domain]?.score ?? null;
-}
 
 function scoreTone(score: number | null) {
   if (score === null) return { status: "Not fully measured", color: "#6D7771", soft: "#E5E8E6" };
@@ -58,9 +55,19 @@ export function MovementScoresPanel({ domains, metrics, isSample = false }: { do
     }
   ));
   const presentations: ScorePresentation[] = orderedDomains.map((domain) => {
-    const score = domainScore(domain, metrics);
+    const module = metrics?.task_quality?.modules?.[domain.domain];
+    const score = module?.score ?? module?.earned_score ?? null;
+    const partial = module?.score == null && score !== null;
     const tone = scoreTone(score);
-    return { domain: domain.domain, label: DOMAIN_LABELS[domain.domain], score, ...tone };
+    return {
+      domain: domain.domain, label: DOMAIN_LABELS[domain.domain], score, ...tone,
+      ...(partial ? {
+        status: "Partial score",
+        color: palette.muted,
+        soft: palette.border,
+        coverage: `${module?.measured_steps}/${module?.total_steps} steps measured. Points recorded so far; unmeasured steps are not scored.`,
+      } : {}),
+    };
   });
 
   return (
@@ -99,6 +106,7 @@ export function MovementScoresPanel({ domains, metrics, isSample = false }: { do
                 <Text style={[styles.scoreScale, { color: item.score === null ? palette.muted : item.color }]}> / 100</Text>
               </View>
               <Text style={[styles.scoreStatus, { color: item.color }]}>{item.status}</Text>
+              {item.coverage && <Text style={[styles.coverage, { color: palette.muted }]}>{item.coverage}</Text>}
               <View style={[styles.track, { backgroundColor: item.soft }]}>
                 <View style={[styles.fill, { width: `${Math.max(0, item.score ?? 0)}%` as `${number}%`, backgroundColor: item.color }]} />
               </View>
@@ -125,7 +133,7 @@ const styles = StyleSheet.create({
   scoreRow: { marginTop: spacing.lg, flexDirection: "row", alignItems: "stretch" },
   scoreRowCompact: { flexDirection: "column", marginTop: spacing.md },
   scoreItem: { flex: 1, minWidth: 0, minHeight: 184, paddingHorizontal: spacing.lg, flexDirection: "row", alignItems: "flex-start", gap: spacing.md },
-  scoreItemCompact: { minHeight: 0, paddingHorizontal: 0, paddingVertical: spacing.md, borderTopWidth: 1, borderTopColor: "#DDE2DE" },
+  scoreItemCompact: { flex: 0, flexBasis: "auto", minHeight: 0, paddingHorizontal: 0, paddingVertical: spacing.md, borderTopWidth: 1, borderTopColor: "#DDE2DE" },
   iconWrap: { width: 76, paddingTop: 3, alignItems: "center" },
   scoreCopy: { flex: 1, minWidth: 0 },
   domainLabel: { fontSize: 18, lineHeight: 24, fontWeight: "900" },
@@ -135,6 +143,7 @@ const styles = StyleSheet.create({
   scoreValueCompact: { fontSize: 40, lineHeight: 46 },
   scoreScale: { fontSize: 27, lineHeight: 34, fontWeight: "900" },
   scoreStatus: { marginTop: 2, fontSize: 16, lineHeight: 22, fontWeight: "700" },
+  coverage: { marginTop: 6, fontSize: 14, lineHeight: 20 },
   track: { height: 12, marginTop: spacing.md, borderRadius: 6, overflow: "hidden" },
   fill: { height: 12, borderRadius: 6 },
 });

@@ -133,11 +133,15 @@ def score_assessment(task_results, rubrics, assigned_task_ids=None):
         steps = {value(step, "step_id"): step for step in value(task, "steps", []) or []}
         rows = [score_step(steps.get(rule["id"]), rule) for rule in rubric["steps"]]
         measured = [row["score"] for row in rows if row["score"] is not None]
-        score = round(sum(measured) / len(rows), 1) if len(measured) == len(rows) and rows else None
+        # Keep every assigned step's share of the points. Partial evidence earns
+        # only its observed points; it does not become a complete movement score.
+        earned_score = round(sum(measured) / len(rows), 1) if measured else None
         assisted = (value(task, "metrics", {}) or {}).get("assisted") is True
-        if assisted and score is not None:
-            score = round(score * .5, 1)
+        if assisted and earned_score is not None:
+            earned_score = round(earned_score * .5, 1)
+        score = earned_score if len(measured) == len(rows) and rows else None
         tasks.append({"task_id": tid, "label": rubric["label"], "domain": rubric["domain"], "score": score,
+                      "earned_score": earned_score,
                       "assisted": assisted, "measured_steps": len(measured), "total_steps": len(rows), "steps": rows})
     modules = {}
     for domain in ("upper_limb", "hand", "lower_limb"):
@@ -145,8 +149,11 @@ def score_assessment(task_results, rubrics, assigned_task_ids=None):
         weight = 100 / len(selected) if selected else 0
         for task in selected:
             task["module_weight"] = round(weight, 2)
-            task["earned_module_points"] = round(task["score"] / 100 * weight, 2) if task["score"] is not None else None
+            task["earned_module_points"] = round(task["earned_score"] / 100 * weight, 2) if task["earned_score"] is not None else None
         complete = bool(selected) and all(task["score"] is not None for task in selected)
-        modules[domain] = {"score": round(sum(task["score"] for task in selected) / len(selected), 1) if complete else None,
+        measured_steps = sum(task["measured_steps"] for task in selected)
+        earned_score = round(sum(task["earned_score"] or 0 for task in selected) / len(selected), 1) if measured_steps else None
+        modules[domain] = {"score": earned_score if complete else None, "earned_score": earned_score,
+                           "measured_steps": measured_steps, "total_steps": sum(task["total_steps"] for task in selected),
                            "maximum": 100, "task_count": len(selected), "measured_tasks": sum(task["score"] is not None for task in selected)}
     return {"version": VERSION, "modules": modules, "tasks": tasks, "clinical_measure": False}
