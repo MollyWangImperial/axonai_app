@@ -737,10 +737,9 @@ def test_forward_reach_grading_is_phase_gated_and_catches_forward_lean_and_shrug
     assert "const bilateral=rad2deg(Math.atan2(Math.min(frameRise,gapShrink),halfWidth));" in source
     assert "raw.shoulder_line_delta=lm[OTHER.shoulder].y-lm[ACTIVE.shoulder].y;" in source
     assert "raw.other_neck_gap=" in source
-    # Stale calibrations from older builds are never reused.
-    assert "const REHAB_CALIBRATION_VERSION = 3;" in source
-    assert '"other_neck_gap","shoulder_line_delta","shoulders_y"' in source
-    assert "REHAB_BASELINE_REQUIRED_KEYS.some(" in source
+    # Camera baselines are recaptured on every entry, including older builds.
+    assert "resetExerciseCalibration();" in source
+    assert "loadSessionCalibration" not in source
 
     # A confirmed compensation scores a fixed 70 and earns no point; only a
     # correct repetition (no compensation, score >= 90) earns its point. The
@@ -970,18 +969,11 @@ def test_trunk_restrained_reaching_is_graded_like_forward_reach_and_recalibrates
     assert "return `I noticed ${joinProblems(incomplete.map(romProblemText))}. ${correction}`;" in source
     assert "your arm reached ${achieved} of ${target} degrees" in source
 
-    # A session calibration captured for another exercise (forward reach, back away
-    # from the chair) is reused only when the patient is still sitting the same way;
-    # otherwise the runner says so and learns the new starting position.
+    # Every exercise learns its own starting position, even in the same plan.
     assert "function ensureLoop()" in source
-    assert "async function postureMatchesSessionBaseline()" in source
-    assert 'for(const key of ["shoulder_width","torso_length","active_shoulder_y"])' in source
-    assert "const postureMatches=await postureMatchesSessionBaseline();" in source
-    assert 'reason:"posture_changed"' in source
-    assert 'const POSTURE_CHANGED_VOICE="You are sitting a little differently for this exercise, so I will learn your starting position again. Please hold still for a moment.";' in source
-    assert "await playVoice(POSTURE_CHANGED_VOICE);" in source
-    # The setup voice (how to sit for this exercise) plays before the check, once.
-    assert source.index("await playVoice(CFG.setup_voice);\n    setupVoicePlayed=true;") < source.index("const postureMatches=await postureMatchesSessionBaseline();")
+    assert "resetExerciseCalibration();" in source
+    assert "postureMatchesSessionBaseline" not in source
+    # Exercise instructions still play once after the new calibration.
     assert "if(!setupVoicePlayed){" in source
     runner_script = source.split("REHAB_RUNNER_HTML_TEMPLATE = r", 1)[1]
     assert runner_script.count("requestAnimationFrame(loop);") == 3  # ensureLoop + the loop's own two re-schedules

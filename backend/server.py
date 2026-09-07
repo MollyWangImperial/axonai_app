@@ -10033,7 +10033,7 @@ REHAB_RUNNER_HTML_TEMPLATE = r"""<!DOCTYPE html>
   #cameraFrame{position:absolute;left:0;top:0;width:100%;height:100%;overflow:hidden;background:#000}
   #cameraFrame video,#cameraFrame canvas{position:absolute;inset:0;width:100%;height:100%;transform:scaleX(-1);transform-origin:center}
   #ui{position:absolute;inset:0;pointer-events:none;display:flex;flex-direction:column;justify-content:space-between;padding:env(safe-area-inset-top,24px) 16px env(safe-area-inset-bottom,24px) 16px}
-  #top{display:flex;align-items:center;gap:8px;background:rgba(28,32,29,0.65);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);border-radius:24px;padding:12px 16px;pointer-events:auto}
+  #top{position:relative;z-index:12;display:flex;align-items:center;gap:8px;background:rgba(28,32,29,0.65);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);border-radius:24px;padding:12px 16px;pointer-events:auto}
   #top .meta{flex:1;display:flex;flex-direction:column}
   #top .name{font-size:14px;font-weight:700}
   #top .rep{font-size:12px;color:#D9E5DC}
@@ -10056,7 +10056,7 @@ REHAB_RUNNER_HTML_TEMPLATE = r"""<!DOCTYPE html>
   #overlay p{font-size:15px;color:#bcc2ba;line-height:1.5}
   #overlay button{background:#4A7856;color:#fff;border:none;padding:14px 28px;border-radius:16px;font-weight:700;font-size:16px}
   .hidden{display:none !important}
-  #calibration{position:absolute;inset:0;display:flex;align-items:flex-start;justify-content:center;padding:calc(28px + env(safe-area-inset-top,0px)) 18px 18px;background:linear-gradient(180deg,rgba(12,16,14,.88),rgba(12,16,14,.28));z-index:11;pointer-events:auto}
+  #calibration{position:absolute;inset:0;display:flex;align-items:flex-start;justify-content:center;padding:calc(88px + env(safe-area-inset-top,0px)) 18px 18px;background:linear-gradient(180deg,rgba(12,16,14,.88),rgba(12,16,14,.28));z-index:11;pointer-events:auto;overflow-y:auto}
   #calibration .panel{width:min(560px,100%);padding:20px;border-radius:16px;background:rgba(253,253,253,.96);color:#1C201D;box-shadow:0 18px 55px rgba(0,0,0,.30)}
   #calibration h2{font-size:23px;line-height:1.25;margin-bottom:7px}
   #calibration p{font-size:15px;line-height:1.45;color:#4E5B53}
@@ -10228,8 +10228,6 @@ const URL_PARAMS = new URLSearchParams(window.location.search);
 const VOICE_GUIDANCE_ENABLED = URL_PARAMS.get("voice_guidance") !== "0";
 const AFFECTED_SIDE = URL_PARAMS.get("affected_side") === "left" ? "left" : "right";
 const REHAB_SESSION_ID = (URL_PARAMS.get("rehab_session_id")||"").replace(/[^a-zA-Z0-9_-]/g,"").slice(0,96);
-const REHAB_CALIBRATION_VERSION = 3;  // v3: shoulder-line, both-shoulder height and both neck-gap baselines for shrug detection
-const REHAB_BASELINE_REQUIRED_KEYS = ["trunk_angle","shoulder_width","ear_width","neck_gap","other_neck_gap","shoulder_line_delta","shoulders_y","active_shoulder_y","torso_shoulder_ratio","shoulder_flexion"];
 const STANDARD = CFG.movement_standard || {tracking_mode:"pose", posture:"seated", rom_steps:[], compensations:[]};
 const HAS_SIDE_LEAN_RULE = (STANDARD.compensations||[]).some(rule=>rule.metric === "trunk_side_lean_delta");
 const CALIBRATION_CONTRACT = CFG.calibration_contract || {};
@@ -10371,6 +10369,7 @@ let stepCompleted = false;
 let stepVoiceFinishedAt = 0;   // a step cannot complete until its instruction has been heard
 let stepInstructionToken = 0;  // only the latest step narration is allowed to unlock its target
 let running = false;
+let runnerExited = false;
 let cameraStream = null;
 let confirmationAudioStream = null;
 let audioEl = new Audio();
@@ -10413,65 +10412,32 @@ overlayBody.textContent = CFG.setup_voice;
 
 function postRN(d){ if(window.ReactNativeWebView) window.ReactNativeWebView.postMessage(JSON.stringify(d)); }
 
-function rehabCalibrationStorageKey(){
-  return REHAB_SESSION_ID ? `rehab-calibration-v${REHAB_CALIBRATION_VERSION}:${REHAB_SESSION_ID}` : "";
-}
 let loopStarted=false;
 let setupVoicePlayed=false;
-const POSTURE_CHANGED_VOICE="You are sitting a little differently for this exercise, so I will learn your starting position again. Please hold still for a moment.";
 function ensureLoop(){
   if(loopStarted) return;
   loopStarted=true;
   requestAnimationFrame(loop);
 }
-// Sample the live pose for up to ~4 s and compare seated posture with the
-// stored baseline (shoulder width, torso length, shoulder height). Any real
-// change of seating position fails the check and triggers recalibration.
-async function postureMatchesSessionBaseline(){
-  const samples=[];
-  const started=performance.now();
-  while(samples.length < 12 && performance.now()-started < 4000){
-    await new Promise(resolve=>setTimeout(resolve,80));
-    if(lastRawMetrics && Number.isFinite(Number(lastRawMetrics.shoulder_width))) samples.push(lastRawMetrics);
-  }
-  if(samples.length < 6) return false;
-  const base=baselineMetrics;
-  const med=(key)=>median(samples.map(sample=>Number(sample[key])));
-  for(const key of ["shoulder_width","torso_length","active_shoulder_y"]){
-    if(!Number.isFinite(Number(base[key]))) return false;
-  }
-  const rel=(key)=>Math.abs(med(key)-Number(base[key]))/Math.max(1e-6,Math.abs(Number(base[key])));
-  const shoulderShift=Math.abs(med("active_shoulder_y")-Number(base.active_shoulder_y));
-  return rel("shoulder_width") < 0.06 && rel("torso_length") < 0.08 && shoulderShift < 0.04;
-}
-function loadSessionCalibration(){
-  const key=rehabCalibrationStorageKey();
-  if(!key) return null;
-  try{
-    const saved=JSON.parse(localStorage.getItem(key)||"null");
-    if(!saved || saved.version !== REHAB_CALIBRATION_VERSION || saved.affected_side !== AFFECTED_SIDE) return null;
-    if(!saved.baseline_metrics || typeof saved.baseline_metrics !== "object") return null;
-    if(REHAB_BASELINE_REQUIRED_KEYS.some(key=>!Number.isFinite(Number(saved.baseline_metrics[key])))) return null;
-    return saved;
-  }catch(e){ return null; }
-}
-function saveSessionCalibration(){
-  const key=rehabCalibrationStorageKey();
-  if(!key) return;
-  try{
-    localStorage.setItem(key,JSON.stringify({
-      version:REHAB_CALIBRATION_VERSION,
-      affected_side:AFFECTED_SIDE,
-      baseline_metrics:baselineMetrics,
-      lap_target:exerciseLapTarget,
-      lap_target_radius:exerciseLapTargetRadius,
-      source_tracking_mode:STANDARD.tracking_mode,
-      source_posture:STANDARD.posture,
-      captured_at:new Date().toISOString(),
-    }));
-  }catch(e){
-    postRN({type:"exercise_calibration_storage_error",message:String(e)});
-  }
+function resetExerciseCalibration(){
+  // Camera coordinates belong to this entry, never to a saved rehab-plan ID.
+  calibrating=true;
+  calibrationInstructionFinished=false;
+  calibrationReady=false;
+  calibrationFinishing=false;
+  calibrationSamples=[];
+  calibrationAnchors=[];
+  baselineMetrics={};
+  latestExercisePoseLandmarks=null;
+  exerciseLapTarget=null;
+  exerciseLapTargetRadius=null;
+  exerciseLapTargetCalibration=newExerciseLapTargetCalibration();
+  exerciseLapCalibrationDiagnostic={
+    reason:"waiting_for_pose",
+    guidance:"Keep your affected hand relaxed on the top of your same-side thigh.",
+  };
+  restHandOpenScore=null;
+  restHandOpenSamples=[];
 }
 
 function createSilentWavUrl(){
@@ -10576,6 +10542,7 @@ let voiceSequence = 0;
 let activeVoiceSequence = 0;
 let stopActiveVoice = null;
 async function playVoice(text){
+  if(runnerExited) return "interrupted";
   if(!VOICE_GUIDANCE_ENABLED || !text){
     voiceText.textContent = "Voice guidance off · follow on-screen text";
     return "disabled";
@@ -10689,6 +10656,7 @@ function prefetchVoice(text){
 async function setupCamera(){
   try{
     cameraStream = await navigator.mediaDevices.getUserMedia({video:responsiveVideoSettings(640, 480),audio:false});
+    if(runnerExited){ stopExerciseRunner(); return false; }
     video.srcObject = cameraStream;
     await new Promise(r => video.onloadedmetadata = r);
     syncCameraViewport();
@@ -10697,6 +10665,7 @@ async function setupCamera(){
     }catch(e){
       confirmationAudioStream = null;
     }
+    if(runnerExited){ stopExerciseRunner(); return false; }
     return true;
   }catch(e){
     captionEl.textContent = "Camera permission denied.";
@@ -11482,18 +11451,17 @@ function updateCalibration(lm,handLm){
   if(calibrationReady && calibrationInstructionFinished) void completeCalibration();
 }
 async function completeCalibration(){
-  if(calibrationFinishing || !calibrationReady) return;
+  if(runnerExited || calibrationFinishing || !calibrationReady) return;
   calibrationFinishing=true;
   const keys=Object.keys(calibrationSamples[0]||{});
   baselineMetrics=Object.fromEntries(keys.map(key=>[key,median(calibrationSamples.map(sample=>Number(sample[key])))]));
   restHandOpenScore=restHandOpenSamples.length >= 10 ? median(restHandOpenSamples) : null;
   if(HAS_DYNAMIC_LAP_TARGET){
     exerciseLapTarget=exerciseLapTargetCalibration.target ? {...exerciseLapTargetCalibration.target} : null;
-    exerciseLapTargetRadius=Number.isFinite(exerciseLapTargetRadius)
+    exerciseLapTargetRadius=Number.isFinite(exerciseLapTargetRadius) && exerciseLapTargetRadius > 0
       ? exerciseLapTargetRadius
       : Math.min(Math.max(.10,exerciseShoulderWidth(latestExercisePoseLandmarks)*.55),.18);
   }
-  saveSessionCalibration();
   calibrating=false;
   calibrationEl.classList.add("hidden");
   postRN({
@@ -11693,7 +11661,7 @@ function exerciseShoulderWidth(lm){
 function effectiveExerciseTargetRadius(sub,lm){
   const baseR=Number(sub && sub.target && sub.target.r)||0.10;
   if(isExerciseLapTarget(sub)){
-    if(Number.isFinite(exerciseLapTargetRadius)) return exerciseLapTargetRadius;
+    if(Number.isFinite(exerciseLapTargetRadius) && exerciseLapTargetRadius > 0) return exerciseLapTargetRadius;
     const radius=Math.min(Math.max(.10,exerciseShoulderWidth(lm)*.55),.18);
     if(exerciseLapTargetCalibration.ready) exerciseLapTargetRadius=radius;
     return radius;
@@ -12193,6 +12161,7 @@ function drawLiveDegrees(lm){
 }
 
 async function startRep(){
+  if(runnerExited) return;
   currentSubStep = 0;
   feedbackPending = false;
   resetRepMetrics();
@@ -12215,6 +12184,7 @@ async function startRep(){
 }
 
 async function startSubStep(){
+  if(runnerExited) return;
   const instructionToken=++stepInstructionToken;
   const sub = CFG.cycle[currentSubStep];
   captionEl.textContent = sub.caption;
@@ -12593,6 +12563,7 @@ async function askAssistance(){
 }
 
 async function finishExercise(){
+  if(runnerExited) return;
   running = false;
   stopListening();
   fbEl.classList.add("hidden");
@@ -12604,12 +12575,14 @@ async function finishExercise(){
   }else{
     await playVoice("Magnificent work. You have finished this exercise. I'm so proud of you.");
   }
+  if(runnerExited) return;
   postRN({type:"exercise_complete", exercise_id: location.search, reps: CFG.reps, assisted, quality_reps: qualityReps});
   if(cameraStream) cameraStream.getTracks().forEach(track=>track.stop());
   if(confirmationAudioStream) confirmationAudioStream.getTracks().forEach(track=>track.stop());
 }
 
 function advanceSubStep(){
+  if(runnerExited) return;
   vobjOnStepCompleted(currentSubStep);
   currentSubStep += 1;
   if(currentSubStep >= CFG.cycle.length){
@@ -12728,15 +12701,16 @@ function loop(){
 }
 
 startBtn.addEventListener("click", async () => {
+  if(runnerExited) return;
   const unlockPromise = unlockAudioPlayback();
   const setupVoicePromise = prefetchVoice(CFG.setup_voice);
   const calibrationVoicePromise = prefetchVoice(STANDARD.calibration_instruction);
-  prefetchVoice(POSTURE_CHANGED_VOICE);
   CFG.cycle.forEach(step => prefetchVoice(step.voice));
   overlay.classList.add("hidden");
   startBtn.disabled = true;
   const camOk = await setupCamera();
-  if(!camOk){ overlay.classList.remove("hidden"); return; }
+  if(runnerExited) return;
+  if(!camOk){ overlay.classList.remove("hidden"); startBtn.disabled=false; return; }
   captionEl.textContent = "Loading the movement model…";
   try{
     await warmUpModels();
@@ -12752,85 +12726,41 @@ startBtn.addEventListener("click", async () => {
   // prefetch in parallel and must not hold the setup screen open.
   void calibrationVoicePromise;
   await Promise.allSettled([unlockPromise, setupVoicePromise]);
+  if(runnerExited) return;
   running = true;
-  const sessionCalibration = loadSessionCalibration();
-  if(sessionCalibration){
-    baselineMetrics={...sessionCalibration.baseline_metrics};
-    exerciseLapTarget=sessionCalibration.lap_target ? {...sessionCalibration.lap_target} : null;
-    if(HAS_DYNAMIC_LAP_TARGET && !exerciseLapTarget
-      && Number.isFinite(Number(baselineMetrics.active_wrist_x))
-      && Number.isFinite(Number(baselineMetrics.active_wrist_y))){
-      exerciseLapTarget={x:Number(baselineMetrics.active_wrist_x),y:Number(baselineMetrics.active_wrist_y)};
-    }
-    exerciseLapTargetRadius=Number.isFinite(Number(sessionCalibration.lap_target_radius))
-      ? Number(sessionCalibration.lap_target_radius)
-      : null;
-    calibrating=false;
-    calibrationEl.classList.add("hidden");
-    ensureLoop();
-    // The setup voice tells the patient how to sit for THIS exercise (for
-    // example back against the chair for trunk-restrained reaching), so let
-    // them settle first and only then compare their posture with the stored
-    // baseline.
-    await playVoice(CFG.setup_voice);
-    setupVoicePlayed=true;
-    // A stored baseline is only valid if the patient is sitting the same way
-    // now. Trunk-restrained reaching (back against the chair) after forward
-    // reach (back away from the chair) changes distance and posture, which
-    // would blind the lean and shrug detectors - so recalibrate on drift.
-    calibrationInstruction.textContent="Hold still for a moment.";
-    calibrationStatus.textContent="Checking your starting position…";
-    calibrationFill.style.width="100%";
-    calibrationEl.classList.remove("hidden");
-    const postureMatches=await postureMatchesSessionBaseline();
-    calibrationEl.classList.add("hidden");
-    if(postureMatches){
-      postRN({
-        type:"exercise_calibration_reused",
-        exercise_id:CFG.name,
-        rehab_session_id:REHAB_SESSION_ID,
-        source_tracking_mode:sessionCalibration.source_tracking_mode,
-        source_posture:sessionCalibration.source_posture,
-      });
-      await startRep();
-      return;
-    }
-    postRN({type:"exercise_calibration_recaptured", exercise_id:CFG.name, rehab_session_id:REHAB_SESSION_ID, reason:"posture_changed"});
-    await playVoice(POSTURE_CHANGED_VOICE);
-  }
-  calibrating = true;
-  calibrationInstructionFinished = false;
-  calibrationReady = false;
-  calibrationFinishing = false;
-  calibrationSamples = [];
-  calibrationAnchors = [];
-  latestExercisePoseLandmarks = null;
-  exerciseLapTarget = null;
-  exerciseLapTargetRadius = null;
-  exerciseLapTargetCalibration = newExerciseLapTargetCalibration();
-  exerciseLapCalibrationDiagnostic = {
-    reason:"waiting_for_pose",
-    guidance:"Keep your affected hand relaxed on the top of your same-side thigh.",
-  };
+  resetExerciseCalibration();
   calibrationInstruction.textContent = STANDARD.calibration_instruction;
   calibrationStatus.textContent = "Looking for the required joints…";
   calibrationFill.style.width = "0%";
   calibrationEl.classList.remove("hidden");
   ensureLoop();
   await playVoice(STANDARD.calibration_instruction);
+  if(runnerExited) return;
   calibrationInstructionFinished = true;
   if(calibrationReady) void completeCalibration();
 });
 
-exitBtn.addEventListener("click", () => {
+function stopExerciseRunner(){
+  runnerExited=true;
   running=false;
+  stepInstructionToken++;
+  voiceSequence++;
+  if(stopActiveVoice) stopActiveVoice();
+  audioEl.pause();
+  if(window.speechSynthesis) window.speechSynthesis.cancel();
   stopListening();
   clearTemporaryCompensationEvidence();
   if(cameraStream) cameraStream.getTracks().forEach(track=>track.stop());
   if(confirmationAudioStream) confirmationAudioStream.getTracks().forEach(track=>track.stop());
+}
+exitBtn.addEventListener("click", () => {
+  stopExerciseRunner();
   postRN({type:"exit"});
 });
-window.addEventListener("pagehide",clearTemporaryCompensationEvidence,{once:true});
+window.addEventListener("pagehide",stopExerciseRunner,{once:true});
+window.addEventListener("pageshow",event=>{
+  if(event.persisted && window.parent === window) window.location.reload();
+});
 
 postRN({type:"ready"});
 if(URL_PARAMS.get("test_mode") !== "rep_feedback"){
@@ -12839,7 +12769,6 @@ if(URL_PARAMS.get("test_mode") !== "rep_feedback"){
   warmUpModels().catch(() => {});
   prefetchVoice(CFG.setup_voice);
   prefetchVoice(STANDARD.calibration_instruction);
-  prefetchVoice(POSTURE_CHANGED_VOICE);
   prefetchVoice("Wonderful. Here we go.");
   (CFG.cycle||[]).forEach(step => prefetchVoice(step && step.voice));
 }

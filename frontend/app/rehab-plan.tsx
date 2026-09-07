@@ -321,9 +321,8 @@ export default function RehabPlanScreen() {
   const [demonstrationId, setDemonstrationId] = useState<string | null>(null);
   const [expandedPurposeIds, setExpandedPurposeIds] = useState<Set<string>>(new Set());
   const [sessionDifficulty, setSessionDifficulty] = useState<SessionDifficulty>("medium");
-  // A new ID is created whenever this rehab-plan screen is entered. The first
-  // exercise calibrates against it; later exercises reuse that calibration.
-  // Leaving the plan and starting rehab again mounts a new screen and ID.
+  // Groups activity within this plan visit. Camera calibration is fresh on
+  // every exercise entry and is never restored from this ID.
   const rehabSessionIdRef = React.useRef(
     `rehab-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
   );

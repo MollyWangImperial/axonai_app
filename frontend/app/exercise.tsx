@@ -3,6 +3,7 @@ import { View, Text, StyleSheet, Pressable, ActivityIndicator, Platform } from "
 import { WebView, WebViewMessageEvent } from "react-native-webview";
 import { Ionicons } from "@expo/vector-icons";
 import { useLocalSearchParams, useRouter } from "expo-router";
+import { useIsFocused } from "@react-navigation/native";
 import * as Haptics from "expo-haptics";
 import { colors, spacing, radius } from "@/src/theme";
 import { storage } from "@/src/utils/storage";
@@ -26,6 +27,24 @@ type ExerciseProgress = {
 };
 
 export default function ExerciseScreen() {
+  const isFocused = useIsFocused();
+  const { exercise_id } = useLocalSearchParams<{ exercise_id: string }>();
+  const [entryVersion, setEntryVersion] = useState(0);
+
+  useEffect(() => {
+    if (Platform.OS !== "web") return;
+    const onPageShow = (event: PageTransitionEvent) => {
+      if (event.persisted) setEntryVersion((value) => value + 1);
+    };
+    window.addEventListener("pageshow", onPageShow);
+    return () => window.removeEventListener("pageshow", onPageShow);
+  }, []);
+
+  // Unmount the camera on exit, even when navigation retains this screen.
+  return isFocused ? <ExerciseSession key={`${exercise_id}:${entryVersion}`} /> : null;
+}
+
+function ExerciseSession() {
   const router = useRouter();
   const { exercise_id, name, plan_id, sets, reps, difficulty, variation, affected_side, rehab_session_id, library_test } = useLocalSearchParams<{ exercise_id: string; name?: string; plan_id?: string; sets?: string; reps?: string; difficulty?: string; variation?: string; affected_side?: string; rehab_session_id?: string; library_test?: string }>();
   const webRef = useRef<WebView>(null);
@@ -39,6 +58,16 @@ export default function ExerciseScreen() {
   const seenReps = useRef(new Set<number>());
   const messages = useRef<Promise<void>>(Promise.resolve());
   const [syncMessage, setSyncMessage] = useState("");
+  const mounted = useRef(true);
+  const returnTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      if (returnTimer.current) clearTimeout(returnTimer.current);
+    };
+  }, []);
 
   const totalSets = parseInt(sets || "3", 10);
   const totalReps = parseInt(reps || "10", 10);
@@ -175,7 +204,7 @@ export default function ExerciseScreen() {
             });
           void flushPatientActivities().then((saved) => setSyncMessage(saved ? "Saved to your account." : "Saved on this device. Waiting to sync to your account."));
         }
-        setTimeout(() => router.back(), 2400);
+        if (mounted.current) returnTimer.current = setTimeout(() => router.back(), 2400);
       } else if (msg.type === "camera_error") {
         setError("Camera unavailable. Please grant camera permission in your phone settings and try again.");
       } else if (msg.type === "exit") {

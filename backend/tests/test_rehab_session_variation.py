@@ -204,17 +204,15 @@ def test_runner_pose_and_target_overlay_match_assessment_visual_geometry():
     assert 'sub.target.r * 1.55' not in html
 
 
-def test_rehab_calibration_is_saved_once_and_reused_by_session_id():
+def test_every_exercise_entry_calibrates_without_restoring_session_coordinates():
     html = server._rehab_runner_html("ex_reach", prescribed_reps=3)
 
     assert 'URL_PARAMS.get("rehab_session_id")' in html
-    assert "function rehabCalibrationStorageKey()" in html
-    assert "function loadSessionCalibration()" in html
-    assert "function saveSessionCalibration()" in html
-    assert "saveSessionCalibration();" in html
-    assert 'type:"exercise_calibration_reused"' in html
-    assert "if(sessionCalibration){" in html
-    assert "baselineMetrics={...sessionCalibration.baseline_metrics};" in html
+    assert "resetExerciseCalibration();" in html
+    assert "loadSessionCalibration" not in html
+    assert "saveSessionCalibration" not in html
+    assert 'type:"exercise_calibration_reused"' not in html
+    assert 'window.addEventListener("pagehide",stopExerciseRunner' in html
 
 
 def test_every_configured_runner_exposes_the_shared_calibration_scoring_and_style_contracts():
