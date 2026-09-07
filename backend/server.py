@@ -8124,27 +8124,6 @@ async function celebrateAndAdvance(){
   celebrateLabel.textContent = `Task ${currentTaskIdx + 1} of ${tasks.length} complete`;
   celebrateTitle.textContent = pick.title;
   celebrateMsg.textContent = pick.msg;
-  const statistics = document.getElementById("assessmentTaskStatistics");
-  statistics.replaceChildren();
-  for(const savedStep of taskResults[currentTaskIdx].steps){
-    const rule = window.REHYN_ASSESSMENT_RUBRIC.tasks[finishedTask.id]?.steps.find(item=>item.id===savedStep.step_id);
-    const row = document.createElement("div");
-    row.className = "assessment-stat-row";
-    const title = document.createElement("strong");
-    title.textContent = `${rule?.label || savedStep.step_id} - ${(savedStep.duration_ms/1000).toFixed(1)} s`;
-    row.appendChild(title);
-    const detail = document.createElement("div");
-    const q=savedStep.metrics.quality || {};
-    detail.textContent = (rule?.criteria || []).map(c=>{
-      const measured=q.measurements?.[c.metric];
-      const ratio=c.unit==="ratio", scale=ratio?100:1, unit=ratio?"%":c.unit==="deg"?" degrees":"";
-      return `${c.label}: ${measured?.samples>=5 && Number.isFinite(measured.value) ? Math.round(measured.value*scale)+unit : "Not measured"} / ${Math.round(c.target*scale)}${unit}`;
-    }).join("; ");
-    row.appendChild(detail);
-    const cues=Object.entries(q.compensations || {}).filter(([id,c])=>c.max_streak_ms>=500 && c.max_value>window.REHYN_ASSESSMENT_RUBRIC.compensations[id].threshold).map(([id])=>window.REHYN_ASSESSMENT_RUBRIC.compensations[id].cue);
-    if(cues.length){const warning=document.createElement("p");warning.className="assessment-quality-warning";warning.textContent=cues.join(" ");row.appendChild(warning);}
-    statistics.appendChild(row);
-  }
   renderCelebrateDots();
   celebrateEl.classList.remove("hidden");
   // give browser a tick so the transition fires
@@ -8171,11 +8150,6 @@ async function celebrateAndAdvance(){
   // Ensure overlay is visible for at least ~2.4s for tactile/emotional pacing
   const minDisplayMs = 2400;
   if(voiceMs < minDisplayMs) await new Promise(r => setTimeout(r, minDisplayMs - voiceMs));
-  const reviewButton = document.getElementById("assessmentStatisticsContinue");
-  reviewButton.textContent = hasNext ? "Continue to next task" : "Save assessment and view results";
-  reviewButton.disabled = false;
-  await new Promise(resolve => reviewButton.addEventListener("click", resolve, {once:true}));
-  reviewButton.disabled = true;
 
   // Hide overlay and advance
   celebrateEl.classList.remove("show");
@@ -8693,12 +8667,7 @@ POSE_RUNNER_HTML = POSE_RUNNER_HTML.replace("</head>", """<style>
 #celebrate h2,#celebrate p{margin:0}
 #celebrate .msg{max-width:640px}
 @media(max-width:600px){#celebrate{gap:10px}#celebrate .star{font-size:36px}#celebrate h2{font-size:23px}}
-#assessmentTaskStatistics{width:min(760px,100%);text-align:left;font-size:16px;line-height:1.5}
-.assessment-stat-row{border-bottom:1px solid #ffffff55;padding:10px 0}
-.assessment-quality-warning{color:#fff;border-left:4px dotted #ff8080;padding-left:10px;margin:6px 0}
-#assessmentStatisticsContinue{min-height:48px;flex-shrink:0;padding:12px 24px;margin-top:20px;border-radius:8px;background:#fff;color:#104734;border:0;font-size:18px;font-weight:700}
 </style><script>""" + _assessment_quality_script + "\nwindow.REHYN_ASSESSMENT_RUBRIC=" + json.dumps({"version": ASSESSMENT_QUALITY_VERSION, "compensations": ASSESSMENT_COMPENSATIONS, "tasks": ASSESSMENT_RUBRICS}) + ";</script></head>")
-POSE_RUNNER_HTML = POSE_RUNNER_HTML.replace('<div class="dotsMini" id="celebrateDots"></div>', '<div class="dotsMini" id="celebrateDots"></div><div id="assessmentTaskStatistics"></div><button id="assessmentStatisticsContinue" disabled>Continue</button>')
 POSE_RUNNER_HTML = POSE_RUNNER_HTML.replace('<div id="ui">', '<div id="ui"><div id="assessmentQualityStatus" role="status" aria-live="polite"></div>')
 
 

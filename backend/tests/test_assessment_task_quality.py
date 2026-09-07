@@ -131,3 +131,17 @@ def test_quality_evidence_and_scores_survive_account_save_and_reload(monkeypatch
     assert reloaded["functional_metrics"]["task_quality"] == saved.metrics["task_quality"]
     assert reloaded["functional_metrics"]["task_quality"]["modules"]["upper_limb"]["score"] == 80
     assert completed == [(user["id"], saved.created_at)]
+
+
+def test_between_task_celebration_is_brief_and_advances_without_a_button():
+    from backend import server
+
+    html = server.POSE_RUNNER_HTML
+    assert '<div class="star">&#11088;</div>' in html
+    assert "Wonderful work!" in html
+    assert "assessmentTaskStatistics" not in html
+    assert "assessmentStatisticsContinue" not in html
+    assert "Continue to next task" not in html
+    assert "Save assessment and view results" not in html
+    assert "if(voiceMs < minDisplayMs) await new Promise" in html
+    assert "currentTaskIdx += 1;" in html
