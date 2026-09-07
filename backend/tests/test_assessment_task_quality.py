@@ -145,3 +145,5 @@ def test_between_task_celebration_is_brief_and_advances_without_a_button():
     assert "Save assessment and view results" not in html
     assert "if(voiceMs < minDisplayMs) await new Promise" in html
     assert "currentTaskIdx += 1;" in html
+    assert "#celebrate{overflow:auto;padding:24px 16px;box-sizing:border-box;justify-content:center" in html
+    assert "justify-content:flex-start;background:#244d3c" not in html

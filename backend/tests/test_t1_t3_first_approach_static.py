@@ -36,6 +36,23 @@ def test_other_upper_limb_movement_gates_use_a_patient_scaled_threshold():
 
 def test_t3_mouth_is_locked_before_the_hand_covers_the_face():
     source = server.POSE_RUNNER_HTML
-    assert 'activeTask && activeTask.id === "T3" && currentStepIdx === 0' in source
+    assert 'activeTask && activeTask.id === "T3" && !mouthTargetCalibration.locked' in source
+    assert 'currentStepIdx === 0 || isMouthTarget(getCurrentStep())' in source
     assert "updateMouthTargetCalibration(landmarks, lastPoseScanTs);" in source
     assert "if(mouthTargetCalibration.locked && mouthTargetCalibration.target)" in source
+
+
+def test_arm_start_targets_are_fixed_to_the_horizontal_screen_center():
+    source = server.POSE_RUNNER_HTML
+    resolver = source[source.index("function getEffectiveTargetXY") : source.index("// ---------- Hand metrics")]
+    expected = {
+        "T1-S1", "T2-S1", "T3-S1", "T5-S1", "T6-S1", "T7-S1",
+        "H1-S1", "H2-S1", "H3-S1", "H4-S1",
+    }
+
+    assert "const CENTERED_ARM_START_STEP_IDS = new Set" in source
+    assert "return {x:0.5, y:step.target.y};" in resolver
+    assert resolver.index("if(isCenteredArmStartStep(step))") < resolver.index('if(which === "CHEST")')
+    assert "centeredStartTarget:(step, landmarks=null)" in source
+    for step_id in expected:
+        assert f'"{step_id}"' in source[source.index("const CENTERED_ARM_START_STEP_IDS") : source.index("function poseMouthTarget")]

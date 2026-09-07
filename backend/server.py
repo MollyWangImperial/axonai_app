@@ -6312,6 +6312,10 @@ function isLapTarget(step){
   return !!step && step.target && step.target.landmark === "LAP_DYNAMIC";
 }
 
+function isMouthTarget(step){
+  return !!step && step.target && step.target.landmark === "MOUTH";
+}
+
 function currentTaskLapStep(){
   const task = tasks[currentTaskIdx];
   if(!task || !Array.isArray(task.steps)) return null;
@@ -6704,6 +6708,13 @@ if(URL_PARAMS.get("test_mode") === "upper_limb_endpoint"){
   window.__rehynUpperLimbEndpointTest = {
     affectedSide:AFFECTED_SIDE,
     gateRequiredById:(stepId) => !["T1-S1", "T1-S2", "T3-S1", "T3-S2"].includes(stepId),
+    centeredStartTarget:(step, landmarks=null) => {
+      const savedPose = latestPoseLandmarks;
+      latestPoseLandmarks = landmarks;
+      const target = getEffectiveTargetXY(step);
+      latestPoseLandmarks = savedPose;
+      return target;
+    },
     evaluateReachHit:(landmarks, target, radius=0.10) => {
       const point = closestAffectedReachPointToTarget(landmarks, target);
       return {point, distance:distXY(point, target), hit:distXY(point, target) < radius};
@@ -6826,6 +6837,15 @@ function computeMetrics(landmarks){
 // and the candidate body point(s) to test against the target zone.
 // Mirroring: user sees themselves mirrored — so on-screen X = (1 - landmark.x).
 function mirrorX(p){ return {x: 1 - p.x, y: p.y}; }
+
+const CENTERED_ARM_START_STEP_IDS = new Set([
+  "T1-S1", "T2-S1", "T3-S1", "T5-S1", "T6-S1", "T7-S1",
+  "H1-S1", "H2-S1", "H3-S1", "H4-S1",
+]);
+
+function isCenteredArmStartStep(step){
+  return !!step && CENTERED_ARM_START_STEP_IDS.has(step.id);
+}
 
 function poseMouthTarget(lm){
   if(!lm || lm.length < 11) return null;
@@ -6964,6 +6984,9 @@ function getEffectiveTargetXY(step){
   if(isLapTarget(step)){
     return assessmentLapTarget || lapTargetCalibration.target || {x: step.target.x, y: step.target.y};
   }
+  if(isCenteredArmStartStep(step)){
+    return {x:0.5, y:step.target.y};
+  }
   if(isHandTask()){
     return {x: step.target.x, y: step.target.y};
   }
@@ -6980,7 +7003,7 @@ function getEffectiveTargetXY(step){
   }
   if(which === "MOUTH"){
     const p = updateMouthTargetCalibration(latestPoseLandmarks);
-    return p ? {x:p.x, y:p.y} : {x:step.target.x, y:step.target.y};
+    return p ? {x:p.x, y:p.y} : null;
   }
   if(which === "CHEST"){
     const p = resolveLandmarkPoint(which);
@@ -7550,6 +7573,7 @@ function getTargetNearMiss(lm){
   const point = targetAttemptPoint(lm, step);
   if(!point) return null;
   const target = getEffectiveTargetXY(step);
+  if(!target) return null;
   const radius = effectiveRadius(step, isHandTask() ? null : lm);
   const distance = distXY(point, target);
   const intentional = hasIntentionalTargetAttempt(lm, step, radius);
@@ -7806,6 +7830,7 @@ function checkTarget(landmarks){
   const target = step.target;
   const which = target.landmark;
   const targetXY = getEffectiveTargetXY(step);
+  if(!targetXY) return false;
   const R = effectiveRadius(step, landmarks);
 
   const wristDist = () => {
@@ -7838,7 +7863,7 @@ function checkTarget(landmarks){
     return near && gestureOk;
   }
   if(which === "MOUTH"){
-    return mouthContactDistance(landmarks, targetXY) < R;
+    return mouthTargetCalibration.locked && mouthContactDistance(landmarks, targetXY) < R;
   }
   if(which === "CHEST"){
     return wristDist() < R;
@@ -7939,11 +7964,18 @@ function drawOverlay(landmarks){
     return;
   }
   if(isLapTarget(step) && !lapTargetCalibration.ready){
+    lapStatus.textContent = "Keep your affected hand resting on the visible part of your lap while Rehyn locates the target.";
+    lapStatus.classList.remove("hidden");
+    return;
+  }
+  if(isMouthTarget(step) && !mouthTargetCalibration.target){
+    lapStatus.textContent = "Keep your face and mouth visible while Rehyn locates the mouth target.";
     lapStatus.classList.remove("hidden");
     return;
   }
   lapStatus.classList.add("hidden");
   const targetXY = getEffectiveTargetXY(step);
+  if(!targetXY) return;
   const tx = targetXY.x * canvas.width;
   const ty = targetXY.y * canvas.height;
   // Visual radius MATCHES the actual hit radius — so what the user sees == what triggers.
@@ -8253,7 +8285,8 @@ function loop(){
       // Lock T3's mouth point while the affected hand is still at the chest.
       // Waiting until the hand covers the mouth can pull facial landmarks and
       // the target away from the anatomical mouth center.
-      if(activeTask && activeTask.id === "T3" && currentStepIdx === 0){
+      if(activeTask && activeTask.id === "T3" && !mouthTargetCalibration.locked
+        && (currentStepIdx === 0 || isMouthTarget(getCurrentStep()))){
         updateMouthTargetCalibration(landmarks, lastPoseScanTs);
       }
       updateMovementGate(landmarks);
@@ -8662,7 +8695,7 @@ _assessment_quality_script = (ROOT_DIR / "assessment_quality.js").read_text(enco
 POSE_RUNNER_HTML = POSE_RUNNER_HTML.replace("</head>", """<style>
 #assessmentQualityStatus{color:#fff;background:#8a2424;border-radius:8px;max-width:900px;margin:6px auto;padding:8px 12px;font-size:16px;line-height:1.4}
 #assessmentQualityStatus:empty{display:none}
-#celebrate{overflow:auto;padding:24px 16px;box-sizing:border-box;justify-content:flex-start;background:#244d3c}
+#celebrate{overflow:auto;padding:24px 16px;box-sizing:border-box;justify-content:center;background:#244d3c}
 #celebrate .star{font-size:48px;flex-shrink:0}
 #celebrate h2,#celebrate p{margin:0}
 #celebrate .msg{max-width:640px}

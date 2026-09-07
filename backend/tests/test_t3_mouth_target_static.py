@@ -24,12 +24,24 @@ def test_t3_mouth_target_is_stabilized_and_uses_affected_hand_contact_points():
         "function closestAffectedHandPointToTarget(lm, target)",
         "function mouthContactDistance(lm, target)",
         'if(which === "MOUTH")',
-        "return mouthContactDistance(landmarks, targetXY) < R;",
+        "return mouthTargetCalibration.locked && mouthContactDistance(landmarks, targetXY) < R;",
         "const palm = rawHandPalmCenter();",
     ):
         assert marker in source
     mouth_function = source[source.index("function poseMouthTarget") : source.index("function updateMouthTargetCalibration")]
     assert "mirrorX" not in mouth_function
+
+
+def test_t3_mouth_circle_never_falls_back_to_a_non_anatomical_screen_position():
+    source = server.POSE_RUNNER_HTML
+    resolver = source[source.index("function getEffectiveTargetXY") : source.index("// ---------- Hand metrics")]
+    target_check = source[source.index("function checkTarget") : source.index("// ---------- Drawing")]
+
+    assert "return p ? {x:p.x, y:p.y} : null;" in resolver
+    assert "return p ? {x:p.x, y:p.y} : {x:step.target.x, y:step.target.y};" not in resolver
+    assert "return mouthTargetCalibration.locked && mouthContactDistance(landmarks, targetXY) < R;" in target_check
+    assert "Keep your face and mouth visible while Rehyn locates the mouth target." in source
+    assert 'currentStepIdx === 0 || isMouthTarget(getCurrentStep())' in source
 
 
 def test_t3_enables_hand_landmarks_and_has_a_browser_simulation_hook():
