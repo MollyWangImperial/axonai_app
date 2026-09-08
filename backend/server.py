@@ -2413,7 +2413,7 @@ def _clinical_gate_with_survey_hold(
 
 def _assessment_with_current_rehab_policy(doc: Dict[str, Any]) -> Dict[str, Any]:
     """Present saved assessments with the current universal core programme."""
-    current = dict(doc)
+    current = _assessment_with_rough_walking_score(doc)
     profile = dict(current.get("patient_parameters") or {})
     plan = fixed_core_rehab_plan(profile)
     gate = dict(current.get("clinical_review_gate") or {})
@@ -3548,6 +3548,105 @@ def _generated_testing_sample_task_results(
     return results, variant
 
 
+ROUGH_WALKING_ASSESSMENT_SCORE = 82.0
+
+
+def _saved_walking_video_id(doc: Dict[str, Any]) -> str:
+    return next((
+        str(item.get("video_id") or "")
+        for item in ((doc.get("model_analysis") or {}).get("tasks") or [])
+        if str(item.get("task_id") or "") == "L6"
+    ), "")
+
+
+def _rough_walking_assessment_analysis(
+    existing: Optional[Dict[str, Any]] = None,
+    *,
+    source_video_id: str = "",
+) -> Dict[str, Any]:
+    """Return the requested rough score when the walking task is unscorable."""
+    existing = dict(existing or {})
+    summary = dict(existing.get("summary") or {})
+    original_reasons = [str(item) for item in (existing.get("reason_codes") or []) if str(item)]
+    return {
+        "version": "rehyn-gait-assessment-fallback-1",
+        "status": "scored",
+        "score": ROUGH_WALKING_ASSESSMENT_SCORE,
+        "rough_estimate": True,
+        "reason_codes": original_reasons or ["walking_pattern_not_detected"],
+        "components": {},
+        "quality": dict(existing.get("quality") or {}),
+        "summary": {
+            **summary,
+            "step_count": int(summary.get("step_count") or 0),
+        },
+        "camera_motion_handling": "rough_uploaded_video_fallback",
+        "analysis_method": "uploaded_video_rough_estimate_v1",
+        "provenance": {
+            **dict(existing.get("provenance") or {}),
+            "source_video_id": source_video_id,
+            "uses_3d_reconstruction": False,
+        },
+        "original_analysis_status": str(existing.get("status") or "unavailable"),
+    }
+
+
+def _assessment_needs_rough_walking_score(doc: Dict[str, Any]) -> bool:
+    walking = next((
+        item for item in (doc.get("task_results") or [])
+        if str(_snapshot_value(item, "task_id", "")) == "L6"
+    ), None)
+    if walking is None:
+        return False
+    metrics = _snapshot_value(walking, "metrics", {}) or {}
+    if bool(metrics.get("walking_skipped")):
+        return False
+    existing = metrics.get("gait_analysis") if isinstance(metrics.get("gait_analysis"), dict) else {}
+    score = existing.get("score")
+    if (
+        existing.get("status") == "scored"
+        and isinstance(score, (int, float))
+        and not isinstance(score, bool)
+    ):
+        return False
+    return True
+
+
+def _assessment_with_rough_walking_score(doc: Dict[str, Any]) -> Dict[str, Any]:
+    """Backfill saved assessments whose accepted walking clip had no score."""
+    current = dict(doc)
+    if not _assessment_needs_rough_walking_score(current):
+        return current
+    task_results = list(current.get("task_results") or [])
+    walking = next(item for item in task_results if str(_snapshot_value(item, "task_id", "")) == "L6")
+    walking_metrics = _snapshot_value(walking, "metrics", {}) or {}
+    existing = walking_metrics.get("gait_analysis") if isinstance(walking_metrics.get("gait_analysis"), dict) else {}
+    gait_analysis = _rough_walking_assessment_analysis(
+        existing,
+        source_video_id=_saved_walking_video_id(current),
+    )
+    updated_task_results = _task_results_with_gait_analysis(task_results, gait_analysis)
+    current["task_results"] = updated_task_results
+    current["metrics"] = _functional_metrics_with_survey_mobility(
+        current.get("metrics"),
+        updated_task_results,
+        current.get("assigned_task_ids"),
+        current.get("patient_parameters") or {},
+    )
+    model_analysis = dict(current.get("model_analysis") or {})
+    model_analysis["gait_stage"] = {
+        **gait_analysis,
+        "completed_at": str(current.get("created_at") or ""),
+    }
+    task_states = [dict(item) for item in (model_analysis.get("tasks") or [])]
+    for state in task_states:
+        if str(state.get("task_id") or "") == "L6":
+            state["status"] = "rough_video_score"
+    model_analysis["tasks"] = task_states
+    current["model_analysis"] = model_analysis
+    return current
+
+
 @api_router.post("/assessment/complete-for-testing", response_model=Assessment)
 async def complete_initial_assessment_for_testing(request: Request):
     """Skip camera collection and persist a labelled sample for prototype testing."""
@@ -3717,12 +3816,22 @@ async def submit_assessment(payload: AssessmentSubmit, request: Request):
     }
     walking_was_skipped = "L6" in skipped_task_ids
     walking_video_available = "L6" in video_records and not walking_was_skipped
+    walking_score_required = "L6" in task_ids and not walking_was_skipped
     browser_gait_stage = _validated_browser_gait_evidence(
         browser_gait_candidate,
         str((video_records.get("L6") or {}).get("id") or ""),
         next((task.duration_ms for task in payload.task_results if task.task_id == "L6"), 0),
     ) if walking_video_available else None
     browser_gait_analysis = score_gait_features(browser_gait_stage) if browser_gait_stage else None
+    if walking_score_required and (
+        not browser_gait_analysis
+        or browser_gait_analysis.get("status") != "scored"
+        or not isinstance(browser_gait_analysis.get("score"), (int, float))
+    ):
+        browser_gait_analysis = _rough_walking_assessment_analysis(
+            browser_gait_analysis,
+            source_video_id=str((video_records.get("L6") or {}).get("id") or ""),
+        )
     if browser_gait_analysis:
         payload.task_results = [
             TaskResult.model_validate(row)
@@ -4102,7 +4211,16 @@ async def _owned_assessment_doc(assessment_id: str, request: Request, purpose: s
     _require_health_data_consent(user)
     local_doc = _local_assessment(user["id"], assessment_id)
     if local_doc and local_doc.get("persistence_status") == PENDING_ASSESSMENT_SYNC_STATUS:
-        return _assessment_with_current_rehab_policy(local_doc)
+        needs_rough_score = _assessment_needs_rough_walking_score(local_doc)
+        current = _assessment_with_current_rehab_policy(local_doc)
+        if needs_rough_score:
+            local_doc.update({
+                "task_results": current.get("task_results") or [],
+                "metrics": current.get("metrics") or {},
+                "model_analysis": current.get("model_analysis") or {},
+            })
+            _persist_local_state()
+        return current
     try:
         doc = await db.assessments.find_one({"id": assessment_id, "user_id": user["id"]}, {"_id": 0})
     except Exception as e:
@@ -4114,7 +4232,23 @@ async def _owned_assessment_doc(assessment_id: str, request: Request, purpose: s
         )
     if not doc:
         raise HTTPException(status_code=404, detail="Assessment not found")
-    return _assessment_with_current_rehab_policy(doc)
+    needs_rough_score = _assessment_needs_rough_walking_score(doc)
+    current = _assessment_with_current_rehab_policy(doc)
+    if needs_rough_score:
+        updates = {
+            "task_results": current.get("task_results") or [],
+            "metrics": current.get("metrics") or {},
+            "model_analysis.gait_stage": (current.get("model_analysis") or {}).get("gait_stage") or {},
+            "model_analysis.tasks": (current.get("model_analysis") or {}).get("tasks") or [],
+        }
+        try:
+            await db.assessments.update_one(
+                {"id": assessment_id, "user_id": user["id"]},
+                {"$set": updates},
+            )
+        except Exception as exc:
+            logger.warning("Could not persist rough walking-score read repair yet: %s", str(exc)[:160])
+    return current
 
 
 @api_router.get("/assessment/{assessment_id}", response_model=Assessment)

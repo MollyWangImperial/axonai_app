@@ -707,7 +707,7 @@ def test_completed_initial_collection_returns_domain_metrics_without_a_normal_re
         assert body_domains["lower_limb"]["survey_affected_sides"] == ["right"]
         assert body_domains["lower_limb"]["step_completion_percent"] == 100
         assert summary["functional_metrics"]["domains"]["lower_limb"]["step_completion_percent"] == 100
-        assert summary["functional_metrics"]["task_quality"]["modules"]["lower_limb"]["score"] is None
+        assert summary["functional_metrics"]["task_quality"]["modules"]["lower_limb"]["score"] == 82.0
         assert "score_source" not in summary["functional_metrics"]["task_quality"]["modules"]["lower_limb"]
         # The interim starting plan is viewable right away.
         assert summary["rehab_plan_ready"] is True
