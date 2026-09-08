@@ -379,6 +379,7 @@ def test_repeated_small_movement_observations_suggest_re_screening_for_camera_ta
 def test_survey_functional_problems_pin_every_domain_with_survey_reasons():
     problems = survey_functional_problems({
         "side_affected": "left",
+        "affected_areas": ["left_upper", "right_lower"],
         "affected_arm_movement": "no_movement",
         "affected_hand_movement": "some_finger_movement",
         "mobility_level": "independent",
@@ -389,7 +390,12 @@ def test_survey_functional_problems_pin_every_domain_with_survey_reasons():
     assert set(by_domain) == {"upper_limb", "hand", "lower_limb"}
     assert by_domain["upper_limb"]["severity"] == "needs_attention"
     assert by_domain["hand"]["severity"] == "building_strength"
-    assert by_domain["lower_limb"]["severity"] == "moving_well"
+    assert by_domain["lower_limb"]["severity"] == "building_strength"
+    assert by_domain["upper_limb"]["affected_side"] == "left"
+    assert by_domain["lower_limb"]["affected_side"] == "right"
+    assert by_domain["upper_limb"]["reported_affected"] is True
+    assert by_domain["hand"]["reported_affected"] is True
+    assert by_domain["lower_limb"]["reported_affected"] is True
     assert all(pin["problem"] for pin in problems["pins"])
 
 

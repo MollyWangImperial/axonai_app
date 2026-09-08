@@ -501,6 +501,9 @@ def test_snapshot_and_report_screens_show_qualitative_scores_and_survey_highligh
     assert 'authedFetch("/api/assessment/survey-report")' in results
     assert "Your movement scores" in scores
     assert "Guided-task scores - not a clinical measure." in scores
+    assert "Guided assessment tasks calculate each score" in scores
+    assert "Affected-area wording follows your survey" in scores
+    assert "module?.score_source === \"survey\"" not in scores
     assert 'testID="movement-scores-panel"' in scores
     assert "movement-score-" in scores
     assert 'title="What this means for daily life"' in results
@@ -512,6 +515,8 @@ def test_snapshot_and_report_screens_show_qualitative_scores_and_survey_highligh
     assert "results-map-marker-" in results
     assert 'testID="results-map-detail"' in results
     assert "MAP_DOMAIN_ICONS" in results
+    assert "reportedAffected !== true" in results
+    assert "Guided tasks calculate the numeric score separately" in results
     assert "mapAreaTitleWide" in results
     assert results.count('testID="results-movement-map"') == 1  # shared by demo and real assessment data
     assert results.index("<MovementScoresPanel") < results.index('title="What this means for daily life"')

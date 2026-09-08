@@ -49,7 +49,7 @@ try:
         attach_hand_failure_phenotypes,
     )
     from backend.muscle_diagnosis import build_muscle_activation_diagnosis
-    from backend.assessment_fusion import build_analysis_pipeline, build_clinical_review_gate, build_survey_consistency
+    from backend.assessment_fusion import build_analysis_pipeline, build_clinical_review_gate, build_survey_consistency, survey_domain_context
     from backend.biomechanics_pipeline import (
         aggregate_model_outputs,
         build_model_analysis_manifest,
@@ -64,7 +64,7 @@ try:
     from backend.fast_screening import FAST_RUNNER_HTML, evaluate_fast_screen
     from backend.encouragement import MEDALS as REWARD_MEDALS, compute_rewards
     from backend.assessment_quality import VERSION as ASSESSMENT_QUALITY_VERSION, COMPENSATIONS as ASSESSMENT_COMPENSATIONS, build_rubrics, score_assessment
-    from backend.daily_activity_metrics import build_daily_activity_metrics, survey_mobility_result
+    from backend.daily_activity_metrics import build_daily_activity_metrics
     from backend.alira_care_orchestrator import (
         QUESTION_BANK as ALIRA_CARE_QUESTION_BANK,
         FUNCTIONAL_ISSUE_CATALOG,
@@ -96,7 +96,7 @@ except ImportError:
         attach_hand_failure_phenotypes,
     )
     from muscle_diagnosis import build_muscle_activation_diagnosis
-    from assessment_fusion import build_analysis_pipeline, build_clinical_review_gate, build_survey_consistency
+    from assessment_fusion import build_analysis_pipeline, build_clinical_review_gate, build_survey_consistency, survey_domain_context
     from biomechanics_pipeline import (
         aggregate_model_outputs,
         build_model_analysis_manifest,
@@ -111,7 +111,7 @@ except ImportError:
     from fast_screening import FAST_RUNNER_HTML, evaluate_fast_screen
     from encouragement import MEDALS as REWARD_MEDALS, compute_rewards
     from assessment_quality import VERSION as ASSESSMENT_QUALITY_VERSION, COMPENSATIONS as ASSESSMENT_COMPENSATIONS, build_rubrics, score_assessment
-    from daily_activity_metrics import build_daily_activity_metrics, survey_mobility_result
+    from daily_activity_metrics import build_daily_activity_metrics
     from alira_care_orchestrator import (
         QUESTION_BANK as ALIRA_CARE_QUESTION_BANK,
         FUNCTIONAL_ISSUE_CATALOG,
@@ -1538,21 +1538,7 @@ def _task_quality_with_survey_mobility(
     task_quality: Dict[str, Any],
     patient_parameters: Optional[Dict[str, Any]],
 ) -> Dict[str, Any]:
-    """Use the existing survey score for lower limb; the walking video is record-only."""
-    mobility = survey_mobility_result(patient_parameters)
-    if mobility.get("score") is None:
-        return task_quality
-    lower_limb = (task_quality.get("modules") or {}).get("lower_limb")
-    if not isinstance(lower_limb, dict):
-        return task_quality
-    score = mobility["score"]
-    lower_limb.update({
-        "score": score,
-        "earned_score": score,
-        "score_source": "survey",
-        "reported_assistance_level": mobility.get("reported_assistance_level"),
-        "survey_response": mobility.get("survey_response"),
-    })
+    """Keep module scores derived solely from guided assessment task evidence."""
     return task_quality
 
 
@@ -1560,27 +1546,39 @@ def _summary_with_survey_mobility(
     summary: Dict[str, Any],
     patient_parameters: Optional[Dict[str, Any]],
 ) -> Dict[str, Any]:
-    mobility = survey_mobility_result(patient_parameters)
-    if mobility.get("score") is None:
-        return summary
+    """Add patient-reported affected regions without changing task metrics."""
+    context = survey_domain_context(patient_parameters)
     summary = {
         **summary,
         "domains": [dict(domain) for domain in (summary.get("domains") or [])],
     }
     for domain in summary.get("domains") or []:
-        if domain.get("domain") != "lower_limb":
+        domain_id = str(domain.get("domain") or "")
+        survey = context.get(domain_id)
+        if not survey:
             continue
-        domain.update({
-            "status": "survey_reported",
-            "score_source": "survey",
-            "survey_score": mobility["score"],
-            "tasks_completed": 0,
-            "tasks_observed": 0,
-            "step_completion_percent": 0,
-            "average_task_duration_ms": 0,
-            "findings_count": 0,
-            "summary": "This lower-limb result comes from the movement-readiness survey. The walking video is saved as a record and is not graded.",
-        })
+        domain.update(survey)
+        if not survey["survey_answered"]:
+            continue
+        if survey["survey_affected"] is None:
+            domain.update({
+                "status": "survey_unsure",
+                "summary": "The survey did not identify whether this area was affected. The numeric score comes only from guided assessment tasks.",
+            })
+        elif survey["survey_affected"]:
+            sides = survey["survey_affected_sides"]
+            side_label = "Both sides were" if len(sides) > 1 else f"Your {sides[0]} side was"
+            domain.update({
+                "status": "survey_reported_affected",
+                "summary": f"{side_label} reported as affected in your survey. The numeric score comes only from guided assessment tasks.",
+            })
+        else:
+            domain.update({
+                "status": "survey_reported_unaffected",
+                "summary": "This area was not reported as affected in your survey. The numeric score comes only from guided assessment tasks.",
+            })
+    if any(domain.get("survey_affected") is True for domain in summary.get("domains") or []):
+        summary["overall_status"] = "survey_reported_affected"
     return summary
 
 
@@ -1641,11 +1639,8 @@ def build_functional_metrics(
     hand_completion = completion("hand")
     shoulder_hike = any(bool(row.get("shoulder_hike")) for row in records("upper_limb"))
 
-    task_quality = _task_quality_with_survey_mobility(
-        score_assessment(tasks, ASSESSMENT_RUBRICS, assigned_task_ids),
-        patient_parameters,
-    )
-    mobility = survey_mobility_result(patient_parameters)
+    task_quality = score_assessment(tasks, ASSESSMENT_RUBRICS, assigned_task_ids)
+    survey_context = survey_domain_context(patient_parameters)
     walking_video_uploaded = any(
         (_snapshot_value(task, "metrics", {}) or {}).get("walking_video_role") == "supporting_record"
         for task in lower_tasks
@@ -1656,16 +1651,13 @@ def build_functional_metrics(
         "shoulder_flexion_deg": round(shoulder_elevation, 1) if shoulder_elevation is not None else None,
         "trunk_lean_deg": round(trunk_lean, 1) if trunk_lean is not None else None,
         "reach_completion": reach_completion,
-        "bilateral_symmetry": (
-            None
-            if mobility.get("score") is not None
-            else round(gait_symmetry, 3) if gait_symmetry is not None else None
-        ),
+        "bilateral_symmetry": round(gait_symmetry, 3) if gait_symmetry is not None else None,
         "pinch_grip": round(pinch_grip, 3) if pinch_grip is not None else None,
         "hand_opening": round(hand_opening, 3) if hand_opening is not None else None,
         "walking_skipped": walking_skipped,
         "domains": {
             "upper_limb": {
+                **survey_context["upper_limb"],
                 "observed": bool(upper_tasks),
                 "step_completion_percent": round(100 * reach_completion) if reach_completion is not None else None,
                 "shoulder_elevation_deg": round(shoulder_elevation, 1) if shoulder_elevation is not None else None,
@@ -1673,22 +1665,23 @@ def build_functional_metrics(
                 "shoulder_hike_detected": shoulder_hike,
             },
             "hand": {
+                **survey_context["hand"],
                 "observed": bool(hand_tasks),
                 "step_completion_percent": round(100 * hand_completion) if hand_completion is not None else None,
                 "hand_opening_percent": round(100 * hand_opening) if hand_opening is not None else None,
                 "pinch_control_percent": round(100 * pinch_grip) if pinch_grip is not None else None,
             },
             "lower_limb": {
-                "observed": False,
-                "reported": mobility.get("score") is not None,
+                **survey_context["lower_limb"],
+                "observed": bool(lower_tasks) and not walking_skipped,
+                "result_source": "assessment_tasks",
+                "survey_score": None,
+                "reported_assistance_level": None,
                 "skipped": walking_skipped,
-                "result_source": mobility.get("score_source"),
-                "survey_score": mobility.get("score"),
-                "reported_assistance_level": mobility.get("reported_assistance_level"),
                 "walking_video_uploaded": walking_video_uploaded,
-                "step_completion_percent": None,
-                "bilateral_motion_symmetry_percent": None,
-                "full_body_visibility_percent": None,
+                "step_completion_percent": round(100 * completion("lower_limb")) if completion("lower_limb") is not None else None,
+                "bilateral_motion_symmetry_percent": round(100 * gait_symmetry) if gait_symmetry is not None else None,
+                "full_body_visibility_percent": round(100 * (numeric_max("lower_limb", "gait_full_body_visibility_ratio") or 0)) if numeric_max("lower_limb", "gait_full_body_visibility_ratio") is not None else None,
                 "video_duration_seconds": round(walking_duration_ms / 1000, 1) if walking_duration_ms is not None else None,
             },
         },
@@ -1701,18 +1694,18 @@ def _functional_metrics_with_survey_mobility(
     assigned_task_ids: Optional[Sequence[str]],
     patient_parameters: Optional[Dict[str, Any]],
 ) -> Dict[str, Any]:
-    """Normalize new and historic snapshots to the survey-only lower-limb policy."""
+    """Normalize historic snapshots to task-only scores plus survey context."""
     computed = build_functional_metrics(task_results, assigned_task_ids, patient_parameters)
     if not saved_metrics:
         return computed
-    mobility = survey_mobility_result(patient_parameters)
-    if mobility.get("score") is None:
-        return dict(saved_metrics)
     normalized = dict(saved_metrics)
-    normalized["bilateral_symmetry"] = None
     normalized["task_quality"] = computed["task_quality"]
     saved_domains = dict(normalized.get("domains") or {})
-    saved_domains["lower_limb"] = computed["domains"]["lower_limb"]
+    for domain_id in ("upper_limb", "hand", "lower_limb"):
+        saved_domains[domain_id] = {
+            **dict(saved_domains.get(domain_id) or {}),
+            **computed["domains"][domain_id],
+        }
     normalized["domains"] = saved_domains
     return normalized
 
@@ -3537,12 +3530,12 @@ async def submit_assessment(payload: AssessmentSubmit, request: Request):
             task_state["status"] = "supporting_record_only"
     has_camera_analysis_tasks = any(task_id != "L6" for task_id in task_ids)
     if not testing_shortcut and task_ids and not has_camera_analysis_tasks:
-        model_analysis["status"] = "not_required_survey_based"
+        model_analysis["status"] = "supporting_record_only"
     model_analysis["gpu_stage"] = {
         "status": (
             "generated_testing_sample" if testing_shortcut
             else "queued" if LOCAL_GPU_WORKER_URL and has_camera_analysis_tasks
-            else "not_required_survey_based" if task_ids and not has_camera_analysis_tasks
+            else "supporting_record_only" if task_ids and not has_camera_analysis_tasks
             else "not_configured"
         ),
         "device": None if testing_shortcut else "cuda:0" if LOCAL_GPU_WORKER_URL and has_camera_analysis_tasks else None,
@@ -3552,7 +3545,7 @@ async def submit_assessment(payload: AssessmentSubmit, request: Request):
         "status": (
             "generated_testing_sample" if testing_shortcut
             else "not_observed_patient_skipped" if walking_was_skipped
-            else "not_required_survey_based" if "L6" in assigned_task_ids
+            else "supporting_record_only" if "L6" in assigned_task_ids
             else "not_configured"
         ),
         "modeled_tasks": [],
@@ -4610,8 +4603,8 @@ POSE_RUNNER_HTML = r"""<!DOCTYPE html>
       <ul>
         <li>A short video is fine. Keep the patient's whole body and usual walking aid visible when possible.</li>
         <li>Keep the camera still at a safe distance and do not stand in the patient's walking path.</li>
-        <li>The video is saved as an assessment record; it is not used to grade lower-limb movement.</li>
-        <li>The lower-limb result shown in the movement snapshot comes from the patient's survey answers.</li>
+        <li>The video is saved as assessment evidence. If it cannot support reliable measurements, no lower-limb score is shown.</li>
+        <li>The survey identifies the affected lower-limb area and side. Any numeric lower-limb score comes only from measurable walking-task evidence.</li>
       </ul>
       <div id="walkingDesktopActions" class="hidden" data-testid="walking-desktop-actions">
         <div id="walkingVideoDropZone" data-testid="walking-video-drop-zone">
@@ -5574,13 +5567,13 @@ async function showWalkingCapture(task){
   walkingCaptureLead.textContent = "Ask a carer or family member to record from the front while you walk toward the camera at your usual comfortable pace.";
   walkingDesktopActions.classList.remove("hidden");
   walkingMobileActions.classList.add("hidden");
-  setWalkingCaptureStatus("Choose any walking video from this device. Short clips are accepted and video framing does not affect the survey-based lower-limb result.");
+  setWalkingCaptureStatus("Choose any walking video from this device. Short clips are accepted; a score is shown only when the walking task contains measurable evidence.");
   walkingCapture.classList.remove("hidden");
   ui.classList.add("hidden");
   renderDots();
   if(!walkingCapturePromptPlayed){
     walkingCapturePromptPlayed = true;
-    const prompt = "For the walking record, ask a carer or family member to take a short video from the front while you walk toward the camera. Then choose or record the video here. Any walking video will be accepted for now, and your lower-limb result comes from your survey answers.";
+    const prompt = "For the walking record, ask a carer or family member to take a short video from the front while you walk toward the camera. Then choose or record the video here. Any walking video will be accepted for now. Your survey identifies the affected area and side; a numeric score is shown only from measurable task evidence.";
     await playVoice(prompt);
   }
 }
@@ -5890,7 +5883,7 @@ async function completeUploadedWalkingTask(file, validation){
   const metrics = {
     walking_capture_mode:"uploaded_video",
     walking_video_role:"supporting_record",
-    lower_limb_result_source:"survey",
+    lower_limb_result_source:"assessment_tasks",
     walking_video_accepted:true,
     walking_video_metadata_readable:validation.metadataReadable === true,
     uploaded_video_duration_ms:validation.durationMs,
@@ -8605,7 +8598,7 @@ async function processWalkingVideoFile(file, source="picker"){
       return;
     }
     setWalkingCaptureStatus(validation.message, "good");
-    await playVoice("The walking video is saved as part of your assessment record. Thank you. Your lower-limb result comes from your survey answers, and your assessment is now complete.");
+    await playVoice("The walking video is saved as part of your assessment record. Thank you. Your survey identifies the affected area and side, and your assessment is now complete.");
     setWalkingCaptureStatus(LIBRARY_TEST_MODE
       ? "Walking video accepted. Preparing the test result..."
       : "Walking video accepted. Preparing secure save...", "good");

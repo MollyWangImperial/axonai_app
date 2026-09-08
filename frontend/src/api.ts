@@ -231,6 +231,9 @@ export type FunctionalMetrics = {
   walking_skipped?: boolean;
   domains?: {
     upper_limb?: {
+      survey_answered?: boolean;
+      survey_affected?: boolean | null;
+      survey_affected_sides?: ("left" | "right")[];
       observed?: boolean;
       step_completion_percent?: number | null;
       shoulder_elevation_deg?: number | null;
@@ -238,12 +241,18 @@ export type FunctionalMetrics = {
       shoulder_hike_detected?: boolean;
     };
     hand?: {
+      survey_answered?: boolean;
+      survey_affected?: boolean | null;
+      survey_affected_sides?: ("left" | "right")[];
       observed?: boolean;
       step_completion_percent?: number | null;
       hand_opening_percent?: number | null;
       pinch_control_percent?: number | null;
     };
     lower_limb?: {
+      survey_answered?: boolean;
+      survey_affected?: boolean | null;
+      survey_affected_sides?: ("left" | "right")[];
       observed?: boolean;
       reported?: boolean;
       skipped?: boolean;
@@ -282,9 +291,12 @@ export type AssessmentTaskQuality = {
 export type BodyFunctionDomainSummary = {
   domain: "upper_limb" | "hand" | "lower_limb";
   label: string;
-  status: "analysis_pending" | "review_recommended" | "no_observable_difficulty" | "not_observed" | "survey_reported";
+  status: "analysis_pending" | "review_recommended" | "no_observable_difficulty" | "not_observed" | "survey_reported" | "survey_reported_affected" | "survey_reported_unaffected" | "survey_unsure";
   score_source?: "survey" | string;
   survey_score?: number | null;
+  survey_answered?: boolean;
+  survey_affected?: boolean | null;
+  survey_affected_sides?: ("left" | "right")[];
   tasks_completed: number;
   tasks_observed: number;
   step_completion_percent: number;

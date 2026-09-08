@@ -644,6 +644,7 @@ def test_completed_initial_collection_returns_domain_metrics_without_a_normal_re
             "consent": {"health_data_consent": True},
             "credits": 1000,
             "profile": {
+                "affected_areas": ["left_upper", "right_lower"],
                 "sitting_ability": "independent",
                 "affected_arm_movement": "some_movement",
                 "affected_hand_movement": "some_finger_movement",
@@ -688,7 +689,7 @@ def test_completed_initial_collection_returns_domain_metrics_without_a_normal_re
         assert [item["id"] for item in assessment["rehab_plan"]] == [
             "ex_trunk", "ex_reach", "ex_grasp", "ex_h2m",
         ]
-        assert assessment["body_function_summary"]["overall_status"] == "analysis_pending"
+        assert assessment["body_function_summary"]["overall_status"] == "survey_reported_affected"
         assert assessment["metrics"]["reach_completion"] == 1.0
         assert assessment["metrics"]["domains"]["hand"]["step_completion_percent"] == 100
 
@@ -699,11 +700,15 @@ def test_completed_initial_collection_returns_domain_metrics_without_a_normal_re
         body_domains = {item["domain"]: item for item in summary["body_function_summary"]["domains"]}
         assert body_domains["upper_limb"]["step_completion_percent"] == 100
         assert body_domains["hand"]["step_completion_percent"] == 100
-        assert body_domains["lower_limb"]["status"] == "survey_reported"
-        assert body_domains["lower_limb"]["step_completion_percent"] == 0
-        assert summary["functional_metrics"]["domains"]["lower_limb"]["step_completion_percent"] is None
-        assert summary["functional_metrics"]["task_quality"]["modules"]["lower_limb"]["score"] == 95
-        assert summary["functional_metrics"]["task_quality"]["modules"]["lower_limb"]["score_source"] == "survey"
+        assert body_domains["upper_limb"]["status"] == "survey_reported_affected"
+        assert body_domains["upper_limb"]["survey_affected_sides"] == ["left"]
+        assert body_domains["hand"]["status"] == "survey_reported_affected"
+        assert body_domains["lower_limb"]["status"] == "survey_reported_affected"
+        assert body_domains["lower_limb"]["survey_affected_sides"] == ["right"]
+        assert body_domains["lower_limb"]["step_completion_percent"] == 100
+        assert summary["functional_metrics"]["domains"]["lower_limb"]["step_completion_percent"] == 100
+        assert summary["functional_metrics"]["task_quality"]["modules"]["lower_limb"]["score"] is None
+        assert "score_source" not in summary["functional_metrics"]["task_quality"]["modules"]["lower_limb"]
         # The interim starting plan is viewable right away.
         assert summary["rehab_plan_ready"] is True
 

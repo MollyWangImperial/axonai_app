@@ -12,8 +12,9 @@ import { DEMO_ASSESSMENT_ID, demoAssessment, demoPatientAssessmentSummary } from
 
 type DomainId = "upper_limb" | "hand" | "lower_limb";
 
-function statusColor(findings: number, completion: number) {
+function statusColor(findings: number, completion: number, surveyAffected = false) {
   if (findings > 0) return { color: "#F05F4C", soft: "#FCE7E3", label: "Needs attention", icon: "alert" as const };
+  if (surveyAffected) return { color: "#DEA128", soft: "#FFF3D8", label: "Reported affected", icon: "barbell-outline" as const };
   if (completion < 100) return { color: "#DEA128", soft: "#FFF3D8", label: "Building strength", icon: "barbell-outline" as const };
   return { color: "#3E8256", soft: "#E5F1E8", label: "Moving well", icon: "checkmark" as const };
 }
@@ -141,17 +142,24 @@ export default function MovementMapScreen() {
         setData(summary);
         setAssessment(raw);
         setScreenCache(`movement-map:${id}`, { summary, raw });
+        const firstReported = summary.body_function_summary.domains.find((domain) => domain.survey_affected === true)?.domain;
         const firstFinding = summary.insights.domain_metrics.find((domain) => domain.findings_count > 0)?.domain;
-        if (firstFinding) setSelected(firstFinding);
+        if (firstReported || firstFinding) setSelected(firstReported ?? firstFinding!);
       })
       .finally(() => setLoading(false));
   }, [id]);
 
   const affectedSide: "left" | "right" = assessment?.affected_side?.toLowerCase() === "left" ? "left" : "right";
-  const domains = data?.insights.domain_metrics || [];
+  const bodyDomains = data?.body_function_summary.domains || [];
+  const surveyAnswered = bodyDomains.some((domain) => domain.survey_answered);
+  const reportedDomains = new Set(bodyDomains.filter((domain) => domain.survey_affected === true).map((domain) => domain.domain));
+  const domains = (data?.insights.domain_metrics || []).filter((domain) => !surveyAnswered || reportedDomains.has(domain.domain));
   const selectedDomain = domains.find((domain) => domain.domain === selected) || domains[0];
-  const selectedStatus = statusColor(selectedDomain?.findings_count || 0, selectedDomain?.completion_percent || 0);
-  const activation = data?.insights.activation_profile.find((item) => item.domain === selected);
+  const selectedDomainId = selectedDomain?.domain ?? selected;
+  const selectedSurveyDomain = bodyDomains.find((domain) => domain.domain === selectedDomainId);
+  const selectedAffectedSide = selectedSurveyDomain?.survey_affected_sides?.[0] ?? affectedSide;
+  const selectedStatus = statusColor(selectedDomain?.findings_count || 0, selectedDomain?.completion_percent || 0, selectedSurveyDomain?.survey_affected === true);
+  const activation = data?.insights.activation_profile.find((item) => item.domain === selectedDomainId);
   const ratio = activation?.template_mean ? activation.mean / activation.template_mean : null;
   const reviewGate = data?.clinical_review_gate;
   const planAccessAllowed = reviewGate?.rehab_access === "allowed" || reviewGate?.rehab_access === "interim";
@@ -161,13 +169,13 @@ export default function MovementMapScreen() {
   const noRehabNeeded = reviewGate?.rehab_access === "not_needed" || reviewGate?.status === "no_rehab_needed";
   const ageBand = assessment?.patient_parameters?.age_band || profileAgeBand || (isDemo ? "70-79" : null);
   const ageAnatomy = getAgeAnatomyPresentation(ageBand);
-  const selectedAreaTitle = areaTitle(selected, affectedSide);
+  const selectedAreaTitle = areaTitle(selectedDomainId, selectedAffectedSide);
 
   const selectedSummary = useMemo(() => {
-    const domain = data?.body_function_summary.domains.find((item) => item.domain === selected);
+    const domain = data?.body_function_summary.domains.find((item) => item.domain === selectedDomainId);
     if (!domain) return "This area was not observed in the completed assessment.";
     return domain.summary;
-  }, [data?.body_function_summary.domains, selected]);
+  }, [data?.body_function_summary.domains, selectedDomainId]);
 
   const cycleDomain = (direction: -1 | 1) => {
     const available = domains.map((domain) => domain.domain);
@@ -227,15 +235,17 @@ export default function MovementMapScreen() {
               <View style={[styles.mapCanvas, { height: anatomyHeight }]}>
                 <Image source={ageAnatomy.source} resizeMode="contain" style={styles.anatomyImage} accessibilityLabel={ageAnatomy.viewLabel} />
                 {domains.map((domain) => {
+                  const surveyDomain = bodyDomains.find((item) => item.domain === domain.domain);
+                  const domainAffectedSide = surveyDomain?.survey_affected_sides?.[0] ?? affectedSide;
                   const sourceX = domain.domain === "upper_limb" ? ageAnatomy.shoulderX : domain.domain === "hand" ? ageAnatomy.handX : ageAnatomy.lowerLimbX;
                   const y = domain.domain === "upper_limb" ? ageAnatomy.shoulderY : domain.domain === "hand" ? ageAnatomy.handY : ageAnatomy.lowerLimbY;
-                  const x = affectedSide === "right" ? sourceX : 100 - sourceX;
-                  const status = statusColor(domain.findings_count, domain.completion_percent);
+                  const x = domainAffectedSide === "right" ? sourceX : 100 - sourceX;
+                  const status = statusColor(domain.findings_count, domain.completion_percent, surveyDomain?.survey_affected === true);
                   return (
                     <ShinyMapMarker
                       key={domain.domain}
-                      active={selected === domain.domain}
-                      label={areaTitle(domain.domain, affectedSide)}
+                      active={selectedDomainId === domain.domain}
+                      label={areaTitle(domain.domain, domainAffectedSide)}
                       labelSide={x < 50 ? "left" : "right"}
                       onPress={() => { setSelected(domain.domain); setDetailsExpanded(false); }}
                       status={status}

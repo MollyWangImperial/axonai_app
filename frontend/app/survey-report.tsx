@@ -22,6 +22,8 @@ type FunctionalPin = {
   domain: "upper_limb" | "hand" | "lower_limb";
   title: string;
   affected_side: "left" | "right";
+  affected_sides?: ("left" | "right")[];
+  reported_affected?: boolean | null;
   tier: number;
   severity: "needs_attention" | "building_strength" | "moving_well";
   problem: string;
@@ -113,8 +115,12 @@ export default function SurveyReportScreen() {
   );
   const anatomyHeight = anatomyWidth / ANATOMY_ASPECT_RATIO;
   const pins = report?.functional_problems?.pins ?? [];
-  const affectedSide = report?.functional_problems?.affected_side ?? "right";
-  const activePin = selectedPin ?? pins.find((pin) => pin.severity === "needs_attention") ?? pins[0] ?? null;
+  const displayedPins = pins.filter((pin) => pin.reported_affected !== false);
+  const activePin = (
+    selectedPin && displayedPins.some((pin) => pin.domain === selectedPin.domain)
+      ? selectedPin
+      : displayedPins.find((pin) => pin.severity === "needs_attention") ?? displayedPins[0] ?? null
+  );
 
   return (
     <View style={styles.container}>
@@ -171,7 +177,7 @@ export default function SurveyReportScreen() {
               testID="survey-report-anatomy-coordinate-frame"
             >
               <Image source={anatomy.source} resizeMode="contain" style={styles.anatomyImage} accessibilityLabel={anatomy.viewLabel} />
-              {pins.map((pin) => {
+              {displayedPins.map((pin) => {
                 const x = pin.domain === "upper_limb" ? anatomy.shoulderX : pin.domain === "hand" ? anatomy.handX : anatomy.lowerLimbX;
                 const y = pin.domain === "upper_limb" ? anatomy.shoulderY : pin.domain === "hand" ? anatomy.handY : anatomy.lowerLimbY;
                 const severity = SEVERITY_PRESENTATION[pin.severity];
@@ -186,7 +192,7 @@ export default function SurveyReportScreen() {
                       styles.pin,
                       {
                         top: `${y}%` as `${number}%`,
-                        left: `${affectedSide === "right" ? x : 100 - x}%` as `${number}%`,
+                        left: `${pin.affected_side === "right" ? x : 100 - x}%` as `${number}%`,
                         borderColor: severity.color,
                         backgroundColor: severity.soft,
                       },
@@ -207,7 +213,9 @@ export default function SurveyReportScreen() {
                   </Text>
                 </View>
                 <Text style={styles.pinDetailTitle}>
-                  {(activePin.affected_side === "left" ? "Left " : "Right ") + activePin.title.toLowerCase()}
+                  {(activePin.affected_sides?.length === 2
+                    ? "Both sides: "
+                    : activePin.affected_side === "left" ? "Left " : "Right ") + activePin.title.toLowerCase()}
                 </Text>
                 <Text style={styles.pinDetailText}>{activePin.problem}</Text>
               </View>

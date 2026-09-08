@@ -21,8 +21,8 @@ def test_walking_task_requests_a_short_frontal_supporting_record():
         "whole body",
         "walking aid",
         "camera still",
-        "survey answers",
-        "not graded",
+        "score comes only from measurable evidence",
+        "affected area and side come from the patient's survey",
     ):
         assert phrase in guidance
     assert task["steps"][1]["measure"] == []
@@ -116,7 +116,7 @@ def test_walking_upload_is_saved_as_a_record_without_gait_metrics():
     source = server.POSE_RUNNER_HTML
     completion = source[source.index("async function completeUploadedWalkingTask") : source.index("function playBrowserVoice")]
     assert 'walking_video_role:"supporting_record"' in completion
-    assert 'lower_limb_result_source:"survey"' in completion
+    assert 'lower_limb_result_source:"assessment_tasks"' in completion
     assert 'walking_video_accepted:true' in completion
     assert "gait_bilateral_motion_symmetry" not in completion
     assert "walking_same_patient_confirmed" not in completion

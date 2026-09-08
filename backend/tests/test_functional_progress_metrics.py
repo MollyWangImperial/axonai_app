@@ -70,7 +70,7 @@ def test_skipped_walking_is_not_counted_as_failed_or_observed():
     assert "not counted as a failed task" in summary["domains"][0]["summary"]
 
 
-def test_walking_video_is_record_only_and_lower_limb_score_comes_from_survey():
+def test_walking_video_metrics_do_not_become_a_survey_derived_lower_limb_score():
     walking = server.TaskResult(
         task_id="L6",
         completed_steps=3,
@@ -82,41 +82,44 @@ def test_walking_video_is_record_only_and_lower_limb_score_comes_from_survey():
             "uploaded_video_duration_ms": 3035,
         },
     )
-    profile = {"mobility_level": "person_assist"}
+    profile = {"mobility_level": "person_assist", "affected_areas": ["right_lower"]}
 
     metrics = server.build_functional_metrics([walking], ["L6"], profile)
     lower_module = metrics["task_quality"]["modules"]["lower_limb"]
     lower_domain = metrics["domains"]["lower_limb"]
 
-    assert lower_module["score"] == 45
-    assert lower_module["score_source"] == "survey"
-    assert lower_module["reported_assistance_level"] == "moderate_assistance"
-    assert metrics["bilateral_symmetry"] is None
-    assert lower_domain["observed"] is False
-    assert lower_domain["reported"] is True
-    assert lower_domain["result_source"] == "survey"
-    assert lower_domain["survey_score"] == 45
+    assert lower_module["score"] is None
+    assert "score_source" not in lower_module
+    assert metrics["bilateral_symmetry"] == 0.12
+    assert lower_domain["observed"] is True
+    assert lower_domain["result_source"] == "assessment_tasks"
+    assert lower_domain["survey_score"] is None
+    assert lower_domain["survey_affected"] is True
+    assert lower_domain["survey_affected_sides"] == ["right"]
     assert lower_domain["walking_video_uploaded"] is True
     assert lower_domain["video_duration_seconds"] == 3.0
-    assert lower_domain["bilateral_motion_symmetry_percent"] is None
+    assert lower_domain["bilateral_motion_symmetry_percent"] == 12
 
 
-def test_lower_limb_body_summary_is_explicitly_survey_reported():
-    walking = server.TaskResult(task_id="L6", completed_steps=3, total_steps=3, steps=[], metrics={})
-    raw_summary = patient_body_function_summary([walking], [], {}, ("lower_limb",))
+def test_body_summary_uses_affected_area_survey_for_each_domain_and_side():
+    raw_summary = patient_body_function_summary([], [], {}, ("upper_limb", "hand", "lower_limb"))
 
-    summary = server._summary_with_survey_mobility(raw_summary, {"mobility_level": "walker"})
+    summary = server._summary_with_survey_mobility(
+        raw_summary,
+        {"mobility_level": "independent", "affected_areas": ["left_upper", "right_lower"]},
+    )
 
-    lower = summary["domains"][0]
-    assert lower["status"] == "survey_reported"
-    assert lower["score_source"] == "survey"
-    assert lower["survey_score"] == 95
-    assert lower["tasks_observed"] == 0
-    assert lower["step_completion_percent"] == 0
-    assert "walking video is saved as a record and is not graded" in lower["summary"]
+    by_domain = {item["domain"]: item for item in summary["domains"]}
+    assert by_domain["upper_limb"]["status"] == "survey_reported_affected"
+    assert by_domain["upper_limb"]["survey_affected_sides"] == ["left"]
+    assert by_domain["hand"]["status"] == "survey_reported_affected"
+    assert by_domain["hand"]["survey_affected_sides"] == ["left"]
+    assert by_domain["lower_limb"]["status"] == "survey_reported_affected"
+    assert by_domain["lower_limb"]["survey_affected_sides"] == ["right"]
+    assert "numeric score comes only from guided assessment tasks" in by_domain["lower_limb"]["summary"]
 
 
-def test_historic_video_gait_score_is_suppressed_when_survey_data_exists():
+def test_historic_survey_score_is_removed_while_task_metrics_and_survey_context_are_retained():
     walking = server.TaskResult(
         task_id="L6",
         completed_steps=3,
@@ -134,15 +137,36 @@ def test_historic_video_gait_score_is_suppressed_when_survey_data_exists():
         historic,
         [walking],
         ["L6"],
-        {"mobility_level": "wheelchair"},
+        {"mobility_level": "wheelchair", "affected_areas": ["right_lower"]},
     )
 
-    assert normalized["bilateral_symmetry"] is None
-    assert normalized["task_quality"]["modules"]["lower_limb"]["score"] == 25
-    assert normalized["task_quality"]["modules"]["lower_limb"]["score_source"] == "survey"
-    assert normalized["domains"]["lower_limb"]["observed"] is False
-    assert normalized["domains"]["lower_limb"]["survey_score"] == 25
+    assert normalized["bilateral_symmetry"] == 0.91
+    assert normalized["task_quality"]["modules"]["lower_limb"]["score"] is None
+    assert "score_source" not in normalized["task_quality"]["modules"]["lower_limb"]
+    assert normalized["domains"]["lower_limb"]["observed"] is True
+    assert normalized["domains"]["lower_limb"]["result_source"] == "assessment_tasks"
+    assert normalized["domains"]["lower_limb"]["survey_score"] is None
+    assert normalized["domains"]["lower_limb"]["survey_affected"] is True
     assert normalized["domains"]["lower_limb"]["bilateral_motion_symmetry_percent"] is None
+
+
+def test_survey_answers_never_replace_assessment_task_module_scores():
+    task_quality = {
+        "modules": {
+            "upper_limb": {"score": 81.5},
+            "hand": {"score": 72.0},
+            "lower_limb": {"score": 64.0},
+        }
+    }
+
+    result = server._task_quality_with_survey_mobility(
+        task_quality,
+        {"mobility_level": "independent", "affected_areas": ["left_upper", "right_lower"]},
+    )
+
+    assert result["modules"]["upper_limb"]["score"] == 81.5
+    assert result["modules"]["hand"]["score"] == 72.0
+    assert result["modules"]["lower_limb"]["score"] == 64.0
 
 
 def test_patient_function_summary_exposes_explanations_and_real_metrics():

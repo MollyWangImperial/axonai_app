@@ -30,6 +30,9 @@ function domainStatusLabel(status: string) {
   if (status === "review_recommended") return "Needs attention";
   if (status === "not_observed") return "Not observed";
   if (status === "survey_reported") return "From your survey";
+  if (status === "survey_reported_affected") return "Reported affected";
+  if (status === "survey_reported_unaffected") return "Not reported affected";
+  if (status === "survey_unsure") return "Survey answer unsure";
   return "Analysis in progress";
 }
 
@@ -79,6 +82,8 @@ type SurveyPin = {
   domain: "upper_limb" | "hand" | "lower_limb";
   title: string;
   affected_side: "left" | "right";
+  affected_sides?: ("left" | "right")[];
+  reported_affected?: boolean | null;
   severity: "needs_attention" | "building_strength" | "moving_well";
   problem: string;
 };
@@ -102,7 +107,8 @@ export default function ResultsScreen() {
   const cachedResult = getScreenCache<{ data: PatientAssessmentSummary; assessment: Assessment | null }>(`results:${id}`);
   const [loading, setLoading] = useState(!cachedResult);
   const [showDetails, setShowDetails] = useState(false);
-  const [surveyPins, setSurveyPins] = useState<SurveyPin[]>(getScreenCache<SurveyPin[]>("survey-problems") ?? []);
+  const surveyProblemCacheKey = `survey-problems:${id ?? "unknown"}`;
+  const [surveyPins, setSurveyPins] = useState<SurveyPin[]>(getScreenCache<SurveyPin[]>(surveyProblemCacheKey) ?? []);
   const [selectedMapDomain, setSelectedMapDomain] = useState<"upper_limb" | "hand" | "lower_limb" | null>(null);
   const isDemo = id === DEMO_ASSESSMENT_ID;
   const isGeneratedSample = assessment?.testing_shortcut === true
@@ -130,11 +136,11 @@ export default function ResultsScreen() {
         if (cancelled || !body) return;
         const pins = (body?.functional_problems?.pins || []) as SurveyPin[];
         setSurveyPins(pins);
-        setScreenCache<SurveyPin[]>("survey-problems", pins);
+        setScreenCache<SurveyPin[]>(surveyProblemCacheKey, pins);
       })
       .catch(() => null);
     return () => { cancelled = true; };
-  }, [isDemo]);
+  }, [isDemo, surveyProblemCacheKey]);
 
   useEffect(() => {
     let cancelled = false;
@@ -203,8 +209,8 @@ export default function ResultsScreen() {
     return "Your movement collection is ready";
   }, [snapshotDecision?.presentation.title, primaryProblem?.title, topObservation?.title]);
 
-  // Inline movement map: observed domain results lead; survey answers fill in
-  // any domain that has not been observed yet.
+  // The map reflects patient-reported affected regions. Guided tasks provide
+  // the separate numeric scores and never erase a survey-reported problem.
   const MAP_SEVERITIES = {
     needs_attention: { color: "#E84432", soft: "#FFF1EF", label: "May need support" },
     building_strength: { color: "#C88913", soft: "#FFF7E6", label: "Building strength" },
@@ -218,46 +224,29 @@ export default function ResultsScreen() {
   } as const;
   const mapMarkers = (["upper_limb", "hand", "lower_limb"] as const).map((domain) => {
     const observed = data?.body_function_summary.domains.find((item) => item.domain === domain);
+    const metricDomain = data?.functional_metrics?.domains?.[domain];
     const pin = surveyPins.find((item) => item.domain === domain);
-    if (domain === "lower_limb" && observed?.status === "survey_reported") {
-      const surveyScore = observed.survey_score ?? data?.functional_metrics?.domains?.lower_limb?.survey_score ?? null;
-      const surveySeverity = surveyScore !== null && surveyScore >= 80
-        ? "moving_well" as const
-        : surveyScore !== null && surveyScore < 65
-          ? "needs_attention" as const
-          : "building_strength" as const;
-      return {
-        domain,
-        severity: pin?.severity ?? surveySeverity,
-        source: "survey" as const,
-        coverage: null,
-        findings: null,
-        detail: pin?.problem ?? "This lower-limb result comes from your movement-readiness survey. Your walking video is saved as a record and is not graded.",
-      };
-    }
-    if (observed && observed.status !== "not_observed") {
-      const severity = observed.findings_count > 0 || observed.status === "review_recommended"
-        ? "needs_attention" as const
-        : observed.status === "analysis_pending" || (observed.step_completion_percent ?? 0) < 100
-          ? "building_strength" as const
-          : "moving_well" as const;
-      return {
-        domain,
-        severity,
-        source: "observed" as const,
-        coverage: observed.step_completion_percent ?? 0,
-        findings: observed.findings_count ?? 0,
-        detail: observed.findings_count > 0
-          ? "This area showed a finding to review from the completed tasks."
-          : observed.status === "analysis_pending"
-            ? "The guided-task metrics are ready while the validated movement analysis is still in progress."
-            : "This area moved steadily in the completed tasks.",
-      };
-    }
-    if (pin) {
-      return { domain, severity: pin.severity, source: "survey" as const, coverage: null, findings: null, detail: pin.problem };
-    }
-    return null;
+    const reportedAffected = pin?.reported_affected ?? observed?.survey_affected ?? metricDomain?.survey_affected;
+    if (reportedAffected !== true) return null;
+    const affectedSides = pin?.affected_sides?.length
+      ? pin.affected_sides
+      : observed?.survey_affected_sides?.length
+        ? observed.survey_affected_sides
+        : metricDomain?.survey_affected_sides?.length
+          ? metricDomain.survey_affected_sides
+          : [pin?.affected_side ?? affectedSide];
+    const markerSide = affectedSides[0] ?? affectedSide;
+    const severity = pin?.severity === "needs_attention" ? "needs_attention" as const : "building_strength" as const;
+    return {
+      domain,
+      severity,
+      affectedSide: markerSide,
+      affectedSides,
+      source: "survey" as const,
+      coverage: null,
+      findings: null,
+      detail: pin?.problem ?? `Your survey reports that your ${markerSide} ${MAP_TITLES[domain]} was affected.`,
+    };
   }).filter((marker): marker is NonNullable<typeof marker> => marker != null);
   const activeMapMarker = mapMarkers.find((marker) => marker.domain === selectedMapDomain)
     ?? mapMarkers.find((marker) => marker.severity === "needs_attention")
@@ -334,7 +323,7 @@ export default function ResultsScreen() {
                       const y = marker.domain === "upper_limb" ? ageAnatomy.shoulderY : marker.domain === "hand" ? ageAnatomy.handY : ageAnatomy.lowerLimbY;
                       const presentation = MAP_SEVERITIES[marker.severity];
                       const active = activeMapMarker?.domain === marker.domain;
-                      const areaTitle = `${affectedSide === "left" ? "Left" : "Right"} ${MAP_TITLES[marker.domain]}`;
+                      const areaTitle = `${marker.affectedSides.length > 1 ? "Both" : marker.affectedSide === "left" ? "Left" : "Right"} ${MAP_TITLES[marker.domain]}`;
                       return (
                         <Pressable
                           key={marker.domain}
@@ -347,7 +336,7 @@ export default function ResultsScreen() {
                             styles.mapMarker,
                             {
                               top: `${y}%` as `${number}%`,
-                              left: `${affectedSide === "right" ? x : 100 - x}%` as `${number}%`,
+                              left: `${marker.affectedSide === "right" ? x : 100 - x}%` as `${number}%`,
                               borderColor: presentation.color,
                               backgroundColor: active ? presentation.soft : "#FFFFFF",
                               shadowColor: presentation.color,
@@ -369,7 +358,7 @@ export default function ResultsScreen() {
                   {mapMarkers.map((marker, index) => {
                     const presentation = MAP_SEVERITIES[marker.severity];
                     const active = activeMapMarker?.domain === marker.domain;
-                    const areaTitle = `${affectedSide === "left" ? "Left" : "Right"} ${MAP_TITLES[marker.domain]}`;
+                    const areaTitle = `${marker.affectedSides.length > 1 ? "Both" : marker.affectedSide === "left" ? "Left" : "Right"} ${MAP_TITLES[marker.domain]}`;
                     return (
                       <Pressable
                         key={marker.domain}
@@ -400,9 +389,7 @@ export default function ResultsScreen() {
                             <View testID="results-map-detail">
                               <Text style={[styles.mapAreaDetail, isWide && styles.mapAreaDetailWide]}>{marker.detail}</Text>
                               <Text style={[styles.mapAreaMeta, isWide && styles.mapAreaMetaWide]}>
-                                {marker.source === "observed"
-                                  ? `${marker.coverage}% task coverage · ${marker.findings} finding${marker.findings === 1 ? "" : "s"} to review`
-                                  : "Based on your survey answers; completed camera tasks refine this area."}
+                                Based on your affected-area survey answer. Guided tasks calculate the numeric score separately.
                               </Text>
                             </View>
                           )}

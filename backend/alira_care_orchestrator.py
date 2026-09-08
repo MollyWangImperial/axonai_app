@@ -398,29 +398,47 @@ FUNCTIONAL_PROBLEM_TITLES = {"upper_limb": "Shoulder and arm", "hand": "Hand", "
 def survey_functional_problems(profile: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     """Anatomy pin-points derived from the survey alone (report page 2).
 
-    Every domain gets an honest pin: needs_attention (Tier 1),
-    building_strength (Tier 2), or moving_well (Tier 3), with the survey-based
-    reason. A completed camera assessment later refines this map.
+    Every domain gets one tier and one pin for API compatibility. The affected-
+    area survey decides whether and where a domain is presented as affected;
+    guided assessment tasks calculate numeric scores separately.
     """
     profile = dict(profile or {})
     tiers = functional_tiers(profile)
     side = str(profile.get("side_affected") or "").lower()
     affected_side = side if side in {"left", "right"} else "right"
-    pins = [
-        {
+    areas = {str(item).strip().lower() for item in profile.get("affected_areas") or []}
+    survey_answered = bool(areas)
+    survey_unsure = "unsure" in areas
+    pins = []
+    for domain, item in tiers["by_domain"].items():
+        suffix = "lower" if domain == "lower_limb" else "upper"
+        affected_sides = [candidate for candidate in ("left", "right") if f"{candidate}_{suffix}" in areas]
+        reported_affected = None if survey_unsure or not survey_answered else bool(affected_sides)
+        pin_side = affected_sides[0] if affected_sides else affected_side
+        severity = FUNCTIONAL_PROBLEM_SEVERITIES.get(item["tier"], "building_strength")
+        if reported_affected is True and severity == "moving_well":
+            severity = "building_strength"
+        if reported_affected is True:
+            side_label = "both sides" if len(affected_sides) > 1 else f"the {pin_side} side"
+            problem = f"Your survey reports that {side_label} was affected in this area."
+        elif reported_affected is False:
+            problem = "Your survey did not identify this area as affected."
+        else:
+            problem = "Your survey did not confirm whether this area was affected."
+        pins.append({
             "domain": domain,
             "title": FUNCTIONAL_PROBLEM_TITLES.get(domain, domain),
-            "affected_side": affected_side,
+            "affected_side": pin_side,
+            "affected_sides": affected_sides,
+            "reported_affected": reported_affected,
             "tier": item["tier"],
-            "severity": FUNCTIONAL_PROBLEM_SEVERITIES.get(item["tier"], "building_strength"),
-            "problem": item["reason"],
-        }
-        for domain, item in tiers["by_domain"].items()
-    ]
+            "severity": severity,
+            "problem": problem,
+        })
     return {
         "affected_side": affected_side,
         "pins": pins,
-        "reason": "Pin-pointed from the movement-readiness survey answers; a completed camera assessment refines this map.",
+        "reason": "Affected regions come from your movement-readiness survey. Guided assessment tasks calculate the movement scores.",
     }
 
 

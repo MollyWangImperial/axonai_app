@@ -17,6 +17,34 @@ DOMAIN_LABELS = {
 }
 
 
+def survey_domain_context(patient_parameters: Mapping[str, Any] | None) -> Dict[str, Dict[str, Any]]:
+    """Map the affected-area survey answer to each scored movement domain.
+
+    The survey describes which body regions the patient reports as affected.
+    It does not provide a numeric movement score; those values come from the
+    guided assessment tasks.
+    """
+    params = patient_parameters or {}
+    areas = {str(item).strip().lower() for item in params.get("affected_areas") or []}
+    answered = bool(areas)
+    uncertain = "unsure" in areas
+
+    def domain(suffix: str) -> Dict[str, Any]:
+        sides = [side for side in ("left", "right") if f"{side}_{suffix}" in areas]
+        return {
+            "survey_answered": answered,
+            "survey_affected": None if uncertain else bool(sides) if answered else None,
+            "survey_affected_sides": sides,
+        }
+
+    upper = domain("upper")
+    return {
+        "upper_limb": dict(upper),
+        "hand": dict(upper),
+        "lower_limb": domain("lower"),
+    }
+
+
 def _task_domain(task_id: str) -> str:
     if task_id.startswith("H"):
         return "hand"

@@ -133,7 +133,7 @@ LOWER_LIMB_TASKS_DATA: List[Dict[str, Any]] = [
             "Record a short frontal video with the patient walking toward the camera at their usual comfortable pace.",
             "Keep the patient's whole body and usual walking aid visible when possible.",
             "Keep the camera still at a safe distance and do not stand in the patient's walking path.",
-            "The video is saved as an assessment record. The lower-limb movement result comes from the patient's survey answers and is not graded from this video.",
+            "The video is saved as an assessment record. Any lower-limb score comes only from measurable evidence in this assessment task; the affected area and side come from the patient's survey.",
         ],
         "steps": [
             {

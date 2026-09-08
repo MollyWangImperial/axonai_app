@@ -32,7 +32,7 @@ const WALKING_PREPARATION_TIPS = [
   "Clear a short, safe walking path",
   "Use your usual walking aid and do not attempt walking if it is not normally safe",
   "Ask a carer or family member to record a short frontal video as you walk toward the camera",
-  "The walking video is saved as a record; your lower-limb result comes from your survey answers",
+  "The walking video supplies assessment evidence; your survey identifies the affected area and side",
 ];
 
 const HELPER_PREPARATION_TIP =
