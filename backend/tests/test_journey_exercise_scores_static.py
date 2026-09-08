@@ -50,6 +50,7 @@ def test_exercise_score_panel_uses_fresh_persisted_daily_averages_and_goal_line(
     assert 'cache: "no-store"' in PANEL
     assert "weeklyExerciseScoreData" in PANEL
     assert "dailyScores.reduce((sum, score) => sum + score.average_score, 0) / dailyScores.length" in PANEL
+    assert "Math.round(value * 10) / 10" in PANEL
     assert "const DEFAULT_TARGET = 80" in PANEL
     assert 'strokeDasharray="7 7"' in PANEL
     assert "Personal goal {target}" in PANEL

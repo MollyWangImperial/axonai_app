@@ -44,7 +44,7 @@ const DEMO_EXERCISES = [
 ];
 
 function clampScore(value: number) {
-  return Math.max(0, Math.min(100, Math.round(value)));
+  return Math.max(0, Math.min(100, Math.round(value * 10) / 10));
 }
 
 function readableExerciseName(activity: ScoredExerciseActivity) {
@@ -228,7 +228,7 @@ export function JourneyExerciseScoresPanel({ demoMode }: { demoMode: boolean }) 
   );
   const { activities, dailyScores } = weeklyScores;
   const average = dailyScores.length
-    ? Math.round(dailyScores.reduce((sum, score) => sum + score.average_score, 0) / dailyScores.length)
+    ? Math.round((dailyScores.reduce((sum, score) => sum + score.average_score, 0) / dailyScores.length) * 10) / 10
     : null;
   const minimumChartWidth = wide ? 640 : 560;
   const availableWidth = Math.min(1000, Math.max(280, viewportWidth - (wide ? 96 : 64)));
