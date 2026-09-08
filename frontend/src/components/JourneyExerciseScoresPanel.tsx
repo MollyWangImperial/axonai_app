@@ -16,17 +16,12 @@ import { authedFetch } from "@/src/auth";
 import { DisplayPalette, useDisplayPreferences } from "@/src/displayPreferences";
 import { getScreenCache, setScreenCache } from "@/src/screenCache";
 import { radius, spacing } from "@/src/theme";
-
-type ExerciseActivity = {
-  id: string;
-  exercise_id: string;
-  exercise_name?: string;
-  completed_reps: number;
-  average_score: number;
-  repetition_scores?: number[];
-  completed_at: string;
-  created_at?: string;
-};
+import {
+  DailyExerciseScore,
+  ExerciseActivity,
+  ScoredExerciseActivity,
+  weeklyExerciseScoreData,
+} from "@/src/journeyExerciseScores";
 
 type ExerciseActivityResponse = {
   activities: ExerciseActivity[];
@@ -52,7 +47,7 @@ function clampScore(value: number) {
   return Math.max(0, Math.min(100, Math.round(value)));
 }
 
-function readableExerciseName(activity: ExerciseActivity) {
+function readableExerciseName(activity: ScoredExerciseActivity) {
   if (activity.exercise_name?.trim()) return activity.exercise_name.trim();
   return activity.exercise_id
     .replace(/^ex_/, "")
@@ -60,7 +55,7 @@ function readableExerciseName(activity: ExerciseActivity) {
     .replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 
-function activityDate(activity: ExerciseActivity) {
+function activityDate(activity: ExerciseActivity | DailyExerciseScore) {
   return activity.completed_at || activity.created_at || "";
 }
 
@@ -97,28 +92,13 @@ function makeDemoActivities(now = new Date()): ExerciseActivity[] {
   });
 }
 
-function thisWeeksScores(activities: ExerciseActivity[], now = new Date()) {
-  const cutoff = new Date(now);
-  cutoff.setHours(23, 59, 59, 999);
-  const start = new Date(cutoff.getTime() - 6 * DAY_MS);
-  start.setHours(0, 0, 0, 0);
-
-  return activities
-    .filter((activity) => Number.isFinite(activity.average_score))
-    .filter((activity) => {
-      const completedAt = new Date(activityDate(activity)).getTime();
-      return Number.isFinite(completedAt) && completedAt >= start.getTime() && completedAt <= cutoff.getTime();
-    })
-    .sort((a, b) => new Date(activityDate(a)).getTime() - new Date(activityDate(b)).getTime());
-}
-
 function ScoreChart({
-  activities,
+  dailyScores,
   target,
   palette,
   width,
 }: {
-  activities: ExerciseActivity[];
+  dailyScores: DailyExerciseScore[];
   target: number;
   palette: DisplayPalette;
   width: number;
@@ -128,7 +108,7 @@ function ScoreChart({
   const right = 24;
   const top = 31;
   const bottom = 197;
-  const lowestScore = Math.min(target, ...activities.map((activity) => activity.average_score));
+  const lowestScore = Math.min(target, ...dailyScores.map((score) => score.average_score));
   const yMin = lowestScore >= 60 ? 60 : Math.max(0, Math.floor((lowestScore - 10) / 10) * 10);
   const valueRange = Math.max(20, 100 - yMin);
   const yFor = (score: number) => top + ((100 - Math.max(yMin, Math.min(100, score))) / valueRange) * (bottom - top);
@@ -139,7 +119,7 @@ function ScoreChart({
     <View
       style={{ width, height }}
       accessible
-      accessibilityLabel={`${activities.length} exercise session scores. Personal goal ${target}.`}
+      accessibilityLabel={`${dailyScores.length} daily exercise score averages. Personal goal ${target}.`}
       testID="journey-exercise-score-chart"
     >
       <Svg width={width} height={height}>
@@ -162,18 +142,18 @@ function ScoreChart({
           Personal goal {target}
         </SvgText>
 
-        {activities.map((activity, index) => {
-          const x = activities.length === 1
+        {dailyScores.map((dailyScore, index) => {
+          const x = dailyScores.length === 1
             ? left + plotWidth / 2
-            : left + (index / (activities.length - 1)) * plotWidth;
-          const score = clampScore(activity.average_score);
+            : left + (index / (dailyScores.length - 1)) * plotWidth;
+          const score = clampScore(dailyScore.average_score);
           const y = yFor(score);
           const reachedGoal = score >= target;
           const stem = reachedGoal ? "#84AB88" : "#E8B94F";
           const marker = reachedGoal ? "#AFC9AF" : "#F3CF7C";
 
           return (
-            <G key={activity.id}>
+            <G key={dailyScore.id}>
               <Line x1={x} y1={bottom} x2={x} y2={y} stroke={stem} strokeWidth={8} strokeLinecap="round" />
               <Circle cx={x} cy={y} r={30} fill={marker} opacity={0.16} />
               <Circle cx={x} cy={y} r={23} fill={marker} />
@@ -194,7 +174,7 @@ function ScoreChart({
                 fontSize={12}
                 textAnchor="middle"
               >
-                {shortDate(activityDate(activity))}
+                {shortDate(dailyScore.completed_at)}
               </SvgText>
             </G>
           );
@@ -211,12 +191,13 @@ export function JourneyExerciseScoresPanel({ demoMode }: { demoMode: boolean }) 
   const cached = getScreenCache<ExerciseActivityResponse>(CACHE_KEY);
   const [payload, setPayload] = useState<ExerciseActivityResponse>(cached ?? { activities: [], target_score: DEFAULT_TARGET });
   const [loading, setLoading] = useState(!cached);
+  const [loadError, setLoadError] = useState(false);
   const [showDetails, setShowDetails] = useState(false);
 
   const load = useCallback(async () => {
     if (!getScreenCache<ExerciseActivityResponse>(CACHE_KEY)) setLoading(true);
     try {
-      const response = await authedFetch("/api/alira/activities?limit=100");
+      const response = await authedFetch(`/api/alira/activities?limit=500&fresh=${Date.now()}`, { cache: "no-store" });
       if (!response.ok) throw new Error("Unable to load exercise scores");
       const result = await response.json();
       const next: ExerciseActivityResponse = {
@@ -225,7 +206,9 @@ export function JourneyExerciseScoresPanel({ demoMode }: { demoMode: boolean }) 
       };
       setPayload(next);
       setScreenCache(CACHE_KEY, next);
+      setLoadError(false);
     } catch {
+      setLoadError(true);
       if (!getScreenCache<ExerciseActivityResponse>(CACHE_KEY)) {
         setPayload({ activities: [], target_score: DEFAULT_TARGET });
       }
@@ -239,16 +222,17 @@ export function JourneyExerciseScoresPanel({ demoMode }: { demoMode: boolean }) 
   }, [load]));
 
   const target = clampScore(payload.target_score || DEFAULT_TARGET);
-  const activities = useMemo(
-    () => demoMode ? makeDemoActivities() : thisWeeksScores(payload.activities),
+  const weeklyScores = useMemo(
+    () => weeklyExerciseScoreData(demoMode ? makeDemoActivities() : payload.activities),
     [demoMode, payload.activities],
   );
-  const average = activities.length
-    ? Math.round(activities.reduce((sum, activity) => sum + activity.average_score, 0) / activities.length)
+  const { activities, dailyScores } = weeklyScores;
+  const average = dailyScores.length
+    ? Math.round(dailyScores.reduce((sum, score) => sum + score.average_score, 0) / dailyScores.length)
     : null;
   const minimumChartWidth = wide ? 640 : 560;
   const availableWidth = Math.min(1000, Math.max(280, viewportWidth - (wide ? 96 : 64)));
-  const chartWidth = Math.max(minimumChartWidth, availableWidth, 128 + activities.length * (wide ? 106 : 92));
+  const chartWidth = Math.max(minimumChartWidth, availableWidth, 128 + dailyScores.length * (wide ? 106 : 92));
   const goalCopy = average == null
     ? "Your next score will appear here"
     : average > target
@@ -264,7 +248,7 @@ export function JourneyExerciseScoresPanel({ demoMode }: { demoMode: boolean }) 
     >
       <View style={[styles.header, !wide && styles.headerNarrow]}>
         <View style={styles.titleRow}>
-          <Text style={[styles.heading, { color: palette.text }]}>This week&apos;s exercise scores</Text>
+          <Text style={[styles.heading, { color: palette.text }]}>This week&apos;s daily exercise averages</Text>
           {demoMode ? (
             <View style={[styles.sampleBadge, { backgroundColor: palette.soft }]}>
               <Text style={[styles.sampleBadgeText, { color: palette.text }]}>SAMPLE</Text>
@@ -295,14 +279,14 @@ export function JourneyExerciseScoresPanel({ demoMode }: { demoMode: boolean }) 
         </View>
       </View>
 
-      {loading && !demoMode && !activities.length ? (
+      {loading && !demoMode && !dailyScores.length ? (
         <View style={styles.emptyState}>
           <ActivityIndicator color={palette.brand} />
           <Text style={[styles.emptyText, { color: palette.muted }]}>Loading your exercise scores...</Text>
         </View>
-      ) : activities.length ? (
+      ) : dailyScores.length ? (
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chartScroll}>
-          <ScoreChart activities={activities} target={target} palette={palette} width={chartWidth} />
+          <ScoreChart dailyScores={dailyScores} target={target} palette={palette} width={chartWidth} />
         </ScrollView>
       ) : (
         <View style={[styles.emptyState, { backgroundColor: palette.soft }]}>
@@ -310,8 +294,8 @@ export function JourneyExerciseScoresPanel({ demoMode }: { demoMode: boolean }) 
             <Ionicons name="stats-chart-outline" size={25} color={palette.brand} />
           </View>
           <View style={styles.emptyCopy}>
-            <Text style={[styles.emptyTitle, { color: palette.text }]}>Complete a guided exercise to begin</Text>
-            <Text style={[styles.emptyText, { color: palette.muted }]}>Each point will show the average of all scored repetitions in that exercise session.</Text>
+            <Text style={[styles.emptyTitle, { color: palette.text }]}>{loadError ? "Exercise scores are temporarily unavailable" : "Complete a scored exercise to begin"}</Text>
+            <Text style={[styles.emptyText, { color: palette.muted }]}>{loadError ? "Reopen Journey to try loading the saved scores again." : "Camera scores and manually entered testing scores both appear here. Each point is one day's average."}</Text>
           </View>
         </View>
       )}
