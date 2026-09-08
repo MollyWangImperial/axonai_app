@@ -63,6 +63,12 @@ const ARM_MOVEMENT_HELP = require("@/assets/images/survey-arm-movement-help.png"
 const ARM_MOVEMENT_NONE = require("@/assets/images/survey-arm-movement-none.png");
 const ARM_MOVEMENT_UNAFFECTED = require("@/assets/images/survey-arm-movement-unaffected.png");
 const ARM_MOVEMENT_UNSURE = require("@/assets/images/survey-arm-movement-unsure.png");
+const ARM_ACTIVITY_REACH_FORWARD = require("@/assets/images/survey-arm-activity-reach-forward.png");
+const ARM_ACTIVITY_RAISE_ARM = require("@/assets/images/survey-arm-activity-raise-arm.png");
+const ARM_ACTIVITY_HAND_TO_MOUTH = require("@/assets/images/survey-arm-activity-hand-to-mouth.png");
+const ARM_ACTIVITY_UPRIGHT_REACH = require("@/assets/images/survey-arm-activity-upright-reach.png");
+const ARM_ACTIVITY_SHOULDER_DOWN = require("@/assets/images/survey-arm-activity-shoulder-down.png");
+const ARM_ACTIVITY_BOTH_ARMS = require("@/assets/images/survey-arm-activity-both-arms.png");
 
 export default function OnboardingScreen() {
   const insets = useSafeAreaInsets();
@@ -104,6 +110,7 @@ export default function OnboardingScreen() {
   const useWideDominantHandLayout = width >= 900;
   const useWideSittingAbilityLayout = width >= 1000;
   const useWideArmMovementLayout = width >= 1180;
+  const useWideArmActivityLayout = width >= 1180;
 
   useEffect(() => {
     if (!startsFromSavedProfile) return;
@@ -782,6 +789,106 @@ export default function OnboardingScreen() {
         );
       }
 
+      if (step.key === "arm_activity_difficulties") {
+        const activityChoices = [
+          { value: "reach_forward", label: "Reaching forward", image: ARM_ACTIVITY_REACH_FORWARD, imageLabel: "A seated woman reaching forward for a mug" },
+          { value: "raise_arm", label: "Raising my arm", image: ARM_ACTIVITY_RAISE_ARM, imageLabel: "A woman raising her arm toward a shelf" },
+          { value: "hand_to_mouth", label: "Bringing my hand to my mouth", image: ARM_ACTIVITY_HAND_TO_MOUTH, imageLabel: "A seated woman bringing a spoon toward her mouth" },
+          { value: "trunk_lean", label: "Keeping my body upright while reaching", image: ARM_ACTIVITY_UPRIGHT_REACH, imageLabel: "A seated woman reaching while keeping her body upright" },
+          { value: "shoulder_hike", label: "Keeping my shoulder down while lifting my arm", image: ARM_ACTIVITY_SHOULDER_DOWN, imageLabel: "A woman lifting a bowl while keeping her shoulder down" },
+          { value: "use_both_arms", label: "Using both arms together", image: ARM_ACTIVITY_BOTH_ARMS, imageLabel: "A woman folding a towel with both hands" },
+        ];
+        const additionalChoices = [
+          { value: "none", label: "None of these", icon: "ban-outline" as const },
+          { value: "not_sure", label: "I am not sure", icon: "help-circle-outline" as const },
+        ];
+        const toggleArmActivity = (value: string) => {
+          const active = selected.includes(value);
+          if (["none", "not_sure"].includes(value)) {
+            setVal(step.key, active ? [] : [value]);
+            return;
+          }
+          const next = active
+            ? selected.filter((item) => item !== value)
+            : [...selected.filter((item) => !["none", "not_sure"].includes(item)), value];
+          setVal(step.key, next);
+        };
+
+        return (
+          <View style={styles.armActivityLayout} testID="arm-activity-difficulties-selector">
+            <View style={[styles.armActivityGrid, useWideArmActivityLayout && styles.armActivityGridWide]}>
+              {activityChoices.map((choice) => {
+                const active = selected.includes(choice.value);
+                return (
+                  <Pressable
+                    key={choice.value}
+                    testID={`onb-multi-${step.key}-${choice.value}`}
+                    accessibilityRole="checkbox"
+                    accessibilityState={{ checked: active }}
+                    aria-checked={active}
+                    accessibilityLabel={choice.label}
+                    onPress={() => toggleArmActivity(choice.value)}
+                    style={({ pressed }) => [
+                      styles.armActivityCard,
+                      useWideArmActivityLayout && styles.armActivityCardWide,
+                      active && styles.armActivityCardActive,
+                      pressed && styles.armActivityCardPressed,
+                    ]}
+                  >
+                    <Image
+                      source={choice.image}
+                      resizeMode="contain"
+                      accessibilityLabel={choice.imageLabel}
+                      style={[styles.armActivityImage, useWideArmActivityLayout && styles.armActivityImageWide]}
+                    />
+                    <Text style={[
+                      styles.armActivityLabel,
+                      useWideArmActivityLayout && styles.armActivityLabelWide,
+                      active && styles.armActivityLabelActive,
+                    ]}>{choice.label}</Text>
+                    {active ? (
+                      <View style={[styles.armActivityCheck, useWideArmActivityLayout && styles.armActivityCheckWide]}>
+                        <Ionicons name="checkmark" size={useWideArmActivityLayout ? 29 : 23} color={colors.onBrandPrimary} />
+                      </View>
+                    ) : null}
+                  </Pressable>
+                );
+              })}
+            </View>
+
+            <View style={[styles.armActivityAdditionalRow, useWideArmActivityLayout && styles.armActivityAdditionalRowWide]}>
+              {additionalChoices.map((choice) => {
+                const active = selected.includes(choice.value);
+                return (
+                  <Pressable
+                    key={choice.value}
+                    testID={`onb-multi-${step.key}-${choice.value}`}
+                    accessibilityRole="checkbox"
+                    accessibilityState={{ checked: active }}
+                    aria-checked={active}
+                    accessibilityLabel={choice.label}
+                    onPress={() => toggleArmActivity(choice.value)}
+                    style={({ pressed }) => [
+                      styles.armActivityAdditionalChoice,
+                      useWideArmActivityLayout && styles.armActivityAdditionalChoiceWide,
+                      active && styles.armActivityAdditionalChoiceActive,
+                      pressed && styles.armActivityCardPressed,
+                    ]}
+                  >
+                    <Ionicons
+                      name={active ? "checkmark-circle" : choice.icon}
+                      size={24}
+                      color={active ? colors.brandPrimary : colors.onSurfaceTertiary}
+                    />
+                    <Text style={[styles.armActivityAdditionalLabel, active && styles.armActivityLabelActive]}>{choice.label}</Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+          </View>
+        );
+      }
+
       return (
         <View style={styles.optionsGrid}>
           {step.options!.map((o) => {
@@ -902,6 +1009,7 @@ export default function OnboardingScreen() {
             step.key === "dominant_hand" && useWideDominantHandLayout && styles.dominantHandQuestionWide,
             step.key === "sitting_ability" && useWideSittingAbilityLayout && styles.sittingAbilityQuestionWide,
             step.key === "affected_arm_movement" && useWideArmMovementLayout && styles.armMovementQuestionWide,
+            step.key === "arm_activity_difficulties" && useWideArmActivityLayout && styles.armActivityQuestionWide,
           ]} testID={`onb-q-${step.key}`}>{step.question}</Text>
           {step.helper && <Text style={[
             styles.helper,
@@ -909,6 +1017,7 @@ export default function OnboardingScreen() {
             step.key === "dominant_hand" && useWideDominantHandLayout && styles.dominantHandHelperWide,
             step.key === "sitting_ability" && useWideSittingAbilityLayout && styles.sittingAbilityHelperWide,
             step.key === "affected_arm_movement" && useWideArmMovementLayout && styles.armMovementHelperWide,
+            step.key === "arm_activity_difficulties" && useWideArmActivityLayout && styles.armActivityHelperWide,
           ]}>{step.helper}</Text>}
           <View style={{ height: spacing.lg }} />
           {loadingProfile ? <ActivityIndicator color={colors.brandPrimary} /> : renderInput()}
@@ -1248,6 +1357,28 @@ const styles = StyleSheet.create({
   armMovementAdditionalIndicatorActive: { backgroundColor: colors.brandPrimary },
   armMovementQuestionWide: { fontSize: 34, lineHeight: 42 },
   armMovementHelperWide: { fontSize: 18, lineHeight: 25 },
+  armActivityLayout: { width: "100%", gap: spacing.md },
+  armActivityGrid: { width: "100%", gap: spacing.sm },
+  armActivityGridWide: { flexDirection: "row", flexWrap: "wrap", alignItems: "stretch", gap: spacing.md },
+  armActivityCard: { width: "100%", minHeight: 144, flexDirection: "row", alignItems: "center", gap: spacing.md, paddingHorizontal: spacing.md, paddingVertical: spacing.sm, borderRadius: radius.md, borderWidth: 2, borderColor: colors.border, backgroundColor: "#FBFAF6", overflow: "hidden", position: "relative" },
+  armActivityCardWide: { width: "31.5%", minWidth: 0, minHeight: 215, flexGrow: 1, flexDirection: "column", justifyContent: "space-between", gap: spacing.xs, paddingHorizontal: spacing.md, paddingTop: spacing.xs, paddingBottom: spacing.sm },
+  armActivityCardActive: { borderColor: colors.brandPrimary, borderWidth: 3, backgroundColor: "#EEF6F0" },
+  armActivityCardPressed: { opacity: 0.78 },
+  armActivityImage: { flexShrink: 0, width: 142, height: 112 },
+  armActivityImageWide: { width: "100%", height: 158 },
+  armActivityLabel: { flex: 1, minWidth: 0, color: colors.onSurface, fontSize: 17, lineHeight: 23, fontWeight: "800", textAlign: "center" },
+  armActivityLabelWide: { flex: 0, minHeight: 25, fontSize: 18, lineHeight: 24 },
+  armActivityLabelActive: { color: colors.brandPrimary },
+  armActivityCheck: { position: "absolute", top: 10, right: 10, width: 38, height: 38, borderRadius: 19, alignItems: "center", justifyContent: "center", backgroundColor: "#246536", borderWidth: 3, borderColor: colors.surface },
+  armActivityCheckWide: { width: 46, height: 46, borderRadius: 23 },
+  armActivityAdditionalRow: { width: "100%", gap: spacing.sm },
+  armActivityAdditionalRowWide: { flexDirection: "row", alignItems: "stretch", gap: spacing.md },
+  armActivityAdditionalChoice: { width: "100%", minHeight: 58, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: spacing.sm, paddingHorizontal: spacing.md, paddingVertical: spacing.sm, borderRadius: radius.md, borderWidth: 2, borderColor: colors.border, backgroundColor: "#FBFAF6" },
+  armActivityAdditionalChoiceWide: { flex: 1, width: "auto", minWidth: 0 },
+  armActivityAdditionalChoiceActive: { borderColor: colors.brandPrimary, backgroundColor: "#EEF6F0" },
+  armActivityAdditionalLabel: { color: colors.onSurface, fontSize: 16, lineHeight: 22, fontWeight: "800", textAlign: "center" },
+  armActivityQuestionWide: { fontSize: 34, lineHeight: 42 },
+  armActivityHelperWide: { fontSize: 18, lineHeight: 25 },
   optionsGrid: { flexDirection: "row", flexWrap: "wrap", gap: spacing.sm },
   chip: { maxWidth: "100%", flexDirection: "row", alignItems: "center", gap: 6, backgroundColor: colors.surfaceSecondary, paddingHorizontal: spacing.md, paddingVertical: 10, borderRadius: radius.pill, borderWidth: 2, borderColor: "transparent" },
   chipActive: { borderColor: colors.brandPrimary, backgroundColor: colors.brandTertiary },

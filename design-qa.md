@@ -26,6 +26,48 @@ Final result: passed.
 
 ---
 
+# Design QA: Arm Activity Difficulties Survey
+
+Source visual truth: `C:\Users\LENOVO\AppData\Local\Temp\codex-clipboard-1a32de51-e989-41f5-99c7-8cf506bb9ca6.png`.
+
+Implementation under test: `frontend/app/onboarding.tsx`, question 9 of 19 (`arm_activity_difficulties`).
+
+## Comparison setup
+
+- Compared the supplied 1818 × 893 reference and the rendered local screen in the same review pass at an explicit 1818 × 893 browser viewport.
+- Matched state: question 9 of 19 with “Raising my arm” and “Keeping my shoulder down while lifting my arm” selected.
+- Also reviewed the responsive implementation at 390 × 844 with the same question and fixed Continue footer.
+
+## Visual and content checks
+
+- Three-column by two-row illustrated card structure matches the selected direction at the reference viewport.
+- The six labels and the original survey helper text are unchanged; no extra information was added.
+- Selected cards use a dark-green outline, pale-green fill, and a high-contrast check badge.
+- “None of these” and “I am not sure” remain visually subordinate and span the bottom row.
+- At 390 × 844, cards become compact horizontal rows with readable copy, no horizontal clipping, and scrolling for the full set.
+- The illustrations use one consistent older-patient character, sage/green palette, transparent backgrounds, and concrete everyday actions.
+
+## Interaction and accessibility checks
+
+- Multi-select works for the six movement cards.
+- Selecting “None of these” or “I am not sure” clears movement selections; choosing a movement clears either exclusive answer.
+- The Continue control becomes enabled after a valid selection.
+- Every choice retains the existing test ID pattern, checkbox role, accessible label, checked state, and keyboard focusability on web.
+
+## Verification
+
+- `frontend/app/onboarding.tsx` passes ESLint.
+- Project-wide TypeScript still reports pre-existing errors in unrelated files (`assessment.tsx`, `exercise.tsx`, `persona-chat.tsx`, and `src/auth.ts`); no TypeScript error points to this survey implementation.
+- No current-route console error was observed in the local question-9 preview.
+
+## Findings
+
+- No actionable P0, P1, or P2 visual, content, responsive, or interaction issues remain.
+
+final result: passed
+
+---
+
 # Design QA: iPhone Home Layout
 
 Source bug reports:
