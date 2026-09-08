@@ -117,6 +117,34 @@ def test_browser_2d_evidence_must_match_the_saved_video_and_exclude_3d():
     assert server._validated_browser_gait_evidence(candidate, "video-l6", 3000) is None
 
 
+def test_settings_walking_video_endpoint_scores_without_saving_an_assessment(monkeypatch):
+    candidate = _payload(camera_method="body_centric_2d_browser")
+    candidate.update({
+        "analysis_method": "mediapipe_browser_body_centric_2d_v1",
+        "coordinate_frame": "pelvis_centered_leg_normalized_2d",
+    })
+    candidate["quality"].update({"sampled_frames": 40, "detected_frames": 40})
+    candidate["provenance"].update({
+        "source_video_id": "settings-walking-video-test",
+        "processing_location": "patient_browser",
+        "uses_3d_reconstruction": False,
+    })
+
+    async def signed_in(*_args):
+        return {"id": "walking-test-patient"}
+
+    monkeypatch.setattr(server, "_user_from_header", signed_in)
+    request = Request({"type": "http", "method": "POST", "path": "/api/analysis/gait-2d/test-score", "headers": []})
+    payload = server.Gait2DTestScoreRequest(duration_ms=3000, evidence=server.GaitStageResultSubmit(**candidate))
+
+    result = asyncio.run(server.score_gait_2d_for_testing(payload, request))
+
+    assert result["testing_only"] is True
+    assert result["saved_to_assessment"] is False
+    assert result["gait_analysis"]["status"] == "scored"
+    assert result["gait_analysis"]["score"] >= 90
+
+
 def test_assessment_submit_scores_video_bound_browser_2d_evidence(monkeypatch):
     stored = []
     user = {"id": "walking-patient", "email": "walk@example.com", "profile": {}}

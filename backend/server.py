@@ -743,6 +743,11 @@ class GaitStageResultSubmit(BaseModel):
     traceback: Optional[str] = None
 
 
+class Gait2DTestScoreRequest(BaseModel):
+    duration_ms: int = Field(ge=100, le=3_600_000)
+    evidence: GaitStageResultSubmit
+
+
 class TaskVideoUploadComplete(BaseModel):
     video_id: str
     object_key: str
@@ -3544,6 +3549,26 @@ def _validated_browser_gait_evidence(
         return None
 
 
+@api_router.post("/analysis/gait-2d/test-score")
+async def score_gait_2d_for_testing(payload: Gait2DTestScoreRequest, request: Request):
+    """Score local 2D walking evidence without creating an assessment record."""
+    user = await _user_from_header(dict(request.headers))
+    if not user:
+        raise HTTPException(status_code=401, detail="Sign in required")
+    stage = _validated_browser_gait_evidence(
+        payload.evidence.model_dump(exclude_none=True),
+        "settings-walking-video-test",
+        payload.duration_ms,
+    )
+    if not stage:
+        raise HTTPException(status_code=422, detail="Walking evidence could not be validated")
+    return {
+        "testing_only": True,
+        "saved_to_assessment": False,
+        "gait_analysis": score_gait_features(stage),
+    }
+
+
 @api_router.post("/assessment/submit", response_model=Assessment)
 async def submit_assessment(payload: AssessmentSubmit, request: Request):
     user = await _user_from_header(dict(request.headers))
@@ -4855,10 +4880,10 @@ POSE_RUNNER_HTML = r"""<!DOCTYPE html>
   </div>
   <div id="walkingCapture" class="hidden" data-testid="walking-capture">
     <div class="walkingCard">
-      <div class="walkingEyebrow">Final walking record</div>
+      <div id="walkingCaptureEyebrow" class="walkingEyebrow">Final walking record</div>
       <h2 id="walkingCaptureTitle">Upload a short frontal walking video</h2>
       <p id="walkingCaptureLead">Ask a carer or family member to record from the front while you walk toward the camera at your usual comfortable pace.</p>
-      <ul>
+      <ul id="walkingCaptureGuidance">
         <li>A short video is fine. Keep the patient's whole body and usual walking aid visible when possible.</li>
         <li>A fixed camera is best. If the route does not fit, move smoothly from a safe position beside the path; do not walk backward in front of the patient.</li>
         <li>The video is saved as assessment evidence. If it cannot support reliable measurements, no lower-limb score is shown.</li>
@@ -4982,8 +5007,10 @@ const calibrationLap = document.getElementById("calibrationLap");
 const calibrationProgressFill = document.getElementById("calibrationProgressFill");
 const calibrationAutoStatus = document.getElementById("calibrationAutoStatus");
 const walkingCapture = document.getElementById("walkingCapture");
+const walkingCaptureEyebrow = document.getElementById("walkingCaptureEyebrow");
 const walkingCaptureTitle = document.getElementById("walkingCaptureTitle");
 const walkingCaptureLead = document.getElementById("walkingCaptureLead");
+const walkingCaptureGuidance = document.getElementById("walkingCaptureGuidance");
 const walkingDesktopActions = document.getElementById("walkingDesktopActions");
 const walkingMobileActions = document.getElementById("walkingMobileActions");
 const walkingVideoDropZone = document.getElementById("walkingVideoDropZone");
@@ -5266,13 +5293,17 @@ const CURRENT_USER_ID = URL_PARAMS.get("uid") || "";
 const ACCOUNT_GENERATION = URL_PARAMS.get("account_generation") || "0";
 const ACCOUNT_HEADERS = {"X-User-Id": CURRENT_USER_ID, "X-Account-Generation": ACCOUNT_GENERATION};
 const ASSESSMENT_PACKAGE = URL_PARAMS.get("package") || "upper_limb";
+const WALKING_TEST_MODE = URL_PARAMS.get("walking_test") === "1";
 const LIBRARY_TEST_MODE = URL_PARAMS.get("library_test") === "1";
 if(LIBRARY_TEST_MODE){
   stepTitle.textContent = "Single task test";
+  if(WALKING_TEST_MODE) stepTitle.textContent = "Walking video test";
   const overlayHeading = overlay.querySelector("h1");
   const overlayCopy = overlay.querySelector("p");
-  if(overlayHeading) overlayHeading.textContent = "Ready to test this task?";
-  if(overlayCopy) overlayCopy.textContent = "This guided test stays separate from Assessment history, Progress, and the care plan.";
+  if(overlayHeading) overlayHeading.textContent = WALKING_TEST_MODE ? "Walking video test" : "Ready to test this task?";
+  if(overlayCopy) overlayCopy.textContent = WALKING_TEST_MODE
+    ? "Choose a walking video to calculate its 2D gait score."
+    : "This guided test stays separate from Assessment history, Progress, and the care plan.";
 }
 const ASSIGNED_TASK_IDS = (URL_PARAMS.get("task_ids") || "")
   .split(",").map(value => value.trim()).filter(Boolean);
@@ -5826,15 +5857,28 @@ async function showWalkingCapture(task){
   pendingUnconfirmedWalkingVideo = null;
   pendingUnconfirmedWalkingValidation = null;
   walkingProceedUnconfirmedBtn.classList.add("hidden");
+  walkingCaptureEyebrow.textContent = WALKING_TEST_MODE ? "Settings test" : "Final walking record";
   walkingCaptureTitle.textContent = "Upload a short frontal walking video";
-  walkingCaptureLead.textContent = "Ask a carer or family member to record from the front while you walk toward the camera at your usual comfortable pace.";
+  walkingCaptureLead.textContent = WALKING_TEST_MODE
+    ? "Choose a walking video to calculate its score immediately. The test does not change the patient's assessment, points, or progress."
+    : "Ask a carer or family member to record from the front while you walk toward the camera at your usual comfortable pace.";
+  if(WALKING_TEST_MODE){
+    walkingCaptureGuidance.innerHTML = [
+      "A short frontal video is best. Keep the person's whole body and walking aid visible when possible.",
+      "The camera may be fixed or move smoothly with the person.",
+      "The score uses the same body-centred 2D method as the assessment.",
+    ].map(item => `<li>${item}</li>`).join("");
+    walkingSkipBtn.textContent = "Back to Settings";
+  }
   walkingDesktopActions.classList.remove("hidden");
   walkingMobileActions.classList.add("hidden");
-  setWalkingCaptureStatus("Choose any walking video from this device. Short clips are accepted; a score is shown only when the walking task contains measurable evidence.");
+  setWalkingCaptureStatus(WALKING_TEST_MODE
+    ? "Choose a video. Rehyn will analyse up to 60 frames on this device, then show the score."
+    : "Choose any walking video from this device. Short clips are accepted; a score is shown only when the walking task contains measurable evidence.");
   walkingCapture.classList.remove("hidden");
   ui.classList.add("hidden");
   renderDots();
-  if(!walkingCapturePromptPlayed){
+  if(!WALKING_TEST_MODE && !walkingCapturePromptPlayed){
     walkingCapturePromptPlayed = true;
     const prompt = "For the walking record, ask a carer or family member to take a short video from the front while you walk toward the camera. Then choose or record the video here. Any walking video will be accepted for now. Your survey identifies the affected area and side; a numeric score is shown only from measurable task evidence.";
     await playVoice(prompt);
@@ -6356,9 +6400,50 @@ async function validateWalkingVideo(file, onProgress=()=>{}){
   }
 }
 
+async function scoreWalkingVideoForSettings(validation){
+  if(!validation.gaitAnalysis){
+    return {
+      status:"unscorable",
+      score:null,
+      reason_codes:["walking_pattern_not_detected"],
+      components:{},
+      quality:{},
+    };
+  }
+  const evidence = {
+    ...validation.gaitAnalysis,
+    provenance:{
+      ...(validation.gaitAnalysis.provenance || {}),
+      source_video_id:"settings-walking-video-test",
+    },
+  };
+  const response = await fetch(`${API_BASE}/analysis/gait-2d/test-score`, {
+    method:"POST",
+    headers:{"Content-Type":"application/json", ...ACCOUNT_HEADERS},
+    body:JSON.stringify({duration_ms:validation.durationMs, evidence}),
+  });
+  if(!response.ok){
+    const detail = await response.text();
+    throw new Error(detail || `Walking score request failed (${response.status})`);
+  }
+  const payload = await response.json();
+  return payload.gait_analysis;
+}
+
 async function completeUploadedWalkingTask(file, validation){
   const task = tasks[currentTaskIdx];
   if(!task || !isWalkingTask(task)) return;
+  if(WALKING_TEST_MODE){
+    setWalkingCaptureStatus("Calculating the walking score...", "good");
+    const gaitAnalysis = await scoreWalkingVideoForSettings(validation);
+    postRN({
+      type:"walking_test_result",
+      testing_only:true,
+      saved_to_assessment:false,
+      gait_analysis:gaitAnalysis,
+    });
+    return;
+  }
   let cloudRecord = null;
   if(!LIBRARY_TEST_MODE){
     cloudRecord = await persistTaskVideo({
@@ -8981,6 +9066,23 @@ async function beginAssessmentSetup(){
     postRN({type:"assessment_start_error", message:`Could not load assessment tasks: ${String(error)}`});
     return;
   }
+  if(WALKING_TEST_MODE){
+    const task = tasks[currentTaskIdx];
+    if(!task || !isWalkingTask(task) || tasks.length !== 1){
+      const message = "The walking video test could not load its walking task.";
+      overlay.classList.remove("hidden");
+      startBtn.disabled = false;
+      startBtn.textContent = "Try Again";
+      startBtn.removeAttribute("aria-busy");
+      startSetupInProgress = false;
+      postRN({type:"assessment_start_error", message});
+      return;
+    }
+    await showWalkingCapture(task);
+    startBtn.removeAttribute("aria-busy");
+    startSetupInProgress = false;
+    return;
+  }
   const firstStep = tasks[currentTaskIdx] && tasks[currentTaskIdx].steps && tasks[currentTaskIdx].steps[0];
   const firstVoicePromise = firstStep && firstStep.voice
     ? fetchVoiceAudio(firstStep.voice).catch(() => null)
@@ -9045,6 +9147,7 @@ async function beginAssessmentSetup(){
 
 startBtn.addEventListener("click", beginAssessmentSetup);
 if(window.__rehynStartRequested) void beginAssessmentSetup();
+if(WALKING_TEST_MODE && !window.__rehynStartRequested) void beginAssessmentSetup();
 
 walkingVideoInput.addEventListener("click", () => {
   setWalkingCaptureStatus("Choose or record a walking video on this device.");
@@ -9094,9 +9197,11 @@ async function processWalkingVideoFile(file, source="picker"){
       return;
     }
     setWalkingCaptureStatus(validation.message, "good");
-    await playVoice("The walking video is saved as part of your assessment record. Thank you. Your survey identifies the affected area and side, and your assessment is now complete.");
+    if(!LIBRARY_TEST_MODE){
+      await playVoice("The walking video is saved as part of your assessment record. Thank you. Your survey identifies the affected area and side, and your assessment is now complete.");
+    }
     setWalkingCaptureStatus(LIBRARY_TEST_MODE
-      ? "Walking video accepted. Preparing the test result..."
+      ? "Walking video analysed. Preparing the test result..."
       : "Walking video accepted. Preparing secure save...", "good");
     await completeUploadedWalkingTask(file, validation);
   }catch(error){
@@ -9187,6 +9292,10 @@ walkingProceedUnconfirmedBtn.addEventListener("click", async () => {
 });
 
 walkingSkipBtn.addEventListener("click", async () => {
+  if(WALKING_TEST_MODE){
+    postRN({type:"exit"});
+    return;
+  }
   const task = tasks[currentTaskIdx];
   if(!task || !isWalkingTask(task)) return;
   walkingSkipBtn.disabled = true;

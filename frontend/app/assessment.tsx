@@ -1,5 +1,5 @@
 import { useRef, useState, useEffect } from "react";
-import { View, Text, StyleSheet, Pressable, ActivityIndicator, Platform } from "react-native";
+import { View, Text, StyleSheet, Pressable, ActivityIndicator, Platform, ScrollView } from "react-native";
 import { WebView, WebViewMessageEvent } from "react-native-webview";
 import { Ionicons } from "@expo/vector-icons";
 import { useLocalSearchParams, useRouter } from "expo-router";
@@ -10,6 +10,39 @@ import { cacheAssessmentActivity, completedTasksKey, getAccountGeneration, getUs
 import { storage } from "@/src/utils/storage";
 import { SafetyStopStrip } from "@/src/components/SafetyStopStrip";
 import { loadUserPreferences } from "@/src/userPreferences";
+
+type GaitScoreComponent = {
+  score: number | null;
+  weight: number;
+};
+
+type WalkingTestResult = {
+  status: "scored" | "unscorable";
+  score: number | null;
+  reason_codes?: string[];
+  components?: Record<string, GaitScoreComponent>;
+  summary?: { step_count?: number };
+};
+
+const GAIT_COMPONENTS = [
+  ["step_length_proxy", "Step length"],
+  ["step_length_proxy_symmetry", "Step length symmetry"],
+  ["step_time_symmetry", "Step timing symmetry"],
+  ["rhythm_regularity", "Rhythm regularity"],
+  ["swing_clearance_proxy", "Swing and knee movement"],
+  ["trunk_stability", "Trunk stability"],
+] as const;
+
+const GAIT_RETRY_MESSAGES: Record<string, string> = {
+  walking_pattern_not_detected: "The walking pattern could not be detected in this video.",
+  camera_motion_not_compensated: "The camera movement could not be separated from the walking motion.",
+  too_few_tracked_frames: "Too few clear walking frames were found.",
+  insufficient_pose_tracking: "The body was not visible clearly enough throughout the clip.",
+  feet_not_visible_enough: "Keep both feet and the whole body visible throughout the clip.",
+  multiple_people_in_frame: "Keep one walking person in the frame.",
+  too_few_alternating_steps: "The clip needs at least three clear alternating steps.",
+  insufficient_gait_components: "There was not enough measurable walking information for a score.",
+};
 
 function parseCompletedTasks(raw: string | null): Record<string, boolean> {
   if (!raw) return {};
@@ -37,19 +70,22 @@ async function markTaskVideoSaved(userId: string, packageId: AssessmentPackageId
 
 export default function AssessmentScreen() {
   const router = useRouter();
-  const params = useLocalSearchParams<{ package?: string; start_task?: string; completed_tasks?: string; affected_side?: string; task_ids?: string; library_test?: string }>();
+  const params = useLocalSearchParams<{ package?: string; start_task?: string; completed_tasks?: string; affected_side?: string; task_ids?: string; library_test?: string; walking_test?: string }>();
   const packageParam = params["package"];
   const startTaskParam = params["start_task"];
   const affectedSideParam = params["affected_side"];
   const completedTasksParam = params["completed_tasks"];
   const assignedTaskIdsParam = params["task_ids"];
   const isLibraryTest = params["library_test"] === "1";
+  const isWalkingTest = params["walking_test"] === "1";
   const webRef = useRef<WebView>(null);
   const userIdRef = useRef<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [runnerUri, setRunnerUri] = useState<string | null>(null);
   const [testComplete, setTestComplete] = useState(false);
+  const [walkingTestResult, setWalkingTestResult] = useState<WalkingTestResult | null>(null);
+  const [runnerRevision, setRunnerRevision] = useState(0);
 
   useEffect(() => {
     (async () => {
@@ -68,9 +104,10 @@ export default function AssessmentScreen() {
       if (typeof completedTasksParam === "string" && completedTasksParam) query.set("completed_tasks", completedTasksParam);
       if (typeof assignedTaskIdsParam === "string" && assignedTaskIdsParam) query.set("task_ids", assignedTaskIdsParam);
       if (isLibraryTest) query.set("library_test", "1");
+      if (isWalkingTest) query.set("walking_test", "1");
       setRunnerUri(`${POSE_RUNNER_URL}?${query.toString()}`);
     })();
-  }, [packageParam, startTaskParam, completedTasksParam, affectedSideParam, assignedTaskIdsParam, isLibraryTest]);
+  }, [packageParam, startTaskParam, completedTasksParam, affectedSideParam, assignedTaskIdsParam, isLibraryTest, isWalkingTest]);
 
   const onMessage = async (e: WebViewMessageEvent) => {
     try {
@@ -119,6 +156,11 @@ export default function AssessmentScreen() {
       } else if (msg.type === "library_test_complete") {
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
         setTestComplete(true);
+      } else if (msg.type === "walking_test_result") {
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        setWalkingTestResult(msg.gait_analysis as WalkingTestResult);
+      } else if (msg.type === "walking_video_error" && isWalkingTest) {
+        setError("The walking video could not be scored. Please choose another video.");
       } else if (msg.type === "assessment_error") {
         setError("Could not save assessment. Please try again.");
       }
@@ -132,10 +174,23 @@ export default function AssessmentScreen() {
     true;
   `;
 
+  const retryWalkingTest = () => {
+    setWalkingTestResult(null);
+    setError(null);
+    setLoading(true);
+    setRunnerRevision((current) => current + 1);
+  };
+
+  const walkingComponents = walkingTestResult
+    ? GAIT_COMPONENTS.map(([key, label]) => ({ key, label, value: walkingTestResult.components?.[key] }))
+      .filter((item) => item.value)
+    : [];
+
   return (
     <View style={styles.container}>
       {runnerUri ? (
       <WebView
+        key={`assessment-runner-${runnerRevision}`}
         ref={webRef}
         testID="assessment-webview"
         source={{ uri: runnerUri }}
@@ -191,6 +246,54 @@ export default function AssessmentScreen() {
           </Pressable>
         </View>
       )}
+
+      {walkingTestResult && (
+        <ScrollView style={styles.walkingResultOverlay} contentContainerStyle={styles.walkingResultWrap} testID="walking-video-test-result">
+          <View style={styles.walkingResultPanel}>
+            <Ionicons
+              name={walkingTestResult.status === "scored" ? "checkmark-circle" : "alert-circle"}
+              size={54}
+              color={walkingTestResult.status === "scored" ? colors.success : colors.brandSecondary}
+            />
+            <Text style={styles.walkingResultTitle}>Walking video score</Text>
+            {walkingTestResult.status === "scored" && walkingTestResult.score != null ? (
+              <>
+                <Text style={styles.walkingOverallScore}>{walkingTestResult.score}<Text style={styles.walkingScoreSuffix}> / 100</Text></Text>
+                <Text style={styles.walkingResultBody}>{walkingTestResult.summary?.step_count || 0} alternating steps measured</Text>
+                <View style={styles.walkingComponentList}>
+                  {walkingComponents.map(({ key, label, value }) => (
+                    <View key={key} style={styles.walkingComponentRow}>
+                      <View style={styles.walkingComponentCopy}>
+                        <Text style={styles.walkingComponentLabel}>{label}</Text>
+                        <Text style={styles.walkingComponentWeight}>{value?.weight || 0}% of the overall score</Text>
+                      </View>
+                      <Text style={styles.walkingComponentScore}>{value?.score == null ? "Not measured" : `${value.score} / 100`}</Text>
+                    </View>
+                  ))}
+                </View>
+              </>
+            ) : (
+              <>
+                <Text style={styles.walkingUnscorable}>No reliable score</Text>
+                {(walkingTestResult.reason_codes || ["walking_pattern_not_detected"]).map((code) => (
+                  <Text key={code} style={styles.walkingReason}>{GAIT_RETRY_MESSAGES[code] || "Try a clearer walking video."}</Text>
+                ))}
+              </>
+            )}
+            <Text style={styles.walkingTestingNote}>Testing only. This result was not saved to Assessment history or Progress.</Text>
+            <View style={styles.walkingResultActions}>
+              <Pressable onPress={retryWalkingTest} style={styles.walkingRetryButton} testID="walking-video-test-again">
+                <Ionicons name="refresh" size={20} color="#FFFFFF" />
+                <Text style={styles.walkingActionPrimary}>Test another video</Text>
+              </Pressable>
+              <Pressable onPress={() => router.back()} style={styles.walkingBackButton} testID="walking-video-test-back">
+                <Ionicons name="arrow-back" size={20} color={colors.brandPrimary} />
+                <Text style={styles.walkingActionSecondary}>Back to Settings</Text>
+              </Pressable>
+            </View>
+          </View>
+        </ScrollView>
+      )}
       <SafetyStopStrip />
     </View>
   );
@@ -210,4 +313,25 @@ const styles = StyleSheet.create({
   testCompleteBody: { maxWidth: 420, color: colors.onSurfaceSecondary, fontSize: 15, lineHeight: 22, textAlign: "center" },
   testCompleteButton: { minHeight: 54, minWidth: 210, marginTop: spacing.sm, paddingHorizontal: spacing.lg, borderRadius: radius.md, backgroundColor: colors.brandPrimary, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: spacing.sm },
   testCompleteButtonText: { color: "#FFFFFF", fontSize: 16, fontWeight: "800" },
+  walkingResultOverlay: { ...StyleSheet.absoluteFillObject, backgroundColor: "#F8FBF8" },
+  walkingResultWrap: { flexGrow: 1, minHeight: "100%", alignItems: "center", justifyContent: "center", paddingHorizontal: spacing.md, paddingTop: spacing.xl, paddingBottom: 88, backgroundColor: "#F8FBF8" },
+  walkingResultPanel: { width: "100%", maxWidth: 680, alignItems: "center", gap: spacing.sm },
+  walkingResultTitle: { color: colors.onSurface, fontSize: 27, lineHeight: 34, fontWeight: "800", textAlign: "center" },
+  walkingOverallScore: { color: colors.brandPrimary, fontSize: 52, lineHeight: 60, fontWeight: "900", textAlign: "center" },
+  walkingScoreSuffix: { fontSize: 22, fontWeight: "800" },
+  walkingUnscorable: { color: colors.brandSecondary, fontSize: 30, lineHeight: 38, fontWeight: "900", textAlign: "center" },
+  walkingResultBody: { color: colors.onSurfaceSecondary, fontSize: 15, lineHeight: 22, textAlign: "center" },
+  walkingComponentList: { width: "100%", marginTop: spacing.sm, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: "#C9D4CC" },
+  walkingComponentRow: { minHeight: 62, flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: spacing.md, paddingVertical: spacing.sm, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: "#C9D4CC" },
+  walkingComponentCopy: { flex: 1 },
+  walkingComponentLabel: { color: colors.onSurface, fontSize: 15, lineHeight: 21, fontWeight: "700" },
+  walkingComponentWeight: { color: colors.onSurfaceSecondary, fontSize: 12, lineHeight: 17 },
+  walkingComponentScore: { color: colors.brandPrimary, fontSize: 15, lineHeight: 21, fontWeight: "800", textAlign: "right" },
+  walkingReason: { maxWidth: 540, color: colors.onSurfaceSecondary, fontSize: 15, lineHeight: 22, textAlign: "center" },
+  walkingTestingNote: { maxWidth: 540, marginTop: spacing.sm, color: colors.onSurfaceSecondary, fontSize: 12, lineHeight: 18, textAlign: "center" },
+  walkingResultActions: { width: "100%", maxWidth: 420, marginTop: spacing.sm, gap: spacing.sm },
+  walkingRetryButton: { minHeight: 54, paddingHorizontal: spacing.lg, borderRadius: radius.md, backgroundColor: colors.brandPrimary, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: spacing.sm },
+  walkingBackButton: { minHeight: 52, paddingHorizontal: spacing.lg, borderWidth: 1, borderColor: colors.brandPrimary, borderRadius: radius.md, backgroundColor: "#FFFFFF", flexDirection: "row", alignItems: "center", justifyContent: "center", gap: spacing.sm },
+  walkingActionPrimary: { color: "#FFFFFF", fontSize: 16, fontWeight: "800" },
+  walkingActionSecondary: { color: colors.brandPrimary, fontSize: 16, fontWeight: "800" },
 });
