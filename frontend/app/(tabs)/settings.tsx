@@ -175,6 +175,25 @@ export default function SettingsScreen() {
 
           <SettingsGroup label="TESTING" palette={palette}>
             <SettingsLink
+              testID="settings-test-walking-video"
+              icon="walk-outline"
+              title="Test walking video"
+              subtitle="Upload a video and see its gait scores directly"
+              onPress={() => router.push({
+                pathname: "/assessment" as never,
+                params: {
+                  package: "lower_limb",
+                  start_task: "L6",
+                  task_ids: "L6",
+                  library_test: "1",
+                  walking_test: "1",
+                },
+              })}
+              palette={palette}
+              scale={scale}
+            />
+            <Divider palette={palette} />
+            <SettingsLink
               testID="settings-testing-library"
               icon="fitness-outline"
               title="Task & exercise library"

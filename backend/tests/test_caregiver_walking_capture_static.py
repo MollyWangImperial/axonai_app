@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 
 os.environ.setdefault("MONGO_URL", "mongodb://127.0.0.1:27017")
 os.environ.setdefault("DB_NAME", "axonai_caregiver_walking_test")
@@ -175,3 +176,26 @@ def test_walking_upload_reports_real_save_progress():
     assert "request.upload.onprogress" in source
     assert "Promise.all([localSavePromise, cloudSavePromise])" in source
     assert 'setWalkingCaptureStatus(`Walking video accepted. Saving securely (${percent}%)...`' in source
+
+
+def test_settings_walking_video_test_is_upload_first_and_does_not_save_assessment_data():
+    source = server.POSE_RUNNER_HTML
+    setup = source[source.index("async function beginAssessmentSetup") : source.index('startBtn.addEventListener("click"')]
+    completion = source[source.index("async function completeUploadedWalkingTask") : source.index("function playBrowserVoice")]
+    assert 'const WALKING_TEST_MODE = URL_PARAMS.get("walking_test") === "1"' in source
+    assert "if(WALKING_TEST_MODE){" in setup
+    assert "await showWalkingCapture(task)" in setup
+    assert "setupCamera()" not in setup.split("if(WALKING_TEST_MODE){", 1)[1].split("return;", 1)[0]
+    assert 'source_video_id:"settings-walking-video-test"' in source
+    assert '/analysis/gait-2d/test-score' in source
+    assert 'type:"walking_test_result"' in completion
+    assert 'saved_to_assessment:false' in completion
+
+    root = Path(__file__).resolve().parents[2]
+    settings = (root / "frontend" / "app" / "(tabs)" / "settings.tsx").read_text(encoding="utf-8")
+    assessment = (root / "frontend" / "app" / "assessment.tsx").read_text(encoding="utf-8")
+    assert 'testID="settings-test-walking-video"' in settings
+    assert 'title="Test walking video"' in settings
+    assert 'walking_test: "1"' in settings
+    assert 'testID="walking-video-test-result"' in assessment
+    assert "Test another video" in assessment
