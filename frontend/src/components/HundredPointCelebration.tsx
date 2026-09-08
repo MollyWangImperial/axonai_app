@@ -24,10 +24,13 @@ type HundredPointCelebrationProps = {
   visible: boolean;
   name: string;
   points: number;
+  collecting: boolean;
+  error?: string;
+  onCollect: () => void;
   onClose: () => void;
 };
 
-export function HundredPointCelebration({ visible, name, points, onClose }: HundredPointCelebrationProps) {
+export function HundredPointCelebration({ visible, name, points, collecting, error, onCollect, onClose }: HundredPointCelebrationProps) {
   const { width } = useWindowDimensions();
   const { palette } = useDisplayPreferences();
   const compact = width < 720;
@@ -91,7 +94,7 @@ export function HundredPointCelebration({ visible, name, points, onClose }: Hund
   const displayName = name.trim() || "there";
 
   return (
-    <Modal visible={visible} transparent animationType="none" onRequestClose={onClose}>
+    <Modal visible={visible} transparent animationType="none" onRequestClose={() => { if (!collecting) onClose(); }}>
       <Animated.View style={[styles.backdrop, { opacity: backdropOpacity }]}>
         <Animated.View
           accessibilityRole="alert"
@@ -107,8 +110,9 @@ export function HundredPointCelebration({ visible, name, points, onClose }: Hund
             accessibilityRole="button"
             accessibilityLabel="Close 100 point celebration"
             testID="hundred-point-close"
+            disabled={collecting}
             onPress={onClose}
-            style={({ pressed }) => [styles.closeButton, { backgroundColor: palette.soft }, pressed && styles.pressed]}
+            style={({ pressed }) => [styles.closeButton, { backgroundColor: palette.soft }, (pressed || collecting) && styles.pressed]}
           >
             <Ionicons name="close" size={26} color={palette.text} />
           </Pressable>
@@ -136,13 +140,18 @@ export function HundredPointCelebration({ visible, name, points, onClose }: Hund
             <Text style={[styles.title, { color: palette.text }]}>Wonderful work, {displayName}!</Text>
             <Text style={[styles.body, { color: palette.text, fontWeight: "700" }]}>Rehyn Consistency Champion</Text>
             <Text style={[styles.body, { color: palette.muted }]}>You reached {points} points. Your steady effort has earned this medal.</Text>
+            <Text style={[styles.calendarHint, { color: palette.muted }]}>Collect it to save it on today&apos;s calendar.</Text>
+            {error ? <Text accessibilityRole="alert" style={styles.error}>{error}</Text> : null}
             <Pressable
               accessibilityRole="button"
-              testID="hundred-point-continue"
-              onPress={onClose}
-              style={({ pressed }) => [styles.continueButton, { backgroundColor: palette.brand }, pressed && styles.pressed]}
+              accessibilityLabel="Collect medal and save it to the calendar"
+              testID="hundred-point-collect"
+              disabled={collecting}
+              onPress={onCollect}
+              style={({ pressed }) => [styles.collectButton, { backgroundColor: palette.brand }, (pressed || collecting) && styles.pressed]}
             >
-              <Text style={styles.continueText}>Continue</Text>
+              <Ionicons name="medal-outline" size={22} color="#FFFFFF" />
+              <Text style={styles.collectText}>{collecting ? "Collecting..." : "Collect"}</Text>
             </Pressable>
           </View>
         </Animated.View>
@@ -196,7 +205,9 @@ const styles = StyleSheet.create({
   kicker: { fontSize: 13, lineHeight: 18, fontWeight: "900" },
   title: { marginTop: spacing.sm, fontSize: 34, lineHeight: 41, fontWeight: "900", textAlign: "left" },
   body: { marginTop: spacing.sm, fontSize: 19, lineHeight: 28, fontWeight: "500" },
-  continueButton: { width: "100%", minHeight: 60, marginTop: spacing.xl, borderRadius: radius.sm, alignItems: "center", justifyContent: "center" },
-  continueText: { color: "#FFFFFF", fontSize: 18, lineHeight: 24, fontWeight: "900" },
+  calendarHint: { marginTop: spacing.sm, fontSize: 16, lineHeight: 23, fontWeight: "600" },
+  error: { marginTop: spacing.sm, color: "#B42318", fontSize: 15, lineHeight: 21, fontWeight: "700" },
+  collectButton: { width: "100%", minHeight: 60, marginTop: spacing.lg, borderRadius: radius.sm, flexDirection: "row", gap: spacing.sm, alignItems: "center", justifyContent: "center" },
+  collectText: { color: "#FFFFFF", fontSize: 18, lineHeight: 24, fontWeight: "900" },
   pressed: { opacity: 0.82 },
 });

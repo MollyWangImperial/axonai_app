@@ -15489,6 +15489,10 @@ class DailyMedalCollect(DailyCheckInSubmit):
     current_date: Optional[str] = Field(default=None, min_length=10, max_length=10)
 
 
+class RewardMilestoneCollect(DailyCheckInSubmit):
+    testing_revision: Optional[str] = Field(default=None, max_length=64)
+
+
 def _validated_checkin_date(value: str) -> str:
     if not DAILY_CHECKIN_DATE_PATTERN.match(value):
         raise HTTPException(status_code=422, detail="date must be a YYYY-MM-DD calendar date")
@@ -15500,21 +15504,34 @@ def _validated_checkin_date(value: str) -> str:
 
 
 async def _save_daily_checkins(user: Dict[str, Any], checkins: Dict[str, Dict[str, Any]]) -> None:
-    changes = {
+    previous_checkins = user.get("daily_checkins") or {}
+    monotonic_changes = {
         f"daily_checkins.{_validated_checkin_date(day)}.{field}": value
         for day, entry in checkins.items()
-        if entry != (user.get("daily_checkins") or {}).get(day)
+        if entry != previous_checkins.get(day)
         for field, value in entry.items()
         if field in {"status", "checked_in_at", "completed_at", "medal_collected_at"} and value
     }
-    if not changes:
+    milestone_changes = {
+        f"daily_checkins.{_validated_checkin_date(day)}.milestone_medals.{collection_id}": medal
+        for day, entry in checkins.items()
+        for collection_id, medal in (entry.get("milestone_medals") or {}).items()
+        if medal != (((previous_checkins.get(day) or {}).get("milestone_medals") or {}).get(collection_id))
+    }
+    update: Dict[str, Any] = {}
+    if monotonic_changes:
+        update["$min"] = monotonic_changes
+    if milestone_changes:
+        update["$set"] = milestone_changes
+    if not update:
         return
     try:
         # Update only changed fields, not a stale copy of the whole calendar.
         # 'complete' sorts before 'in_progress'; $min also preserves the first
-        # timestamp, so retries/another tab cannot undo a completed day.
+        # timestamp, so retries/another tab cannot undo a completed day. Reward
+        # milestones have their own stable collection id and are set separately.
         saved = await db.users.find_one_and_update(
-            {"id": user["id"]}, {"$min": changes}, return_document=ReturnDocument.AFTER,
+            {"id": user["id"]}, update, return_document=ReturnDocument.AFTER,
             projection={"_id": 0},
         )
         if not saved:
@@ -15525,6 +15542,24 @@ async def _save_daily_checkins(user: Dict[str, Any], checkins: Dict[str, Dict[st
     except Exception as exc:
         _require_durable_patient_store("daily check-in", exc)
         await _save_user_fields(user, {"daily_checkins": checkins}, context="daily check-in")
+
+
+def _daily_calendar_day(day: str, record: Dict[str, Any]) -> Dict[str, Any]:
+    milestone_medals = sorted(
+        [dict(item) for item in (record.get("milestone_medals") or {}).values() if isinstance(item, dict)],
+        key=lambda item: (str(item.get("collected_at") or ""), str(item.get("id") or "")),
+    )
+    result = {
+        "date": day,
+        "status": record.get("status") or "in_progress",
+        "medal": bool(record.get("medal_collected_at") or milestone_medals),
+    }
+    # Keep the existing daily-medal response unchanged when no milestone is on
+    # the date. New clients can distinguish two medals collected on one day.
+    if milestone_medals:
+        result["daily_medal"] = bool(record.get("medal_collected_at"))
+        result["milestone_medals"] = milestone_medals
+    return result
 
 
 def _daily_checkin_response(date: str, checkins: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
@@ -15538,14 +15573,7 @@ def _daily_checkin_response(date: str, checkins: Dict[str, Dict[str, Any]]) -> D
             day for day, record in sorted(checkins.items())
             if day < date and record.get("status") == "complete" and not record.get("medal_collected_at")
         ), None),
-        "days": [
-            {
-                "date": day,
-                "status": record.get("status") or "in_progress",
-                "medal": bool(record.get("medal_collected_at")),
-            }
-            for day, record in sorted(checkins.items())
-        ],
+        "days": [_daily_calendar_day(day, record) for day, record in sorted(checkins.items())],
     }
 
 
@@ -15651,9 +15679,58 @@ async def _rewards_for_user(user: Dict[str, Any], as_of: Optional[str] = None):
     rewards = compute_rewards(activities, check_ins, dict(user.get("daily_checkins") or {}), assessments=await _reward_assessments_for_user(user["id"]), now=_as_of_now(as_of), testing_points_adjustment=int(testing.get("adjustment") or 0))
     rewards["testing_revision"] = testing.get("revision")
     acknowledged = set(testing.get("acknowledged") or []) if testing else set(user.get("reward_milestones_acknowledged") or [])
+    testing_revision = testing.get("revision") if testing else None
+    for record in (user.get("daily_checkins") or {}).values():
+        for collected in (record.get("milestone_medals") or {}).values():
+            if not isinstance(collected, dict):
+                continue
+            collected_revision = collected.get("testing_revision")
+            if (testing_revision and collected_revision == testing_revision) or (not testing_revision and not collected_revision):
+                acknowledged.add(collected.get("id"))
     for medal in rewards.get("medals") or []:
         medal["celebrated"] = medal.get("id") in acknowledged
     return rewards
+
+
+@api_router.post("/users/rewards/milestones/{milestone_id}/collect")
+async def collect_reward_milestone(milestone_id: str, payload: RewardMilestoneCollect, request: Request):
+    """Collect an earned points medal and attach it to the selected calendar day."""
+    user = await _user_from_header(dict(request.headers))
+    if not user:
+        raise HTTPException(status_code=401, detail="Sign in required")
+    date = _validated_checkin_date(payload.date)
+    milestone = next((item for item in REWARD_MEDALS if item["id"] == milestone_id), None)
+    if not milestone:
+        raise HTTPException(status_code=404, detail="Reward milestone not found")
+    rewards = await _rewards_for_user(user, date)
+    if int(rewards.get("points") or 0) < int(milestone["threshold"]):
+        raise HTTPException(status_code=409, detail="Reward milestone has not been earned yet")
+    testing_revision = rewards.get("testing_revision")
+    if payload.testing_revision != testing_revision:
+        raise HTTPException(status_code=409, detail="Points changed before this medal was collected. Open the latest award and try again.")
+
+    collection_id = milestone_id if not testing_revision else f"{milestone_id}__testing__{testing_revision}"
+    checkins = dict(user.get("daily_checkins") or {})
+    entry = dict(checkins.get(date) or {})
+    milestone_medals = dict(entry.get("milestone_medals") or {})
+    if collection_id not in milestone_medals:
+        collected = {
+            "id": milestone_id,
+            "name": milestone["name"],
+            "threshold": int(milestone["threshold"]),
+            "points": int(rewards.get("points") or 0),
+            "collected_at": datetime.now(timezone.utc).isoformat(),
+        }
+        if testing_revision:
+            collected["testing_revision"] = testing_revision
+        milestone_medals[collection_id] = collected
+        entry["milestone_medals"] = milestone_medals
+        checkins[date] = entry
+        await _save_daily_checkins(user, checkins)
+
+    response = _daily_checkin_response(date, checkins)
+    response["collected_medal"] = milestone_medals[collection_id]
+    return response
 
 
 class TestingPointsSubmit(BaseModel):

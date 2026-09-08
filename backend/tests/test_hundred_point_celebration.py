@@ -1,10 +1,14 @@
 import asyncio
+import copy
 import os
 import sys
 import types
 import wave
 from pathlib import Path
 
+import pytest
+from fastapi import HTTPException
+from fastapi.testclient import TestClient
 from starlette.requests import Request
 
 
@@ -93,6 +97,84 @@ def test_acknowledging_earned_milestone_persists_to_the_account(monkeypatch):
     assert saved["reward_milestones_acknowledged"] == ["hundred_point_medal"]
 
 
+def test_collecting_earned_milestone_saves_it_on_that_calendar_day(monkeypatch):
+    user = {"id": "patient-collect", "daily_checkins": {}}
+
+    async def signed_in_user(_headers):
+        return user
+
+    async def empty(_user_id):
+        return []
+
+    async def assessments(_user_id):
+        return _five_assessments()
+
+    async def save_days(account, checkins):
+        account["daily_checkins"] = copy.deepcopy(checkins)
+
+    monkeypatch.setattr(server, "_user_from_header", signed_in_user)
+    monkeypatch.setattr(server, "_care_activities_for_user", empty)
+    monkeypatch.setattr(server, "_care_check_ins_for_user", empty)
+    monkeypatch.setattr(server, "_reward_assessments_for_user", assessments)
+    monkeypatch.setattr(server, "_save_daily_checkins", save_days)
+
+    with TestClient(server.app) as client:
+        first_response = client.post(
+            "/api/users/rewards/milestones/hundred_point_medal/collect",
+            json={"date": "2026-09-08", "testing_revision": None},
+        )
+        assert first_response.status_code == 200
+        first = first_response.json()
+        again = client.post(
+            "/api/users/rewards/milestones/hundred_point_medal/collect",
+            json={"date": "2026-09-08", "testing_revision": None},
+        ).json()
+    medal = first["collected_medal"]
+    assert medal["name"] == "Rehyn Consistency Champion"
+    assert medal["points"] == 100
+    assert first["date"] == "2026-09-08" and first["status"] == "not_checked_in"
+    assert first["days"] == [{
+        "date": "2026-09-08",
+        "status": "in_progress",
+        "medal": True,
+        "daily_medal": False,
+        "milestone_medals": [medal],
+    }]
+
+    collected_at = medal["collected_at"]
+    assert again["collected_medal"]["collected_at"] == collected_at
+    rewards = asyncio.run(server._rewards_for_user(user, "2026-09-08"))
+    assert rewards["medals"][0]["celebrated"] is True
+
+
+def test_collecting_milestone_rejects_stale_testing_award(monkeypatch):
+    user = {
+        "id": "patient-stale-award",
+        "daily_checkins": {},
+        "reward_points_testing": {"adjustment": 100, "revision": "current-revision", "acknowledged": []},
+    }
+
+    async def signed_in_user(_headers):
+        return user
+
+    async def empty(_user_id):
+        return []
+
+    monkeypatch.setattr(server, "_user_from_header", signed_in_user)
+    monkeypatch.setattr(server, "_care_activities_for_user", empty)
+    monkeypatch.setattr(server, "_care_check_ins_for_user", empty)
+    monkeypatch.setattr(server, "_reward_assessments_for_user", empty)
+
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(server.collect_reward_milestone(
+            "hundred_point_medal",
+            server.RewardMilestoneCollect(date="2026-09-08", testing_revision="old-revision"),
+            _request(),
+        ))
+    assert error.value.status_code == 409
+    assert user["daily_checkins"] == {}
+
+
 def _five_assessments():
     return [{"id": f"assessment-{i}", "created_at": "2026-09-06T12:00:00Z",
              "task_results": [{"task_id": "T1", "total_steps": 1, "steps": [{"completed": True}]}]} for i in range(5)]
@@ -108,9 +190,12 @@ def test_home_celebration_is_animated_audible_and_has_no_music_panel():
     assert "Animated.spring(medalScale" in component
     assert "Music playing" not in component
     assert "shouldShowHundredPointCelebration" in home
-    assert "acknowledgeHundredPointCelebration" in home
+    assert "rememberHundredPointCollection" in home
     assert "reward_milestone_seen_v1" in home
-    assert "/api/users/rewards/milestones/${milestoneId}/acknowledge" in home
+    assert "/api/users/rewards/milestones/${award.milestoneId}/collect" in home
+    assert 'testID="hundred-point-collect"' in component
+    assert 'collecting ? "Collecting..." : "Collect"' in component
+    assert "setCalendarHighlight(todayIso)" in home and "setShowCalendar(true)" in home
     assert 'visible={Boolean(hundredPointAward)}' in home
     assert 'visible={!hundredPointAward && showMedal && medalAvailable}' in home
     assert 'event={hundredPointAward ? null : celebration}' in home

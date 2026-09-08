@@ -11,7 +11,12 @@ import { colors, radius, spacing } from "@/src/theme";
 // the medals and the next assessment date, and (testing phase) the date
 // stepper that lets a tester walk through the days.
 
-export type CalendarDay = { status: string; medal?: boolean };
+export type CalendarDay = {
+  status: string;
+  medal?: boolean;
+  dailyMedal?: boolean;
+  milestoneMedals?: { id: string; name: string; points: number }[];
+};
 
 const WEEKDAY_LABELS = ["M", "T", "W", "T", "F", "S", "S"];
 
@@ -351,7 +356,11 @@ export function MedalCalendarModal({ visible, today, days, assessmentDate, highl
     const date = formatLocalDate(new Date(shownMonth.getFullYear(), shownMonth.getMonth(), day, 12));
     cells.push({ key: date, day, date });
   }
-  const medalCount = Object.values(days).filter((day) => day.medal).length;
+  const medalCount = Object.values(days).reduce((count, day) => {
+    const milestoneCount = day.milestoneMedals?.length || 0;
+    if (milestoneCount) return count + milestoneCount + (day.dailyMedal ? 1 : 0);
+    return count + (day.medal ? 1 : 0);
+  }, 0);
   const assessmentLabel = assessmentDate ? longDate(assessmentDate) : "";
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
@@ -416,7 +425,7 @@ export function MedalCalendarModal({ visible, today, days, assessmentDate, highl
             })}
           </View>
           <View style={styles.legend}>
-            <View style={styles.legendItem}><Ionicons name="medal" size={15} color="#8A5A00" /><Text style={[styles.legendText, { color: palette.muted }]}>Medal - exercises finished</Text></View>
+            <View style={styles.legendItem}><Ionicons name="medal" size={15} color="#8A5A00" /><Text style={[styles.legendText, { color: palette.muted }]}>Collected medal</Text></View>
             <View style={styles.legendItem}><View style={[styles.legendDot, styles.dayAssessment]}><Ionicons name="clipboard" size={9} color="#FFFFFF" /></View><Text style={[styles.legendText, { color: palette.muted }]}>Re-assessment day</Text></View>
             <View style={styles.legendItem}><View style={[styles.legendDot, styles.dayInProgress]} /><Text style={[styles.legendText, { color: palette.muted }]}>Checked in</Text></View>
           </View>
