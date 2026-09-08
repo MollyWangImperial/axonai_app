@@ -10,73 +10,50 @@ def _walking_task():
     return next(task for task in server.LOWER_LIMB_TASKS_DATA if task["id"] == "L6")
 
 
-def test_initial_walking_task_has_explicit_caregiver_filming_guidance():
+def test_walking_task_requests_a_short_frontal_supporting_record():
     task = _walking_task()
     assert task["caregiver_recorded"] is True
+    assert task["view"] == "Front view"
     guidance = " ".join(task["filming_guidance"]).lower()
     for phrase in (
-        "face the camera clearly for two seconds",
-        "head, trunk, hips, knees, feet",
+        "short frontal video",
+        "walking toward the camera",
+        "whole body",
         "walking aid",
-        "fixed camera",
-        "walk smoothly parallel",
-        "must not walk backward",
-        "separate person for guarding",
-        "avoid zooming",
+        "camera still",
+        "survey answers",
+        "not graded",
     ):
         assert phrase in guidance
+    assert task["steps"][1]["measure"] == []
 
 
-def test_walking_voice_guides_carer_before_during_and_after_walk():
+def test_walking_voice_guides_a_front_view_without_promising_video_grading():
     steps = {step["id"]: step for step in _walking_task()["steps"]}
     setup = steps["L6-S1"]["voice"].lower()
     walking = steps["L6-S2"]["voice"].lower()
     stopping = steps["L6-S3"]["voice"].lower()
     assert "carer or family member" in setup
-    assert "face the camera clearly" in setup
+    assert "from the front" in setup
+    assert "walk toward the camera" in setup
     assert "whole body" in setup
-    assert "walk smoothly parallel" in setup
-    assert "must not walk backward" in setup
-    assert "keep the phone steady" in walking
-    assert "do not zoom or walk backward" in walking
-    assert "head and feet visible" in stopping
+    assert "camera still" in setup
+    assert "usual comfortable pace" in walking
+    assert "ready to upload" in stopping
 
 
-def test_walking_detection_requires_full_body_visibility():
-    source = server.POSE_RUNNER_HTML
-    assert "function fullBodyVisibleForWalking(lm)" in source
-    assert "mostVisible([11,12])" in source
-    assert "mostVisible([31,32])" in source
-    assert "gaitFullBodyVisibilityRatio() >= 0.75" in source
-    assert 'return standing && fullBodyVisibleForWalking(landmarks);' in source
-    assert "gait_full_body_visibility_ratio" in source
-
-
-def test_walking_detection_supports_fixed_or_parallel_tracking_camera():
-    source = server.POSE_RUNNER_HTML
-    assert "const fixedCameraProgress = gaitPelvisTravelMaxRatio > 0.35;" in source
-    assert "const caregiverTrackedProgress = gaitAlternationCount >= 3;" in source
-    assert "(fixedCameraProgress || caregiverTrackedProgress)" in source
-    assert "const bilateralLegMotion = gaitAffectedAnkleTravelMaxRatio > 0.16" in source
-
-
-def test_walking_evidence_does_not_accumulate_during_voice_instructions():
-    source = server.POSE_RUNNER_HTML
-    assert "const gaitCaptureActive = voiceFinishedAt > 0" in source
-    assert "if(gaitCaptureActive){" in source
-
-
-def test_walking_uses_device_specific_capture_controls_instead_of_target_circles():
+def test_walking_capture_uses_the_upload_picker_for_desktop_and_phone():
     source = server.POSE_RUNNER_HTML
     assert 'data-testid="walking-capture"' in source
     assert 'data-testid="walking-desktop-actions"' in source
     assert 'data-testid="walking-video-drop-zone"' in source
-    assert 'data-testid="walking-mobile-actions"' in source
     assert 'data-testid="walking-choose-video"' in source
-    assert 'data-testid="walking-start-recording"' in source
-    assert 'data-testid="walking-skip"' in source
-    assert "const IS_MOBILE_CAPTURE_DEVICE" in source
-    assert 'if(isWalkingTask()){\n    lapStatus.classList.add("hidden");\n    return;' in source
+    assert 'id="walkingVideoInput" type="file" accept="video/*"' in source
+    show = source[source.index("async function showWalkingCapture") : source.index("function facePoseIsFrontal")]
+    assert 'walkingDesktopActions.classList.remove("hidden")' in show
+    assert 'walkingMobileActions.classList.add("hidden")' in show
+    assert "switchToWalkingCamera" not in show
+    assert "Any walking video will be accepted for now" in show
 
 
 def test_walking_can_be_skipped_without_recording_a_failed_gait_task():
@@ -89,46 +66,77 @@ def test_walking_can_be_skipped_without_recording_a_failed_gait_task():
     assert "mark it as not observed, not as a failed test" in source
 
 
-def test_desktop_walking_upload_keeps_mismatch_blocking_but_framing_advisory():
+def test_walking_validator_accepts_any_video_without_pose_identity_or_framing_checks():
     source = server.POSE_RUNNER_HTML
-    assert "async function validateWalkingVideo(file, onProgress=()=>{})" in source
-    assert "durationSeconds < 6 || durationSeconds > 90" not in source
-    assert "Math.min(width, height) < 360" not in source
-    assert "const qualityAdvisory" in source
-    assert "fullBodyVisibleForWalking(pose)" in source
-    assert "if(fullBodyRatio < 0.70)" not in source
-    assert "patientMatchScore < WALKING_FACE_MATCH_THRESHOLD" in source
-    assert "completeUploadedWalkingTask(file, validation)" in source
-    assert 'capture_source:"uploaded_walking_video"' in source
+    validation = source[source.index("async function validateWalkingVideo") : source.index("function walkingFunctionalMetrics")]
+    assert "return {ok:false" not in validation.split("const objectUrl", 1)[1]
+    assert 'validationMode:"record_only"' in validation
+    assert "sampledFrames:[]" in validation
+    assert "getWalkingVideoValidator" not in validation
+    assert "detectForVideo" not in validation
+    assert "fullBodyVisibleForWalking" not in validation
+    assert "faceSignature" not in validation
+    assert "samePatient" not in validation
+    assert "durationSeconds <" not in validation
+    assert "durationSeconds > 90" not in validation
+    assert "walkingReviewVideo.videoWidth" in validation
+    assert "walkingReviewVideo.videoHeight" in validation
 
 
-def test_desktop_video_picker_receives_the_user_gesture_directly():
+def test_walking_video_recognition_allows_browser_and_common_phone_formats():
     source = server.POSE_RUNNER_HTML
-    assert 'id="walkingVideoInput" type="file" accept="video/*"' in source
+    recognizer = source[source.index("function isWalkingVideoFile") : source.index("async function processWalkingVideoFile")]
+    assert 'startsWith("video/")' in recognizer
+    for extension in ("mp4", "mov", "m4v", "webm", "avi", "mpeg", "mpg", "mkv", "3gp"):
+        assert extension in recognizer
+    content_types = source[source.index("function walkingVideoContentType") : source.index("async function processWalkingVideoFile")]
+    for mime in (
+        "video/mp4",
+        "video/quicktime",
+        "video/x-m4v",
+        "video/webm",
+        "video/x-msvideo",
+        "video/mpeg",
+        "video/x-matroska",
+        "video/3gpp",
+    ):
+        assert mime in content_types
+        assert mime in server.TASK_VIDEO_EXTENSIONS
+
+
+def test_walking_upload_keeps_only_file_type_and_size_safety_limits():
+    source = server.POSE_RUNNER_HTML
+    validation = source[source.index("async function validateWalkingVideo") : source.index("function walkingFunctionalMetrics")]
+    assert "if(!isWalkingVideoFile(file))" in validation
+    assert "file.size || 0) > 35 * 1024 * 1024" in validation
+    assert "larger than 35 MB" in validation
+
+
+def test_walking_upload_is_saved_as_a_record_without_gait_metrics():
+    source = server.POSE_RUNNER_HTML
+    completion = source[source.index("async function completeUploadedWalkingTask") : source.index("function playBrowserVoice")]
+    assert 'walking_video_role:"supporting_record"' in completion
+    assert 'lower_limb_result_source:"survey"' in completion
+    assert 'walking_video_accepted:true' in completion
+    assert "gait_bilateral_motion_symmetry" not in completion
+    assert "walking_same_patient_confirmed" not in completion
+    assert "walking_full_body_visibility_ratio" not in completion
+
+
+def test_walking_video_picker_and_drag_drop_share_the_acceptance_pipeline():
+    source = server.POSE_RUNNER_HTML
     assert '#walkingPickerButton{position:relative;width:100%}' in source
     assert '#walkingVideoInput{position:absolute;inset:0;width:100%;height:100%;opacity:0' in source
     assert '#walkingChooseVideoBtn{pointer-events:none}' in source
     assert 'walkingVideoInput.addEventListener("click"' in source
-    assert 'walkingChooseVideoBtn.addEventListener("click"' not in source
     assert 'walkingVideoInput.click()' not in source
-
-
-def test_desktop_walking_video_supports_drag_and_drop_through_the_picker_pipeline():
-    source = server.POSE_RUNNER_HTML
-    assert 'data-testid="walking-video-drop-zone"' in source
-    assert 'walkingVideoDropZone.addEventListener("dragenter"' in source
-    assert 'walkingVideoDropZone.addEventListener("dragover"' in source
-    assert 'walkingVideoDropZone.addEventListener("dragleave"' in source
-    assert 'walkingVideoDropZone.addEventListener("drop"' in source
-    assert 'event.dataTransfer && event.dataTransfer.files' in source
     assert 'processWalkingVideoFile(file, "drop")' in source
     assert 'processWalkingVideoFile(file, "picker")' in source
-    assert 'function isWalkingVideoFile(file)' in source
 
 
-def test_walking_video_picker_recovers_after_validation_errors():
+def test_walking_video_picker_recovers_after_processing_errors():
     source = server.POSE_RUNNER_HTML
-    processor = source[source.index('async function processWalkingVideoFile') : source.index('let walkingVideoDragDepth')]
+    processor = source[source.index("async function processWalkingVideoFile") : source.index("let walkingVideoDragDepth")]
     assert 'walkingDesktopActions.classList.add("busy")' in processor
     assert 'walkingVideoDropZone.classList.add("busy")' in processor
     assert 'catch(error)' in processor
@@ -137,85 +145,18 @@ def test_walking_video_picker_recovers_after_validation_errors():
     assert 'walkingVideoInput.value = ""' in processor
 
 
-def test_walking_upload_checks_same_patient_locally_before_accepting_video():
+def test_walking_model_is_not_preloaded_or_used_by_the_upload_validator():
     source = server.POSE_RUNNER_HTML
-    for marker in (
-        "function normalizedFaceAppearance(source, pose)",
-        "function faceSignatureSimilarity(reference, candidate)",
-        "function capturePatientFaceReference(source, pose",
-        "const identityTimes = Array.from(new Set(",
-        "const patientMatchScore = identityUnconfirmed ? null : medianValue(identityScores);",
-        "patientMatchScore < WALKING_FACE_MATCH_THRESHOLD",
-        "samePatientConfirmed:true",
-        "walking_same_patient_confirmed",
-        'URL_PARAMS.get("test_mode") === "walking_identity"',
-    ):
-        assert marker in source
-    assert "patientFaceReferenceSamples" in source
-    assert "body:patientFaceReference" not in source
+    assert "preloadWalkingVideoValidator();" not in source
+    validation = source[source.index("async function validateWalkingVideo") : source.index("function walkingFunctionalMetrics")]
+    assert "walkingVideoValidatorPromise" not in validation
+    assert "PoseLandmarker.createFromOptions" not in validation
+    assert "validator.close()" not in validation
 
 
-def test_unconfirmed_walking_identity_can_be_explicitly_accepted_for_review():
+def test_walking_upload_reports_real_save_progress():
     source = server.POSE_RUNNER_HTML
-    assert "const MIN_FACE_SIGNATURE_SPAN_PX = 32;" in source
-    assert "if(observedFaceSpanPx < MIN_FACE_SIGNATURE_SPAN_PX) return null;" in source
-    assert 'data-testid="walking-proceed-identity-unconfirmed"' in source
-    assert 'reason:"identity_unconfirmed"' in source
-    assert "allowProceed:true" in source
-    assert 'validation.reason === "identity_unconfirmed"' in source
-    assert 'walkingProceedUnconfirmedBtn.classList.remove("hidden")' in source
-    assert 'identityStatus:"unconfirmed_patient_proceeded"' in source
-    assert "walking_identity_review_required:validation.samePatientConfirmed !== true" in source
-    assert "walking_patient_match_score:Number.isFinite(validation.patientMatchScore)" in source
-
-
-def test_likely_walking_identity_mismatch_has_no_proceed_bypass():
-    source = server.POSE_RUNNER_HTML
-    validation = source[source.index("async function validateWalkingVideo") : source.index("async function completeUploadedWalkingTask")]
-    mismatch_start = validation.index("if(!identityUnconfirmed && patientMatchScore < WALKING_FACE_MATCH_THRESHOLD)")
-    mismatch_end = validation.index("const sampleCount", mismatch_start)
-    mismatch_branch = validation[mismatch_start:mismatch_end]
-    assert "does not appear consistent with the patient" in mismatch_branch
-    assert "allowProceed" not in mismatch_branch
-
-
-def test_walking_upload_rejects_oversize_early_and_reports_real_progress():
-    source = server.POSE_RUNNER_HTML
-    assert "file.size || 0) > 35 * 1024 * 1024" in source
     assert "function uploadTaskVideoToCloud" in source
     assert "request.upload.onprogress" in source
     assert "Promise.all([localSavePromise, cloudSavePromise])" in source
-    assert 'const prefix = validation.samePatientConfirmed' in source
-    assert '"Saving video for therapist review"' in source
-    assert 'setWalkingCaptureStatus(`${prefix} (${percent}%)...`' in source
-
-
-def test_walking_validator_is_initialized_before_the_video_is_selected():
-    source = server.POSE_RUNNER_HTML
-    assert "let walkingVideoValidatorPromise = null;" in source
-    assert "async function getWalkingVideoValidator()" in source
-    assert "function preloadWalkingVideoValidator()" in source
-    assert "preloadWalkingVideoValidator();" in source
-    assert "validator = await getWalkingVideoValidator();" in source
-    validation = source[source.index("async function validateWalkingVideo") : source.index("async function completeUploadedWalkingTask")]
-    assert 'PoseLandmarker.createFromOptions' not in validation
-    assert 'validator.close()' not in validation
-
-
-def test_phone_walking_capture_uses_an_explicit_record_button_and_rear_camera_when_available():
-    source = server.POSE_RUNNER_HTML
-    assert "walkingRecordBtn.addEventListener" in source
-    assert 'facingMode:{ideal:"environment"}' in source
-    assert 'type:"walking_recording_started"' in source
-    assert 'device_mode:"mobile"' in source
-
-
-def test_camera_switch_waits_for_a_real_frame_before_pose_detection_resumes():
-    source = server.POSE_RUNNER_HTML
-    assert "async function waitForWalkingCameraFrame" in source
-    assert "video.videoWidth > 0 && video.videoHeight > 0" in source
-    assert "walkingCameraSwitching = true" in source
-    assert "walkingCameraSwitching = false" in source
-    assert "const cameraFrameReady = !walkingCameraSwitching" in source
-    assert "if(cameraFrameReady && landmarker" in source
-    assert "if(cameraFrameReady && handLandmarker" in source
+    assert 'setWalkingCaptureStatus(`Walking video accepted. Saving securely (${percent}%)...`' in source

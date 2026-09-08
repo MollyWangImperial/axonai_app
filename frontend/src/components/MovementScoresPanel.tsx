@@ -59,9 +59,16 @@ export function MovementScoresPanel({ domains, metrics, isSample = false }: { do
     const score = module?.score ?? module?.earned_score ?? null;
     const partial = module?.score == null && score !== null;
     const tone = scoreTone(score);
+    const surveyBased = module?.score_source === "survey";
     return {
       domain: domain.domain, label: DOMAIN_LABELS[domain.domain], score, ...tone,
-      ...(partial ? {
+      ...(surveyBased ? {
+        status: "Survey estimate",
+        color: "#27714D",
+        soft: "#DDE9DD",
+        coverage: "Based on your movement-readiness survey. Your walking video is saved as a record and is not graded.",
+      } : {}),
+      ...(!surveyBased && partial ? {
         status: "Partial score",
         color: palette.muted,
         soft: palette.border,
@@ -78,7 +85,7 @@ export function MovementScoresPanel({ domains, metrics, isSample = false }: { do
           <Text style={[styles.subtitle, compact && styles.subtitleCompact, { color: palette.muted }]}>
             {isSample
               ? "Generated for testing only. Higher sample values represent steadier movement."
-              : "Based on today's guided movement tasks. Higher means steadier movement."}
+              : "Arm and hand scores use guided tasks. The lower-limb result uses your survey answers."}
           </Text>
         </View>
         <View style={styles.measureNote}>

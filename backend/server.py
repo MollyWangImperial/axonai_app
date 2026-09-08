@@ -64,7 +64,7 @@ try:
     from backend.fast_screening import FAST_RUNNER_HTML, evaluate_fast_screen
     from backend.encouragement import MEDALS as REWARD_MEDALS, compute_rewards
     from backend.assessment_quality import VERSION as ASSESSMENT_QUALITY_VERSION, COMPENSATIONS as ASSESSMENT_COMPENSATIONS, build_rubrics, score_assessment
-    from backend.daily_activity_metrics import build_daily_activity_metrics
+    from backend.daily_activity_metrics import build_daily_activity_metrics, survey_mobility_result
     from backend.alira_care_orchestrator import (
         QUESTION_BANK as ALIRA_CARE_QUESTION_BANK,
         FUNCTIONAL_ISSUE_CATALOG,
@@ -111,7 +111,7 @@ except ImportError:
     from fast_screening import FAST_RUNNER_HTML, evaluate_fast_screen
     from encouragement import MEDALS as REWARD_MEDALS, compute_rewards
     from assessment_quality import VERSION as ASSESSMENT_QUALITY_VERSION, COMPENSATIONS as ASSESSMENT_COMPENSATIONS, build_rubrics, score_assessment
-    from daily_activity_metrics import build_daily_activity_metrics
+    from daily_activity_metrics import build_daily_activity_metrics, survey_mobility_result
     from alira_care_orchestrator import (
         QUESTION_BANK as ALIRA_CARE_QUESTION_BANK,
         FUNCTIONAL_ISSUE_CATALOG,
@@ -379,6 +379,16 @@ class _GuardedDatabase:
 db = _GuardedDatabase(_mongo_database, MONGO_CIRCUIT)
 task_video_bucket = AsyncIOMotorGridFSBucket(_mongo_database, bucket_name="task_videos")
 TASK_VIDEO_MAX_BYTES = 35 * 1024 * 1024
+TASK_VIDEO_EXTENSIONS = {
+    "video/mp4": "mp4",
+    "video/quicktime": "mov",
+    "video/x-m4v": "m4v",
+    "video/webm": "webm",
+    "video/x-msvideo": "avi",
+    "video/mpeg": "mpeg",
+    "video/x-matroska": "mkv",
+    "video/3gpp": "3gp",
+}
 TASK_VIDEO_FALLBACK_DIR = ROOT_DIR / ".task_videos"
 LOCAL_STATE_DIR = ROOT_DIR / ".local_state"
 LOCAL_USERS_FILE = LOCAL_STATE_DIR / "users.json"
@@ -1524,7 +1534,61 @@ def _progress_task_domain(task_id: str) -> str:
     return "upper_limb"
 
 
-def build_functional_metrics(task_results: Sequence[Any], assigned_task_ids=None) -> Dict[str, Any]:
+def _task_quality_with_survey_mobility(
+    task_quality: Dict[str, Any],
+    patient_parameters: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Use the existing survey score for lower limb; the walking video is record-only."""
+    mobility = survey_mobility_result(patient_parameters)
+    if mobility.get("score") is None:
+        return task_quality
+    lower_limb = (task_quality.get("modules") or {}).get("lower_limb")
+    if not isinstance(lower_limb, dict):
+        return task_quality
+    score = mobility["score"]
+    lower_limb.update({
+        "score": score,
+        "earned_score": score,
+        "score_source": "survey",
+        "reported_assistance_level": mobility.get("reported_assistance_level"),
+        "survey_response": mobility.get("survey_response"),
+    })
+    return task_quality
+
+
+def _summary_with_survey_mobility(
+    summary: Dict[str, Any],
+    patient_parameters: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    mobility = survey_mobility_result(patient_parameters)
+    if mobility.get("score") is None:
+        return summary
+    summary = {
+        **summary,
+        "domains": [dict(domain) for domain in (summary.get("domains") or [])],
+    }
+    for domain in summary.get("domains") or []:
+        if domain.get("domain") != "lower_limb":
+            continue
+        domain.update({
+            "status": "survey_reported",
+            "score_source": "survey",
+            "survey_score": mobility["score"],
+            "tasks_completed": 0,
+            "tasks_observed": 0,
+            "step_completion_percent": 0,
+            "average_task_duration_ms": 0,
+            "findings_count": 0,
+            "summary": "This lower-limb result comes from the movement-readiness survey. The walking video is saved as a record and is not graded.",
+        })
+    return summary
+
+
+def build_functional_metrics(
+    task_results: Sequence[Any],
+    assigned_task_ids=None,
+    patient_parameters: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     """Derive stable patient-facing progress metrics from saved task evidence."""
     tasks = list(task_results)
 
@@ -1572,19 +1636,31 @@ def build_functional_metrics(task_results: Sequence[Any], assigned_task_ids=None
     hand_opening = numeric_max("hand", "hand_open_score")
     pinch_grip = numeric_max("hand", "pinch_score")
     gait_symmetry = numeric_max("lower_limb", "gait_bilateral_motion_symmetry", "bilateral_wrist_displacement_symmetry")
-    gait_visibility = numeric_max("lower_limb", "gait_full_body_visibility_ratio")
     walking_duration_ms = numeric_max("lower_limb", "uploaded_video_duration_ms")
     reach_completion = completion("upper_limb")
     hand_completion = completion("hand")
-    walking_completion = completion("lower_limb")
     shoulder_hike = any(bool(row.get("shoulder_hike")) for row in records("upper_limb"))
 
+    task_quality = _task_quality_with_survey_mobility(
+        score_assessment(tasks, ASSESSMENT_RUBRICS, assigned_task_ids),
+        patient_parameters,
+    )
+    mobility = survey_mobility_result(patient_parameters)
+    walking_video_uploaded = any(
+        (_snapshot_value(task, "metrics", {}) or {}).get("walking_video_role") == "supporting_record"
+        for task in lower_tasks
+    )
+
     return {
-        "task_quality": score_assessment(tasks, ASSESSMENT_RUBRICS, assigned_task_ids),
+        "task_quality": task_quality,
         "shoulder_flexion_deg": round(shoulder_elevation, 1) if shoulder_elevation is not None else None,
         "trunk_lean_deg": round(trunk_lean, 1) if trunk_lean is not None else None,
         "reach_completion": reach_completion,
-        "bilateral_symmetry": round(gait_symmetry, 3) if gait_symmetry is not None else None,
+        "bilateral_symmetry": (
+            None
+            if mobility.get("score") is not None
+            else round(gait_symmetry, 3) if gait_symmetry is not None else None
+        ),
         "pinch_grip": round(pinch_grip, 3) if pinch_grip is not None else None,
         "hand_opening": round(hand_opening, 3) if hand_opening is not None else None,
         "walking_skipped": walking_skipped,
@@ -1603,15 +1679,42 @@ def build_functional_metrics(task_results: Sequence[Any], assigned_task_ids=None
                 "pinch_control_percent": round(100 * pinch_grip) if pinch_grip is not None else None,
             },
             "lower_limb": {
-                "observed": bool(lower_tasks) and not walking_skipped,
+                "observed": False,
+                "reported": mobility.get("score") is not None,
                 "skipped": walking_skipped,
-                "step_completion_percent": round(100 * walking_completion) if walking_completion is not None else None,
-                "bilateral_motion_symmetry_percent": round(100 * gait_symmetry) if gait_symmetry is not None else None,
-                "full_body_visibility_percent": round(100 * gait_visibility) if gait_visibility is not None else None,
+                "result_source": mobility.get("score_source"),
+                "survey_score": mobility.get("score"),
+                "reported_assistance_level": mobility.get("reported_assistance_level"),
+                "walking_video_uploaded": walking_video_uploaded,
+                "step_completion_percent": None,
+                "bilateral_motion_symmetry_percent": None,
+                "full_body_visibility_percent": None,
                 "video_duration_seconds": round(walking_duration_ms / 1000, 1) if walking_duration_ms is not None else None,
             },
         },
     }
+
+
+def _functional_metrics_with_survey_mobility(
+    saved_metrics: Optional[Dict[str, Any]],
+    task_results: Sequence[Any],
+    assigned_task_ids: Optional[Sequence[str]],
+    patient_parameters: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Normalize new and historic snapshots to the survey-only lower-limb policy."""
+    computed = build_functional_metrics(task_results, assigned_task_ids, patient_parameters)
+    if not saved_metrics:
+        return computed
+    mobility = survey_mobility_result(patient_parameters)
+    if mobility.get("score") is None:
+        return dict(saved_metrics)
+    normalized = dict(saved_metrics)
+    normalized["bilateral_symmetry"] = None
+    normalized["task_quality"] = computed["task_quality"]
+    saved_domains = dict(normalized.get("domains") or {})
+    saved_domains["lower_limb"] = computed["domains"]["lower_limb"]
+    normalized["domains"] = saved_domains
+    return normalized
 
 
 def _snapshot_issue_category(issue: Any) -> str:
@@ -2640,7 +2743,7 @@ async def create_task_video_upload_ticket(
         raise HTTPException(status_code=413, detail="Task video size is outside the allowed range")
     safe_package = _safe_video_token(package_id, "assessment")
     safe_task = _safe_video_token(task_id, "task")
-    extension = "mp4" if normalized_type in {"video/mp4", "video/quicktime"} else "webm"
+    extension = TASK_VIDEO_EXTENSIONS.get(normalized_type, "video")
     video_id = "r2_" + uuid.uuid4().hex
     object_key = task_video_object_storage.object_key(
         user["id"], safe_package, safe_task, video_id, extension
@@ -2744,7 +2847,7 @@ async def save_task_video(
 
     safe_package = _safe_video_token(package_id, "assessment")
     safe_task = _safe_video_token(task_id, "task")
-    extension = "mp4" if content_type in {"video/mp4", "video/quicktime"} else "webm"
+    extension = TASK_VIDEO_EXTENSIONS.get(content_type, "video")
     created_at = datetime.now(timezone.utc).isoformat()
     metadata = {
         "user_id": user["id"],
@@ -3430,21 +3533,29 @@ async def submit_assessment(payload: AssessmentSubmit, request: Request):
     for task_state in model_analysis.get("tasks", []):
         if str(task_state.get("task_id")) in skipped_task_ids:
             task_state["status"] = "not_observed_patient_skipped"
+        elif str(task_state.get("task_id")) == "L6":
+            task_state["status"] = "supporting_record_only"
+    has_camera_analysis_tasks = any(task_id != "L6" for task_id in task_ids)
+    if not testing_shortcut and task_ids and not has_camera_analysis_tasks:
+        model_analysis["status"] = "not_required_survey_based"
     model_analysis["gpu_stage"] = {
-        "status": "generated_testing_sample" if testing_shortcut else "queued" if LOCAL_GPU_WORKER_URL else "not_configured",
-        "device": None if testing_shortcut else "cuda:0" if LOCAL_GPU_WORKER_URL else None,
+        "status": (
+            "generated_testing_sample" if testing_shortcut
+            else "queued" if LOCAL_GPU_WORKER_URL and has_camera_analysis_tasks
+            else "not_required_survey_based" if task_ids and not has_camera_analysis_tasks
+            else "not_configured"
+        ),
+        "device": None if testing_shortcut else "cuda:0" if LOCAL_GPU_WORKER_URL and has_camera_analysis_tasks else None,
     }
-    walking_video_ready = bool((video_records.get("L6") or {}).get("id"))
     walking_was_skipped = "L6" in skipped_task_ids
     model_analysis["musculoskeletal_stage"] = {
         "status": (
             "generated_testing_sample" if testing_shortcut
-            else "queued" if LOCAL_GPU_WORKER_URL and walking_video_ready
             else "not_observed_patient_skipped" if walking_was_skipped
-            else "waiting_for_walking_video" if LOCAL_GPU_WORKER_URL
+            else "not_required_survey_based" if "L6" in assigned_task_ids
             else "not_configured"
         ),
-        "modeled_tasks": ["L6"] if walking_video_ready else [],
+        "modeled_tasks": [],
     }
     expected_task_count = len(assigned_task_ids)
     collection_summary = patient_collection_summary(payload.task_results, expected_task_count)
@@ -3452,14 +3563,17 @@ async def submit_assessment(payload: AssessmentSubmit, request: Request):
         logger.warning("Ignoring client-supplied musculoskeletal outputs; trusted worker ingestion is required")
     trusted_model_outputs: Dict[str, Any] = {}
     issues = derive_functional_issues(payload.task_results)
-    functional_metrics = build_functional_metrics(payload.task_results, assigned_task_ids)
+    functional_metrics = build_functional_metrics(payload.task_results, assigned_task_ids, patient_parameters)
     domain_assessments = build_domain_assessments(payload.task_results)
     expected_summary_domains = _expected_domains_for_tasks(payload.assessment_package, assigned_task_ids)
-    body_function_summary = patient_body_function_summary(
-        payload.task_results,
-        issues,
-        trusted_model_outputs,
-        expected_summary_domains,
+    body_function_summary = _summary_with_survey_mobility(
+        patient_body_function_summary(
+            payload.task_results,
+            issues,
+            trusted_model_outputs,
+            expected_summary_domains,
+        ),
+        patient_parameters,
     )
     movement_snapshot_decision = build_movement_snapshot_decision(
         payload.task_results,
@@ -3633,11 +3747,19 @@ async def submit_assessment(payload: AssessmentSubmit, request: Request):
             "exercise_ids": [exercise.id for exercise in plan],
         },
     )
-    if not testing_shortcut and LOCAL_GPU_WORKER_URL and ANALYSIS_WORKER_TOKEN and (payload.motion_data or video_records):
+    analysis_video_records = {task_id: record for task_id, record in video_records.items() if task_id != "L6"}
+    analysis_motion_data = dict(payload.motion_data or {})
+    if isinstance(analysis_motion_data.get("frames"), list):
+        analysis_motion_data["frames"] = [
+            frame for frame in analysis_motion_data["frames"]
+            if str(frame.get("task_id") or "") != "L6"
+        ]
+    has_analysis_input = bool(analysis_video_records or analysis_motion_data.get("frames"))
+    if not testing_shortcut and LOCAL_GPU_WORKER_URL and ANALYSIS_WORKER_TOKEN and has_analysis_input:
         asyncio.create_task(_queue_local_gpu_stage(
             assessment_id,
-            payload.motion_data,
-            video_records,
+            analysis_motion_data,
+            analysis_video_records,
             payload.affected_side,
             patient_parameters,
         ))
@@ -3817,12 +3939,26 @@ async def get_patient_assessment_summary(assessment_id: str, request: Request):
     expected = len(assigned_task_ids) or len(ASSESSMENT_PACKAGES.get(package_id, {}).get("tasks", []))
     collection = doc.get("patient_summary") or patient_collection_summary(doc.get("task_results", []), expected)
     expected_summary_domains = _expected_domains_for_tasks(package_id, assigned_task_ids)
-    body_function_summary = doc.get("body_function_summary") or patient_body_function_summary(
-        doc.get("task_results", []),
-        doc.get("functional_issues", []),
-        doc.get("musculoskeletal_outputs", {}),
-        expected_summary_domains,
+    body_function_summary = _summary_with_survey_mobility(
+        doc.get("body_function_summary") or patient_body_function_summary(
+            doc.get("task_results", []),
+            doc.get("functional_issues", []),
+            doc.get("musculoskeletal_outputs", {}),
+            expected_summary_domains,
+        ),
+        doc.get("patient_parameters") or {},
     )
+    task_quality = _task_quality_with_survey_mobility(
+        score_assessment(doc.get("task_results", []), ASSESSMENT_RUBRICS, assigned_task_ids),
+        doc.get("patient_parameters") or {},
+    )
+    functional_metrics = _functional_metrics_with_survey_mobility(
+        doc.get("metrics"),
+        doc.get("task_results", []),
+        assigned_task_ids,
+        doc.get("patient_parameters") or {},
+    )
+    functional_metrics["task_quality"] = task_quality
     return {
         "id": doc["id"],
         "created_at": doc["created_at"],
@@ -3836,8 +3972,7 @@ async def get_patient_assessment_summary(assessment_id: str, request: Request):
             doc.get("affected_side", "right"),
             doc.get("model_analysis") or {},
         ),
-        "functional_metrics": {**(doc.get("metrics") or build_functional_metrics(doc.get("task_results", []))),
-                               "task_quality": score_assessment(doc.get("task_results", []), ASSESSMENT_RUBRICS, assigned_task_ids)},
+        "functional_metrics": functional_metrics,
         "insights": doc.get("patient_insights") or build_patient_insights(
             body_function_summary,
             doc.get("musculoskeletal_outputs") or {},
@@ -4164,9 +4299,17 @@ async def save_model_results(assessment_id: str, payload: ModelResultSubmit, req
     if not doc:
         raise HTTPException(status_code=404, detail="Assessment not found")
 
-    task_ids = [str(item.get("task_id")) for item in doc.get("task_results", [])]
+    task_ids = [
+        str(item.get("task_id"))
+        for item in doc.get("task_results", [])
+        if str(item.get("task_id")) != "L6"
+    ]
     manifest_tasks = (doc.get("model_analysis") or {}).get("tasks") or []
-    expected_videos = {str(item.get("task_id")): item.get("video_id") for item in manifest_tasks}
+    expected_videos = {
+        str(item.get("task_id")): item.get("video_id")
+        for item in manifest_tasks
+        if str(item.get("task_id")) != "L6"
+    }
     try:
         validated = validate_model_outputs(payload.model_dump(), task_ids, expected_videos)
     except ValueError as exc:
@@ -4204,11 +4347,14 @@ async def save_model_results(assessment_id: str, payload: ModelResultSubmit, req
             "rehab_plan_source": "fixed_core_programme",
         }
     expected_summary_domains = _expected_domains_for_tasks(package_id, assigned_task_ids)
-    body_function_summary = patient_body_function_summary(
-        task_results,
-        issues,
-        outputs,
-        expected_summary_domains,
+    body_function_summary = _summary_with_survey_mobility(
+        patient_body_function_summary(
+            task_results,
+            issues,
+            outputs,
+            expected_summary_domains,
+        ),
+        patient_parameters,
     )
     completed_model_analysis = dict(doc.get("model_analysis") or {})
     completed_model_analysis.update({
@@ -4458,22 +4604,22 @@ POSE_RUNNER_HTML = r"""<!DOCTYPE html>
   </div>
   <div id="walkingCapture" class="hidden" data-testid="walking-capture">
     <div class="walkingCard">
-      <div class="walkingEyebrow">Final walking observation</div>
-      <h2 id="walkingCaptureTitle">Record a comfortable walk</h2>
-      <p id="walkingCaptureLead">Ask a carer or family member to record from the side while you walk at your usual comfortable pace.</p>
+      <div class="walkingEyebrow">Final walking record</div>
+      <h2 id="walkingCaptureTitle">Upload a short frontal walking video</h2>
+      <p id="walkingCaptureLead">Ask a carer or family member to record from the front while you walk toward the camera at your usual comfortable pace.</p>
       <ul>
-        <li>Before walking, have the patient face the camera clearly for two seconds so Rehyn can confirm the video belongs to the same assessment.</li>
-        <li>Keep the patient's head, trunk, hips, knees, feet, and walking aid visible for the entire recording.</li>
-        <li>Use a fixed side view when possible. Otherwise move smoothly parallel at a safe distance.</li>
-        <li>Do not zoom, walk backward, cross the patient's path, or film while providing hands-on support.</li>
+        <li>A short video is fine. Keep the patient's whole body and usual walking aid visible when possible.</li>
+        <li>Keep the camera still at a safe distance and do not stand in the patient's walking path.</li>
+        <li>The video is saved as an assessment record; it is not used to grade lower-limb movement.</li>
+        <li>The lower-limb result shown in the movement snapshot comes from the patient's survey answers.</li>
       </ul>
       <div id="walkingDesktopActions" class="hidden" data-testid="walking-desktop-actions">
         <div id="walkingVideoDropZone" data-testid="walking-video-drop-zone">
           <div class="walkingDropIcon" aria-hidden="true">&#8593;</div>
-          <div class="walkingDropTitle">Drag your walking video here</div>
-          <div class="walkingDropHint">or choose it from this computer</div>
+          <div class="walkingDropTitle">Drag your frontal walking video here</div>
+          <div class="walkingDropHint">or choose or record a short video on this device</div>
           <div id="walkingPickerButton">
-            <button id="walkingChooseVideoBtn" type="button" tabindex="-1" data-testid="walking-choose-video">Choose walking video</button>
+            <button id="walkingChooseVideoBtn" type="button" tabindex="-1" data-testid="walking-choose-video">Choose or record walking video</button>
             <input id="walkingVideoInput" type="file" accept="video/*" aria-label="Choose walking video" data-testid="walking-video-input" />
           </div>
         </div>
@@ -5421,29 +5567,20 @@ function setWalkingCaptureStatus(message, tone=""){
 }
 
 async function showWalkingCapture(task){
-  finalizePatientFaceReference();
   pendingUnconfirmedWalkingVideo = null;
   pendingUnconfirmedWalkingValidation = null;
   walkingProceedUnconfirmedBtn.classList.add("hidden");
-  walkingCaptureTitle.textContent = IS_MOBILE_CAPTURE_DEVICE
-    ? "Record the walking test"
-    : "Upload a walking video";
-  walkingCaptureLead.textContent = IS_MOBILE_CAPTURE_DEVICE
-    ? "Hand the phone to a carer or family member. They should record from the side and keep your whole body visible."
-    : "A computer should stay in place. Ask a carer or family member to record the walk on a phone, then upload that video here. The patient should face the camera for two seconds before turning sideways to walk.";
-  walkingDesktopActions.classList.toggle("hidden", IS_MOBILE_CAPTURE_DEVICE);
-  walkingMobileActions.classList.toggle("hidden", !IS_MOBILE_CAPTURE_DEVICE);
-  setWalkingCaptureStatus(IS_MOBILE_CAPTURE_DEVICE
-    ? "When everyone is safely positioned, tap Start recording walking."
-    : "Drag a walking video here, or choose it from this computer. Rehyn will confirm that it is the same patient before uploading; framing notes will not block the video.");
+  walkingCaptureTitle.textContent = "Upload a short frontal walking video";
+  walkingCaptureLead.textContent = "Ask a carer or family member to record from the front while you walk toward the camera at your usual comfortable pace.";
+  walkingDesktopActions.classList.remove("hidden");
+  walkingMobileActions.classList.add("hidden");
+  setWalkingCaptureStatus("Choose any walking video from this device. Short clips are accepted and video framing does not affect the survey-based lower-limb result.");
   walkingCapture.classList.remove("hidden");
   ui.classList.add("hidden");
   renderDots();
   if(!walkingCapturePromptPlayed){
     walkingCapturePromptPlayed = true;
-    const prompt = IS_MOBILE_CAPTURE_DEVICE
-      ? "For the walking test, hand the phone to a carer or family member. Keep your whole body visible from the side. Tap Start recording walking when everyone is safely positioned."
-      : "For the walking test, ask a carer or family member to record on a phone. Face the camera clearly for two seconds first, then turn sideways and walk while keeping your whole body visible. Upload that video here.";
+    const prompt = "For the walking record, ask a carer or family member to take a short video from the front while you walk toward the camera. Then choose or record the video here. Any walking video will be accepted for now, and your lower-limb result comes from your survey answers.";
     await playVoice(prompt);
   }
 }
@@ -5651,124 +5788,57 @@ function seekWalkingReviewVideo(timeSeconds){
 }
 
 async function validateWalkingVideo(file, onProgress=()=>{}){
-  if(!file || !String(file.type || "").startsWith("video/")){
+  if(!isWalkingVideoFile(file)){
     return {ok:false, message:"Please choose a video file."};
   }
   if(Number(file.size || 0) > 35 * 1024 * 1024){
     return {ok:false, message:"This video is larger than 35 MB. Record at 1080p or lower, or trim the clip to the walking test, then choose it again."};
   }
   const objectUrl = URL.createObjectURL(file);
-  let validator = null;
+  let durationSeconds = 0;
+  let width = 0;
+  let height = 0;
+  let metadataReadable = false;
   try{
     onProgress({stage:"metadata", message:"Opening the video on this device..."});
     walkingReviewVideo.src = objectUrl;
-    await new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => reject(new Error("Video metadata timed out")), 8000);
-      walkingReviewVideo.onloadedmetadata = () => { clearTimeout(timeout); resolve(); };
-      walkingReviewVideo.onerror = () => { clearTimeout(timeout); reject(new Error("The selected video could not be opened")); };
-    });
-    const durationSeconds = Number(walkingReviewVideo.duration || 0);
-    const width = Number(walkingReviewVideo.videoWidth || 0);
-    const height = Number(walkingReviewVideo.videoHeight || 0);
-    if(!Number.isFinite(durationSeconds) || durationSeconds <= 0){
-      return {ok:false, message:"This video has no readable duration. Please choose a playable walking video."};
-    }
-    onProgress({stage:"model", message:"Preparing the walking video check..."});
-    validator = await getWalkingVideoValidator();
-    const reference = finalizePatientFaceReference();
-    if(!reference){
-      return {ok:false, message:"Rehyn could not create the seated patient reference. Return to the assessment camera and keep the patient's face clear before choosing the video again."};
-    }
-    const timestampBase = performance.now() + 1000;
-    let detectorIndex = 0;
-    const latestIdentityTime = Math.max(0, durationSeconds - 0.05);
-    const identityTimes = Array.from(new Set(
-      [0.05, durationSeconds * 0.18, durationSeconds * 0.38, durationSeconds * 0.55]
-        .map(time => Math.round(Math.min(time, latestIdentityTime) * 1000) / 1000)
-        .filter(time => time >= 0)
-    ));
-    const identityScores = [];
-    for(let index=0; index<identityTimes.length; index += 1){
-      onProgress({
-        stage:"identity",
-        current:index + 1,
-        total:identityTimes.length,
-        message:`Confirming the patient in the video (${index + 1}/${identityTimes.length})...`,
+    try{
+      await new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => reject(new Error("Video metadata timed out")), 5000);
+        walkingReviewVideo.onloadedmetadata = () => { clearTimeout(timeout); resolve(); };
+        walkingReviewVideo.onerror = () => { clearTimeout(timeout); reject(new Error("Video metadata was not readable in this browser")); };
       });
-      await seekWalkingReviewVideo(identityTimes[index]);
-      const result = validator.detectForVideo(walkingReviewVideo, timestampBase + detectorIndex * 1000);
-      detectorIndex += 1;
-      const pose = result && result.landmarks && result.landmarks[0] ? result.landmarks[0] : null;
-      const signature = normalizedFaceAppearance(walkingReviewVideo, pose);
-      if(signature) identityScores.push(faceSignatureSimilarity(reference, signature));
+      durationSeconds = Number(walkingReviewVideo.duration || 0);
+      width = Number(walkingReviewVideo.videoWidth || 0);
+      height = Number(walkingReviewVideo.videoHeight || 0);
+      metadataReadable = Number.isFinite(durationSeconds) && durationSeconds > 0;
+    }catch(error){
+      postRN({type:"walking_video_metadata_unavailable", message:String(error)});
     }
-    const identityUnconfirmed = identityScores.length < 1;
-    const patientMatchScore = identityUnconfirmed ? null : medianValue(identityScores);
-    if(!identityUnconfirmed && patientMatchScore < WALKING_FACE_MATCH_THRESHOLD){
-      return {ok:false, message:"This video does not appear consistent with the patient who completed the seated assessment. Please choose the correct patient's video or restart the assessment with the intended patient."};
-    }
-
-    const sampleCount = Math.max(3, Math.min(8, Math.ceil(durationSeconds * 2)));
-    const sampledFrames = [];
-    const walkingStartSeconds = 0;
-    const walkingEndSeconds = durationSeconds * 0.94;
-    for(let index=0; index<sampleCount; index += 1){
-      onProgress({
-        stage:"movement",
-        current:index + 1,
-        total:sampleCount,
-        message:`Checking full-body walking visibility (${index + 1}/${sampleCount})...`,
-      });
-      const time = walkingStartSeconds + ((walkingEndSeconds - walkingStartSeconds) * index / (sampleCount - 1));
-      await seekWalkingReviewVideo(time);
-      const result = validator.detectForVideo(walkingReviewVideo, timestampBase + detectorIndex * 1000);
-      detectorIndex += 1;
-      const pose = result && result.landmarks && result.landmarks[0] ? result.landmarks[0] : null;
-      const world = result && result.worldLandmarks && result.worldLandmarks[0] ? result.worldLandmarks[0] : null;
-      if(pose) sampledFrames.push({time, pose, world, fullBody:fullBodyVisibleForWalking(pose)});
-    }
-    const poseFrameCount = sampledFrames.length;
-    const fullBodyFrameCount = sampledFrames.filter(frame => frame.fullBody).length;
-    const fullBodyRatio = poseFrameCount ? fullBodyFrameCount / poseFrameCount : 0;
-    const qualityAdvisory = poseFrameCount < Math.ceil(sampleCount / 2)
-      ? " The patient was small or difficult to track in parts of the clip, so movement confidence may be lower."
-      : (fullBodyRatio < 0.50
-        ? " Some body parts leave the frame, so movement confidence may be lower."
-        : "");
-    if(identityUnconfirmed){
-      return {
-        ok:false,
-        allowProceed:true,
-        reason:"identity_unconfirmed",
-        message:"The patient's face is too small or unclear for Rehyn to confirm the identity. You can choose another video, or use this video and mark it for therapist review.",
-        durationMs:Math.round(durationSeconds * 1000),
-        width,
-        height,
-        poseFrameCount,
-        fullBodyFrameCount,
-        fullBodyRatio,
-        patientMatchScore:null,
-        samePatientConfirmed:false,
-        identityStatus:"unconfirmed_patient_proceeded",
-        sampledFrames,
-      };
-    }
+    onProgress({stage:"ready", message:"Walking video accepted. Preparing the secure save..."});
     return {
       ok:true,
-      message:`Same-patient check passed. The walking video is accepted.${qualityAdvisory}`,
-      durationMs:Math.round(durationSeconds * 1000),
+      message:metadataReadable
+        ? "Walking video accepted. Lower-limb results will use the saved survey answers."
+        : "Walking video accepted. This browser could not preview its metadata, but the file can still be saved.",
+      durationMs:metadataReadable ? Math.round(durationSeconds * 1000) : 0,
       width,
       height,
-      poseFrameCount,
-      fullBodyFrameCount,
-      fullBodyRatio,
-      patientMatchScore,
-      samePatientConfirmed:true,
-      identityStatus:"confirmed",
-      sampledFrames,
+      metadataReadable,
+      validationMode:"record_only",
+      sampledFrames:[],
     };
   }catch(error){
-    return {ok:false, message:`Could not validate this video. ${String(error.message || error)}`};
+    return {
+      ok:true,
+      message:"Walking video accepted. It will be saved without browser preview metadata.",
+      durationMs:0,
+      width:0,
+      height:0,
+      metadataReadable:false,
+      validationMode:"record_only",
+      sampledFrames:[],
+    };
   }finally{
     walkingReviewVideo.removeAttribute("src");
     walkingReviewVideo.load();
@@ -5802,7 +5872,7 @@ function walkingFunctionalMetrics(sampledFrames){
 async function completeUploadedWalkingTask(file, validation){
   const task = tasks[currentTaskIdx];
   if(!task || !isWalkingTask(task)) return;
-  validation.sampledFrames.forEach((frame, index) => {
+  (validation.sampledFrames || []).forEach((frame, index) => {
     if(motionFrames.length >= MAX_MOTION_FRAMES) return;
     motionFrames.push({
       timestamp_ms:Math.round(frame.time * 1000),
@@ -5819,17 +5889,13 @@ async function completeUploadedWalkingTask(file, validation){
   });
   const metrics = {
     walking_capture_mode:"uploaded_video",
+    walking_video_role:"supporting_record",
+    lower_limb_result_source:"survey",
+    walking_video_accepted:true,
+    walking_video_metadata_readable:validation.metadataReadable === true,
     uploaded_video_duration_ms:validation.durationMs,
     uploaded_video_width:validation.width,
     uploaded_video_height:validation.height,
-    gait_pose_frame_count:validation.poseFrameCount,
-    gait_full_body_visible_frame_count:validation.fullBodyFrameCount,
-    gait_full_body_visibility_ratio:+validation.fullBodyRatio.toFixed(3),
-    walking_same_patient_confirmed:validation.samePatientConfirmed === true,
-    walking_identity_status:validation.identityStatus || (validation.samePatientConfirmed ? "confirmed" : "unconfirmed_patient_proceeded"),
-    walking_identity_review_required:validation.samePatientConfirmed !== true,
-    walking_patient_match_score:Number.isFinite(validation.patientMatchScore) ? +validation.patientMatchScore.toFixed(3) : null,
-    ...walkingFunctionalMetrics(validation.sampledFrames),
   };
   const perStepDuration = Math.round(validation.durationMs / Math.max(1, task.steps.length));
   taskResults[currentTaskIdx] = {
@@ -5845,14 +5911,11 @@ async function completeUploadedWalkingTask(file, validation){
       taskId:task.id,
       startedAt:performance.now(),
       durationMs:validation.durationMs,
-      mimeType:file.type || "video/mp4",
+      mimeType:walkingVideoContentType(file),
     }, file, {
       onUploadProgress:progress => {
         const percent = Math.round(progress * 100);
-        const prefix = validation.samePatientConfirmed
-          ? "Video checks passed. Saving securely"
-          : "Saving video for therapist review";
-        setWalkingCaptureStatus(`${prefix} (${percent}%)...`, "good");
+        setWalkingCaptureStatus(`Walking video accepted. Saving securely (${percent}%)...`, "good");
       },
     });
   }
@@ -8356,9 +8419,6 @@ function loop(){
     latestHandLandmarks = null;
     latestHandedness = "";
   }
-  if(!walkingCaptureActive && landmarks){
-    capturePatientFaceReference(video, landmarks, now);
-  }
   if(calibratingAssessment) updatePreAssessmentCalibrationUI(landmarks);
   computeHandMetrics();
   const inTarget = !calibratingAssessment && !correctionVoicePlaying && checkTarget(landmarks);
@@ -8482,7 +8542,6 @@ async function beginAssessmentSetup(){
     postRN({type:"model_setup_error", message:String(error)});
     return;
   }
-  preloadWalkingVideoValidator();
   await Promise.allSettled([unlockPromise, firstVoicePromise]);
   running = true;
   requestAnimationFrame(loop);
@@ -8499,16 +8558,24 @@ startBtn.addEventListener("click", beginAssessmentSetup);
 if(window.__rehynStartRequested) void beginAssessmentSetup();
 
 walkingVideoInput.addEventListener("click", () => {
-  pendingUnconfirmedWalkingVideo = null;
-  pendingUnconfirmedWalkingValidation = null;
-  walkingProceedUnconfirmedBtn.classList.add("hidden");
-  setWalkingCaptureStatus("Choose the walking video from this computer.");
+  setWalkingCaptureStatus("Choose or record a walking video on this device.");
 });
 
 function isWalkingVideoFile(file){
   if(!file) return false;
   if(String(file.type || "").toLowerCase().startsWith("video/")) return true;
   return /\.(mp4|mov|m4v|webm|avi|mpeg|mpg|mkv|3gp)$/i.test(String(file.name || ""));
+}
+
+function walkingVideoContentType(file){
+  const supplied = String(file && file.type || "").split(";", 1)[0].trim().toLowerCase();
+  if(supplied.startsWith("video/")) return supplied;
+  const extension = String(file && file.name || "").split(".").pop().toLowerCase();
+  return ({
+    mp4:"video/mp4", mov:"video/quicktime", m4v:"video/x-m4v",
+    webm:"video/webm", avi:"video/x-msvideo", mpeg:"video/mpeg",
+    mpg:"video/mpeg", mkv:"video/x-matroska", "3gp":"video/3gpp",
+  })[extension] || "video/mp4";
 }
 
 async function processWalkingVideoFile(file, source="picker"){
@@ -8522,8 +8589,6 @@ async function processWalkingVideoFile(file, source="picker"){
     setWalkingCaptureStatus("That file is not a video. Drop or choose a walking video instead.", "warn");
     return;
   }
-  pendingUnconfirmedWalkingVideo = null;
-  pendingUnconfirmedWalkingValidation = null;
   walkingProceedUnconfirmedBtn.classList.add("hidden");
   walkingChooseVideoBtn.disabled = true;
   walkingDesktopActions.classList.add("busy");
@@ -8533,22 +8598,17 @@ async function processWalkingVideoFile(file, source="picker"){
     : "Opening the walking video on this device...");
   try{
     const validation = await validateWalkingVideo(file, progress => {
-      setWalkingCaptureStatus(progress.message || "Checking the walking video...");
+      setWalkingCaptureStatus(progress.message || "Opening the walking video...");
     });
     if(!validation.ok){
-      if(validation.allowProceed && validation.reason === "identity_unconfirmed"){
-        pendingUnconfirmedWalkingVideo = file;
-        pendingUnconfirmedWalkingValidation = validation;
-        walkingProceedUnconfirmedBtn.classList.remove("hidden");
-      }
       setWalkingCaptureStatus(validation.message, "warn");
       return;
     }
     setWalkingCaptureStatus(validation.message, "good");
-    await playVoice("The walking video passed the recording check. Thank you. Your assessment is now complete.");
+    await playVoice("The walking video is saved as part of your assessment record. Thank you. Your lower-limb result comes from your survey answers, and your assessment is now complete.");
     setWalkingCaptureStatus(LIBRARY_TEST_MODE
-      ? "Video checks passed. Preparing the test result..."
-      : "Video checks passed. Preparing secure save...", "good");
+      ? "Walking video accepted. Preparing the test result..."
+      : "Walking video accepted. Preparing secure save...", "good");
     await completeUploadedWalkingTask(file, validation);
   }catch(error){
     setWalkingCaptureStatus(`The selected video could not be processed. ${String(error && error.message ? error.message : error)}`, "warn");
@@ -16711,7 +16771,12 @@ def _assessment_progress_series(assessments_raw: List[Dict[str, Any]]) -> Tuple[
     series: List[Dict[str, Any]] = []
     issues_count: Dict[str, int] = {}
     for a in assessments_raw:
-        m = a.get("metrics") or build_functional_metrics(a.get("task_results", []))
+        m = _functional_metrics_with_survey_mobility(
+            a.get("metrics"),
+            a.get("task_results", []),
+            a.get("assigned_task_ids"),
+            a.get("patient_parameters") or {},
+        )
         issues = [
             item for item in (a.get("functional_issues") or [])
             if str(_snapshot_value(item, "code", "")) != "NO_ISSUES"

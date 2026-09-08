@@ -70,6 +70,81 @@ def test_skipped_walking_is_not_counted_as_failed_or_observed():
     assert "not counted as a failed task" in summary["domains"][0]["summary"]
 
 
+def test_walking_video_is_record_only_and_lower_limb_score_comes_from_survey():
+    walking = server.TaskResult(
+        task_id="L6",
+        completed_steps=3,
+        total_steps=3,
+        steps=[],
+        metrics={
+            "walking_video_role": "supporting_record",
+            "gait_bilateral_motion_symmetry": 0.12,
+            "uploaded_video_duration_ms": 3035,
+        },
+    )
+    profile = {"mobility_level": "person_assist"}
+
+    metrics = server.build_functional_metrics([walking], ["L6"], profile)
+    lower_module = metrics["task_quality"]["modules"]["lower_limb"]
+    lower_domain = metrics["domains"]["lower_limb"]
+
+    assert lower_module["score"] == 45
+    assert lower_module["score_source"] == "survey"
+    assert lower_module["reported_assistance_level"] == "moderate_assistance"
+    assert metrics["bilateral_symmetry"] is None
+    assert lower_domain["observed"] is False
+    assert lower_domain["reported"] is True
+    assert lower_domain["result_source"] == "survey"
+    assert lower_domain["survey_score"] == 45
+    assert lower_domain["walking_video_uploaded"] is True
+    assert lower_domain["video_duration_seconds"] == 3.0
+    assert lower_domain["bilateral_motion_symmetry_percent"] is None
+
+
+def test_lower_limb_body_summary_is_explicitly_survey_reported():
+    walking = server.TaskResult(task_id="L6", completed_steps=3, total_steps=3, steps=[], metrics={})
+    raw_summary = patient_body_function_summary([walking], [], {}, ("lower_limb",))
+
+    summary = server._summary_with_survey_mobility(raw_summary, {"mobility_level": "walker"})
+
+    lower = summary["domains"][0]
+    assert lower["status"] == "survey_reported"
+    assert lower["score_source"] == "survey"
+    assert lower["survey_score"] == 95
+    assert lower["tasks_observed"] == 0
+    assert lower["step_completion_percent"] == 0
+    assert "walking video is saved as a record and is not graded" in lower["summary"]
+
+
+def test_historic_video_gait_score_is_suppressed_when_survey_data_exists():
+    walking = server.TaskResult(
+        task_id="L6",
+        completed_steps=3,
+        total_steps=3,
+        steps=[],
+        metrics={"walking_video_role": "supporting_record"},
+    )
+    historic = {
+        "bilateral_symmetry": 0.91,
+        "task_quality": {"modules": {"lower_limb": {"score": 91}}},
+        "domains": {"lower_limb": {"observed": True, "bilateral_motion_symmetry_percent": 91}},
+    }
+
+    normalized = server._functional_metrics_with_survey_mobility(
+        historic,
+        [walking],
+        ["L6"],
+        {"mobility_level": "wheelchair"},
+    )
+
+    assert normalized["bilateral_symmetry"] is None
+    assert normalized["task_quality"]["modules"]["lower_limb"]["score"] == 25
+    assert normalized["task_quality"]["modules"]["lower_limb"]["score_source"] == "survey"
+    assert normalized["domains"]["lower_limb"]["observed"] is False
+    assert normalized["domains"]["lower_limb"]["survey_score"] == 25
+    assert normalized["domains"]["lower_limb"]["bilateral_motion_symmetry_percent"] is None
+
+
 def test_patient_function_summary_exposes_explanations_and_real_metrics():
     source = open("frontend/app/function-summary.tsx", encoding="utf-8").read()
     api = open("frontend/src/api.ts", encoding="utf-8").read()

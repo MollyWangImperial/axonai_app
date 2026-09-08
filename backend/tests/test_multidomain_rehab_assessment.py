@@ -696,8 +696,14 @@ def test_completed_initial_collection_returns_domain_metrics_without_a_normal_re
         assert [item["domain"] for item in summary["body_function_summary"]["domains"]] == [
             "upper_limb", "hand", "lower_limb"
         ]
-        assert all(item["step_completion_percent"] == 100 for item in summary["body_function_summary"]["domains"])
-        assert summary["functional_metrics"]["domains"]["lower_limb"]["step_completion_percent"] == 100
+        body_domains = {item["domain"]: item for item in summary["body_function_summary"]["domains"]}
+        assert body_domains["upper_limb"]["step_completion_percent"] == 100
+        assert body_domains["hand"]["step_completion_percent"] == 100
+        assert body_domains["lower_limb"]["status"] == "survey_reported"
+        assert body_domains["lower_limb"]["step_completion_percent"] == 0
+        assert summary["functional_metrics"]["domains"]["lower_limb"]["step_completion_percent"] is None
+        assert summary["functional_metrics"]["task_quality"]["modules"]["lower_limb"]["score"] == 95
+        assert summary["functional_metrics"]["task_quality"]["modules"]["lower_limb"]["score_source"] == "survey"
         # The interim starting plan is viewable right away.
         assert summary["rehab_plan_ready"] is True
 

@@ -77,6 +77,20 @@ _ASSISTANCE_TO_SCORE = {
 }
 
 
+def survey_mobility_result(profile: Optional[Mapping[str, Any]] = None) -> Dict[str, Any]:
+    """Return the established survey-only lower-limb score and its provenance."""
+    profile = dict(profile or {})
+    response = str(profile.get("mobility_level") or "").lower()
+    assistance = _MOBILITY_TO_ASSISTANCE.get(response)
+    return {
+        "score": _ASSISTANCE_TO_SCORE.get(assistance) if assistance else None,
+        "score_scale": "0_to_100",
+        "score_source": "survey" if assistance else None,
+        "reported_assistance_level": assistance,
+        "survey_response": response or None,
+    }
+
+
 def _quantitative_score(observed_ratio, reported_level):
     if observed_ratio is not None:
         return max(0, min(100, int(round(float(observed_ratio) * 100))))

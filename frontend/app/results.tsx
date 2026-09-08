@@ -29,6 +29,7 @@ function domainStatusLabel(status: string) {
   if (status === "no_observable_difficulty") return "Moving well";
   if (status === "review_recommended") return "Needs attention";
   if (status === "not_observed") return "Not observed";
+  if (status === "survey_reported") return "From your survey";
   return "Analysis in progress";
 }
 
@@ -218,6 +219,22 @@ export default function ResultsScreen() {
   const mapMarkers = (["upper_limb", "hand", "lower_limb"] as const).map((domain) => {
     const observed = data?.body_function_summary.domains.find((item) => item.domain === domain);
     const pin = surveyPins.find((item) => item.domain === domain);
+    if (domain === "lower_limb" && observed?.status === "survey_reported") {
+      const surveyScore = observed.survey_score ?? data?.functional_metrics?.domains?.lower_limb?.survey_score ?? null;
+      const surveySeverity = surveyScore !== null && surveyScore >= 80
+        ? "moving_well" as const
+        : surveyScore !== null && surveyScore < 65
+          ? "needs_attention" as const
+          : "building_strength" as const;
+      return {
+        domain,
+        severity: pin?.severity ?? surveySeverity,
+        source: "survey" as const,
+        coverage: null,
+        findings: null,
+        detail: pin?.problem ?? "This lower-limb result comes from your movement-readiness survey. Your walking video is saved as a record and is not graded.",
+      };
+    }
     if (observed && observed.status !== "not_observed") {
       const severity = observed.findings_count > 0 || observed.status === "review_recommended"
         ? "needs_attention" as const

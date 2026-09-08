@@ -245,7 +245,12 @@ export type FunctionalMetrics = {
     };
     lower_limb?: {
       observed?: boolean;
+      reported?: boolean;
       skipped?: boolean;
+      result_source?: "survey" | string | null;
+      survey_score?: number | null;
+      reported_assistance_level?: string | null;
+      walking_video_uploaded?: boolean;
       step_completion_percent?: number | null;
       bilateral_motion_symmetry_percent?: number | null;
       full_body_visibility_percent?: number | null;
@@ -259,6 +264,9 @@ export type AssessmentTaskQuality = {
   modules: Record<"upper_limb" | "hand" | "lower_limb", {
     score: number | null; earned_score?: number | null; maximum: number; task_count: number; measured_tasks: number;
     measured_steps?: number; total_steps?: number;
+    score_source?: "survey" | "camera" | string;
+    reported_assistance_level?: string | null;
+    survey_response?: string | null;
   }>;
   tasks: {
     task_id: string; label: string; domain: string; score: number | null; module_weight: number; earned_module_points: number | null;
@@ -274,7 +282,9 @@ export type AssessmentTaskQuality = {
 export type BodyFunctionDomainSummary = {
   domain: "upper_limb" | "hand" | "lower_limb";
   label: string;
-  status: "analysis_pending" | "review_recommended" | "no_observable_difficulty" | "not_observed";
+  status: "analysis_pending" | "review_recommended" | "no_observable_difficulty" | "not_observed" | "survey_reported";
+  score_source?: "survey" | string;
+  survey_score?: number | null;
   tasks_completed: number;
   tasks_observed: number;
   step_completion_percent: number;
