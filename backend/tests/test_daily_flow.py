@@ -226,9 +226,15 @@ def test_app_wires_the_date_stepper_reminder_medal_calendar_and_finish_button():
     assert 'authedFetch("/api/chat/daily-reminder"' in home
     assert 'dailyPromptKey("alira-reminder", userId, todayIso)' in home
     assert 'testID="alira-daily-reminder"' in modals
-    # Re-assessment day prompt that starts the assessment.
+    # Re-assessment day prompt checks in first when needed, then starts the
+    # follow-up assessment instead of sending a returning user through initial.
     assert 'dailyPromptKey("reassessment", userId, todayIso)' in home and "if (hasInitialAssessment && followUpDue)" in home
     assert 'testID="reassessment-day-start"' in modals
+    assert "if (!checkedInToday && !await checkInForToday()) return;" in home
+    assert "onStart={startDueReassessment}" in home
+    assert "checkedIn={checkedInToday}" in home and "checkingIn={checkingIn}" in home
+    assert '"Check in and start re-assessment"' in modals and '"Start re-assessment"' in modals
+    assert 'mode: taskIds?.length ? "initial" : isInitialAssessment ? "initial" : "followup"' in home
     # Medal after the day's exercises, collected onto the calendar with the next assessment date.
     assert 'authedFetch("/api/users/daily-checkin/medal"' in home
     assert "checkIn.availableMedalDate < todayIso" in home

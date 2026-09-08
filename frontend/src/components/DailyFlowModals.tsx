@@ -228,11 +228,14 @@ export function AliraMessageModal({ visible, text, checkedIn, checkingIn, action
 type ReassessmentDayModalProps = {
   visible: boolean;
   date: string;
-  onStart: () => void;
+  checkedIn: boolean;
+  checkingIn: boolean;
+  actionError?: string;
+  onStart: () => void | Promise<void>;
   onLater: () => void;
 };
 
-export function ReassessmentDayModal({ visible, date, onStart, onLater }: ReassessmentDayModalProps) {
+export function ReassessmentDayModal({ visible, date, checkedIn, checkingIn, actionError, onStart, onLater }: ReassessmentDayModalProps) {
   const { palette } = useDisplayPreferences();
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onLater}>
@@ -241,14 +244,22 @@ export function ReassessmentDayModal({ visible, date, onStart, onLater }: Reasse
           <View style={[styles.badge, { backgroundColor: palette.soft }]}>
             <Ionicons name="clipboard-outline" size={34} color={palette.brand} />
           </View>
-          <Text style={[styles.kicker, { color: palette.brand }]}>TODAY IS YOUR RE-ASSESSMENT DAY</Text>
-          <Text style={[styles.title, { color: palette.text }]}>Let&apos;s measure your progress</Text>
+          <Text style={[styles.kicker, { color: palette.brand }]}>ALIRA - TODAY IS YOUR RE-ASSESSMENT DAY</Text>
+          <Text style={[styles.title, { color: palette.text }]}>{checkedIn ? "Let's measure your progress" : "Check in, then measure your progress"}</Text>
           <Text style={[styles.body, { color: palette.muted }]}>
-            {longDate(date)}. You have completed a round of daily exercises, so today Alira repeats the movement assessment to see how far you have come and to refresh your plan for the next round.
+            {longDate(date)}. {checkedIn
+              ? "Alira is ready to repeat the movement assessment, show how far you have come, and refresh your plan for the next round."
+              : "Complete today's quick check-in first. Alira will then open your re-assessment to show how far you have come and refresh your plan for the next round."}
           </Text>
-          <Pressable testID="reassessment-day-start" onPress={onStart} style={({ pressed }) => [styles.primary, pressed && styles.pressed]}>
+          {actionError ? <Text accessibilityRole="alert" style={{ color: palette.text }}>{actionError}</Text> : null}
+          <Pressable
+            testID="reassessment-day-start"
+            disabled={checkingIn}
+            onPress={() => { void onStart(); }}
+            style={({ pressed }) => [styles.primary, (pressed || checkingIn) && styles.pressed]}
+          >
             <Ionicons name="videocam-outline" size={19} color="#FFFFFF" />
-            <Text style={styles.primaryText}>Start the assessment</Text>
+            <Text style={styles.primaryText}>{checkingIn ? "Checking in..." : checkedIn ? "Start re-assessment" : "Check in and start re-assessment"}</Text>
           </Pressable>
           <Pressable testID="reassessment-day-later" onPress={onLater} style={styles.later}>
             <Text style={[styles.laterText, { color: palette.muted }]}>Later today</Text>
