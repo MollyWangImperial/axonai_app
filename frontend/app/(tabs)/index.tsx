@@ -751,6 +751,12 @@ export default function HomeScreen() {
     openExercisePlan();
   };
 
+  const startDueReassessment = useCallback(async () => {
+    if (!checkedInToday && !await checkInForToday()) return;
+    setShowReassessment(false);
+    startNextSession();
+  }, [checkedInToday, checkInForToday, startNextSession]);
+
   // Testing phase: step the app date from Home. Everything that asks "what is
   // today?" (check-in, plan, reminders, medals, the server's care plan) follows.
   const changeAppDate = useCallback(async (next: string | null) => {
@@ -811,8 +817,8 @@ export default function HomeScreen() {
   const medalAvailable = Boolean(availableMedalDate);
 
   // The daily prompts, evaluated once per app date after the data has loaded:
-  //  1. a completed prior day's medal, offered on the next day's first visit;
-  //  2. re-assessment day (the scheduled assessment is due and can start);
+  //  1. re-assessment day (the scheduled assessment is due and can start);
+  //  2. a completed prior day's medal, offered on the next day's first visit;
   //  3. exercises remain: Alira's once-a-day reminder, also posted into the chat.
   useEffect(() => {
     if (!dailyPromptsReady || loading || !carePlan) return;
@@ -822,10 +828,6 @@ export default function HomeScreen() {
     void (async () => {
       const user = await getCachedUser();
       const userId = user?.id || "anonymous";
-      if (medalAvailable) {
-        if (!cancelled) { setMedalError(""); setShowMedal(true); }
-        return;
-      }
       if (hasInitialAssessment && followUpDue) {
         const key = dailyPromptKey("reassessment", userId, todayIso);
         const shown = await storage.getItem(key, "");
@@ -835,6 +837,10 @@ export default function HomeScreen() {
         }
         // Keep assessment day focused on the assessment, even after its
         // once-a-day prompt has been dismissed.
+        return;
+      }
+      if (medalAvailable) {
+        if (!cancelled) { setMedalError(""); setShowMedal(true); }
         return;
       }
       if (hasInitialAssessment && remainingExerciseIds.length > 0) {
@@ -1242,7 +1248,10 @@ export default function HomeScreen() {
       <ReassessmentDayModal
         visible={!hundredPointAward && showReassessment}
         date={todayIso}
-        onStart={() => { setShowReassessment(false); startNextSession(); }}
+        checkedIn={checkedInToday}
+        checkingIn={checkingIn}
+        actionError={checkInError}
+        onStart={startDueReassessment}
         onLater={() => setShowReassessment(false)}
       />
       <AssessmentDateModal
