@@ -713,7 +713,7 @@ def test_forward_reach_grading_is_phase_gated_and_catches_forward_lean_and_shrug
     assert [step["phase"] for step in cfg["ex_h2m"]["cycle"]] == ["movement"] * 4 + ["return"]
     assert [step["phase"] for step in cfg["ex_bilateral"]["cycle"]] == ["movement", "movement"]
     assert "function activeMovementPhase()" in source
-    assert "if(!activeMovementPhase()) return;" in source
+    assert "if(!activeMovementPhase()){ compensationConsecutive={}; return; }" in source
     assert "activeFrames < SCORING_MIN_FRAMES" in source
 
     # Elbow extension is judged at peak reach with the arm actually raised,
@@ -753,7 +753,7 @@ def test_forward_reach_grading_is_phase_gated_and_catches_forward_lean_and_shrug
     # below the 35% share; a compensation held for ~1 s of movement is confirmed
     # whatever the share.
     assert "function movementUnderway(raw)" in source
-    assert "if(!ruleAppliesNow(rule) || !underway) continue;" in source
+    assert "if(!ruleAppliesNow(rule) || !underway){ compensationConsecutive[rule.id]=0; continue; }" in source
     assert "return value-rest >= 0.25*span;" in source
     assert server.EXERCISE_SCORING_METHOD["sustained_compensation_frames"] == 24
     assert "return hits/eligible >= Number(rule.min_ratio||.35) || hits >= SUSTAINED_COMPENSATION_FRAMES;" in source
@@ -943,13 +943,13 @@ def test_trunk_restrained_reaching_is_graded_like_forward_reach_and_recalibrates
     standard = server.EXERCISE_MOVEMENT_STANDARDS["ex_trunk"]
 
     # Same shared engine: a reach phase that is scored and a return phase that is not,
-    # with the workbook's stricter 8-degree trunk-lean threshold for this exercise.
+    # with a small-posture allowance and sustained confirmation for trunk lean.
     assert [step["phase"] for step in trunk["cycle"]] == ["movement", "return"]
-    assert {rule["id"]: rule["threshold_deg"] for rule in standard["compensations"]} == {"trunk_lean": 8, "shoulder_hike": 8}
+    assert {rule["id"]: rule["threshold_deg"] for rule in standard["compensations"]} == {"trunk_lean": 12, "shoulder_hike": 8}
     assert [step["metric"] for step in standard["rom_steps"]] == ["shoulder_flexion", "elbow_extension"]
 
     # The alarm names what went wrong in this exercise's own terms, then the correction.
-    assert trunk["compensation_problems"]["trunk_lean"] == "your back came away from the chair and your trunk leaned forward"
+    assert trunk["compensation_problems"]["trunk_lean"] == "your trunk leaned beyond the small posture allowance"
     assert trunk["compensation_problems"]["shoulder_hike"] == "your shoulder lifted toward your ear"
     assert "back against the chair" in trunk["correct_form_cue"] and "extend your elbow" in trunk["correct_form_cue"]
     assert "const specific=CFG.compensation_problems && CFG.compensation_problems[rule.id];" in source
@@ -1058,7 +1058,7 @@ def test_cylindrical_grasp_reach_open_close_carry_release_flow_and_compensations
     assert set(profile["compensation_labels"]) == {"trunk_lean", "trunk_side_lean", "shoulder_hike", "elbow_flare", "wrist_flexion"}
     assert "hand_opening" in profile["rom_cues"] and "elbow_extension" in profile["rom_cues"]
     assert "function ruleAppliesNow(rule)" in source
-    assert "if(!ruleAppliesNow(step)) continue;" in source and "if(!ruleAppliesNow(rule) || !underway) continue;" in source
+    assert "if(!ruleAppliesNow(step)) continue;" in source and "if(!ruleAppliesNow(rule) || !underway){ compensationConsecutive[rule.id]=0; continue; }" in source
     assert "raw.elbow_flare=rad2deg(Math.atan2(elbowOut,elbowDown));" in source
     assert grasp["compensation_problems"] == {
         "trunk_lean": "your chest leaned toward the cup",
