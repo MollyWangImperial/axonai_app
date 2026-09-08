@@ -48,6 +48,7 @@ import {
 } from "@/src/components/DailyFlowModals";
 import { PointsCelebration, PointsCelebrationEvent, celebrationEvent } from "@/src/components/PointsCelebration";
 import { HundredPointCelebration } from "@/src/components/HundredPointCelebration";
+import { TestingPointsModal } from "@/src/components/TestingPointsModal";
 import { SurveyPrefaceModal } from "@/src/components/SurveyPrefaceModal";
 import { useDisplayPreferences } from "@/src/displayPreferences";
 import { getScreenCache, setScreenCache } from "@/src/screenCache";
@@ -116,6 +117,7 @@ type DailyCheckInState = {
   date: string;
   status: "not_checked_in" | "in_progress" | "complete";
   medalCollected?: boolean;
+  availableMedalDate?: string | null;
   days: { date: string; status: string; medal?: boolean }[];
 };
 
@@ -126,23 +128,25 @@ const dailyPromptKey = (kind: string, userId: string, date: string) => `home_dai
 
 type RewardsSummary = {
   points: number;
+  earned_points?: number;
+  testing_revision?: string | null;
   message?: string;
   streak?: { current_days?: number };
   medals?: { id: string; name: string; threshold: number; earned: boolean; celebrated?: boolean }[];
 };
 
-type HundredPointAward = { name: string; points: number; userId: string; milestoneId: string };
+type HundredPointAward = { name: string; points: number; userId: string; milestoneId: string; testingRevision?: string | null };
 const HUNDRED_POINT_MEDAL_ID = "hundred_point_medal";
-const milestoneSeenKey = (userId: string, milestoneId: string) => `reward_milestone_seen_v1:${userId}:${milestoneId}`;
+const milestoneSeenKey = (userId: string, milestoneId: string, testingRevision?: string | null) => `reward_milestone_seen_v1:${userId}:${milestoneId}${testingRevision ? `:testing:${testingRevision}` : ""}`;
 
 async function shouldShowHundredPointCelebration(userId: string, rewards: RewardsSummary | null): Promise<boolean> {
   const milestone = rewards?.medals?.find((item) => item.id === HUNDRED_POINT_MEDAL_ID);
   if (!milestone?.earned || milestone.celebrated) return false;
-  return !(await storage.getItem(milestoneSeenKey(userId, milestone.id), false));
+  return !(await storage.getItem(milestoneSeenKey(userId, milestone.id, rewards?.testing_revision), false));
 }
 
-async function acknowledgeHundredPointCelebration(userId: string, milestoneId: string) {
-  await storage.setItem(milestoneSeenKey(userId, milestoneId), true);
+async function acknowledgeHundredPointCelebration(userId: string, milestoneId: string, testingRevision?: string | null) {
+  await storage.setItem(milestoneSeenKey(userId, milestoneId, testingRevision), true);
   void authedFetch(`/api/users/rewards/milestones/${milestoneId}/acknowledge`, { method: "POST" }).catch(() => null);
 }
 
@@ -417,23 +421,30 @@ export default function HomeScreen() {
   const [loading, setLoading] = useState(!cached);
   const [accountStateUnavailable, setAccountStateUnavailable] = useState(false);
   const [checkingIn, setCheckingIn] = useState(false);
+  const [checkInError, setCheckInError] = useState("");
   const [showWeek, setShowWeek] = useState(false);
   const [showSurveyPreface, setShowSurveyPreface] = useState(false);
   const [celebration, setCelebration] = useState<PointsCelebrationEvent | null>(null);
   const [hundredPointAward, setHundredPointAward] = useState<HundredPointAward | null>(null);
-  // Daily flow: Alira's reminder, the re-assessment-day prompt, today's medal
+  const [showTestingPoints, setShowTestingPoints] = useState(false);
+  const [savingTestingPoints, setSavingTestingPoints] = useState(false);
+  const [testingPointsError, setTestingPointsError] = useState("");
+  // Daily flow: Alira's reminder, the re-assessment-day prompt, a prior day's medal
   // and the calendar it lands on. One prompt at a time.
   const [aliraReminder, setAliraReminder] = useState<string | null>(null);
   const [showReassessment, setShowReassessment] = useState(false);
   const [showMedal, setShowMedal] = useState(false);
   const [collectingMedal, setCollectingMedal] = useState(false);
+  const [medalError, setMedalError] = useState("");
   const [showCalendar, setShowCalendar] = useState(false);
   const [calendarHighlight, setCalendarHighlight] = useState<string | undefined>(undefined);
   const [showAssessmentDate, setShowAssessmentDate] = useState(false);
   const [savingAssessmentDate, setSavingAssessmentDate] = useState(false);
   const promptsEvaluatedFor = useRef<string>("");
+  const [dailyPromptsReady, setDailyPromptsReady] = useState(false);
 
   const load = useCallback(async () => {
+    setDailyPromptsReady(false);
     if (!getScreenCache<HomeScreenCache>("home")) setLoading(true);
     await loadAppDateOverride();
     const user = await getCachedUser();
@@ -494,7 +505,7 @@ export default function HomeScreen() {
     const nextOwnGoal = String(onboarding?.profile?.primary_goal || "").trim();
     const nextDailyGoal = deriveFunctionalGoal(onboarding?.profile) || nextOwnGoal;
     const serverCheckIn: DailyCheckInState = checkInPayload
-      ? { date: checkInPayload.date || requestedDate, status: checkInPayload.status || "not_checked_in", medalCollected: Boolean(checkInPayload.medal_collected), days: checkInPayload.days || [] }
+      ? { date: checkInPayload.date || requestedDate, status: checkInPayload.status || "not_checked_in", medalCollected: Boolean(checkInPayload.medal_collected), availableMedalDate: checkInPayload.available_medal_date, days: checkInPayload.days || [] }
       : EMPTY_CHECK_IN;
     const cachedCheckInStatus = cachedActivity.daily_check_ins?.[requestedDate];
     const nextCheckIn: DailyCheckInState = serverCheckIn.status !== "not_checked_in" || !cachedCheckInStatus
@@ -548,7 +559,7 @@ export default function HomeScreen() {
     const nextPoints = Number(rewardsPayload?.points ?? 0);
     const showHundredPointAward = Boolean(user?.id && await shouldShowHundredPointCelebration(user.id, rewardsPayload));
     if (showHundredPointAward && user?.id) {
-      setHundredPointAward({ name: nextName, points: nextPoints, userId: user.id, milestoneId: HUNDRED_POINT_MEDAL_ID });
+      setHundredPointAward({ name: nextName, points: nextPoints, userId: user.id, milestoneId: HUNDRED_POINT_MEDAL_ID, testingRevision: rewardsPayload?.testing_revision });
     }
     const lastCelebratedPoints = getScreenCache<number>("celebrated-points");
     if (lastCelebratedPoints == null) {
@@ -588,6 +599,7 @@ export default function HomeScreen() {
       latestAssessmentCreatedAt: nextLatestAssessmentCreatedAt,
     });
     setLoading(false);
+    setDailyPromptsReady(true);
   }, []);
 
   useFocusEffect(useCallback(() => { void load(); }, [load]));
@@ -672,21 +684,27 @@ export default function HomeScreen() {
   }, [activeExerciseIds.length, latest, latestAssessmentId, router, startNextSession]);
 
   const checkInForToday = useCallback(async () => {
-    if (checkingIn || checkedInToday) return;
+    if (checkedInToday) return true;
+    if (checkingIn) return false;
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     setCheckingIn(true);
-    const response = await authedFetch("/api/users/daily-checkin", {
-      method: "POST",
-      body: JSON.stringify({ date: todayIso }),
-    }).catch(() => null);
-    if (response?.ok) {
-      const user = await getCachedUser();
+    setCheckInError("");
+    try {
+      const response = await authedFetch("/api/users/daily-checkin", {
+        method: "POST",
+        body: JSON.stringify({ date: todayIso }),
+      });
       const payload = await response.json().catch(() => null);
-      if (payload) {
-        const status = payload.status === "complete" ? "complete" : "in_progress";
-        setCheckIn({ date: payload.date || todayIso, status, days: payload.days || [] });
-        if (user?.id) await cacheDailyCheckInActivity(user.id, todayIso, status);
+      if (!response.ok || payload?.date !== todayIso || !["in_progress", "complete"].includes(payload?.status)) {
+        throw new Error("Your check-in could not be saved. Please try again before opening today's exercises.");
       }
+      const user = await getCachedUser();
+      const status = payload.status === "complete" ? "complete" : "in_progress";
+      const nextCheckIn: DailyCheckInState = { date: todayIso, status, availableMedalDate: payload.available_medal_date, medalCollected: Boolean(payload.medal_collected), days: payload.days || [] };
+      setCheckIn(nextCheckIn);
+      const cachedHome = getScreenCache<HomeScreenCache>("home");
+      if (cachedHome) setScreenCache<HomeScreenCache>("home", { ...cachedHome, checkIn: nextCheckIn });
+      if (user?.id) await cacheDailyCheckInActivity(user.id, todayIso, status);
       // Checking in earns points (2 per day): celebrate briefly, then the
       // toast fades out on its own, and the badge refreshes right away.
       setCelebration(celebrationEvent(2, "Checked in - great start to today!"));
@@ -698,12 +716,17 @@ export default function HomeScreen() {
           setScreenCache<number>("celebrated-points", Number(rewardsPayload.points ?? 0));
           if (user?.id && await shouldShowHundredPointCelebration(user.id, rewardsPayload)) {
             setCelebration(null);
-            setHundredPointAward({ name: greetName || user.name?.split(" ")[0] || "there", points: Number(rewardsPayload.points ?? 100), userId: user.id, milestoneId: HUNDRED_POINT_MEDAL_ID });
+            setHundredPointAward({ name: greetName || user.name?.split(" ")[0] || "there", points: Number(rewardsPayload.points ?? 100), userId: user.id, milestoneId: HUNDRED_POINT_MEDAL_ID, testingRevision: rewardsPayload.testing_revision });
           }
         }
       }
+      return true;
+    } catch {
+      setCheckInError("Your check-in could not be saved. Please try again before opening today's exercises.");
+      return false;
+    } finally {
+      setCheckingIn(false);
     }
-    setCheckingIn(false);
   }, [checkedInToday, checkingIn, greetName, todayIso]);
 
   const openExercisePlan = () => {
@@ -711,6 +734,12 @@ export default function HomeScreen() {
     else if (latest?.id || latestAssessmentId) router.push({ pathname: "/rehab-plan" as never, params: { id: latest?.id || latestAssessmentId } });
     else if (activeExerciseIds.length) router.push({ pathname: "/rehab-plan" as never, params: { id: CURRENT_ACCOUNT_PLAN_ID } });
     else openDestination(nextStep?.destination);
+  };
+
+  const openPlanFromReminder = async () => {
+    if (!checkedInToday && !await checkInForToday()) return;
+    setAliraReminder(null);
+    openExercisePlan();
   };
 
   // Testing phase: step the app date from Home. Everything that asks "what is
@@ -761,21 +790,26 @@ export default function HomeScreen() {
     for (const day of checkIn.days) map[day.date] = { status: day.status, medal: Boolean(day.medal) };
     return map;
   }, [checkIn.days]);
-  const todaysExercisesComplete = hasInitialAssessment && activeExerciseIds.length > 0 && remainingExerciseIds.length === 0;
-  const medalAvailable = todaysExercisesComplete && checkIn.date === todayIso && checkIn.status === "complete" && !checkIn.medalCollected;
+  const availableMedalDate = checkIn.date === todayIso && checkIn.availableMedalDate && checkIn.availableMedalDate < todayIso
+    ? checkIn.availableMedalDate : null;
+  const medalAvailable = Boolean(availableMedalDate);
 
   // The daily prompts, evaluated once per app date after the data has loaded:
-  //  1. re-assessment day (the scheduled assessment is due and can start);
-  //  2. today's exercises are finished and the medal is waiting;
+  //  1. a completed prior day's medal, offered on the next day's first visit;
+  //  2. re-assessment day (the scheduled assessment is due and can start);
   //  3. exercises remain: Alira's once-a-day reminder, also posted into the chat.
   useEffect(() => {
-    if (loading || !carePlan) return;
+    if (!dailyPromptsReady || loading || !carePlan) return;
     if (promptsEvaluatedFor.current === todayIso) return;
     promptsEvaluatedFor.current = todayIso;
     let cancelled = false;
     void (async () => {
       const user = await getCachedUser();
       const userId = user?.id || "anonymous";
+      if (medalAvailable) {
+        if (!cancelled) { setMedalError(""); setShowMedal(true); }
+        return;
+      }
       if (hasInitialAssessment && followUpDue) {
         const key = dailyPromptKey("reassessment", userId, todayIso);
         const shown = await storage.getItem(key, "");
@@ -785,10 +819,6 @@ export default function HomeScreen() {
         }
         // Keep assessment day focused on the assessment, even after its
         // once-a-day prompt has been dismissed.
-        return;
-      }
-      if (medalAvailable) {
-        if (!cancelled) setShowMedal(true);
         return;
       }
       if (hasInitialAssessment && remainingExerciseIds.length > 0) {
@@ -807,34 +837,57 @@ export default function HomeScreen() {
       }
     })();
     return () => { cancelled = true; };
-  }, [carePlan, followUpDue, hasInitialAssessment, loading, medalAvailable, remainingExerciseIds.length, todayIso]);
+  }, [carePlan, dailyPromptsReady, followUpDue, hasInitialAssessment, loading, medalAvailable, remainingExerciseIds.length, todayIso]);
 
   const collectMedal = useCallback(async () => {
-    if (collectingMedal) return;
+    if (collectingMedal || !availableMedalDate) return;
     setCollectingMedal(true);
-    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    setMedalError("");
     const response = await authedFetch("/api/users/daily-checkin/medal", {
       method: "POST",
-      body: JSON.stringify({ date: todayIso }),
+      body: JSON.stringify({ date: availableMedalDate, current_date: todayIso }),
     }).catch(() => null);
     const payload = response?.ok ? await response.json().catch(() => null) : null;
-    const nextCheckIn: DailyCheckInState = payload
-      ? { date: payload.date || todayIso, status: payload.status || "complete", medalCollected: Boolean(payload.medal_collected), days: payload.days || [] }
-      : {
-          ...checkIn,
-          medalCollected: true,
-          days: checkIn.days.some((day) => day.date === todayIso)
-            ? checkIn.days.map((day) => day.date === todayIso ? { ...day, medal: true } : day)
-            : [...checkIn.days, { date: todayIso, status: "complete", medal: true }],
-        };
+    setCollectingMedal(false);
+    if (!payload) {
+      setMedalError("Your medal could not be saved. Please try again.");
+      return;
+    }
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    const nextCheckIn: DailyCheckInState = { date: payload.date || todayIso, status: payload.status || "not_checked_in", medalCollected: Boolean(payload.medal_collected), availableMedalDate: payload.available_medal_date, days: payload.days || [] };
     setCheckIn(nextCheckIn);
     const cachedHome = getScreenCache<HomeScreenCache>("home");
     if (cachedHome) setScreenCache<HomeScreenCache>("home", { ...cachedHome, checkIn: nextCheckIn });
-    setCollectingMedal(false);
     setShowMedal(false);
-    setCalendarHighlight(todayIso);
+    setCalendarHighlight(availableMedalDate);
     setShowCalendar(true);
-  }, [checkIn, collectingMedal, todayIso]);
+  }, [availableMedalDate, collectingMedal, todayIso]);
+
+  const setTestingPoints = useCallback(async (points: number | null) => {
+    if (savingTestingPoints) return;
+    setSavingTestingPoints(true);
+    setTestingPointsError("");
+    try {
+      const response = await authedFetch("/api/users/testing/points", { method: "POST", body: JSON.stringify({ points }) });
+      if (!response.ok) throw new Error("save failed");
+      const nextRewards: RewardsSummary = await response.json();
+      setRewards(nextRewards);
+      setScreenCache("rewards", nextRewards);
+      setScreenCache<number>("celebrated-points", nextRewards.points);
+      const home = getScreenCache<HomeScreenCache>("home");
+      if (home) setScreenCache<HomeScreenCache>("home", { ...home, rewards: nextRewards });
+      setShowTestingPoints(false);
+      setCelebration(null);
+      const user = await getCachedUser();
+      if (user?.id && await shouldShowHundredPointCelebration(user.id, nextRewards)) {
+        setHundredPointAward({ name: greetName, points: nextRewards.points, userId: user.id, milestoneId: HUNDRED_POINT_MEDAL_ID, testingRevision: nextRewards.testing_revision });
+      }
+    } catch {
+      setTestingPointsError("Points could not be saved. Please try again.");
+    } finally {
+      setSavingTestingPoints(false);
+    }
+  }, [greetName, savingTestingPoints]);
 
   // Once today's assessment is finished, the middle step celebrates it and
   // the third step becomes today's exercises.
@@ -957,6 +1010,10 @@ export default function HomeScreen() {
                   <Ionicons name="ribbon-outline" size={28} color={palette.brand} />
                   <Text style={[styles.pointsValue, { color: palette.text }]}>{rewards?.points ?? 0}</Text>
                   <Text style={[styles.pointsLabel, { color: palette.brand }]}>points</Text>
+                  <Pressable testID="home-set-testing-points" accessibilityRole="button" accessibilityLabel="Set points for testing" onPress={() => { setTestingPointsError(""); setShowTestingPoints(true); }} hitSlop={8} style={({ pressed }) => [styles.pointsEdit, { backgroundColor: palette.surface, borderColor: palette.border }, pressed && styles.pressed]}>
+                    <Ionicons name="create-outline" size={16} color={palette.brand} />
+                    <Text style={{ fontSize: 11, fontWeight: "700", color: palette.brand }}>Test</Text>
+                  </Pressable>
                 </View>
               </View>
 
@@ -984,7 +1041,7 @@ export default function HomeScreen() {
                   title="Check in"
                   active={todayCheckInStatus !== "not_checked_in"}
                   badge={todayCheckInStatus === "not_checked_in" ? <StatusPill icon="ellipse-outline" label="Ready" tone="grey" /> : <StatusPill icon="checkmark-circle-outline" label={todayCheckInStatus === "complete" ? "Complete" : "Checked in"} />}
-                  description={todayCheckInStatus === "not_checked_in" ? "Start today's recovery plan. Checking in earns 2 points." : todayCheckInStatus === "complete" ? "Today's plan is complete." : "Daily check-in complete. +2 points earned."}
+                  description={todayCheckInStatus === "not_checked_in" ? checkInError || "Start today's recovery plan. Checking in earns 2 points." : todayCheckInStatus === "complete" ? "Today's plan is complete." : "Daily check-in complete. +2 points earned."}
                   button={todayCheckInStatus === "not_checked_in" ? { label: checkingIn ? "Checking in..." : "Check in", icon: "hand-right-outline", onPress: checkInForToday, testID: "daily-checkin-button" } : undefined}
                 />
                 {!stepTwoRevealed ? (
@@ -1124,9 +1181,10 @@ export default function HomeScreen() {
         onClose={() => {
           const award = hundredPointAward;
           setHundredPointAward(null);
-          if (award) void acknowledgeHundredPointCelebration(award.userId, award.milestoneId);
+          if (award) void acknowledgeHundredPointCelebration(award.userId, award.milestoneId, award.testingRevision);
         }}
       />
+      <TestingPointsModal visible={showTestingPoints} points={rewards?.points ?? 0} earnedPoints={rewards?.earned_points ?? rewards?.points ?? 0} saving={savingTestingPoints} error={testingPointsError} onSave={(points) => { void setTestingPoints(points); }} onClose={() => { if (!savingTestingPoints) setShowTestingPoints(false); }} />
       <SurveyPrefaceModal visible={!hundredPointAward && showSurveyPreface} onBegin={openSurveyChat} onClose={() => setShowSurveyPreface(false)} />
       <ReassessmentDayModal
         visible={!hundredPointAward && showReassessment}
@@ -1145,9 +1203,10 @@ export default function HomeScreen() {
         onClose={() => setShowAssessmentDate(false)}
       />
       <MedalAwardModal
-        visible={!hundredPointAward && showMedal}
-        date={todayIso}
+        visible={!hundredPointAward && showMedal && medalAvailable}
+        date={availableMedalDate || todayIso}
         collecting={collectingMedal}
+        error={medalError}
         onCollect={() => { void collectMedal(); }}
         onLater={() => setShowMedal(false)}
       />
@@ -1162,7 +1221,10 @@ export default function HomeScreen() {
       <AliraMessageModal
         visible={!hundredPointAward && Boolean(aliraReminder)}
         text={aliraReminder || ""}
-        onOpenPlan={() => { setAliraReminder(null); openExercisePlan(); }}
+        checkedIn={checkedInToday}
+        checkingIn={checkingIn}
+        actionError={checkInError}
+        onOpenPlan={openPlanFromReminder}
         onOpenChat={() => { setAliraReminder(null); router.push("/(tabs)/chat" as never); }}
         onLater={() => setAliraReminder(null)}
       />
@@ -1201,6 +1263,7 @@ const styles = StyleSheet.create({
   goalStrong: { fontWeight: "900" },
   dateLine: { marginTop: 9, fontSize: 15, lineHeight: 21 },
   pointsBadge: { width: 138, height: 138, borderRadius: 69, borderWidth: 1.5, borderColor: "#2B8A53", alignItems: "center", justifyContent: "center" },
+  pointsEdit: { position: "absolute", right: -4, bottom: 2, minHeight: 32, paddingHorizontal: 8, borderRadius: 16, borderWidth: 1, flexDirection: "row", alignItems: "center", gap: 3 },
   pointsValue: { marginTop: -2, fontSize: 44, lineHeight: 48, fontWeight: "900" },
   pointsLabel: { fontSize: 16, lineHeight: 21, fontWeight: "900" },
   sectionHeadingRow: { marginTop: spacing.xs, marginBottom: spacing.sm },

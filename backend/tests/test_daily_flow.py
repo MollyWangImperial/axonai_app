@@ -105,6 +105,8 @@ def test_alira_sends_the_daily_reminder_once_into_the_chat(monkeypatch):
         with TestClient(server.app) as client:
             first = client.post("/api/chat/daily-reminder", json={"session_id": "s_daily", "date": "2026-09-12"}).json()
             second = client.post("/api/chat/daily-reminder", json={"session_id": "s_daily", "date": "2026-09-12"}).json()
+            store["user"]["daily_checkins"] = {"2026-09-12": {"status": "in_progress"}}
+            after_checkin = client.post("/api/chat/daily-reminder", json={"session_id": "s_daily", "date": "2026-09-12"}).json()
             history = client.get("/api/chat/history?session_id=s_daily").json()
         assert first["sent"] is True
         text = first["text"]
@@ -112,6 +114,10 @@ def test_alira_sends_the_daily_reminder_once_into_the_chat(monkeypatch):
         assert "before the end of today" in text
         assert "today's scores are not saved" in text and "lose track of the progress" in text
         assert "You have got this" in text
+        assert "check in and open today's exercise" in text
+        assert "check in and open" not in after_checkin["text"]
+        assert "open today's plan" in after_checkin["text"]
+        assert after_checkin["sent"] is False
         assert set(first["remaining_exercise_ids"]) >= {"ex_reach", "ex_trunk"}
         # Sent once per day; the chat carries it as a message from Alira.
         assert second["sent"] is False and second["reason"] == "already_sent_today"
@@ -161,14 +167,17 @@ def test_daily_medal_needs_a_complete_day_and_then_shows_on_the_calendar(monkeyp
         store["activities"] = [_activity("ex_trunk", "2026-09-12T10:00:00+00:00"), _activity("ex_reach", "2026-09-12T11:00:00+00:00")]
         client.post("/api/users/daily-checkin/complete", json={"date": "2026-09-12"})
         sync_user()
-        collected = client.post("/api/users/daily-checkin/medal", json={"date": "2026-09-12"})
+        same_day = client.post("/api/users/daily-checkin/medal", json={"date": "2026-09-12", "current_date": "2026-09-12"})
+        assert same_day.status_code == 409
+        assert client.get("/api/users/daily-checkin?date=2026-09-13").json()["available_medal_date"] == "2026-09-12"
+        collected = client.post("/api/users/daily-checkin/medal", json={"date": "2026-09-12", "current_date": "2026-09-13"})
         assert collected.status_code == 200
         body = collected.json()
-        assert body["medal_collected"] is True
+        assert body["date"] == "2026-09-13" and body["medal_collected"] is False
         assert body["days"] == [{"date": "2026-09-12", "status": "complete", "medal": True}]
         sync_user()
-        again = client.post("/api/users/daily-checkin/medal", json={"date": "2026-09-12"}).json()
-        assert again["medal_collected"] is True
+        again = client.post("/api/users/daily-checkin/medal", json={"date": "2026-09-12", "current_date": "2026-09-13"}).json()
+        assert again["days"][0]["medal"] is True
         listed = client.get("/api/users/daily-checkin?date=2026-09-13").json()
         assert listed["medal_collected"] is False
         assert listed["days"][0]["medal"] is True
@@ -222,7 +231,8 @@ def test_app_wires_the_date_stepper_reminder_medal_calendar_and_finish_button():
     assert 'testID="reassessment-day-start"' in modals
     # Medal after the day's exercises, collected onto the calendar with the next assessment date.
     assert 'authedFetch("/api/users/daily-checkin/medal"' in home
-    assert "const medalAvailable = todaysExercisesComplete && checkIn.date === todayIso && checkIn.status === \"complete\" && !checkIn.medalCollected;" in home
+    assert "checkIn.availableMedalDate < todayIso" in home
+    assert "date: availableMedalDate, current_date: todayIso" in home
     assert 'testID="daily-medal-collect"' in modals and 'testID="medal-calendar"' in modals
     assert "assessmentDate={assessmentDueDate || undefined}" in home
     assert 'testID="home-open-calendar"' in home

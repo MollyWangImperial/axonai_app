@@ -7,7 +7,7 @@ import { useDisplayPreferences } from "@/src/displayPreferences";
 import { colors, radius, spacing } from "@/src/theme";
 
 // The daily flow on Home: Alira's reminder message, the re-assessment-day
-// prompt, the medal for finishing today's exercises, the calendar that shows
+// prompt, the next-day medal for completed exercises, the calendar that shows
 // the medals and the next assessment date, and (testing phase) the date
 // stepper that lets a tester walk through the days.
 
@@ -177,12 +177,15 @@ export function AssessmentDateModal({ visible, appDate, currentDate, pinned, sav
 type AliraMessageModalProps = {
   visible: boolean;
   text: string;
+  checkedIn: boolean;
+  checkingIn: boolean;
+  actionError?: string;
   onOpenPlan: () => void;
   onOpenChat: () => void;
   onLater: () => void;
 };
 
-export function AliraMessageModal({ visible, text, onOpenPlan, onOpenChat, onLater }: AliraMessageModalProps) {
+export function AliraMessageModal({ visible, text, checkedIn, checkingIn, actionError, onOpenPlan, onOpenChat, onLater }: AliraMessageModalProps) {
   const { palette } = useDisplayPreferences();
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onLater}>
@@ -198,9 +201,10 @@ export function AliraMessageModal({ visible, text, onOpenPlan, onOpenChat, onLat
           <View style={[styles.aliraBubble, { backgroundColor: palette.soft }]}>
             <Text style={[styles.aliraText, { color: palette.text }]} testID="alira-daily-reminder-text">{text}</Text>
           </View>
-          <Pressable testID="alira-daily-reminder-open-plan" onPress={onOpenPlan} style={({ pressed }) => [styles.primary, pressed && styles.pressed]}>
+          {actionError ? <Text accessibilityRole="alert" style={{ color: palette.text }}>{actionError}</Text> : null}
+          <Pressable testID="alira-daily-reminder-open-plan" disabled={checkingIn} onPress={onOpenPlan} style={({ pressed }) => [styles.primary, styles.aliraPrimary, (pressed || checkingIn) && styles.pressed]}>
             <Ionicons name="fitness-outline" size={19} color="#FFFFFF" />
-            <Text style={styles.primaryText}>Open today&apos;s exercises</Text>
+            <Text style={[styles.primaryText, styles.aliraPrimaryText]}>{checkingIn ? "Checking in..." : checkedIn ? "Open today's exercises" : "Check in and open today's exercise"}</Text>
           </Pressable>
           <Pressable testID="alira-daily-reminder-open-chat" onPress={onOpenChat} style={({ pressed }) => [styles.secondary, { borderColor: palette.border }, pressed && styles.pressed]}>
             <Text style={[styles.secondaryText, { color: palette.text }]}>Reply to Alira</Text>
@@ -256,6 +260,7 @@ type MedalAwardModalProps = {
   visible: boolean;
   date: string;
   collecting: boolean;
+  error?: string;
   onCollect: () => void;
   onLater: () => void;
 };
@@ -276,7 +281,7 @@ function MedalArt({ size = 150 }: { size?: number }) {
   );
 }
 
-export function MedalAwardModal({ visible, date, collecting, onCollect, onLater }: MedalAwardModalProps) {
+export function MedalAwardModal({ visible, date, collecting, error, onCollect, onLater }: MedalAwardModalProps) {
   const { palette } = useDisplayPreferences();
   const pop = useRef(new Animated.Value(0.5)).current;
   const shine = useRef(new Animated.Value(0)).current;
@@ -295,20 +300,21 @@ export function MedalAwardModal({ visible, date, collecting, onCollect, onLater 
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onLater}>
       <View style={styles.backdrop}>
         <View style={[styles.card, styles.medalCard, { backgroundColor: palette.surface }]} testID="daily-medal-award">
-          <Text style={[styles.kicker, { color: palette.brand }]}>TODAY&apos;S EXERCISES COMPLETE</Text>
+          <Text style={[styles.kicker, { color: palette.brand }]}>A COMPLETED DAY TO CELEBRATE</Text>
           <Animated.View style={[styles.medalGlow, { opacity: glow }]} />
           <Animated.View style={{ transform: [{ scale: pop }] }}>
             <MedalArt />
           </Animated.View>
           <Text style={[styles.title, { color: palette.text }]}>Rehyn Daily Achiever</Text>
           <Text style={[styles.body, { color: palette.muted }]}>
-            {longDate(date)}. Every completed day is a step your recovery can build on. Collect the medal to add it to your calendar.
+            You completed your exercises on {longDate(date)}. Welcome back! Collect your medal to add it to that day on your calendar.
           </Text>
+          {error ? <Text accessibilityRole="alert" style={[styles.body, { color: "#B42318" }]}>{error}</Text> : null}
           <Pressable testID="daily-medal-collect" disabled={collecting} onPress={onCollect} style={({ pressed }) => [styles.primary, styles.collectButton, (pressed || collecting) && styles.pressed]}>
             <Ionicons name="medal-outline" size={20} color="#FFFFFF" />
             <Text style={styles.primaryText}>{collecting ? "Collecting..." : "Collect medal"}</Text>
           </Pressable>
-          <Pressable testID="daily-medal-later" onPress={onLater} style={styles.later}>
+          <Pressable testID="daily-medal-later" disabled={collecting} onPress={onLater} style={styles.later}>
             <Text style={[styles.laterText, { color: palette.muted }]}>Later</Text>
           </Pressable>
         </View>
@@ -437,6 +443,8 @@ const styles = StyleSheet.create({
   body: { fontSize: 14, lineHeight: 21, textAlign: "center" },
   primary: { alignSelf: "stretch", minHeight: 52, borderRadius: radius.sm, backgroundColor: colors.brandPrimary, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, marginTop: spacing.sm },
   primaryText: { color: "#FFFFFF", fontSize: 16, fontWeight: "900" },
+  aliraPrimary: { paddingHorizontal: spacing.md, paddingVertical: spacing.sm },
+  aliraPrimaryText: { flexShrink: 1, textAlign: "center" },
   secondary: { alignSelf: "stretch", minHeight: 46, borderRadius: radius.sm, borderWidth: 1.5, alignItems: "center", justifyContent: "center", marginTop: 4 },
   secondaryText: { fontSize: 15, fontWeight: "800" },
   later: { minHeight: 40, alignSelf: "stretch", alignItems: "center", justifyContent: "center" },

@@ -21,7 +21,7 @@ def test_palm_facing_is_projection_stable_instead_of_handedness_sign_gated():
 
 def test_h1_palm_gate_and_coaching_use_the_same_threshold():
     source = SERVER.read_text(encoding="utf-8")
-    assert 'palmFacingScore > PALM_FACING_THRESHOLD && handOpenScore < 0.72' in source
+    assert 'return near && palmFacingScore > PALM_FACING_THRESHOLD;' in source
     assert 'step.id !== "H1-S2" || palmFacingScore > PALM_FACING_THRESHOLD' in source
     assert source.count("palmFacingScore <= PALM_FACING_THRESHOLD") == 2
 

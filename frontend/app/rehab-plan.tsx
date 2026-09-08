@@ -327,10 +327,11 @@ export default function RehabPlanScreen() {
     `rehab-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
   );
   // Testing phase: finish today's exercises with an entered score instead of
-  // performing them on camera, then collect the day's award on Home.
+  // performing them on camera, then collect the award on the next day's visit.
   const [showTestingFinish, setShowTestingFinish] = useState(false);
   const [testingScore, setTestingScore] = useState("85");
   const [finishingForTesting, setFinishingForTesting] = useState(false);
+  const [savedTestingExercises, setSavedTestingExercises] = useState(0);
   const [saveError, setSaveError] = useState("");
   const [showAwardPrompt, setShowAwardPrompt] = useState(false);
 
@@ -479,11 +480,14 @@ export default function RehabPlanScreen() {
     const parsed = Number.parseInt(testingScore, 10);
     const score = Number.isFinite(parsed) ? Math.max(0, Math.min(100, parsed)) : 85;
     setFinishingForTesting(true);
+    setSavedTestingExercises(0);
     setSaveError("");
     const completedAt = appNow().toISOString();
     const today = appDateString();
     try {
-      for (const exercise of data.rehab_plan) {
+      // These exercises are independent. Wait for every save to settle before
+      // completing the day or allowing a retry after a partial failure.
+      const saves = await Promise.allSettled(data.rehab_plan.map(async (exercise) => {
         const totalReps = exercise.sets * exercise.reps;
         const repetitionScores = Array.from({ length: totalReps }, () => score);
         if (!isDemo) {
@@ -506,7 +510,8 @@ export default function RehabPlanScreen() {
           if (!response.ok || (await response.json()).ok !== true) throw new Error("Your exercise could not be saved to your account. Please retry.");
         }
         try {
-          const raw = await storage.getItem(await PROGRESS_KEY(planId, exercise.id), "");
+          const progressKey = await PROGRESS_KEY(planId, exercise.id);
+          const raw = await storage.getItem(progressKey, "");
           const previous: ExerciseProgress = typeof raw === "string" && raw
             ? JSON.parse(raw)
             : { completed_reps: 0, total_reps: totalReps, last_score: null, best_score: null, sessions: 0 };
@@ -524,17 +529,21 @@ export default function RehabPlanScreen() {
               { completed_at: completedAt, average_score: score, repetition_scores: repetitionScores },
             ].slice(-60),
           };
-          await storage.setItem(await PROGRESS_KEY(planId, exercise.id), JSON.stringify(updated));
+          await storage.setItem(progressKey, JSON.stringify(updated));
         } catch {
           // The server activity is the durable record; the local card refreshes on focus.
         }
-      }
+        setSavedTestingExercises((saved) => saved + 1);
+      }));
+      const failedSave = saves.find((save): save is PromiseRejectedResult => save.status === "rejected");
+      if (failedSave) throw failedSave.reason;
       if (!isDemo) {
         const response = await authedFetch("/api/users/daily-checkin/complete", {
           method: "POST",
           body: JSON.stringify({ date: today }),
         });
-        if (!response.ok) throw new Error("Your completed day could not be saved. Please retry.");
+        const completedDay = await response.json().catch(() => null);
+        if (!response.ok || completedDay?.status !== "complete") throw new Error("Your completed day could not be saved. Please retry.");
       }
       await loadProgress(data);
       void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
@@ -599,7 +608,7 @@ export default function RehabPlanScreen() {
           />
           {!!saveError && <Text accessibilityRole="alert" style={styles.dailyText}>{saveError}</Text>}
           <Pressable disabled={finishingForTesting} onPress={() => { void finishTodayForTesting(); }} style={[styles.dailyPrimary, finishingForTesting && { opacity: 0.6 }]} testID="plan-testing-finish-confirm">
-            <Text style={styles.dailyPrimaryText}>{finishingForTesting ? "Saving..." : "Mark today as finished"}</Text>
+            <Text style={styles.dailyPrimaryText}>{finishingForTesting ? savedTestingExercises < totalExercises ? `Saving exercises (${savedTestingExercises} of ${totalExercises})...` : "Saving completed day..." : "Mark today as finished"}</Text>
             <Ionicons name="checkmark" size={22} color="#FFFFFF" />
           </Pressable>
           <Pressable onPress={() => setShowTestingFinish(false)} style={styles.dailyLater} testID="plan-testing-finish-cancel">
@@ -616,8 +625,8 @@ export default function RehabPlanScreen() {
         <View style={[styles.dailyCard, { alignItems: "center" }]} testID="plan-award-prompt">
           <View style={styles.awardIcon}><Ionicons name="medal-outline" size={36} color="#B77A0E" /></View>
           <Text style={styles.dailyEyebrow}>TODAY&apos;S EXERCISES FINISHED</Text>
-          <Text style={[styles.dailyTitle, { textAlign: "center" }]}>An award is waiting for you</Text>
-          <Text style={[styles.dailyText, { textAlign: "center" }]}>Well done - today&apos;s session is recorded. Return to the home page to collect today&apos;s medal.</Text>
+          <Text style={[styles.dailyTitle, { textAlign: "center" }]}>Today&apos;s session is complete</Text>
+          <Text style={[styles.dailyText, { textAlign: "center" }]}>Well done - today&apos;s session is recorded. Your Daily Achiever medal will be waiting when you sign in tomorrow.</Text>
           <Pressable onPress={() => { setShowAwardPrompt(false); router.dismissTo("/"); }} style={styles.dailyPrimary} testID="plan-award-go-home">
             <Text style={styles.dailyPrimaryText}>Go to the home page</Text>
             <Ionicons name="home-outline" size={22} color="#FFFFFF" />
@@ -716,7 +725,7 @@ export default function RehabPlanScreen() {
               <Ionicons name="checkmark-circle" size={30} color="#FFFFFF" />
               <View style={styles.finishedCopy}>
                 <Text style={styles.finishedTitle}>FINISHED</Text>
-                <Text style={styles.finishedText}>Today&apos;s exercises are complete. Return to Home to collect today&apos;s award.</Text>
+                <Text style={styles.finishedText}>Today&apos;s exercises are complete. Sign in tomorrow to collect your Daily Achiever medal.</Text>
               </View>
             </View>
           )}

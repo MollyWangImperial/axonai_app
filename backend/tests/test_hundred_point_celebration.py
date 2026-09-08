@@ -112,7 +112,7 @@ def test_home_celebration_is_animated_audible_and_has_no_music_panel():
     assert "reward_milestone_seen_v1" in home
     assert "/api/users/rewards/milestones/${milestoneId}/acknowledge" in home
     assert 'visible={Boolean(hundredPointAward)}' in home
-    assert 'visible={!hundredPointAward && showMedal}' in home
+    assert 'visible={!hundredPointAward && showMedal && medalAvailable}' in home
     assert 'event={hundredPointAward ? null : celebration}' in home
     assert '"reward_milestones_acknowledged"' in server_source
 

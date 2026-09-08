@@ -1155,8 +1155,8 @@ HAND_TASKS_DATA: List[Dict[str, Any]] = [
         "view": "Front view",
         "focus": "Finger extension, palm opening, thumb-index spread",
         "steps": [
-            {"id": "H1-S1", "voice": "We will begin the hand function package. Bring your affected hand up in front of your chest, with your palm facing the camera. Keep your fingers relaxed for now. Please do not open your hand yet.", "target": {"x": 0.5, "y": 0.45, "r": 0.12, "landmark": "WRIST"}, "hold_ms": 1200, "caption": "Hand up, palm facing camera, fingers relaxed"},
-            {"id": "H1-S2", "voice": "Now slowly open your fingers as wide as you comfortably can. Take your time, then hold your palm open and steady.", "target": {"x": 0.5, "y": 0.45, "r": 0.12, "landmark": "HAND_OPEN"}, "hold_ms": 1300, "caption": "Slowly open hand wide", "measure": ["finger_extension", "palm_openness", "thumb_index_spread"]},
+            {"id": "H1-S1", "voice": "We will begin the hand function package. Bring your affected hand up in front of your chest, with your palm facing the camera. If your hand is already open, keep it open and steady.", "target": {"x": 0.5, "y": 0.45, "r": 0.12, "landmark": "WRIST"}, "hold_ms": 1200, "caption": "Hand up, palm facing camera"},
+            {"id": "H1-S2", "voice": "Now slowly open your fingers as wide as you comfortably can, or keep them open if they are already open. Hold your palm open and steady.", "target": {"x": 0.5, "y": 0.45, "r": 0.12, "landmark": "HAND_OPEN"}, "hold_ms": 1300, "caption": "Open hand and hold steady", "measure": ["finger_extension", "palm_openness", "thumb_index_spread"]},
             {"id": "H1-S3", "voice": "Good. Relax your hand and lower it to the same place on your lap.", "target": {"x": 0.5, "y": 0.78, "r": 0.10, "landmark": "LAP_DYNAMIC"}, "hold_ms": 1200, "caption": "Return hand to the calibrated lap position"},
         ],
     },
@@ -7880,7 +7880,10 @@ function checkTarget(landmarks){
     const R = effectiveRadius(step, null);
     const near = Math.hypot(point.x - target.x, point.y - target.y) < R;
     if(step.id === "H1-S1"){
-      return near && palmFacingScore > PALM_FACING_THRESHOLD && handOpenScore < 0.72;
+      // Preparation checks position and palm visibility, not finger closure.
+      // Opening during the instruction must not force a close-and-reopen cycle.
+      // H1-S2 can measure the same open hand after its instruction finishes.
+      return near && palmFacingScore > PALM_FACING_THRESHOLD;
     }
     if(step.id === "H2-S2"){
       if(!near) return false;
@@ -14634,8 +14637,15 @@ async def _adaptive_care_plan_for_user(
     *,
     now: Optional[datetime] = None,
 ) -> Dict[str, Any]:
-    if assessments is None:
-        assessments = await _care_assessments_for_user(user["id"])
+    async def load_or_keep(records, loader):
+        return records if records is not None else await loader(user["id"])
+
+    assessments, check_ins, activities, issue_reports = await asyncio.gather(
+        load_or_keep(assessments, _care_assessments_for_user),
+        load_or_keep(check_ins, _care_check_ins_for_user),
+        load_or_keep(activities, _care_activities_for_user),
+        load_or_keep(issue_reports, _care_issue_reports_for_user),
+    )
     if assessments and not user.get("initial_assessment_completed_at"):
         earliest_assessment_at = min(
             (str(item.get("created_at") or "") for item in assessments if item.get("created_at")),
@@ -14651,12 +14661,6 @@ async def _adaptive_care_plan_for_user(
                 completed_at or datetime.now(timezone.utc).isoformat(),
                 source="server_task_progress_recovery",
             )
-    if check_ins is None:
-        check_ins = await _care_check_ins_for_user(user["id"])
-    if activities is None:
-        activities = await _care_activities_for_user(user["id"])
-    if issue_reports is None:
-        issue_reports = await _care_issue_reports_for_user(user["id"])
     profile = dict(user.get("profile") or {})
     profile["_initial_assessment_completed_at"] = user.get("initial_assessment_completed_at")
     if user.get("initial_assessment_completed_at") and not assessments:
@@ -14880,7 +14884,12 @@ async def _persist_alira_activity(user: Dict[str, Any], payload: AliraActivitySu
             raise _patient_activity_unavailable(exc) from exc
         if existing:
             return {"ok": True, "activity": existing, "already_saved": True}
-    assessments = await _care_assessments_for_user(user["id"])
+    assessments, check_ins, existing_activities, issue_reports = await asyncio.gather(
+        _care_assessments_for_user(user["id"]),
+        _care_check_ins_for_user(user["id"]),
+        _care_activities_for_user(user["id"]),
+        _care_issue_reports_for_user(user["id"]),
+    )
     latest_assessment = max(assessments, key=lambda item: item.get("created_at", ""), default=None)
     approved_ids = {
         str(exercise.get("id"))
@@ -14890,9 +14899,6 @@ async def _persist_alira_activity(user: Dict[str, Any], payload: AliraActivitySu
     # Caregiver-delivered routines (CG_*) are approved from the current care
     # plan rather than an assessment's rehab plan - they exist precisely for
     # patients who cannot complete a camera assessment yet.
-    check_ins = await _care_check_ins_for_user(user["id"])
-    existing_activities = await _care_activities_for_user(user["id"])
-    issue_reports = await _care_issue_reports_for_user(user["id"])
     profile_for_plan = dict(user.get("profile") or {})
     profile_for_plan["_assessment_deferrals"] = dict(user.get("assessment_deferrals") or {})
     profile_for_plan["_next_assessment_override"] = user.get("next_assessment_override")
@@ -15331,14 +15337,16 @@ async def get_exercise_progress(request: Request, plan_id: str, date: str):
     day = _validated_checkin_date(date)
     query = {"user_id": user["id"], "plan_id": plan_id, "day": day}
     try:
-        repetitions = await db.exercise_repetitions.find(query, {"_id": 0}).sort("created_at", 1).to_list(None)
-        activities = await db.alira_activities.find({
-            "user_id": user["id"], "plan_id": plan_id,
-            "$or": [
-                {"day": day},
-                {"day": None, "completed_at": {"$regex": "^" + re.escape(day) + "T"}},
-            ],
-        }, {"_id": 0}).sort("completed_at", 1).to_list(None)
+        repetitions, activities = await asyncio.gather(
+            db.exercise_repetitions.find(query, {"_id": 0}).sort("created_at", 1).to_list(None),
+            db.alira_activities.find({
+                "user_id": user["id"], "plan_id": plan_id,
+                "$or": [
+                    {"day": day},
+                    {"day": None, "completed_at": {"$regex": "^" + re.escape(day) + "T"}},
+                ],
+            }, {"_id": 0}).sort("completed_at", 1).to_list(None),
+        )
     except Exception as exc:
         raise _patient_activity_unavailable(exc) from exc
     return {"ok": True, "progress": _exercise_progress_summary(repetitions, activities, day)}
@@ -15453,6 +15461,10 @@ class DailyCheckInSubmit(BaseModel):
     date: str = Field(min_length=10, max_length=10)
 
 
+class DailyMedalCollect(DailyCheckInSubmit):
+    current_date: Optional[str] = Field(default=None, min_length=10, max_length=10)
+
+
 def _validated_checkin_date(value: str) -> str:
     if not DAILY_CHECKIN_DATE_PATTERN.match(value):
         raise HTTPException(status_code=422, detail="date must be a YYYY-MM-DD calendar date")
@@ -15498,6 +15510,10 @@ def _daily_checkin_response(date: str, checkins: Dict[str, Dict[str, Any]]) -> D
         "date": date,
         "status": entry.get("status") or "not_checked_in",
         "medal_collected": bool(entry.get("medal_collected_at")),
+        "available_medal_date": next((
+            day for day, record in sorted(checkins.items())
+            if day < date and record.get("status") == "complete" and not record.get("medal_collected_at")
+        ), None),
         "days": [
             {
                 "date": day,
@@ -15555,22 +15571,28 @@ async def complete_daily_checkin(payload: DailyCheckInSubmit, request: Request):
 
 
 @api_router.post("/users/daily-checkin/medal")
-async def collect_daily_medal(payload: DailyCheckInSubmit, request: Request):
-    """The patient collects the day's medal on Home once the day's exercises
-    are complete; it then shows on that date of the calendar."""
+async def collect_daily_medal(payload: DailyMedalCollect, request: Request):
+    """Offer a completed day's medal on the next visit on a later local day.
+
+    The client supplies its local/testing date, just like daily check-in.
+    Collection always records the medal against the day it was earned.
+    """
     user = await _user_from_header(dict(request.headers))
     if not user:
         raise HTTPException(status_code=401, detail="Sign in required")
     date = _validated_checkin_date(payload.date)
+    current_date = _validated_checkin_date(payload.current_date) if payload.current_date else datetime.now(timezone.utc).date().isoformat()
+    if date >= current_date:
+        raise HTTPException(status_code=409, detail="This medal is available when you return on the next day.")
     checkins = dict(user.get("daily_checkins") or {})
     entry = dict(checkins.get(date) or {})
     if entry.get("status") != "complete":
-        raise HTTPException(status_code=409, detail="Today's exercises are not complete yet.")
+        raise HTTPException(status_code=409, detail="That day's exercises are not complete yet.")
     if not entry.get("medal_collected_at"):
         entry["medal_collected_at"] = datetime.now(timezone.utc).isoformat()
         checkins[date] = entry
         await _save_daily_checkins(user, checkins)
-    return _daily_checkin_response(date, checkins)
+    return _daily_checkin_response(current_date, checkins)
 
 
 async def _reward_assessments_for_user(user_id: str) -> List[Dict[str, Any]]:
@@ -15595,13 +15617,43 @@ async def get_user_rewards(request: Request, as_of: Optional[str] = None):
     user = await _user_from_header(dict(request.headers))
     if not user:
         raise HTTPException(status_code=401, detail="Sign in required")
+    return await _rewards_for_user(user, as_of)
+
+
+async def _rewards_for_user(user: Dict[str, Any], as_of: Optional[str] = None):
     activities = await _care_activities_for_user(user["id"])
     check_ins = await _care_check_ins_for_user(user["id"])
-    rewards = compute_rewards(activities, check_ins, dict(user.get("daily_checkins") or {}), assessments=await _reward_assessments_for_user(user["id"]), now=_as_of_now(as_of))
-    acknowledged = set(user.get("reward_milestones_acknowledged") or [])
+    testing = user.get("reward_points_testing") or {}
+    rewards = compute_rewards(activities, check_ins, dict(user.get("daily_checkins") or {}), assessments=await _reward_assessments_for_user(user["id"]), now=_as_of_now(as_of), testing_points_adjustment=int(testing.get("adjustment") or 0))
+    rewards["testing_revision"] = testing.get("revision")
+    acknowledged = set(testing.get("acknowledged") or []) if testing else set(user.get("reward_milestones_acknowledged") or [])
     for medal in rewards.get("medals") or []:
         medal["celebrated"] = medal.get("id") in acknowledged
     return rewards
+
+
+class TestingPointsSubmit(BaseModel):
+    points: Optional[int] = Field(..., strict=True, ge=0, le=1000000)
+
+
+@api_router.post("/users/testing/points")
+async def set_points_for_testing(payload: TestingPointsSubmit, request: Request):
+    """Set this account's test total without fabricating completed activities.
+
+    Subsequent activity still earns points. Null restores the earned total;
+    each manual setting starts a fresh, separate milestone demonstration.
+    """
+    user = await _user_from_header(dict(request.headers))
+    if not user:
+        raise HTTPException(status_code=401, detail="Sign in required")
+    rewards = await _rewards_for_user(user)
+    testing = None if payload.points is None else {
+        "adjustment": payload.points - rewards["earned_points"],
+        "revision": str(uuid.uuid4()),
+        "acknowledged": [],
+    }
+    await _save_user_fields(user, {"reward_points_testing": testing}, context="points for testing")
+    return await _rewards_for_user({**user, "reward_points_testing": testing})
 
 
 @api_router.post("/users/rewards/milestones/{milestone_id}/acknowledge")
@@ -15612,17 +15664,16 @@ async def acknowledge_reward_milestone(milestone_id: str, request: Request):
     milestone = next((item for item in REWARD_MEDALS if item["id"] == milestone_id), None)
     if not milestone:
         raise HTTPException(status_code=404, detail="Reward milestone not found")
-    activities = await _care_activities_for_user(user["id"])
-    check_ins = await _care_check_ins_for_user(user["id"])
-    rewards = compute_rewards(activities, check_ins, dict(user.get("daily_checkins") or {}), assessments=await _reward_assessments_for_user(user["id"]))
+    rewards = await _rewards_for_user(user)
     if int(rewards.get("points") or 0) < int(milestone["threshold"]):
         raise HTTPException(status_code=409, detail="Reward milestone has not been earned yet")
-    acknowledged = list(dict.fromkeys(user.get("reward_milestones_acknowledged") or []))
+    testing = user.get("reward_points_testing") or {}
+    acknowledged = list(dict.fromkeys(testing.get("acknowledged") or [])) if testing else list(dict.fromkeys(user.get("reward_milestones_acknowledged") or []))
     if milestone_id not in acknowledged:
         acknowledged.append(milestone_id)
         await _save_user_fields(
             user,
-            {"reward_milestones_acknowledged": acknowledged},
+            {"reward_points_testing": {**testing, "acknowledged": acknowledged}} if testing else {"reward_milestones_acknowledged": acknowledged},
             context="reward milestone acknowledgement",
         )
     return {"ok": True, "milestone_id": milestone_id, "celebrated": True}
@@ -16427,7 +16478,7 @@ class DailyReminderRequest(BaseModel):
     date: str = Field(min_length=10, max_length=10)
 
 
-def _alira_daily_reminder_message(plan: Dict[str, Any], name: str = "", streak: int = 0) -> str:
+def _alira_daily_reminder_message(plan: Dict[str, Any], name: str = "", streak: int = 0, *, checked_in: bool = True) -> str:
     monitoring = plan.get("daily_monitoring") or {}
     remaining = [str(item) for item in (monitoring.get("remaining_exercise_ids_today") or [])]
     completed = [str(item) for item in (monitoring.get("completed_exercise_ids_today") or [])]
@@ -16442,12 +16493,13 @@ def _alira_daily_reminder_message(plan: Dict[str, Any], name: str = "", streak: 
         f" You are on a {streak}-day run, and every day you show up adds to it."
         if streak >= 2 else ""
     )
+    next_action = "open today's plan" if checked_in else "check in and open today's exercise"
     return (
         f"{greeting} Today's plan is ready and {exercises} are waiting for you.{progress} "
         "Please finish them before the end of today: only completed days are recorded, so if today "
         "passes without them, today's scores are not saved and we lose track of the progress you are "
         "making. A short session done today is worth far more than a perfect one planned for tomorrow. "
-        f"{momentum} You have got this - open today's plan and I will guide you through it, one exercise at a time."
+        f"{momentum} You have got this - {next_action} and I will guide you through it, one exercise at a time."
     ).replace("  ", " ")
 
 
@@ -16465,6 +16517,7 @@ async def chat_daily_reminder(req: DailyReminderRequest, request: Request):
         raise HTTPException(status_code=401, detail="Sign in required")
     _require_health_data_consent(user)
     reminder_date = _validated_checkin_date(req.date)
+    checked_in = ((user.get("daily_checkins") or {}).get(reminder_date) or {}).get("status") in {"in_progress", "complete"}
     plan = await _adaptive_care_plan_for_user(user, now=_as_of_now(reminder_date))
     account_state = plan.get("account_state") or {}
     monitoring = plan.get("daily_monitoring") or {}
@@ -16486,7 +16539,11 @@ async def chat_daily_reminder(req: DailyReminderRequest, request: Request):
         None,
     )
     if already:
-        return {"sent": False, "text": already.get("text"), "reason": "already_sent_today", "remaining_exercise_ids": remaining}
+        # A saved reminder can be reopened after the check-in state changes.
+        # Adapt its call to action without posting another chat message.
+        text = str(already.get("text") or "")
+        text = text.replace("check in and open today's exercise", "open today's plan") if checked_in else text.replace("open today's plan", "check in and open today's exercise")
+        return {"sent": False, "text": text, "reason": "already_sent_today", "remaining_exercise_ids": remaining}
     try:
         rewards = compute_rewards(
             await _care_activities_for_user(user["id"]),
@@ -16498,7 +16555,7 @@ async def chat_daily_reminder(req: DailyReminderRequest, request: Request):
         streak = int((rewards.get("streak") or {}).get("current_days") or 0)
     except Exception:
         streak = 0
-    text = _alira_daily_reminder_message(plan, name, streak)
+    text = _alira_daily_reminder_message(plan, name, streak, checked_in=checked_in)
     now = datetime.now(timezone.utc).isoformat()
     turns.append({"role": "assistant", "text": text, "ts": now, "daily_reminder_date": reminder_date})
     await _save_chat_session(session_filter, local_session_key, req.session_id, user["id"], turns, now)
