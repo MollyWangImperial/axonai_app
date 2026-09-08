@@ -89,3 +89,9 @@ android-sdk/
 credentials.json
 *.key
 .credentials
+# Local QA and generated browser exports
+.codex-qa/
+.playwright-cli/
+frontend/.codex-dist/
+frontend/.codex-persistence-export/
+output/

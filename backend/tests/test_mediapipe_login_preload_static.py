@@ -51,11 +51,11 @@ def test_hosted_web_forces_fresh_app_shell_and_service_worker():
     assert "window.location.reload();" in pwa_injector
 
 
-def test_ios_pwa_reserves_the_status_bar_safe_area():
+def test_ios_pwa_uses_the_translucent_status_bar():
     html = (ROOT / "frontend" / "app" / "+html.tsx").read_text(encoding="utf-8")
     pwa_injector = (ROOT / "frontend" / "scripts" / "inject-pwa.js").read_text(encoding="utf-8")
 
-    expected = 'name="apple-mobile-web-app-status-bar-style" content="default"'
+    expected = 'name="apple-mobile-web-app-status-bar-style" content="black-translucent"'
     assert expected in html
     assert expected in pwa_injector
 
