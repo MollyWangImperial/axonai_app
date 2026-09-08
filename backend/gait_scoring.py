@@ -14,6 +14,7 @@ from typing import Any, Iterable, Mapping
 
 VERSION = "rehyn-gait-score-1"
 SUPPORTED_CAMERA_METHODS = {
+    "body_centric_2d_browser",
     "body_centric_2d_background_ransac",
     "body_centric_3d_background_ransac",
     "wham_dpvo_slam",

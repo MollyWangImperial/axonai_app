@@ -70,14 +70,14 @@ def test_walking_can_be_skipped_without_recording_a_failed_gait_task():
     assert "mark it as not observed, not as a failed test" in source
 
 
-def test_walking_validator_accepts_any_video_without_pose_identity_or_framing_checks():
+def test_walking_validator_accepts_any_video_and_collects_optional_2d_gait_evidence():
     source = server.POSE_RUNNER_HTML
     validation = source[source.index("async function validateWalkingVideo") : source.index("async function completeUploadedWalkingTask")]
     assert "return {ok:false" not in validation.split("const objectUrl", 1)[1]
     assert 'validationMode:"accepted_for_async_gait_analysis"' in validation
     assert "sampledFrames:[]" in validation
-    assert "getWalkingVideoValidator" not in validation
-    assert "detectForVideo" not in validation
+    assert "inspectWalkingVideo2D" in validation
+    assert "gaitAnalysis" in validation
     assert "fullBodyVisibleForWalking" not in validation
     assert "faceSignature" not in validation
     assert "samePatient" not in validation
@@ -85,6 +85,15 @@ def test_walking_validator_accepts_any_video_without_pose_identity_or_framing_ch
     assert "durationSeconds > 90" not in validation
     assert "walkingReviewVideo.videoWidth" in validation
     assert "walkingReviewVideo.videoHeight" in validation
+
+
+def test_browser_gait_evidence_is_body_normalized_and_bound_to_the_uploaded_video():
+    source = server.POSE_RUNNER_HTML
+    assert 'camera_motion_handling:"body_centric_2d_browser"' in source
+    assert 'coordinate_frame:"pelvis_centered_leg_normalized_2d"' in source
+    assert 'uses_3d_reconstruction:false' in source
+    assert 'source_video_id:String(cloudRecord.id)' in source
+    assert 'metrics.gait_2d_evidence = gaitEvidence' in source
 
 
 def test_walking_video_recognition_allows_browser_and_common_phone_formats():
@@ -116,13 +125,14 @@ def test_walking_upload_keeps_only_file_type_and_size_safety_limits():
     assert "larger than 35 MB" in validation
 
 
-def test_walking_upload_is_saved_for_trusted_async_gait_scoring():
+def test_walking_upload_is_saved_with_video_bound_2d_evidence_for_backend_scoring():
     source = server.POSE_RUNNER_HTML
     completion = source[source.index("async function completeUploadedWalkingTask") : source.index("function playBrowserVoice")]
     assert 'walking_video_role:"gait_scoring_input"' in completion
     assert 'lower_limb_result_source:"walking_video_analysis"' in completion
-    assert 'walking_video_analysis_status:"queued"' in completion
+    assert 'walking_video_analysis_status:gaitEvidence ? "ready_for_backend_scoring" : "unscorable"' in completion
     assert 'walking_video_accepted:true' in completion
+    assert "metrics.gait_2d_evidence = gaitEvidence" in completion
     assert "gait_bilateral_motion_symmetry" not in completion
     assert "walking_same_patient_confirmed" not in completion
     assert "walking_full_body_visibility_ratio" not in completion

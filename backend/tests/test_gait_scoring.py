@@ -1,7 +1,11 @@
+import asyncio
 import os
+from copy import deepcopy
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
+from starlette.requests import Request
 
 os.environ.setdefault("MONGO_URL", "mongodb://127.0.0.1:27017")
 os.environ.setdefault("DB_NAME", "rehyn_gait_scoring_test")
@@ -83,6 +87,113 @@ def test_camera_or_tracking_failures_abstain_instead_of_assigning_points():
     assert low_quality["status"] == "unscorable"
     assert low_quality["score"] is None
     assert "feet_not_visible_enough" in low_quality["reason_codes"]
+
+
+def test_browser_body_normalized_2d_evidence_uses_the_same_score_weights():
+    result = score_gait_features(_payload(camera_method="body_centric_2d_browser"))
+
+    assert result["status"] == "scored"
+    assert result["score"] >= 90
+
+
+def test_browser_2d_evidence_must_match_the_saved_video_and_exclude_3d():
+    candidate = _payload(camera_method="body_centric_2d_browser")
+    candidate.update({
+        "analysis_method": "mediapipe_browser_body_centric_2d_v1",
+        "coordinate_frame": "pelvis_centered_leg_normalized_2d",
+    })
+    candidate["quality"]["sampled_frames"] = 40
+    candidate["quality"]["detected_frames"] = 40
+    candidate["provenance"].update({
+        "processing_location": "patient_browser",
+        "uses_3d_reconstruction": False,
+    })
+
+    accepted = server._validated_browser_gait_evidence(candidate, "video-l6", 3000)
+    assert accepted is not None
+    assert server._validated_browser_gait_evidence(candidate, "another-video", 3000) is None
+
+    candidate["provenance"]["uses_3d_reconstruction"] = True
+    assert server._validated_browser_gait_evidence(candidate, "video-l6", 3000) is None
+
+
+def test_assessment_submit_scores_video_bound_browser_2d_evidence(monkeypatch):
+    stored = []
+    user = {"id": "walking-patient", "email": "walk@example.com", "profile": {}}
+    candidate = _payload(camera_method="body_centric_2d_browser")
+    candidate.update({
+        "analysis_method": "mediapipe_browser_body_centric_2d_v1",
+        "coordinate_frame": "pelvis_centered_leg_normalized_2d",
+    })
+    candidate["quality"].update({"sampled_frames": 40, "detected_frames": 40})
+    candidate["provenance"].update({
+        "processing_location": "patient_browser",
+        "uses_3d_reconstruction": False,
+    })
+
+    async def signed_in(*_args):
+        return user
+
+    async def access(*_args):
+        return {"trigger": "initial", "task_ids": ["L6"], "issue_report_id": None}
+
+    async def noop(*_args, **_kwargs):
+        return None
+
+    async def videos(*_args):
+        return {"L6": {"id": "video-l6", "storage": "r2", "task_id": "L6"}}
+
+    async def insert(doc):
+        stored.append(deepcopy(doc))
+
+    monkeypatch.setattr(server, "_user_from_header", signed_in)
+    monkeypatch.setattr(server, "_assessment_access_plan", access)
+    monkeypatch.setattr(server, "consume_credits", noop)
+    monkeypatch.setattr(server, "_latest_task_videos", videos)
+    monkeypatch.setattr(server, "_record_initial_assessment_completion", noop)
+    monkeypatch.setattr(server, "_mark_functional_issue_assessed", noop)
+    monkeypatch.setattr(server, "_record_alira_action", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(server, "db", SimpleNamespace(assessments=SimpleNamespace(insert_one=insert)))
+    monkeypatch.setattr(server, "LOCAL_GPU_WORKER_URL", "")
+    request = Request({"type": "http", "method": "POST", "path": "/api/assessment/submit", "headers": []})
+    result = server.TaskResult(
+        task_id="L6",
+        completed_steps=3,
+        total_steps=3,
+        duration_ms=3000,
+        steps=[
+            server.TaskStepResult(step_id=f"L6-S{index}", completed=True, duration_ms=1000)
+            for index in range(1, 4)
+        ],
+        metrics={"walking_video_role": "gait_scoring_input", "gait_2d_evidence": candidate},
+    )
+    payload = server.AssessmentSubmit(
+        task_results=[result],
+        assessment_package="initial",
+        assigned_task_ids=["L6"],
+    )
+
+    saved = asyncio.run(server.submit_assessment(payload, request))
+
+    gait = stored[0]["model_analysis"]["gait_stage"]
+    assert gait["status"] == "scored"
+    assert gait["score"] == saved.metrics["task_quality"]["modules"]["lower_limb"]["score"]
+    assert stored[0]["task_results"][0]["metrics"]["gait_analysis"]["score"] == gait["score"]
+    assert "gait_2d_evidence" not in stored[0]["task_results"][0]["metrics"]
+
+
+def test_status_reports_2d_gait_ready_without_the_optional_gpu_worker(monkeypatch):
+    monkeypatch.setattr(server, "LOCAL_GPU_WORKER_URL", "")
+
+    status = asyncio.run(server.local_gpu_status())
+
+    assert status["status"] == "not_configured"
+    assert status["gait_2d"] == {
+        "status": "ready",
+        "analysis_method": "mediapipe_browser_body_centric_2d_v1",
+        "camera_motion_handling": "body_centric_2d_browser",
+        "uses_3d_reconstruction": False,
+    }
 
 
 def test_backend_gait_score_becomes_the_lower_limb_module_score():

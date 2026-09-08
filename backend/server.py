@@ -3496,6 +3496,54 @@ async def complete_initial_assessment_for_testing(request: Request):
     )
 
 
+def _validated_browser_gait_evidence(
+    candidate: Any,
+    expected_video_id: str,
+    duration_ms: int,
+) -> Optional[Dict[str, Any]]:
+    """Accept bounded 2D evidence only when it matches the saved walking video."""
+    if not isinstance(candidate, dict) or not expected_video_id:
+        return None
+    try:
+        stage = GaitStageResultSubmit.model_validate(candidate).model_dump(exclude_none=True)
+        provenance = stage.get("provenance") or {}
+        if stage.get("status") != "completed":
+            return None
+        if stage.get("analysis_method") != "mediapipe_browser_body_centric_2d_v1":
+            return None
+        if stage.get("camera_motion_handling") != "body_centric_2d_browser":
+            return None
+        if stage.get("coordinate_frame") != "pelvis_centered_leg_normalized_2d":
+            return None
+        if str(provenance.get("source_video_id") or "") != expected_video_id:
+            return None
+        if provenance.get("uses_3d_reconstruction") is not False:
+            return None
+        quality = stage.get("quality") or {}
+        sampled = int(float(quality.get("sampled_frames") or 0))
+        detected = int(float(quality.get("detected_frames") or 0))
+        if not 24 <= sampled <= 60 or not 0 <= detected <= sampled:
+            return None
+        for key in ("tracking_coverage", "full_body_visibility", "distal_visibility", "multi_person_ratio"):
+            value = float(quality.get(key))
+            if not 0 <= value <= 1:
+                return None
+        events = (stage.get("features") or {}).get("step_events") or []
+        if not isinstance(events, list) or len(events) > sampled:
+            return None
+        duration_seconds = max(0.1, duration_ms / 1000)
+        for event in events:
+            if not isinstance(event, dict) or event.get("side") not in {"left", "right"}:
+                return None
+            event_time = float(event.get("time_s"))
+            step_length = float(event.get("step_length_proxy_leg_ratio"))
+            if not 0 <= event_time <= duration_seconds + 0.25 or not 0 <= step_length <= 2:
+                return None
+        return stage
+    except (TypeError, ValueError):
+        return None
+
+
 @api_router.post("/assessment/submit", response_model=Assessment)
 async def submit_assessment(payload: AssessmentSubmit, request: Request):
     user = await _user_from_header(dict(request.headers))
@@ -3521,9 +3569,11 @@ async def submit_assessment(payload: AssessmentSubmit, request: Request):
     task_ids = [task.task_id for task in payload.task_results]
     if set(task_ids) != set(assigned_task_ids):
         raise HTTPException(status_code=422, detail="Submitted task results must match the assigned assessment tasks")
-    # Gait analysis is accepted only from the authenticated worker callback.
-    # A patient-facing assessment submission cannot pre-populate its own score.
+    browser_gait_candidate: Optional[Dict[str, Any]] = None
     for task in payload.task_results:
+        if task.task_id == "L6" and isinstance(task.metrics.get("gait_2d_evidence"), dict):
+            browser_gait_candidate = dict(task.metrics["gait_2d_evidence"])
+        task.metrics.pop("gait_2d_evidence", None)
         task.metrics.pop("gait_analysis", None)
     patient_parameters["assigned_task_ids"] = assigned_task_ids
     video_records = {} if testing_shortcut else await _latest_task_videos(
@@ -3542,13 +3592,25 @@ async def submit_assessment(payload: AssessmentSubmit, request: Request):
     }
     walking_was_skipped = "L6" in skipped_task_ids
     walking_video_available = "L6" in video_records and not walking_was_skipped
+    browser_gait_stage = _validated_browser_gait_evidence(
+        browser_gait_candidate,
+        str((video_records.get("L6") or {}).get("id") or ""),
+        next((task.duration_ms for task in payload.task_results if task.task_id == "L6"), 0),
+    ) if walking_video_available else None
+    browser_gait_analysis = score_gait_features(browser_gait_stage) if browser_gait_stage else None
+    if browser_gait_analysis:
+        payload.task_results = [
+            TaskResult.model_validate(row)
+            for row in _task_results_with_gait_analysis(payload.task_results, browser_gait_analysis)
+        ]
     for task_state in model_analysis.get("tasks", []):
         if str(task_state.get("task_id")) in skipped_task_ids:
             task_state["status"] = "not_observed_patient_skipped"
         elif str(task_state.get("task_id")) == "L6":
             task_state["status"] = (
-                "queued_gait_analysis" if LOCAL_GPU_WORKER_URL and walking_video_available
-                else "gait_analysis_not_configured" if walking_video_available
+                f"browser_2d_{browser_gait_analysis['status']}" if browser_gait_analysis
+                else "queued_gait_analysis" if LOCAL_GPU_WORKER_URL and walking_video_available
+                else "browser_2d_evidence_unavailable" if walking_video_available
                 else "waiting_for_video"
             )
     has_camera_analysis_tasks = any(task_id != "L6" for task_id in task_ids)
@@ -3564,15 +3626,19 @@ async def submit_assessment(payload: AssessmentSubmit, request: Request):
         "device": None if testing_shortcut else "cuda:0" if LOCAL_GPU_WORKER_URL and has_camera_analysis_tasks else None,
     }
     model_analysis["gait_stage"] = {
-        "status": (
+        **({
+            **browser_gait_analysis,
+            "completed_at": datetime.now(timezone.utc).isoformat(),
+        } if browser_gait_analysis else {}),
+        "status": browser_gait_analysis["status"] if browser_gait_analysis else (
             "generated_testing_sample" if testing_shortcut
             else "not_observed_patient_skipped" if walking_was_skipped
             else "queued" if LOCAL_GPU_WORKER_URL and walking_video_available
-            else "not_configured" if walking_video_available
+            else "unscorable" if walking_video_available
             else "waiting_for_video"
         ),
-        "score": None,
-        "camera_motion_handling": None,
+        "score": browser_gait_analysis.get("score") if browser_gait_analysis else None,
+        "camera_motion_handling": browser_gait_analysis.get("camera_motion_handling") if browser_gait_analysis else None,
     }
     model_analysis["musculoskeletal_stage"] = {
         "status": (
@@ -3748,6 +3814,19 @@ async def submit_assessment(payload: AssessmentSubmit, request: Request):
         logger.warning(f"Mongo unavailable for assessment insert; using local fallback: {str(e)[:120]}")
         LOCAL_ASSESSMENTS.append(doc.copy())
         _persist_local_list(LOCAL_ASSESSMENTS_FILE, LOCAL_ASSESSMENTS)
+    if browser_gait_analysis:
+        _record_alira_action(
+            "walking_video_scored",
+            source="browser_body_centric_2d",
+            user_id=user["id"],
+            status=browser_gait_analysis["status"],
+            details={
+                "assessment_id": assessment_id,
+                "score": browser_gait_analysis.get("score"),
+                "camera_motion_handling": browser_gait_analysis.get("camera_motion_handling"),
+                "reason_codes": browser_gait_analysis.get("reason_codes") or [],
+            },
+        )
     if access.get("trigger") == "initial":
         await _record_initial_assessment_completion(user, assessment.created_at)
     await _mark_functional_issue_assessed(user["id"], access.get("issue_report_id"), assessment_id)
@@ -4195,8 +4274,14 @@ async def _queue_local_gpu_stage(
 
 @api_router.get("/analysis/local-gpu/status")
 async def local_gpu_status():
+    browser_gait = {
+        "status": "ready",
+        "analysis_method": "mediapipe_browser_body_centric_2d_v1",
+        "camera_motion_handling": "body_centric_2d_browser",
+        "uses_3d_reconstruction": False,
+    }
     if not LOCAL_GPU_WORKER_URL:
-        return {"status": "not_configured", "cuda": False}
+        return {"status": "not_configured", "cuda": False, "gait_2d": browser_gait}
     try:
         headers = {}
         if ANALYSIS_WORKER_CF_CLIENT_ID and ANALYSIS_WORKER_CF_CLIENT_SECRET:
@@ -4207,9 +4292,9 @@ async def local_gpu_status():
         async with httpx.AsyncClient(timeout=5) as http:
             response = await http.get(f"{LOCAL_GPU_WORKER_URL}/health", headers=headers)
             response.raise_for_status()
-            return response.json()
+            return {**response.json(), "gait_2d": browser_gait}
     except Exception as exc:
-        return {"status": "unavailable", "cuda": False, "error": str(exc)}
+        return {"status": "unavailable", "cuda": False, "error": str(exc), "gait_2d": browser_gait}
 
 
 @api_router.post("/assessment/{assessment_id}/gpu-stage-results")
@@ -5172,6 +5257,7 @@ let objectTransportSamples = [];
 let visionFilesetResolver = null;
 let walkingVideoValidator = null;
 let walkingVideoValidatorPromise = null;
+let walkingValidatorTimestampCursor = 0;
 let motionFrames = [];
 let lastMotionSampleTs = 0;
 const MOTION_SAMPLE_INTERVAL_MS = 100;
@@ -5487,6 +5573,7 @@ async function persistTaskVideo(recording, blob, {onUploadProgress=null}={}){
       video:cloudRecord,
     });
   }
+  return cloudRecord;
 }
 
 function stopAndSaveTaskRecording(taskId){
@@ -5680,7 +5767,10 @@ async function getWalkingVideoValidator(){
       const validator = await PoseLandmarker.createFromOptions(filesetResolver, {
         baseOptions:{ modelAssetPath:"/vendor/mediapipe/models/pose_landmarker_lite.task" },
         runningMode:"VIDEO",
-        numPoses:1,
+        numPoses:2,
+        minPoseDetectionConfidence:0.45,
+        minPosePresenceConfidence:0.45,
+        minTrackingConfidence:0.45,
       });
       walkingVideoValidator = validator;
       return validator;
@@ -5953,6 +6043,249 @@ function seekWalkingReviewVideo(timeSeconds){
   });
 }
 
+const WALKING_2D_LANDMARK = {
+  leftShoulder:11, rightShoulder:12, leftHip:23, rightHip:24,
+  leftKnee:25, rightKnee:26, leftAnkle:27, rightAnkle:28,
+  leftHeel:29, rightHeel:30, leftToe:31, rightToe:32,
+};
+const WALKING_2D_LOWER = [23,24,25,26,27,28,29,30,31,32];
+const WALKING_2D_DISTAL = [25,26,27,28,29,30,31,32];
+
+function walkingPointUsable(point, threshold=0.2){
+  return !!point && Number.isFinite(point.x) && Number.isFinite(point.y)
+    && (point.visibility == null || point.visibility >= threshold);
+}
+
+function walkingPointMean(points){
+  return {
+    x:points.reduce((sum, point) => sum + point.x, 0) / points.length,
+    y:points.reduce((sum, point) => sum + point.y, 0) / points.length,
+  };
+}
+
+function walkingKneeFlexion(hip, knee, ankle){
+  const first = {x:hip.x-knee.x, y:hip.y-knee.y};
+  const second = {x:ankle.x-knee.x, y:ankle.y-knee.y};
+  const denominator = Math.hypot(first.x, first.y) * Math.hypot(second.x, second.y);
+  if(denominator < 1e-6) return null;
+  const cosine = Math.max(-1, Math.min(1, (first.x*second.x + first.y*second.y) / denominator));
+  return 180 - Math.acos(cosine) * 180 / Math.PI;
+}
+
+function bodyNormalizedWalkingPose2D(pose){
+  const required = [11,12,23,24,25,26,27,28,29,30,31,32];
+  if(!pose || !required.every(index => walkingPointUsable(pose[index], 0.18))) return null;
+  const pelvis = walkingPointMean([pose[23], pose[24]]);
+  const shoulders = walkingPointMean([pose[11], pose[12]]);
+  let upX = shoulders.x - pelvis.x;
+  let upY = shoulders.y - pelvis.y;
+  const upLength = Math.hypot(upX, upY);
+  if(upLength < 1e-5) return null;
+  upX /= upLength;
+  upY /= upLength;
+  const hipX = pose[24].x - pose[23].x;
+  const hipY = pose[24].y - pose[23].y;
+  const hipProjection = hipX*upX + hipY*upY;
+  let lateralX = hipX - hipProjection*upX;
+  let lateralY = hipY - hipProjection*upY;
+  const lateralLength = Math.hypot(lateralX, lateralY);
+  if(lateralLength < 1e-5) return null;
+  lateralX /= lateralLength;
+  lateralY /= lateralLength;
+  const legLength = ["left", "right"].reduce((sum, side) => {
+    const hip = pose[WALKING_2D_LANDMARK[`${side}Hip`]];
+    const knee = pose[WALKING_2D_LANDMARK[`${side}Knee`]];
+    const ankle = pose[WALKING_2D_LANDMARK[`${side}Ankle`]];
+    return sum + Math.hypot(hip.x-knee.x, hip.y-knee.y) + Math.hypot(knee.x-ankle.x, knee.y-ankle.y);
+  }, 0) / 2;
+  if(!Number.isFinite(legLength) || legLength < 0.04) return null;
+  const transform = point => {
+    const x = point.x - pelvis.x;
+    const y = point.y - pelvis.y;
+    return {x:(x*lateralX+y*lateralY)/legLength, y:(x*upX+y*upY)/legLength};
+  };
+  return {points:pose.map(transform), pelvis, shoulders};
+}
+
+function selectWalkingPose2D(poses){
+  if(!poses || !poses.length) return {pose:null, count:0};
+  const candidates = poses.map(pose => {
+    const usable = pose.filter(point => walkingPointUsable(point, 0.05));
+    if(!usable.length) return {pose, score:0};
+    const xs = usable.map(point => point.x);
+    const ys = usable.map(point => point.y);
+    const area = Math.max(0, Math.max(...xs)-Math.min(...xs)) * Math.max(0, Math.max(...ys)-Math.min(...ys));
+    const visibility = WALKING_2D_LOWER.reduce((sum, index) => sum + Number(pose[index]?.visibility || 0), 0) / WALKING_2D_LOWER.length;
+    return {pose, score:area*Math.max(visibility, 0.05)};
+  });
+  candidates.sort((left, right) => right.score-left.score);
+  return {pose:candidates[0].pose, count:poses.length};
+}
+
+function smoothWalkingSeries(values){
+  return values.map((_, index) => {
+    const start = Math.max(0, index-1);
+    const end = Math.min(values.length, index+2);
+    return values.slice(start, end).reduce((sum, value) => sum+value, 0) / (end-start);
+  });
+}
+
+function walkingPercentile(values, fraction){
+  if(!values.length) return null;
+  const sorted = [...values].filter(Number.isFinite).sort((left, right) => left-right);
+  if(!sorted.length) return null;
+  const position = (sorted.length-1)*fraction;
+  const lower = Math.floor(position);
+  const upper = Math.ceil(position);
+  if(lower === upper) return sorted[lower];
+  return sorted[lower] + (sorted[upper]-sorted[lower])*(position-lower);
+}
+
+function walkingPeaks(values, prominence, minimumDistance){
+  const candidates = [];
+  for(let index=1; index<values.length-1; index += 1){
+    if(values[index] < values[index-1] || values[index] < values[index+1]) continue;
+    const start = Math.max(0, index-minimumDistance*2);
+    const end = Math.min(values.length, index+minimumDistance*2+1);
+    const leftMinimum = Math.min(...values.slice(start, index+1));
+    const rightMinimum = Math.min(...values.slice(index, end));
+    const observedProminence = values[index] - Math.max(leftMinimum, rightMinimum);
+    if(observedProminence >= prominence) candidates.push({index, prominence:observedProminence});
+  }
+  const kept = [];
+  candidates.forEach(candidate => {
+    const previous = kept[kept.length-1];
+    if(!previous || candidate.index-previous.index >= minimumDistance){
+      kept.push(candidate);
+    }else if(candidate.prominence > previous.prominence){
+      kept[kept.length-1] = candidate;
+    }
+  });
+  return kept.map(item => item.index);
+}
+
+function buildBrowserWalkingEvidence(samples, sampledFrames, analysisFps, sourceVideoId=""){
+  const records = samples.map(sample => {
+    const normalized = bodyNormalizedWalkingPose2D(sample.pose);
+    if(!normalized) return null;
+    const body = normalized.points;
+    const foot = side => walkingPointMean([
+      body[WALKING_2D_LANDMARK[`${side}Ankle`]],
+      body[WALKING_2D_LANDMARK[`${side}Heel`]],
+      body[WALKING_2D_LANDMARK[`${side}Toe`]],
+    ]);
+    return {
+      time:sample.time,
+      pose:sample.pose,
+      leftFoot:foot("left"),
+      rightFoot:foot("right"),
+      leftKnee:walkingKneeFlexion(sample.pose[23], sample.pose[25], sample.pose[27]),
+      rightKnee:walkingKneeFlexion(sample.pose[24], sample.pose[26], sample.pose[28]),
+      trunk:Math.atan2(
+        normalized.shoulders.x-normalized.pelvis.x,
+        normalized.pelvis.y-normalized.shoulders.y,
+      )*180/Math.PI,
+      multiPerson:sample.multiPerson,
+    };
+  }).filter(Boolean);
+  if(!records.length) return null;
+  const forwardDifference = smoothWalkingSeries(records.map(row => row.leftFoot.y-row.rightFoot.y));
+  const footSeparation = smoothWalkingSeries(records.map(row => Math.hypot(
+    row.leftFoot.x-row.rightFoot.x,
+    row.leftFoot.y-row.rightFoot.y,
+  )));
+  const amplitude = Math.max(...forwardDifference)-Math.min(...forwardDifference);
+  const prominence = Math.max(0.035, amplitude*0.15);
+  const minimumDistance = Math.max(3, Math.round(analysisFps*0.28));
+  const leftPeaks = walkingPeaks(forwardDifference, prominence, minimumDistance);
+  const rightPeaks = walkingPeaks(forwardDifference.map(value => -value), prominence, minimumDistance);
+  const events = [
+    ...leftPeaks.map(index => ({index, side:"left"})),
+    ...rightPeaks.map(index => ({index, side:"right"})),
+  ].sort((left, right) => records[left.index].time-records[right.index].time)
+    .filter(event => records[event.index].time >= records[0].time+0.12 && records[event.index].time <= records[records.length-1].time-0.12)
+    .map(event => ({
+      side:event.side,
+      time_s:+records[event.index].time.toFixed(3),
+      step_length_proxy_leg_ratio:+footSeparation[event.index].toFixed(4),
+    }));
+  const alternating = [];
+  events.forEach(event => {
+    const previous = alternating[alternating.length-1];
+    if(previous && previous.side === event.side){
+      if(event.step_length_proxy_leg_ratio > previous.step_length_proxy_leg_ratio) alternating[alternating.length-1] = event;
+    }else{
+      alternating.push(event);
+    }
+  });
+  const fullBodyFrames = records.filter(row => WALKING_2D_LOWER.every(index => Number(row.pose[index]?.visibility || 0) >= 0.45)).length;
+  const distalVisibility = records.reduce((sum, row) => sum + WALKING_2D_DISTAL.reduce(
+    (frameSum, index) => frameSum + Number(row.pose[index]?.visibility || 0), 0
+  ) / WALKING_2D_DISTAL.length, 0) / records.length;
+  const leftHeights = smoothWalkingSeries(records.map(row => row.leftFoot.y));
+  const rightHeights = smoothWalkingSeries(records.map(row => row.rightFoot.y));
+  const leftKnees = records.map(row => row.leftKnee).filter(Number.isFinite);
+  const rightKnees = records.map(row => row.rightKnee).filter(Number.isFinite);
+  const trunk = smoothWalkingSeries(records.map(row => row.trunk));
+  const range = values => (walkingPercentile(values, .95) || 0) - (walkingPercentile(values, .05) || 0);
+  return {
+    status:"completed",
+    analysis_method:"mediapipe_browser_body_centric_2d_v1",
+    camera_motion_handling:"body_centric_2d_browser",
+    coordinate_frame:"pelvis_centered_leg_normalized_2d",
+    quality:{
+      sampled_frames:sampledFrames,
+      detected_frames:records.length,
+      tracking_coverage:+(records.length/Math.max(1, sampledFrames)).toFixed(3),
+      full_body_visibility:+(fullBodyFrames/Math.max(1, records.length)).toFixed(3),
+      distal_visibility:+distalVisibility.toFixed(3),
+      multi_person_ratio:+(records.filter(row => row.multiPerson).length/Math.max(1, sampledFrames)).toFixed(3),
+      background_motion_reliable_ratio:0,
+    },
+    features:{
+      step_events:alternating,
+      left_foot_clearance_leg_ratio:+range(leftHeights).toFixed(4),
+      right_foot_clearance_leg_ratio:+range(rightHeights).toFixed(4),
+      foot_clearance_reliable:false,
+      left_swing_knee_flexion_deg:+(walkingPercentile(leftKnees, .90) || 0).toFixed(1),
+      right_swing_knee_flexion_deg:+(walkingPercentile(rightKnees, .90) || 0).toFixed(1),
+      trunk_lateral_excursion_deg:+range(trunk).toFixed(1),
+      trunk_measurement_reliable:false,
+    },
+    provenance:{
+      source_video_id:sourceVideoId,
+      pose_model:"pose_landmarker_lite.task",
+      analysis_fps:+analysisFps.toFixed(3),
+      processing_location:"patient_browser",
+      uses_3d_reconstruction:false,
+    },
+  };
+}
+
+async function inspectWalkingVideo2D(durationSeconds, onProgress=()=>{}){
+  const validator = await getWalkingVideoValidator();
+  const sampledFrames = Math.max(24, Math.min(60, Math.ceil(durationSeconds*10)));
+  const analysisFps = sampledFrames / Math.max(durationSeconds, .1);
+  const start = Math.min(.05, durationSeconds*.05);
+  const end = Math.max(start, durationSeconds-Math.min(.05, durationSeconds*.05));
+  const timestampBase = walkingValidatorTimestampCursor+1;
+  walkingValidatorTimestampCursor = timestampBase+Math.round(durationSeconds*1000)+1000;
+  const samples = [];
+  for(let index=0; index<sampledFrames; index += 1){
+    const fraction = sampledFrames === 1 ? 0 : index/(sampledFrames-1);
+    const time = start+(end-start)*fraction;
+    await seekWalkingReviewVideo(time);
+    const result = validator.detectForVideo(walkingReviewVideo, timestampBase+Math.round(time*1000));
+    const selected = selectWalkingPose2D(result.landmarks || []);
+    if(selected.pose) samples.push({time, pose:selected.pose, multiPerson:selected.count > 1});
+    if(index % 4 === 0){
+      onProgress({stage:"analysis", message:`Checking walking pattern (${Math.round((index+1)*100/sampledFrames)}%)...`});
+      await new Promise(resolve => requestAnimationFrame(resolve));
+    }
+  }
+  return buildBrowserWalkingEvidence(samples, sampledFrames, analysisFps);
+}
+
 async function validateWalkingVideo(file, onProgress=()=>{}){
   if(!isWalkingVideoFile(file)){
     return {ok:false, message:"Please choose a video file."};
@@ -5965,6 +6298,7 @@ async function validateWalkingVideo(file, onProgress=()=>{}){
   let width = 0;
   let height = 0;
   let metadataReadable = false;
+  let gaitAnalysis = null;
   try{
     onProgress({stage:"metadata", message:"Opening the video on this device..."});
     walkingReviewVideo.src = objectUrl;
@@ -5981,6 +6315,14 @@ async function validateWalkingVideo(file, onProgress=()=>{}){
     }catch(error){
       postRN({type:"walking_video_metadata_unavailable", message:String(error)});
     }
+    if(metadataReadable){
+      try{
+        onProgress({stage:"analysis", message:"Checking the walking pattern in 2D..."});
+        gaitAnalysis = await inspectWalkingVideo2D(durationSeconds, onProgress);
+      }catch(error){
+        postRN({type:"walking_video_2d_analysis_unavailable", message:String(error)});
+      }
+    }
     onProgress({stage:"ready", message:"Walking video accepted. Preparing the secure save..."});
     return {
       ok:true,
@@ -5992,6 +6334,7 @@ async function validateWalkingVideo(file, onProgress=()=>{}){
       height,
       metadataReadable,
       validationMode:"accepted_for_async_gait_analysis",
+      gaitAnalysis,
       sampledFrames:[],
     };
   }catch(error){
@@ -6003,6 +6346,7 @@ async function validateWalkingVideo(file, onProgress=()=>{}){
       height:0,
       metadataReadable:false,
       validationMode:"accepted_for_async_gait_analysis",
+      gaitAnalysis:null,
       sampledFrames:[],
     };
   }finally{
@@ -6015,43 +6359,9 @@ async function validateWalkingVideo(file, onProgress=()=>{}){
 async function completeUploadedWalkingTask(file, validation){
   const task = tasks[currentTaskIdx];
   if(!task || !isWalkingTask(task)) return;
-  (validation.sampledFrames || []).forEach((frame, index) => {
-    if(motionFrames.length >= MAX_MOTION_FRAMES) return;
-    motionFrames.push({
-      timestamp_ms:Math.round(frame.time * 1000),
-      task_id:task.id,
-      step_id:"L6-S2",
-      domain:"lower_limb",
-      pose_2d:compactLandmarks(frame.pose),
-      pose_world_3d:compactLandmarks(frame.world),
-      hand_2d:null,
-      hand_side:null,
-      capture_source:"uploaded_walking_video",
-      sample_index:index,
-    });
-  });
-  const metrics = {
-    walking_capture_mode:"uploaded_video",
-    walking_video_role:"gait_scoring_input",
-    lower_limb_result_source:"walking_video_analysis",
-    walking_video_analysis_status:"queued",
-    walking_video_accepted:true,
-    walking_video_metadata_readable:validation.metadataReadable === true,
-    uploaded_video_duration_ms:validation.durationMs,
-    uploaded_video_width:validation.width,
-    uploaded_video_height:validation.height,
-  };
-  const perStepDuration = Math.round(validation.durationMs / Math.max(1, task.steps.length));
-  taskResults[currentTaskIdx] = {
-    task_id:task.id,
-    completed_steps:task.steps.length,
-    total_steps:task.steps.length,
-    duration_ms:validation.durationMs,
-    steps:task.steps.map(step => ({step_id:step.id, completed:true, failure_code:null, duration_ms:perStepDuration, metrics})),
-    metrics,
-  };
+  let cloudRecord = null;
   if(!LIBRARY_TEST_MODE){
-    await persistTaskVideo({
+    cloudRecord = await persistTaskVideo({
       taskId:task.id,
       startedAt:performance.now(),
       durationMs:validation.durationMs,
@@ -6063,6 +6373,38 @@ async function completeUploadedWalkingTask(file, validation){
       },
     });
   }
+  const gaitEvidence = validation.gaitAnalysis && cloudRecord?.id
+    ? {
+        ...validation.gaitAnalysis,
+        provenance:{
+          ...(validation.gaitAnalysis.provenance || {}),
+          source_video_id:String(cloudRecord.id),
+        },
+      }
+    : null;
+  const metrics = {
+    walking_capture_mode:"uploaded_video",
+    walking_video_role:"gait_scoring_input",
+    lower_limb_result_source:"walking_video_analysis",
+    walking_video_analysis_status:gaitEvidence ? "ready_for_backend_scoring" : "unscorable",
+    walking_video_accepted:true,
+    walking_video_metadata_readable:validation.metadataReadable === true,
+    uploaded_video_duration_ms:validation.durationMs,
+    uploaded_video_width:validation.width,
+    uploaded_video_height:validation.height,
+  };
+  if(gaitEvidence) metrics.gait_2d_evidence = gaitEvidence;
+  const perStepDuration = Math.round(validation.durationMs / Math.max(1, task.steps.length));
+  const stepMetrics = {...metrics};
+  delete stepMetrics.gait_2d_evidence;
+  taskResults[currentTaskIdx] = {
+    task_id:task.id,
+    completed_steps:task.steps.length,
+    total_steps:task.steps.length,
+    duration_ms:validation.durationMs,
+    steps:task.steps.map(step => ({step_id:step.id, completed:true, failure_code:null, duration_ms:perStepDuration, metrics:stepMetrics})),
+    metrics,
+  };
   walkingCaptureActive = true;
   walkingCapture.classList.add("hidden");
   ui.classList.remove("hidden");
