@@ -29,4 +29,13 @@ assert.deepEqual(
   ],
 );
 
+const futureTestingDate = exportsObject.weeklyExerciseScoreData([
+  { id: 'manual-future', exercise_id: 'ex_reach', day: '2026-09-14', completed_reps: 20, average_score: 91, testing_shortcut: true },
+], new Date('2026-09-14T12:00:00'));
+assert.deepEqual(Array.from(futureTestingDate.activities, item => item.id), ['manual-future']);
+assert.deepEqual(
+  Array.from(futureTestingDate.dailyScores, item => ({ day: item.day, average_score: item.average_score })),
+  [{ day: '2026-09-14', average_score: 91 }],
+);
+
 console.log('Journey daily exercise score tests passed');

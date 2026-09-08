@@ -56,6 +56,16 @@ def test_exercise_score_panel_uses_fresh_persisted_daily_averages_and_goal_line(
     assert "Personal goal {target}" in PANEL
 
 
+def test_exercise_score_panel_uses_the_same_testing_date_as_manual_completion():
+    assert 'from "@/src/appDate"' in PANEL
+    assert "await loadAppDateOverride()" in PANEL
+    assert "setChartDate(appDateString())" in PANEL
+    assert "subscribeAppDate" in PANEL
+    assert "const shownDate = parseLocalDate(chartDate)" in PANEL
+    assert "demoMode ? makeDemoActivities(shownDate) : payload.activities" in PANEL
+    assert ",\n        shownDate," in PANEL
+
+
 def test_exercise_score_panel_has_real_empty_loading_and_detail_states():
     assert 'testID="journey-exercise-scores"' in PANEL
     assert 'testID="journey-exercise-score-chart"' in PANEL

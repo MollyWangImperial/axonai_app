@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
   Pressable,
@@ -13,6 +13,7 @@ import { Ionicons } from "@expo/vector-icons";
 import Svg, { Circle, G, Line, Text as SvgText } from "react-native-svg";
 
 import { authedFetch } from "@/src/auth";
+import { appDateString, loadAppDateOverride, parseLocalDate, subscribeAppDate } from "@/src/appDate";
 import { DisplayPalette, useDisplayPreferences } from "@/src/displayPreferences";
 import { getScreenCache, setScreenCache } from "@/src/screenCache";
 import { radius, spacing } from "@/src/theme";
@@ -193,10 +194,13 @@ export function JourneyExerciseScoresPanel({ demoMode }: { demoMode: boolean }) 
   const [loading, setLoading] = useState(!cached);
   const [loadError, setLoadError] = useState(false);
   const [showDetails, setShowDetails] = useState(false);
+  const [chartDate, setChartDate] = useState(appDateString());
 
   const load = useCallback(async () => {
     if (!getScreenCache<ExerciseActivityResponse>(CACHE_KEY)) setLoading(true);
     try {
+      await loadAppDateOverride();
+      setChartDate(appDateString());
       const response = await authedFetch(`/api/alira/activities?limit=500&fresh=${Date.now()}`, { cache: "no-store" });
       if (!response.ok) throw new Error("Unable to load exercise scores");
       const result = await response.json();
@@ -221,10 +225,18 @@ export function JourneyExerciseScoresPanel({ demoMode }: { demoMode: boolean }) 
     void load();
   }, [load]));
 
+  useEffect(() => subscribeAppDate(() => setChartDate(appDateString())), []);
+
   const target = clampScore(payload.target_score || DEFAULT_TARGET);
   const weeklyScores = useMemo(
-    () => weeklyExerciseScoreData(demoMode ? makeDemoActivities() : payload.activities),
-    [demoMode, payload.activities],
+    () => {
+      const shownDate = parseLocalDate(chartDate);
+      return weeklyExerciseScoreData(
+        demoMode ? makeDemoActivities(shownDate) : payload.activities,
+        shownDate,
+      );
+    },
+    [chartDate, demoMode, payload.activities],
   );
   const { activities, dailyScores } = weeklyScores;
   const average = dailyScores.length
