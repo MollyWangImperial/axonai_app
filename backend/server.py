@@ -1155,8 +1155,8 @@ HAND_TASKS_DATA: List[Dict[str, Any]] = [
         "view": "Front view",
         "focus": "Finger extension, palm opening, thumb-index spread",
         "steps": [
-            {"id": "H1-S1", "voice": "We will begin the hand function package. Bring your affected hand up in front of your chest, with your palm facing the camera. Keep your fingers relaxed for now. Please do not open your hand yet.", "target": {"x": 0.5, "y": 0.45, "r": 0.12, "landmark": "WRIST"}, "hold_ms": 1200, "caption": "Hand up, palm facing camera, fingers relaxed"},
-            {"id": "H1-S2", "voice": "Now slowly open your fingers as wide as you comfortably can. Take your time, then hold your palm open and steady.", "target": {"x": 0.5, "y": 0.45, "r": 0.12, "landmark": "HAND_OPEN"}, "hold_ms": 1300, "caption": "Slowly open hand wide", "measure": ["finger_extension", "palm_openness", "thumb_index_spread"]},
+            {"id": "H1-S1", "voice": "We will begin the hand function package. Bring your affected hand up in front of your chest, with your palm facing the camera. If your hand is already open, keep it open and steady.", "target": {"x": 0.5, "y": 0.45, "r": 0.12, "landmark": "WRIST"}, "hold_ms": 1200, "caption": "Hand up, palm facing camera"},
+            {"id": "H1-S2", "voice": "Now slowly open your fingers as wide as you comfortably can, or keep them open if they are already open. Hold your palm open and steady.", "target": {"x": 0.5, "y": 0.45, "r": 0.12, "landmark": "HAND_OPEN"}, "hold_ms": 1300, "caption": "Open hand and hold steady", "measure": ["finger_extension", "palm_openness", "thumb_index_spread"]},
             {"id": "H1-S3", "voice": "Good. Relax your hand and lower it to the same place on your lap.", "target": {"x": 0.5, "y": 0.78, "r": 0.10, "landmark": "LAP_DYNAMIC"}, "hold_ms": 1200, "caption": "Return hand to the calibrated lap position"},
         ],
     },
@@ -7887,7 +7887,10 @@ function checkTarget(landmarks){
     const R = effectiveRadius(step, null);
     const near = Math.hypot(point.x - target.x, point.y - target.y) < R;
     if(step.id === "H1-S1"){
-      return near && palmFacingScore > PALM_FACING_THRESHOLD && handOpenScore < 0.72;
+      // Preparation checks position and palm visibility, not finger closure.
+      // Opening during the instruction must not force a close-and-reopen cycle.
+      // H1-S2 can measure the same open hand after its instruction finishes.
+      return near && palmFacingScore > PALM_FACING_THRESHOLD;
     }
     if(step.id === "H2-S2"){
       if(!near) return false;

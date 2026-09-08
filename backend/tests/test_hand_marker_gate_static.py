@@ -57,7 +57,7 @@ def test_advanced_marker_tasks_keep_seven_task_contract():
     assert 'await setupHand();' in html_source
     assert '"id": "H1-S1"' in html_source
     assert '"landmark": "WRIST"' in html_source
-    assert "Please do not open your hand yet" in html_source
+    assert "If your hand is already open, keep it open and steady." in html_source
     assert "Now slowly open your fingers" in html_source
     assert '"id": "H1-S2"' in html_source
     assert '"hold_ms": 1300' in html_source
@@ -91,7 +91,7 @@ def test_advanced_marker_tasks_keep_seven_task_contract():
     assert 'step.id === "H1-S1"' in html_source
     assert "PALM_FACING_THRESHOLD" in html_source
     assert "palmFacingScore > PALM_FACING_THRESHOLD" in html_source
-    assert "handOpenScore < 0.72" in html_source
+    assert "handOpenScore < 0.72" not in html_source
     assert 'step.id !== "H1-S2" || palmFacingScore > PALM_FACING_THRESHOLD' in html_source
     assert "const openThreshold = 0.45" in html_source
     assert "Palm + open" in html_source
