@@ -495,7 +495,7 @@ export async function resetAccount(): Promise<void> {
   const user = await getCachedUser();
   if (!user) throw new Error("Sign in before resetting your account.");
   const key = `pending_account_reset_v1:${user.id}`;
-  let requestId = await storage.getItem(key, "");
+  let requestId: string | null = await storage.getItem(key, "" as string);
   if (!requestId) {
     requestId = `reset_${Date.now()}_${Math.random().toString(36).slice(2)}`;
     if (!await storage.setItem(key, requestId)) throw new Error("Could not prepare the reset. Please retry.");

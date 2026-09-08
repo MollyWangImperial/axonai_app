@@ -131,7 +131,7 @@ export default function PaywallModal({ visible, onClose, onSubscribed, reason }:
 
         {error && <Text style={styles.error}>{error}</Text>}
         {pendingSession && !error && (
-          <Text style={styles.waiting}>Waiting for payment to complete… you can close this and we'll auto-unlock.</Text>
+          <Text style={styles.waiting}>Waiting for payment to complete… you can close this and we will auto-unlock.</Text>
         )}
         <Text style={styles.legal}>Recurring monthly subscription. Cancel anytime from your account.</Text>
       </View>

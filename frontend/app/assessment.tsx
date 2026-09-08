@@ -205,9 +205,9 @@ export default function AssessmentScreen() {
         // iOS — grant camera permission inline (Expo Go limitations may apply on first load)
         {...(Platform.OS === "ios" ? { mediaCapturePermissionGrantType: "grant" as any } : {})}
         // Android — auto-grant camera permission requests
-        onPermissionRequest={(event: any) => {
+        {...(Platform.OS === "android" ? { onPermissionRequest: (event: any) => {
           try { event?.grant(event?.resources || []); } catch {}
-        }}
+        }} as any : {})}
         onLoadEnd={() => setLoading(false)}
         onMessage={onMessage}
         onError={(e) => setError(String(e.nativeEvent.description || e.nativeEvent))}

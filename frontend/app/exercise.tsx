@@ -232,7 +232,9 @@ function ExerciseSession() {
         mediaPlaybackRequiresUserAction={false}
         allowsInlineMediaPlayback
         {...(Platform.OS === "ios" ? { mediaCapturePermissionGrantType: "grant" as any } : {})}
-        onPermissionRequest={(event: any) => { try { event?.grant(event?.resources || []); } catch {} }}
+        {...(Platform.OS === "android" ? { onPermissionRequest: (event: any) => {
+          try { event?.grant(event?.resources || []); } catch {}
+        }} as any : {})}
         onMessage={onMessage}
         onLoadEnd={() => setLoading(false)}
         onError={(e) => setError(String(e.nativeEvent.description || e.nativeEvent))}

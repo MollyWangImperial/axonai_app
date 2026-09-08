@@ -245,7 +245,6 @@ export default function ResultsScreen() {
     };
   }).filter((marker): marker is NonNullable<typeof marker> => marker != null);
   const activeMapMarker = mapMarkers.find((marker) => marker.domain === selectedMapDomain)
-    ?? mapMarkers.find((marker) => marker.severity === "needs_attention")
     ?? mapMarkers[0]
     ?? null;
 

@@ -301,6 +301,121 @@ def test_saved_assessment_policy_repairs_missing_lower_limb_score_from_saved_vid
     assert repaired["model_analysis"]["tasks"][0]["status"] == "rough_video_score"
 
 
+def test_saved_assessment_policy_replaces_non_finite_lower_limb_score():
+    doc = {
+        "id": "assessment-with-invalid-score",
+        "created_at": "2026-09-08T17:34:00+00:00",
+        "patient_parameters": {},
+        "assigned_task_ids": ["L6"],
+        "task_results": [{
+            "task_id": "L6",
+            "completed_steps": 3,
+            "total_steps": 3,
+            "duration_ms": 3035,
+            "steps": [],
+            "metrics": {"gait_analysis": {"status": "scored", "score": float("nan")}},
+        }],
+        "model_analysis": {"tasks": [{"task_id": "L6", "video_id": "video-invalid-score"}]},
+    }
+
+    repaired = server._assessment_with_current_rehab_policy(doc)
+
+    assert repaired["metrics"]["task_quality"]["modules"]["lower_limb"]["score"] == 82.0
+    assert repaired["task_results"][0]["metrics"]["gait_analysis"]["score"] == 82.0
+
+
+def test_failed_gait_worker_callback_keeps_a_numeric_lower_limb_score(monkeypatch):
+    saved_updates = []
+    doc = {
+        "id": "assessment-worker-failed",
+        "user_id": "walking-patient",
+        "assigned_task_ids": ["L6"],
+        "patient_parameters": {},
+        "task_results": [{
+            "task_id": "L6",
+            "completed_steps": 3,
+            "total_steps": 3,
+            "duration_ms": 3000,
+            "steps": [],
+            "metrics": {},
+        }],
+        "model_analysis": {"tasks": [{"task_id": "L6", "video_id": "video-l6"}]},
+    }
+
+    class Assessments:
+        async def find_one(self, *_args, **_kwargs):
+            return deepcopy(doc)
+
+        async def update_one(self, query, update):
+            saved_updates.append((query, deepcopy(update)))
+
+    monkeypatch.setattr(server, "db", SimpleNamespace(assessments=Assessments()))
+    monkeypatch.setattr(server, "_require_analysis_worker", lambda *_args: None)
+    monkeypatch.setattr(server, "_record_alira_action", lambda *_args, **_kwargs: None)
+    request = Request({"type": "http", "method": "POST", "path": "/api/assessment/a/gait-stage-results", "headers": []})
+
+    response = asyncio.run(server.save_gait_stage_results(
+        doc["id"],
+        server.GaitStageResultSubmit(status="failed", error="worker stopped"),
+        request,
+    ))
+
+    persisted = saved_updates[0][1]["$set"]
+    gait = persisted["task_results"][0]["metrics"]["gait_analysis"]
+    assert response["status"] == "scored"
+    assert response["lower_limb_score"] == 82.0
+    assert gait["score"] == 82.0
+    assert persisted["metrics"]["task_quality"]["modules"]["lower_limb"]["score"] == 82.0
+    assert persisted["model_analysis.gait_stage"]["worker_status"] == "failed"
+
+
+def test_unscorable_completed_gait_callback_uses_rough_score(monkeypatch):
+    saved_updates = []
+    doc = {
+        "id": "assessment-worker-unscorable",
+        "user_id": "walking-patient",
+        "assigned_task_ids": ["L6"],
+        "patient_parameters": {},
+        "task_results": [{"task_id": "L6", "completed_steps": 3, "total_steps": 3, "duration_ms": 3000, "steps": [], "metrics": {}}],
+        "model_analysis": {"tasks": [{"task_id": "L6", "video_id": "video-l6"}]},
+    }
+
+    class Assessments:
+        async def find_one(self, *_args, **_kwargs):
+            return deepcopy(doc)
+
+        async def update_one(self, query, update):
+            saved_updates.append((query, deepcopy(update)))
+
+    monkeypatch.setattr(server, "db", SimpleNamespace(assessments=Assessments()))
+    monkeypatch.setattr(server, "_require_analysis_worker", lambda *_args: None)
+    monkeypatch.setattr(server, "_record_alira_action", lambda *_args, **_kwargs: None)
+    stage = _payload(
+        quality={
+            "detected_frames": 5,
+            "tracking_coverage": 0.1,
+            "full_body_visibility": 0.1,
+            "distal_visibility": 0.1,
+            "multi_person_ratio": 0.0,
+        },
+        camera_method="body_centric_2d_browser",
+    )
+    stage["provenance"]["source_video_id"] = "video-l6"
+    request = Request({"type": "http", "method": "POST", "path": "/api/assessment/a/gait-stage-results", "headers": []})
+
+    response = asyncio.run(server.save_gait_stage_results(
+        doc["id"],
+        server.GaitStageResultSubmit(**stage),
+        request,
+    ))
+
+    persisted = saved_updates[0][1]["$set"]
+    assert response["status"] == "scored"
+    assert response["lower_limb_score"] == 82.0
+    assert persisted["task_results"][0]["metrics"]["gait_analysis"]["rough_estimate"] is True
+    assert persisted["metrics"]["task_quality"]["modules"]["lower_limb"]["score"] == 82.0
+
+
 def test_status_reports_2d_gait_ready_without_the_optional_gpu_worker(monkeypatch):
     monkeypatch.setattr(server, "LOCAL_GPU_WORKER_URL", "")
 

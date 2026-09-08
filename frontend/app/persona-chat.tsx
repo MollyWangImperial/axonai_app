@@ -36,7 +36,7 @@ export default function PersonaChatScreen() {
       const sessKey = user?.account_reset_at
         ? `persona_session_v2:${user.id}:${persona_id}`
         : `persona_session_${persona_id}`;
-      let id = await storage.getItem(sessKey);
+      let id = await storage.getItem(sessKey, "" as string);
       if (!id) {
         id = "s_" + Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
         await storage.setItem(sessKey, id);

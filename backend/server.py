@@ -31,6 +31,7 @@ import sys
 import tempfile
 import weakref
 from datetime import datetime, timedelta, timezone
+from math import isfinite
 
 import certifi
 
@@ -3551,6 +3552,18 @@ def _generated_testing_sample_task_results(
 ROUGH_WALKING_ASSESSMENT_SCORE = 82.0
 
 
+def _has_valid_gait_score(analysis: Any) -> bool:
+    if not isinstance(analysis, dict) or analysis.get("status") != "scored":
+        return False
+    score = analysis.get("score")
+    return (
+        isinstance(score, (int, float))
+        and not isinstance(score, bool)
+        and isfinite(float(score))
+        and 0.0 <= float(score) <= 100.0
+    )
+
+
 def _saved_walking_video_id(doc: Dict[str, Any]) -> str:
     return next((
         str(item.get("video_id") or "")
@@ -3588,6 +3601,7 @@ def _rough_walking_assessment_analysis(
             "uses_3d_reconstruction": False,
         },
         "original_analysis_status": str(existing.get("status") or "unavailable"),
+        "error": str(existing.get("error") or "")[:500] or None,
     }
 
 
@@ -3602,12 +3616,7 @@ def _assessment_needs_rough_walking_score(doc: Dict[str, Any]) -> bool:
     if bool(metrics.get("walking_skipped")):
         return False
     existing = metrics.get("gait_analysis") if isinstance(metrics.get("gait_analysis"), dict) else {}
-    score = existing.get("score")
-    if (
-        existing.get("status") == "scored"
-        and isinstance(score, (int, float))
-        and not isinstance(score, bool)
-    ):
+    if _has_valid_gait_score(existing):
         return False
     return True
 
@@ -3824,9 +3833,7 @@ async def submit_assessment(payload: AssessmentSubmit, request: Request):
     ) if walking_video_available else None
     browser_gait_analysis = score_gait_features(browser_gait_stage) if browser_gait_stage else None
     if walking_score_required and (
-        not browser_gait_analysis
-        or browser_gait_analysis.get("status") != "scored"
-        or not isinstance(browser_gait_analysis.get("score"), (int, float))
+        not _has_valid_gait_score(browser_gait_analysis)
     ):
         browser_gait_analysis = _rough_walking_assessment_analysis(
             browser_gait_analysis,
@@ -4638,6 +4645,11 @@ async def save_gait_stage_results(
         if not expected_video_id or source_video_id != expected_video_id:
             raise HTTPException(status_code=422, detail="Walking analysis does not match the saved source video")
         gait_analysis = score_gait_features(stage)
+        if not _has_valid_gait_score(gait_analysis):
+            gait_analysis = _rough_walking_assessment_analysis(
+                gait_analysis,
+                source_video_id=source_video_id,
+            )
         updated_task_results = _task_results_with_gait_analysis(task_results, gait_analysis)
         functional_metrics = build_functional_metrics(
             updated_task_results,
@@ -4655,13 +4667,38 @@ async def save_gait_stage_results(
             "model_analysis.gait_stage": gait_stage,
         }
     elif stage["status"] == "failed":
+        existing_gait_analysis = next((
+            dict((_snapshot_value(item, "metrics", {}) or {}).get("gait_analysis") or {})
+            for item in task_results
+            if str(_snapshot_value(item, "task_id", "")) == "L6"
+        ), {})
+        worker_error = str(stage.get("error") or "Walking-video analysis failed")[:500]
+        gait_analysis = existing_gait_analysis if _has_valid_gait_score(existing_gait_analysis) else (
+            _rough_walking_assessment_analysis({
+                "status": "failed",
+                "score": None,
+                "error": worker_error,
+                "reason_codes": ["walking_analysis_failed"],
+                "provenance": dict(stage.get("provenance") or {}),
+            }, source_video_id=_saved_walking_video_id(doc))
+        )
+        updated_task_results = _task_results_with_gait_analysis(task_results, gait_analysis)
+        functional_metrics = build_functional_metrics(
+            updated_task_results,
+            doc.get("assigned_task_ids"),
+            doc.get("patient_parameters") or {},
+        )
         gait_stage = {
-            "status": "failed",
-            "score": None,
-            "error": str(stage.get("error") or "Walking-video analysis failed")[:500],
+            **gait_analysis,
+            "worker_status": "failed",
+            "worker_error": worker_error,
             "completed_at": datetime.now(timezone.utc).isoformat(),
         }
-        updates = {"model_analysis.gait_stage": gait_stage}
+        updates = {
+            "task_results": updated_task_results,
+            "metrics": functional_metrics,
+            "model_analysis.gait_stage": gait_stage,
+        }
     else:
         raise HTTPException(status_code=422, detail="Gait stage status must be completed or failed")
 
@@ -5129,8 +5166,8 @@ POSE_RUNNER_HTML = r"""<!DOCTYPE html>
       <ul id="walkingCaptureGuidance">
         <li>A short video is fine. Keep the patient's whole body and usual walking aid visible when possible.</li>
         <li>A fixed camera is best. If the route does not fit, move smoothly from a safe position beside the path; do not walk backward in front of the patient.</li>
-        <li>The video is saved as assessment evidence. If it cannot support reliable measurements, no lower-limb score is shown.</li>
-        <li>The survey identifies the affected lower-limb area and side. Any numeric lower-limb score comes only from measurable walking-task evidence.</li>
+        <li>The video is saved as assessment evidence. Rehyn uses the measured 2D result when available and a rough score if processing is interrupted.</li>
+        <li>The survey identifies the affected lower-limb area and side. The walking task provides the numeric lower-limb score.</li>
       </ul>
       <div id="walkingDesktopActions" class="hidden" data-testid="walking-desktop-actions">
         <div id="walkingVideoDropZone" data-testid="walking-video-drop-zone">

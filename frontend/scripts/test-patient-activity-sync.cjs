@@ -24,7 +24,12 @@ function harness(disk = new Map()) {
   vm.runInNewContext(source, {
     exports, AbortController, setTimeout, clearTimeout,
     require: (id) => {
-      if (id === '@/src/auth') return { getUserId: async () => state.user };
+      if (id === '@/src/auth') return {
+        getUserId: async () => state.user,
+        getAccountGeneration: async () => 0,
+        notifyAuthStateChanged: () => {},
+        refreshAccountState: async () => null,
+      };
       if (id === '@/src/config') return { API_BASE: 'https://test.invalid' };
       if (id === '@/src/utils/storage') return { storage };
       if (id === '@react-native-async-storage/async-storage') return asyncStorage;
