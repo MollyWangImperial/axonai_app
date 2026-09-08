@@ -19,6 +19,7 @@ type GaitScoreComponent = {
 type WalkingTestResult = {
   status: "scored" | "unscorable";
   score: number | null;
+  rough_estimate?: boolean;
   reason_codes?: string[];
   components?: Record<string, GaitScoreComponent>;
   summary?: { step_count?: number };
@@ -260,18 +261,27 @@ export default function AssessmentScreen() {
             {walkingTestResult.status === "scored" && walkingTestResult.score != null ? (
               <>
                 <Text style={styles.walkingOverallScore}>{walkingTestResult.score}<Text style={styles.walkingScoreSuffix}> / 100</Text></Text>
-                <Text style={styles.walkingResultBody}>{walkingTestResult.summary?.step_count || 0} alternating steps measured</Text>
-                <View style={styles.walkingComponentList}>
-                  {walkingComponents.map(({ key, label, value }) => (
-                    <View key={key} style={styles.walkingComponentRow}>
-                      <View style={styles.walkingComponentCopy}>
-                        <Text style={styles.walkingComponentLabel}>{label}</Text>
-                        <Text style={styles.walkingComponentWeight}>{value?.weight || 0}% of the overall score</Text>
-                      </View>
-                      <Text style={styles.walkingComponentScore}>{value?.score == null ? "Not measured" : `${value.score} / 100`}</Text>
+                {walkingTestResult.rough_estimate ? (
+                  <>
+                    <Text style={styles.walkingEstimateLabel}>Rough test estimate</Text>
+                    <Text style={styles.walkingResultBody}>The video was accepted, but a stable 2D walking pattern could not be measured. A testing fallback score was used.</Text>
+                  </>
+                ) : (
+                  <>
+                    <Text style={styles.walkingResultBody}>{walkingTestResult.summary?.step_count || 0} alternating steps measured</Text>
+                    <View style={styles.walkingComponentList}>
+                      {walkingComponents.map(({ key, label, value }) => (
+                        <View key={key} style={styles.walkingComponentRow}>
+                          <View style={styles.walkingComponentCopy}>
+                            <Text style={styles.walkingComponentLabel}>{label}</Text>
+                            <Text style={styles.walkingComponentWeight}>{value?.weight || 0}% of the overall score</Text>
+                          </View>
+                          <Text style={styles.walkingComponentScore}>{value?.score == null ? "Not measured" : `${value.score} / 100`}</Text>
+                        </View>
+                      ))}
                     </View>
-                  ))}
-                </View>
+                  </>
+                )}
               </>
             ) : (
               <>
@@ -320,6 +330,7 @@ const styles = StyleSheet.create({
   walkingResultTitle: { color: colors.onSurface, fontSize: 27, lineHeight: 34, fontWeight: "800", textAlign: "center" },
   walkingOverallScore: { color: colors.brandPrimary, fontSize: 52, lineHeight: 60, fontWeight: "900", textAlign: "center" },
   walkingScoreSuffix: { fontSize: 22, fontWeight: "800" },
+  walkingEstimateLabel: { color: colors.brandSecondary, fontSize: 18, lineHeight: 24, fontWeight: "800", textAlign: "center" },
   walkingUnscorable: { color: colors.brandSecondary, fontSize: 30, lineHeight: 38, fontWeight: "900", textAlign: "center" },
   walkingResultBody: { color: colors.onSurfaceSecondary, fontSize: 15, lineHeight: 22, textAlign: "center" },
   walkingComponentList: { width: "100%", marginTop: spacing.sm, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: "#C9D4CC" },

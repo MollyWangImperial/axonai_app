@@ -101,14 +101,19 @@ def test_walking_validator_retries_with_independent_frame_detection():
     assert 'gaitAnalysisError' in validation
 
 
-def test_settings_walking_test_distinguishes_model_failure_from_no_detected_pattern():
+def test_settings_walking_test_always_returns_a_testing_score_above_80():
     source = server.POSE_RUNNER_HTML
-    scorer = source[source.index("async function scoreWalkingVideoForSettings") : source.index("async function completeUploadedWalkingTask")]
-    assert 'validation.gaitAnalysisError ? "walking_analysis_temporarily_unavailable" : "walking_pattern_not_detected"' in scorer
+    scorer = source[source.index("function roughWalkingTestEstimate") : source.index("async function completeUploadedWalkingTask")]
+    assert 'score:82' in scorer
+    assert 'rough_estimate:true' in scorer
+    assert 'if(!validation.gaitAnalysis) return roughWalkingTestEstimate' in scorer
+    assert 'Number(analysis.score) <= 80' in scorer
+    assert 'return roughWalkingTestEstimate(validation, ["walking_analysis_temporarily_unavailable"])' in scorer
 
     root = Path(__file__).resolve().parents[2]
     assessment = (root / "frontend" / "app" / "assessment.tsx").read_text(encoding="utf-8")
-    assert "walking_analysis_temporarily_unavailable" in assessment
+    assert "Rough test estimate" in assessment
+    assert "A testing fallback score was used." in assessment
 
 
 def test_browser_gait_evidence_is_body_normalized_and_bound_to_the_uploaded_video():
