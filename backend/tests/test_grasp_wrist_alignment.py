@@ -20,7 +20,8 @@ def runner_js():
     names = """
         rad2deg clamp pointVisible angle midpoint median sideIndexes
         poseWristBendDegrees projectedWristBendDegrees rawMovementMetrics
-        forwardLeanDegrees restrainedForwardLeanDegrees headDropDegrees shoulderHikeDegrees metricValue
+        forwardLeanDegrees restrainedForwardLeanDegrees gradedReachForwardLeanDegrees
+        headDropDegrees shoulderHikeDegrees metricValue targetActivationReady exerciseTargetIsArmed
         poseAlignmentDeviation poseTrackingQuality handTrackingQuality trackingQuality
         activeMovementPhase movementUnderway ruleAppliesNow expectedShoulderRise
         compensationThreshold resetRepMetrics updateMetrics reachKeyMetric elbowAtPeakReach
@@ -44,6 +45,8 @@ const STANDARD=CFG.movement_standard, SCORING_METHOD=CFG.scoring_method;
 let ACTIVE=sideIndexes('right'), OTHER=sideIndexes('left');
 let video={videoWidth:1280,videoHeight:720};
 let HAS_SIDE_LEAN_RULE=true;
+let stepVoiceFinishedAt=1, activeVoiceSequence=0;
+const TARGET_ARM_DELAY_AFTER_VOICE_MS=0;
 const CALIBRATION_MIN_TRACKING_QUALITY=.72;
 const SCORING_MIN_FRAMES=8, POINT_THRESHOLD=90, SUSTAINED_COMPENSATION_FRAMES=24;
 const ROM_FULL_CREDIT_RATIO=.95, ROM_COMPLETE_RATIO=.90;
