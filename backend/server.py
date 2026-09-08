@@ -65,6 +65,7 @@ try:
     from backend.encouragement import MEDALS as REWARD_MEDALS, compute_rewards
     from backend.assessment_quality import VERSION as ASSESSMENT_QUALITY_VERSION, COMPENSATIONS as ASSESSMENT_COMPENSATIONS, build_rubrics, score_assessment
     from backend.daily_activity_metrics import build_daily_activity_metrics
+    from backend.gait_scoring import score_gait_features
     from backend.alira_care_orchestrator import (
         QUESTION_BANK as ALIRA_CARE_QUESTION_BANK,
         FUNCTIONAL_ISSUE_CATALOG,
@@ -112,6 +113,7 @@ except ImportError:
     from encouragement import MEDALS as REWARD_MEDALS, compute_rewards
     from assessment_quality import VERSION as ASSESSMENT_QUALITY_VERSION, COMPENSATIONS as ASSESSMENT_COMPENSATIONS, build_rubrics, score_assessment
     from daily_activity_metrics import build_daily_activity_metrics
+    from gait_scoring import score_gait_features
     from alira_care_orchestrator import (
         QUESTION_BANK as ALIRA_CARE_QUESTION_BANK,
         FUNCTIONAL_ISSUE_CATALOG,
@@ -724,6 +726,19 @@ class GPUStageResultSubmit(BaseModel):
     stages: List[str] = Field(default_factory=list)
     tasks: Dict[str, Any] = Field(default_factory=dict)
     reporting_boundary: str = ""
+    error: Optional[str] = None
+    traceback: Optional[str] = None
+
+
+class GaitStageResultSubmit(BaseModel):
+    status: str
+    analysis_method: str = ""
+    camera_motion_handling: str = ""
+    coordinate_frame: str = ""
+    quality: Dict[str, Any] = Field(default_factory=dict)
+    features: Dict[str, Any] = Field(default_factory=dict)
+    provenance: Dict[str, Any] = Field(default_factory=dict)
+    wham_ready: Optional[bool] = None
     error: Optional[str] = None
     traceback: Optional[str] = None
 
@@ -1566,11 +1581,9 @@ def _summary_with_survey_mobility(
                 "summary": "The survey did not identify whether this area was affected. The numeric score comes only from guided assessment tasks.",
             })
         elif survey["survey_affected"]:
-            sides = survey["survey_affected_sides"]
-            side_label = "Both sides were" if len(sides) > 1 else f"Your {sides[0]} side was"
             domain.update({
                 "status": "survey_reported_affected",
-                "summary": f"{side_label} reported as affected in your survey. The numeric score comes only from guided assessment tasks.",
+                "summary": "This area was identified in your survey. The numeric score comes only from guided assessment tasks.",
             })
         else:
             domain.update({
@@ -1642,7 +1655,7 @@ def build_functional_metrics(
     task_quality = score_assessment(tasks, ASSESSMENT_RUBRICS, assigned_task_ids)
     survey_context = survey_domain_context(patient_parameters)
     walking_video_uploaded = any(
-        (_snapshot_value(task, "metrics", {}) or {}).get("walking_video_role") == "supporting_record"
+        (_snapshot_value(task, "metrics", {}) or {}).get("walking_video_role") in {"supporting_record", "gait_scoring_input"}
         for task in lower_tasks
     )
 
@@ -3508,6 +3521,10 @@ async def submit_assessment(payload: AssessmentSubmit, request: Request):
     task_ids = [task.task_id for task in payload.task_results]
     if set(task_ids) != set(assigned_task_ids):
         raise HTTPException(status_code=422, detail="Submitted task results must match the assigned assessment tasks")
+    # Gait analysis is accepted only from the authenticated worker callback.
+    # A patient-facing assessment submission cannot pre-populate its own score.
+    for task in payload.task_results:
+        task.metrics.pop("gait_analysis", None)
     patient_parameters["assigned_task_ids"] = assigned_task_ids
     video_records = {} if testing_shortcut else await _latest_task_videos(
         user["id"] if user else "",
@@ -3523,14 +3540,20 @@ async def submit_assessment(payload: AssessmentSubmit, request: Request):
         task.task_id for task in payload.task_results
         if bool((task.metrics or {}).get("walking_skipped"))
     }
+    walking_was_skipped = "L6" in skipped_task_ids
+    walking_video_available = "L6" in video_records and not walking_was_skipped
     for task_state in model_analysis.get("tasks", []):
         if str(task_state.get("task_id")) in skipped_task_ids:
             task_state["status"] = "not_observed_patient_skipped"
         elif str(task_state.get("task_id")) == "L6":
-            task_state["status"] = "supporting_record_only"
+            task_state["status"] = (
+                "queued_gait_analysis" if LOCAL_GPU_WORKER_URL and walking_video_available
+                else "gait_analysis_not_configured" if walking_video_available
+                else "waiting_for_video"
+            )
     has_camera_analysis_tasks = any(task_id != "L6" for task_id in task_ids)
-    if not testing_shortcut and task_ids and not has_camera_analysis_tasks:
-        model_analysis["status"] = "supporting_record_only"
+    if not testing_shortcut and task_ids and not has_camera_analysis_tasks and not walking_video_available:
+        model_analysis["status"] = "waiting_for_inputs"
     model_analysis["gpu_stage"] = {
         "status": (
             "generated_testing_sample" if testing_shortcut
@@ -3540,7 +3563,17 @@ async def submit_assessment(payload: AssessmentSubmit, request: Request):
         ),
         "device": None if testing_shortcut else "cuda:0" if LOCAL_GPU_WORKER_URL and has_camera_analysis_tasks else None,
     }
-    walking_was_skipped = "L6" in skipped_task_ids
+    model_analysis["gait_stage"] = {
+        "status": (
+            "generated_testing_sample" if testing_shortcut
+            else "not_observed_patient_skipped" if walking_was_skipped
+            else "queued" if LOCAL_GPU_WORKER_URL and walking_video_available
+            else "not_configured" if walking_video_available
+            else "waiting_for_video"
+        ),
+        "score": None,
+        "camera_motion_handling": None,
+    }
     model_analysis["musculoskeletal_stage"] = {
         "status": (
             "generated_testing_sample" if testing_shortcut
@@ -3740,13 +3773,11 @@ async def submit_assessment(payload: AssessmentSubmit, request: Request):
             "exercise_ids": [exercise.id for exercise in plan],
         },
     )
-    analysis_video_records = {task_id: record for task_id, record in video_records.items() if task_id != "L6"}
+    analysis_video_records = {
+        task_id: record for task_id, record in video_records.items()
+        if task_id not in skipped_task_ids
+    }
     analysis_motion_data = dict(payload.motion_data or {})
-    if isinstance(analysis_motion_data.get("frames"), list):
-        analysis_motion_data["frames"] = [
-            frame for frame in analysis_motion_data["frames"]
-            if str(frame.get("task_id") or "") != "L6"
-        ]
     has_analysis_input = bool(analysis_video_records or analysis_motion_data.get("frames"))
     if not testing_shortcut and LOCAL_GPU_WORKER_URL and ANALYSIS_WORKER_TOKEN and has_analysis_input:
         asyncio.create_task(_queue_local_gpu_stage(
@@ -3983,6 +4014,7 @@ async def get_assessment_analysis_status(assessment_id: str, request: Request):
     doc = await _owned_assessment_doc(assessment_id, request, "analysis status")
     model_analysis = doc.get("model_analysis") or {}
     gpu_stage = model_analysis.get("gpu_stage") or {}
+    gait_stage = model_analysis.get("gait_stage") or {}
     musculoskeletal_stage = model_analysis.get("musculoskeletal_stage") or {}
     task_states = {
         task_id: str(task.get("status") or "unknown")
@@ -3999,6 +4031,15 @@ async def get_assessment_analysis_status(assessment_id: str, request: Request):
             "model_version": gpu_stage.get("model_version"),
             "tasks": task_states,
             "error": gpu_stage.get("error"),
+        },
+        "gait_stage": {
+            "status": gait_stage.get("status", "not_configured"),
+            "score": gait_stage.get("score"),
+            "analysis_method": gait_stage.get("analysis_method"),
+            "camera_motion_handling": gait_stage.get("camera_motion_handling"),
+            "wham_ready": gait_stage.get("wham_ready"),
+            "reason_codes": gait_stage.get("reason_codes") or [],
+            "error": gait_stage.get("error"),
         },
         "musculoskeletal_stage": {
             "status": musculoskeletal_stage.get("status", "not_configured"),
@@ -4028,6 +4069,20 @@ async def _set_gpu_stage(assessment_id: str, stage: Dict[str, Any]) -> None:
         for item in LOCAL_ASSESSMENTS:
             if item.get("id") == assessment_id:
                 item.setdefault("model_analysis", {})["gpu_stage"] = stage
+                break
+
+
+async def _set_gait_stage(assessment_id: str, stage: Dict[str, Any]) -> None:
+    try:
+        await db.assessments.update_one(
+            {"id": assessment_id}, {"$set": {"model_analysis.gait_stage": stage}}
+        )
+    except Exception as exc:
+        _require_durable_patient_store("assessment gait analysis", exc)
+        logger.warning(f"Mongo unavailable for gait stage update; local fallback: {str(exc)[:120]}")
+        for item in LOCAL_ASSESSMENTS:
+            if item.get("id") == assessment_id:
+                item.setdefault("model_analysis", {})["gait_stage"] = stage
                 break
 
 
@@ -4130,6 +4185,12 @@ async def _queue_local_gpu_stage(
             "solver": "OpenSim Moco",
             "error": str(exc),
         })
+        if "L6" in video_records:
+            await _set_gait_stage(assessment_id, {
+                "status": "failed_to_queue",
+                "score": None,
+                "error": str(exc),
+            })
 
 
 @api_router.get("/analysis/local-gpu/status")
@@ -4169,6 +4230,118 @@ async def save_gpu_stage_results(
         raise HTTPException(status_code=422, detail="GPU stage status must be completed or failed")
     await _set_gpu_stage(assessment_id, stage)
     return {"assessment_id": assessment_id, "gpu_stage": stage["status"]}
+
+
+def _task_results_with_gait_analysis(
+    task_results: Sequence[Any],
+    gait_analysis: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    updated = []
+    for task in task_results:
+        row = task.model_dump() if hasattr(task, "model_dump") else dict(task)
+        if str(row.get("task_id")) == "L6":
+            metrics = dict(row.get("metrics") or {})
+            metrics["gait_analysis"] = gait_analysis
+            summary = gait_analysis.get("summary") or {}
+            symmetry = summary.get("bilateral_symmetry")
+            if isinstance(symmetry, (int, float)) and not isinstance(symmetry, bool):
+                metrics["gait_bilateral_motion_symmetry"] = float(symmetry)
+            metrics["gait_analysis_status"] = gait_analysis.get("status")
+            metrics["gait_analysis_version"] = gait_analysis.get("version")
+            metrics["gait_step_event_count"] = summary.get("step_count")
+            metrics["gait_camera_motion_handling"] = gait_analysis.get("camera_motion_handling")
+            row["metrics"] = metrics
+        updated.append(row)
+    return updated
+
+
+@api_router.post("/assessment/{assessment_id}/gait-stage-results")
+async def save_gait_stage_results(
+    assessment_id: str,
+    payload: GaitStageResultSubmit,
+    request: Request,
+):
+    """Validate, score, and persist camera-robust walking-video evidence."""
+    _require_analysis_worker(request)
+    try:
+        doc = await db.assessments.find_one({"id": assessment_id}, {"_id": 0})
+    except Exception as exc:
+        _require_durable_patient_store("assessment gait lookup", exc)
+        logger.warning(f"Mongo unavailable for gait lookup; local fallback: {str(exc)[:120]}")
+        doc = next((item for item in LOCAL_ASSESSMENTS if item.get("id") == assessment_id), None)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Assessment not found")
+
+    stage = payload.model_dump(exclude_none=True)
+    task_results = list(doc.get("task_results") or [])
+    updated_task_results = task_results
+    if stage["status"] == "completed":
+        source_video_id = str((stage.get("provenance") or {}).get("source_video_id") or "")
+        expected_video_id = next((
+            str(item.get("video_id") or "")
+            for item in (doc.get("model_analysis") or {}).get("tasks") or []
+            if str(item.get("task_id")) == "L6"
+        ), "")
+        if not expected_video_id or source_video_id != expected_video_id:
+            raise HTTPException(status_code=422, detail="Walking analysis does not match the saved source video")
+        gait_analysis = score_gait_features(stage)
+        updated_task_results = _task_results_with_gait_analysis(task_results, gait_analysis)
+        functional_metrics = build_functional_metrics(
+            updated_task_results,
+            doc.get("assigned_task_ids"),
+            doc.get("patient_parameters") or {},
+        )
+        gait_stage = {
+            **gait_analysis,
+            "wham_ready": stage.get("wham_ready"),
+            "completed_at": datetime.now(timezone.utc).isoformat(),
+        }
+        updates: Dict[str, Any] = {
+            "task_results": updated_task_results,
+            "metrics": functional_metrics,
+            "model_analysis.gait_stage": gait_stage,
+        }
+    elif stage["status"] == "failed":
+        gait_stage = {
+            "status": "failed",
+            "score": None,
+            "error": str(stage.get("error") or "Walking-video analysis failed")[:500],
+            "completed_at": datetime.now(timezone.utc).isoformat(),
+        }
+        updates = {"model_analysis.gait_stage": gait_stage}
+    else:
+        raise HTTPException(status_code=422, detail="Gait stage status must be completed or failed")
+
+    try:
+        await db.assessments.update_one({"id": assessment_id}, {"$set": updates})
+    except Exception as exc:
+        _require_durable_patient_store("assessment gait result", exc)
+        logger.warning(f"Mongo unavailable for gait result update; local fallback: {str(exc)[:120]}")
+        for item in LOCAL_ASSESSMENTS:
+            if item.get("id") == assessment_id:
+                item["task_results"] = updated_task_results
+                if "metrics" in updates:
+                    item["metrics"] = updates["metrics"]
+                item.setdefault("model_analysis", {})["gait_stage"] = gait_stage
+                break
+    _record_alira_action(
+        "walking_video_scored",
+        source="camera_robust_gait_worker",
+        user_id=doc.get("user_id"),
+        status=gait_stage["status"],
+        details={
+            "assessment_id": assessment_id,
+            "score": gait_stage.get("score"),
+            "camera_motion_handling": gait_stage.get("camera_motion_handling"),
+            "reason_codes": gait_stage.get("reason_codes") or [],
+        },
+    )
+    return {
+        "assessment_id": assessment_id,
+        "status": gait_stage["status"],
+        "lower_limb_score": gait_stage.get("score"),
+        "reason_codes": gait_stage.get("reason_codes") or [],
+    }
 
 
 @api_router.post("/assessment/{assessment_id}/model-stage-results")
@@ -4602,7 +4775,7 @@ POSE_RUNNER_HTML = r"""<!DOCTYPE html>
       <p id="walkingCaptureLead">Ask a carer or family member to record from the front while you walk toward the camera at your usual comfortable pace.</p>
       <ul>
         <li>A short video is fine. Keep the patient's whole body and usual walking aid visible when possible.</li>
-        <li>Keep the camera still at a safe distance and do not stand in the patient's walking path.</li>
+        <li>A fixed camera is best. If the route does not fit, move smoothly from a safe position beside the path; do not walk backward in front of the patient.</li>
         <li>The video is saved as assessment evidence. If it cannot support reliable measurements, no lower-limb score is shown.</li>
         <li>The survey identifies the affected lower-limb area and side. Any numeric lower-limb score comes only from measurable walking-task evidence.</li>
       </ul>
@@ -5812,13 +5985,13 @@ async function validateWalkingVideo(file, onProgress=()=>{}){
     return {
       ok:true,
       message:metadataReadable
-        ? "Walking video accepted. Lower-limb results will use the saved survey answers."
+        ? "Walking video accepted. Lower-limb analysis will begin after the assessment."
         : "Walking video accepted. This browser could not preview its metadata, but the file can still be saved.",
       durationMs:metadataReadable ? Math.round(durationSeconds * 1000) : 0,
       width,
       height,
       metadataReadable,
-      validationMode:"record_only",
+      validationMode:"accepted_for_async_gait_analysis",
       sampledFrames:[],
     };
   }catch(error){
@@ -5829,7 +6002,7 @@ async function validateWalkingVideo(file, onProgress=()=>{}){
       width:0,
       height:0,
       metadataReadable:false,
-      validationMode:"record_only",
+      validationMode:"accepted_for_async_gait_analysis",
       sampledFrames:[],
     };
   }finally{
@@ -5837,29 +6010,6 @@ async function validateWalkingVideo(file, onProgress=()=>{}){
     walkingReviewVideo.load();
     URL.revokeObjectURL(objectUrl);
   }
-}
-
-function walkingFunctionalMetrics(sampledFrames){
-  const poses = (sampledFrames || [])
-    .map(frame => frame && frame.pose)
-    .filter(pose => pose && pose.length >= 33);
-  if(poses.length < 2) return {gait_bilateral_motion_symmetry:null};
-  const travel = index => {
-    const points = poses.map(pose => pose[index]).filter(point => point && Number.isFinite(point.x) && Number.isFinite(point.y));
-    if(points.length < 2) return 0;
-    const xs = points.map(point => point.x);
-    const ys = points.map(point => point.y);
-    return Math.hypot(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys));
-  };
-  const leftTravel = travel(27);
-  const rightTravel = travel(28);
-  const largerTravel = Math.max(leftTravel, rightTravel);
-  const symmetry = largerTravel > 0.015 ? Math.min(leftTravel, rightTravel) / largerTravel : null;
-  return {
-    gait_left_ankle_travel:+leftTravel.toFixed(3),
-    gait_right_ankle_travel:+rightTravel.toFixed(3),
-    gait_bilateral_motion_symmetry:symmetry == null ? null : +symmetry.toFixed(3),
-  };
 }
 
 async function completeUploadedWalkingTask(file, validation){
@@ -5882,8 +6032,9 @@ async function completeUploadedWalkingTask(file, validation){
   });
   const metrics = {
     walking_capture_mode:"uploaded_video",
-    walking_video_role:"supporting_record",
-    lower_limb_result_source:"assessment_tasks",
+    walking_video_role:"gait_scoring_input",
+    lower_limb_result_source:"walking_video_analysis",
+    walking_video_analysis_status:"queued",
     walking_video_accepted:true,
     walking_video_metadata_readable:validation.metadataReadable === true,
     uploaded_video_duration_ms:validation.durationMs,
@@ -9427,7 +9578,11 @@ EXERCISE_MOVEMENT_STANDARDS: Dict[str, Dict[str, Any]] = {
         ],
         "compensations": [
             {"id": "trunk_lean", "metric": "trunk_lean_delta", "threshold_deg": 12, "min_frames": 8, "min_ratio": 0.35, "penalty": 10, "correction": "Keep your chest tall and let your arm travel toward the target."},
-            {"id": "shoulder_hike", "metric": "shoulder_hike_delta", "threshold_deg": 8, "min_frames": 8, "min_ratio": 0.35, "penalty": 8, "correction": "Relax the shoulder away from your ear before you reach again."},
+            # Up to and including 20 degrees of shoulder rise is accepted as
+            # normal during Graded Forward Reach. This avoids treating the
+            # ordinary scapular movement that accompanies arm elevation as a
+            # compensatory shoulder hike.
+            {"id": "shoulder_hike", "metric": "shoulder_hike_delta", "threshold_deg": 20, "normal_max_inclusive": True, "normal_rise_allowance_per_elevation_deg": 0, "min_frames": 8, "min_ratio": 0.35, "penalty": 8, "correction": "Relax the shoulder away from your ear before you reach again."},
         ],
     },
     "ex_trunk": {
@@ -9504,10 +9659,10 @@ EXERCISE_MOVEMENT_STANDARDS: Dict[str, Dict[str, Any]] = {
             {"id": "trunk_lean", "metric": "trunk_lean_delta", "threshold_deg": 12, "min_frames": 8, "min_ratio": 0.35, "penalty": 10, "correction": "Keep your shoulders square and move the light object with your arm."},
             # Side lean / rotation to get the cup across instead of moving the arm (carry and release).
             {"id": "trunk_side_lean", "metric": "trunk_side_lean_delta", "threshold_deg": 10, "min_frames": 8, "min_ratio": 0.3, "penalty": 8, "correction": "Keep your body upright and carry the cup across with your arm.", "steps": [3, 4]},
-            # The pose shoulder naturally rises during unilateral arm elevation.
-            # Allow that camera-visible coupling while retaining a capped margin
-            # so a sustained shrug beyond the reach can still be identified.
-            {"id": "shoulder_hike", "metric": "shoulder_hike_delta", "threshold_deg": 9, "min_frames": 12, "min_ratio": 0.45, "normal_rise_allowance_per_elevation_deg": 0.30, "normal_rise_allowance_cap_deg": 18, "penalty": 7, "correction": "Set the shoulder down before lifting the object again."},
+            # Use the same inclusive normal band as Graded Forward Reach: the
+            # ordinary shoulder rise that accompanies lifting and carrying the
+            # cup is normal through 20 degrees.
+            {"id": "shoulder_hike", "metric": "shoulder_hike_delta", "threshold_deg": 20, "normal_max_inclusive": True, "normal_rise_allowance_per_elevation_deg": 0, "min_frames": 12, "min_ratio": 0.45, "penalty": 7, "correction": "Set the shoulder down before lifting the object again."},
             # "Chicken wing": the arm abducts and the elbow rises above the hand to reach,
             # instead of the arm going forward (reach and grasp steps).
             {"id": "elbow_flare", "metric": "elbow_flare_deg", "threshold_deg": 45, "min_frames": 8, "min_ratio": 0.35, "penalty": 7, "correction": "Keep your elbow low and close to your body, and reach forward with your arm.", "steps": [0, 1, 2]},
@@ -11796,6 +11951,10 @@ function compensationThreshold(rule,raw){
   const threshold=Number(rule.threshold_deg||0);
   return rule.metric === "shoulder_hike_delta" ? threshold+expectedShoulderRise(raw,rule) : threshold;
 }
+function compensationExceeded(rule,raw,value){
+  const threshold=compensationThreshold(rule,raw);
+  return rule.normal_max_inclusive === true ? value > threshold : value >= threshold;
+}
 function resetRepMetrics(){
   clearTemporaryCompensationEvidence();
   romBest={};
@@ -11868,7 +12027,7 @@ function updateMetrics(lm,handLm,freshHand=true){
     if(!Number.isFinite(value)){ compensationConsecutive[rule.id]=0; continue; }
     compensationEligible[rule.id]=(compensationEligible[rule.id]||0)+1;
     peakCompensationDegrees[rule.id]=Math.max(Number(peakCompensationDegrees[rule.id]||0),value);
-    const aboveThreshold=value >= compensationThreshold(rule,raw);
+    const aboveThreshold=compensationExceeded(rule,raw,value);
     compensationConsecutive[rule.id]=aboveThreshold ? Number(compensationConsecutive[rule.id]||0)+1 : 0;
     compensationLongestStreak[rule.id]=Math.max(Number(compensationLongestStreak[rule.id]||0),compensationConsecutive[rule.id]);
     if(aboveThreshold) compensationHits[rule.id]=(compensationHits[rule.id]||0)+1;
@@ -12376,7 +12535,7 @@ function drawLiveDegrees(lm){
   const shoulderRule=(STANDARD.compensations||[]).find(item=>item.metric==="shoulder_hike_delta");
   const hike=shoulderHikeDegrees(raw);
   if(shoulderRule && Number.isFinite(hike) && hike>=2 && lm[ACTIVE.shoulder]){
-    drawDegreeLabel(lm[ACTIVE.shoulder].x*canvas.width+14, lm[ACTIVE.shoulder].y*canvas.height-22, `Shoulder lift ${Math.round(hike)}°`, hike>=compensationThreshold(shoulderRule,raw)?"#FF9B8A":"#FFD27A");
+    drawDegreeLabel(lm[ACTIVE.shoulder].x*canvas.width+14, lm[ACTIVE.shoulder].y*canvas.height-22, `Shoulder lift ${Math.round(hike)}°`, compensationExceeded(shoulderRule,raw,hike)?"#FF9B8A":"#FFD27A");
   }
   const mid={x:(lm[11].x+lm[12].x)/2,y:(lm[11].y+lm[12].y)/2};
   const leanRule=(STANDARD.compensations||[]).find(item=>item.metric==="trunk_lean_delta");
@@ -14901,13 +15060,37 @@ async def _persist_alira_activity(user: Dict[str, Any], payload: AliraActivitySu
         _patient_record_id(user["id"], "activity", payload.client_activity_id)
         if payload.client_activity_id else "aca_" + uuid.uuid4().hex[:16]
     )
+    completed_at = payload.completed_at or datetime.now(timezone.utc).isoformat()
+    try:
+        completed_at = datetime.fromisoformat(completed_at.replace("Z", "+00:00")).astimezone(timezone.utc).isoformat()
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="completed_at must be an ISO-8601 timestamp") from exc
+    repetition_scores = _normalise_repetition_scores(payload.repetition_scores)
+    average_score = _average_repetition_scores(repetition_scores, payload.average_score)
+    unassisted_average_score = average_score
+    if payload.assisted:
+        # The client reports raw camera scores plus the assisted flag; halving
+        # happens here once, so every downstream consumer inherits it.
+        repetition_scores = [round(score * ASSISTED_SCORE_FACTOR, 1) for score in repetition_scores]
+        average_score = (
+            round(average_score * ASSISTED_SCORE_FACTOR, 1) if average_score is not None else None
+        )
+    existing = None
+    replace_testing_activity = False
     if payload.client_activity_id:
         try:
             existing = await db.alira_activities.find_one({"_id": activity_id, "user_id": user["id"]}, {"_id": 0})
         except Exception as exc:
             raise _patient_activity_unavailable(exc) from exc
         if existing:
-            return {"ok": True, "activity": existing, "already_saved": True}
+            replace_testing_activity = bool(payload.testing_shortcut and existing.get("testing_shortcut"))
+            same_result = (
+                existing.get("average_score") == average_score
+                and list(existing.get("repetition_scores") or []) == repetition_scores
+                and int(existing.get("completed_reps") or 0) == payload.completed_reps
+            )
+            if not replace_testing_activity or same_result:
+                return {"ok": True, "activity": existing, "already_saved": True}
     assessments, check_ins, existing_activities, issue_reports = await asyncio.gather(
         _care_assessments_for_user(user["id"]),
         _care_check_ins_for_user(user["id"]),
@@ -14941,22 +15124,6 @@ async def _persist_alira_activity(user: Dict[str, Any], payload: AliraActivitySu
     }
     if payload.exercise_id not in approved_ids and payload.exercise_id not in caregiver_ids and payload.exercise_id not in plan_ids:
         raise HTTPException(status_code=409, detail="This exercise is not in the patient's current approved plan.")
-    completed_at = payload.completed_at or datetime.now(timezone.utc).isoformat()
-    try:
-        completed_at = datetime.fromisoformat(completed_at.replace("Z", "+00:00")).astimezone(timezone.utc).isoformat()
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail="completed_at must be an ISO-8601 timestamp") from exc
-    repetition_scores = _normalise_repetition_scores(payload.repetition_scores)
-    average_score = _average_repetition_scores(repetition_scores, payload.average_score)
-    unassisted_average_score = average_score
-    if payload.assisted:
-        # The client reports raw camera scores plus the assisted flag; halving
-        # happens here once, so every downstream consumer (journey scores,
-        # functional-domain averages, care-plan monitoring) inherits it.
-        repetition_scores = [round(score * ASSISTED_SCORE_FACTOR, 1) for score in repetition_scores]
-        average_score = (
-            round(average_score * ASSISTED_SCORE_FACTOR, 1) if average_score is not None else None
-        )
     activity = {
         "id": activity_id,
         "client_activity_id": payload.client_activity_id,
@@ -14974,12 +15141,14 @@ async def _persist_alira_activity(user: Dict[str, Any], payload: AliraActivitySu
         "unassisted_average_score": unassisted_average_score if payload.assisted else None,
         "functional_domain": EXERCISE_FUNCTIONAL_DOMAINS.get(payload.exercise_id),
         "completed_at": completed_at,
-        "created_at": datetime.now(timezone.utc).isoformat(),
+        "created_at": existing.get("created_at") if replace_testing_activity and existing else datetime.now(timezone.utc).isoformat(),
     }
     try:
         if payload.client_activity_id:
             await db.alira_activities.update_one(
-                {"_id": activity_id}, {"$setOnInsert": activity.copy()}, upsert=True,
+                {"_id": activity_id},
+                {"$set": activity.copy()} if replace_testing_activity else {"$setOnInsert": activity.copy()},
+                upsert=True,
             )
         else:
             await db.alira_activities.insert_one(activity.copy())
@@ -14991,7 +15160,9 @@ async def _persist_alira_activity(user: Dict[str, Any], payload: AliraActivitySu
         LOCAL_CARE_STATE[user["id"]] = state
         _persist_local_dict(LOCAL_CARE_STATE_FILE, LOCAL_CARE_STATE)
     activities = await _care_activities_for_user(user["id"])
-    if not any(item.get("id") == activity["id"] for item in activities):
+    if any(item.get("id") == activity["id"] for item in activities):
+        activities = [activity.copy() if item.get("id") == activity["id"] else item for item in activities]
+    else:
         activities.append(activity.copy())
     care_plan = build_adaptive_care_plan(profile_for_plan, assessments, check_ins, activities, issue_reports)
     review = {
@@ -15041,7 +15212,7 @@ async def _persist_alira_activity(user: Dict[str, Any], payload: AliraActivitySu
             "daily_action": care_plan["daily_monitoring"]["next_day_action"],
         },
     )
-    return {"ok": True, "activity": activity, "care_plan": care_plan}
+    return {"ok": True, "activity": activity, "care_plan": care_plan, "already_saved": False}
 
 
 @api_router.post("/users/activity/recover-initial-assessment")

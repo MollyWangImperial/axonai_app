@@ -132,13 +132,13 @@ LOWER_LIMB_TASKS_DATA: List[Dict[str, Any]] = [
         "filming_guidance": [
             "Record a short frontal video with the patient walking toward the camera at their usual comfortable pace.",
             "Keep the patient's whole body and usual walking aid visible when possible.",
-            "Keep the camera still at a safe distance and do not stand in the patient's walking path.",
+            "A fixed camera is best. If the route does not fit, move smoothly from a safe position beside the path; do not walk backward in front of the patient.",
             "The video is saved as an assessment record. Any lower-limb score comes only from measurable evidence in this assessment task; the affected area and side come from the patient's survey.",
         ],
         "steps": [
             {
                 "id": "L6-S1",
-                "voice": "For this final walking record, ask a carer or family member to take a short video from the front while you walk toward the camera at your usual comfortable pace. Keep your whole body and usual walking aid visible when possible. Keep the camera still and safely out of your path.",
+                "voice": "For this final walking record, ask a carer or family member to take a short video from the front while you walk toward the camera at your usual comfortable pace. Keep your whole body and usual walking aid visible when possible. A fixed camera is best. If the route does not fit, the recorder may move smoothly from a safe position beside the path, but must not walk backward in front of you.",
                 "target": {"x": 0.22, "y": 0.78, "r": 0.16, "landmark": "WALK_READY"},
                 "hold_ms": 1500,
                 "movement_required": False,

@@ -43,8 +43,12 @@ def test_gpu_stage_does_not_bypass_validated_model_result_route():
     assert '"model_analysis.gpu_stage"' in source
 
 
-def test_local_worker_runs_cuda_and_moco_as_independent_callbacks():
+def test_local_worker_runs_gait_cuda_and_moco_as_independent_callbacks():
     source = (Path(__file__).resolve().parents[1] / "local_gpu_worker.py").read_text(encoding="utf-8")
+    assert 'callback(job, gait_result, "gait-stage-results")' in source
+    assert "GAIT_RUNTIME.analyze(job)" in source
+    assert '"camera_motion_handling": "body_centric_2d_background_ransac"' in source
+    assert '"uses_3d_reconstruction": False' in source
     assert 'callback(job, gpu_result, "gpu-stage-results")' in source
     assert 'callback(job, model_result, "model-stage-results")' in source
     assert "MOCO_RUNTIME.analyze(job)" in source

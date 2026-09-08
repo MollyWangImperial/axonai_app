@@ -30,7 +30,7 @@ function domainStatusLabel(status: string) {
   if (status === "review_recommended") return "Needs attention";
   if (status === "not_observed") return "Not observed";
   if (status === "survey_reported") return "From your survey";
-  if (status === "survey_reported_affected") return "Reported affected";
+  if (status === "survey_reported_affected") return "Building strength";
   if (status === "survey_reported_unaffected") return "Not reported affected";
   if (status === "survey_unsure") return "Survey answer unsure";
   return "Analysis in progress";
@@ -216,7 +216,7 @@ export default function ResultsScreen() {
     building_strength: { color: "#C88913", soft: "#FFF7E6", label: "Building strength" },
     moving_well: { color: "#3E8256", soft: "#F1F8F2", label: "Moving well" },
   };
-  const MAP_TITLES: Record<string, string> = { upper_limb: "shoulder and arm", hand: "hand", lower_limb: "leg" };
+  const MAP_TITLES: Record<string, string> = { upper_limb: "Shoulder and arm", hand: "Hand", lower_limb: "Leg" };
   const MAP_DOMAIN_ICONS = {
     upper_limb: "body-outline",
     hand: "hand-left-outline",
@@ -236,16 +236,12 @@ export default function ResultsScreen() {
           ? metricDomain.survey_affected_sides
           : [pin?.affected_side ?? affectedSide];
     const markerSide = affectedSides[0] ?? affectedSide;
-    const severity = pin?.severity === "needs_attention" ? "needs_attention" as const : "building_strength" as const;
+    const severity = "building_strength" as const;
     return {
       domain,
       severity,
       affectedSide: markerSide,
       affectedSides,
-      source: "survey" as const,
-      coverage: null,
-      findings: null,
-      detail: pin?.problem ?? `Your survey reports that your ${markerSide} ${MAP_TITLES[domain]} was affected.`,
     };
   }).filter((marker): marker is NonNullable<typeof marker> => marker != null);
   const activeMapMarker = mapMarkers.find((marker) => marker.domain === selectedMapDomain)
@@ -310,7 +306,7 @@ export default function ResultsScreen() {
           {mapMarkers.length > 0 && (
             <View style={[styles.mapPanel, !isWide && styles.mapPanelNarrow]} testID="results-movement-map">
               <Text style={[styles.mapHeading, !isWide && styles.mapHeadingNarrow]}>Your movement map</Text>
-              <Text style={[styles.mapInstruction, !isWide && styles.mapInstructionNarrow]}>Choose a number to learn about that area.</Text>
+              <Text style={[styles.mapInstruction, !isWide && styles.mapInstructionNarrow]}>Choose a number to highlight that area.</Text>
               <View style={[styles.mapLayout, !isWide && styles.mapLayoutStacked]}>
                 <View style={[styles.mapFigure, !isWide && styles.mapFigureStacked]}>
                   <View
@@ -323,7 +319,7 @@ export default function ResultsScreen() {
                       const y = marker.domain === "upper_limb" ? ageAnatomy.shoulderY : marker.domain === "hand" ? ageAnatomy.handY : ageAnatomy.lowerLimbY;
                       const presentation = MAP_SEVERITIES[marker.severity];
                       const active = activeMapMarker?.domain === marker.domain;
-                      const areaTitle = `${marker.affectedSides.length > 1 ? "Both" : marker.affectedSide === "left" ? "Left" : "Right"} ${MAP_TITLES[marker.domain]}`;
+                      const areaTitle = MAP_TITLES[marker.domain];
                       return (
                         <Pressable
                           key={marker.domain}
@@ -358,7 +354,7 @@ export default function ResultsScreen() {
                   {mapMarkers.map((marker, index) => {
                     const presentation = MAP_SEVERITIES[marker.severity];
                     const active = activeMapMarker?.domain === marker.domain;
-                    const areaTitle = `${marker.affectedSides.length > 1 ? "Both" : marker.affectedSide === "left" ? "Left" : "Right"} ${MAP_TITLES[marker.domain]}`;
+                    const areaTitle = MAP_TITLES[marker.domain];
                     return (
                       <Pressable
                         key={marker.domain}
@@ -385,16 +381,7 @@ export default function ResultsScreen() {
                         <View style={styles.mapAreaCopy}>
                           <Text style={[styles.mapAreaTitle, isWide && styles.mapAreaTitleWide]}>{areaTitle}</Text>
                           <Text style={[styles.mapAreaStatus, isWide && styles.mapAreaStatusWide, { color: presentation.color }]}>{presentation.label}</Text>
-                          {active && (
-                            <View testID="results-map-detail">
-                              <Text style={[styles.mapAreaDetail, isWide && styles.mapAreaDetailWide]}>{marker.detail}</Text>
-                              <Text style={[styles.mapAreaMeta, isWide && styles.mapAreaMetaWide]}>
-                                Based on your affected-area survey answer. Guided tasks calculate the numeric score separately.
-                              </Text>
-                            </View>
-                          )}
                         </View>
-                        <Ionicons name="chevron-forward" size={30} color="#0D4C35" />
                       </Pressable>
                     );
                   })}

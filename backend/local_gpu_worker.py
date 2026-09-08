@@ -55,6 +55,10 @@ MOCO_PYTHON = Path(os.environ.get(
     "REHYN_MOCO_PYTHON",
     r"D:\anaconda3\Anaconda3\python.exe",
 ))
+GAIT_POSE_MODEL = Path(os.environ.get(
+    "REHYN_GAIT_POSE_MODEL",
+    str(MOCO_ROOT / "video_demo" / "assets" / "pose_landmarker_lite.task"),
+))
 WORK_ROOT = Path(os.environ.get(
     "REHYN_ANALYSIS_WORK_ROOT",
     str(Path(os.environ.get("TEMP", ".")) / "rehyn-analysis-jobs"),
@@ -403,7 +407,66 @@ class MocoRuntime:
                 shutil.rmtree(job_dir, ignore_errors=True)
 
 
+class GaitVideoRuntime:
+    """Fast sampled-2D gait stage, robust to ordinary handheld motion."""
+
+    def status(self) -> dict[str, Any]:
+        script = Path(__file__).with_name("gait_video_analysis.py")
+        return {
+            "configured": MOCO_PYTHON.is_file() and script.is_file() and GAIT_POSE_MODEL.is_file(),
+            "python": str(MOCO_PYTHON),
+            "pose_model": str(GAIT_POSE_MODEL),
+            "analysis_method": "mediapipe_sampled_body_centric_2d_v1",
+            "camera_motion_handling": "body_centric_2d_background_ransac",
+            "uses_3d_reconstruction": False,
+        }
+
+    def analyze(self, job: dict[str, Any]) -> dict[str, Any] | None:
+        source = next(
+            (item for item in job.get("video_sources") or [] if item.get("task_id") == "L6"),
+            None,
+        )
+        if not source:
+            return None
+        if not self.status()["configured"]:
+            raise RuntimeError("Walking-video pose runtime is not configured")
+
+        WORK_ROOT.mkdir(parents=True, exist_ok=True)
+        job_dir = Path(tempfile.mkdtemp(prefix=f"{job['assessment_id'][:8]}-gait-", dir=WORK_ROOT))
+        extension = ".webm" if "webm" in str(source.get("content_type") or "") else ".mp4"
+        video_path = job_dir / f"walking{extension}"
+        result_path = job_dir / "gait-result.json"
+        try:
+            MocoRuntime._download(source, video_path)
+            completed = subprocess.run(
+                [
+                    str(MOCO_PYTHON),
+                    str(Path(__file__).with_name("gait_video_analysis.py")),
+                    "--video", str(video_path),
+                    "--model", str(GAIT_POSE_MODEL),
+                    "--output", str(result_path),
+                    "--source-video-id", str(source["video_id"]),
+                ],
+                cwd=Path(__file__).resolve().parent,
+                capture_output=True,
+                text=True,
+                timeout=int(os.environ.get("REHYN_GAIT_TIMEOUT_SECONDS", "300")),
+            )
+            if completed.returncode != 0 or not result_path.is_file():
+                raise RuntimeError(
+                    "Walking-video analysis failed: "
+                    + (completed.stderr or completed.stdout)[-1500:]
+                )
+            result = json.loads(result_path.read_text(encoding="utf-8"))
+            result.setdefault("provenance", {})["code_version"] = WORKER_CODE_VERSION
+            return result
+        finally:
+            if os.environ.get("REHYN_KEEP_ANALYSIS_WORK", "0") != "1":
+                shutil.rmtree(job_dir, ignore_errors=True)
+
+
 RUNTIME: CudaRuntime | None = None
+GAIT_RUNTIME = GaitVideoRuntime()
 MOCO_RUNTIME = MocoRuntime()
 JOBS: queue.Queue[dict[str, Any]] = queue.Queue()
 
@@ -434,6 +497,21 @@ def run_jobs() -> None:
     while True:
         job = JOBS.get()
         try:
+            try:
+                gait_result = GAIT_RUNTIME.analyze(job)
+                if gait_result is not None:
+                    callback(job, gait_result, "gait-stage-results")
+            except Exception as exc:
+                gait_failure = {
+                    "status": "failed",
+                    "error": str(exc),
+                    "traceback": traceback.format_exc(limit=8),
+                }
+                try:
+                    callback(job, gait_failure, "gait-stage-results")
+                except Exception:
+                    pass
+
             try:
                 gpu_result = get_runtime().analyze(job.get("motion_data") or {})
                 callback(job, gpu_result, "gpu-stage-results")
@@ -480,6 +558,7 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/health":
             self._json(200, {
                 "cuda": get_runtime().status(),
+                "gait": GAIT_RUNTIME.status(),
                 "musculoskeletal": MOCO_RUNTIME.status(),
                 "queued_jobs": JOBS.qsize(),
             })
@@ -510,5 +589,5 @@ class Handler(BaseHTTPRequestHandler):
 if __name__ == "__main__":
     runtime = get_runtime()
     threading.Thread(target=run_jobs, daemon=True).start()
-    print(json.dumps({"cuda": runtime.status(), "musculoskeletal": MOCO_RUNTIME.status()}), flush=True)
+    print(json.dumps({"cuda": runtime.status(), "gait": GAIT_RUNTIME.status(), "musculoskeletal": MOCO_RUNTIME.status()}), flush=True)
     ThreadingHTTPServer((HOST, PORT), Handler).serve_forever()

@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any, Dict, Mapping
 
 
-FAST_ALGORITHM_VERSION = "rehyn-fast-1.5-openai-stt"
+FAST_ALGORITHM_VERSION = "rehyn-fast-1.6-early-smile-drop"
 FAST_SIGNS = ("face", "arms", "speech")
 FAST_ANSWERS = {"no", "yes", "unsure"}
 
@@ -162,14 +162,14 @@ import { PoseLandmarker, FaceLandmarker, FilesetResolver, DrawingUtils } from "/
 const video=document.getElementById("video"),canvas=document.getElementById("canvas"),ctx=canvas.getContext("2d"),panel=document.getElementById("panel"),cameraLabel=document.getElementById("cameraLabel");
 const answers={face:null,arms:null,speech:null};
 const automated={
-  face:{available:false,positive:false,decision:"pending",samples:0,positive_samples:0,engaged_samples:0,metric:null,quality:"pending",reason:""},
+  face:{available:false,positive:false,decision:"pending",samples:0,positive_samples:0,engaged_samples:0,smile_streak:0,smile_was_established:false,smile_drop_started_at:null,metric:null,smile_activation:null,quality:"pending",reason:""},
   arms:{available:false,positive:false,decision:"pending",samples:0,positive_samples:0,both_raised_samples:0,one_sided_samples:0,metric:null,quality:"pending",reason:""},
   speech:{available:false,positive:false,decision:"pending",transcript:"",similarity:null,confidence:null,quality:"pending",reason:"",provider:"openai",model:"gpt-transcribe",recording_retained:false}
 };
 let poseLandmarker=null,faceLandmarker=null,stream=null,current="intro",lastVideoTime=-1,animationId=null,stepStartedAt=0,stepTimer=null,speechRecorder=null,speechAudioStream=null,speechTimer=null,reported=false,aliraSpeechAudio=null,aliraSpeechToken=0;
 let armBaseline=null,speechSettled=false,speechAwaitingRetry=false,speechBest={transcript:"",confidence:0,score:0},speechAudioContext=null,speechVadFrame=null;
 const phrase="The sky is blue today";
-const FACE_WINDOW_MS=5600,ARMS_WINDOW_MS=6800,SPEECH_WINDOW_MS=15000,SPEECH_SILENCE_MS=1300,SPEECH_MIN_TALK_MS=900;
+const FACE_WINDOW_MS=5600,FACE_SMILE_ON=.08,FACE_SMILE_OFF=.05,FACE_ESTABLISH_SAMPLES=8,FACE_DROP_CONFIRM_MS=450,ARMS_WINDOW_MS=6800,SPEECH_WINDOW_MS=15000,SPEECH_SILENCE_MS=1300,SPEECH_MIN_TALK_MS=900;
 
 function postRN(data){
   const message=JSON.stringify(data);
@@ -256,16 +256,25 @@ function analyseFace(faceResult,poseLm){
     const landmarkAsymmetry=Math.abs(mouthTilt-headTilt)/faceWidth;
     const metric=Math.max(blendAsymmetry,landmarkAsymmetry);
     face.available=true;face.samples+=1;face.quality="face_landmarker";face.metric=Number(metric.toFixed(3));face.smile_activation=Number(smileActivation.toFixed(3));
-    if(smileActivation>.08){face.engaged_samples+=1;face.last_engaged_at=performance.now()}
-    if(smileActivation>.08&&(blendAsymmetry>.22||landmarkAsymmetry>.17))face.positive_samples+=1;
+    const now=performance.now();
+    if(smileActivation>FACE_SMILE_ON){
+      face.engaged_samples+=1;face.smile_streak+=1;face.last_engaged_at=now;face.smile_drop_started_at=null;
+      if(face.smile_streak>=FACE_ESTABLISH_SAMPLES)face.smile_was_established=true;
+    }else if(smileActivation<FACE_SMILE_OFF){
+      face.smile_streak=0;
+      if(face.smile_was_established&&!face.smile_drop_started_at)face.smile_drop_started_at=now;
+    }
+    if(smileActivation>FACE_SMILE_ON&&(blendAsymmetry>.22||landmarkAsymmetry>.17))face.positive_samples+=1;
     face.positive=face.samples>=16&&face.positive_samples/face.samples>.26;
-    if(!face.positive&&performance.now()-stepStartedAt>=2600&&face.engaged_samples>=40&&face.positive_samples/face.samples<=.15){
+    if(!face.positive&&face.smile_was_established&&face.smile_drop_started_at&&now-face.smile_drop_started_at>=FACE_DROP_CONFIRM_MS){
+      if(stepTimer)clearTimeout(stepTimer);
+      const reason="The smile dropped after it was detected and was not maintained, which is treated as a possible facial sign.";
+      face.reason=reason;updateAssist("face","Smile drop detected. Moving to the arm check now.","warn");showAutomaticDecision("face","yes",reason,renderArms,650);return;
+    }
+    if(!face.positive&&smileActivation>FACE_SMILE_ON&&now-stepStartedAt>=2600&&face.engaged_samples>=40&&face.positive_samples/face.samples<=.15){
       if(stepTimer)clearTimeout(stepTimer);updateAssist("face","A steady, even smile was seen. Moving on.","good");finalizeFace();return;
     }
-    if(!face.positive&&face.engaged_samples>=8&&face.engaged_samples<40&&face.last_engaged_at&&performance.now()-face.last_engaged_at>=1200){
-      if(stepTimer)clearTimeout(stepTimer);finalizeFace();return;
-    }
-    updateAssist("face",face.positive?"Alira noticed persistent left-right smile unevenness.":smileActivation>.08?"Smile detected. Comparing both sides now.":"Please smile and hold while Alira observes both sides.",face.positive?"warn":"good");
+    updateAssist("face",face.positive?"Alira noticed persistent left-right smile unevenness.":smileActivation>FACE_SMILE_ON?"Smile detected. Comparing both sides now.":face.smile_drop_started_at?"Smile changed. Confirming the change now.":"Please smile and hold while Alira observes both sides.",face.positive?"warn":"good");
     return;
   }
   if(!poseLm||!visible(poseLm,[2,5,9,10]))return;
@@ -311,15 +320,16 @@ function updateAssist(sign,text,state){
 function beginScan(duration){const fill=document.getElementById("scanFill");if(!fill)return;fill.style.transition="none";fill.style.width="0";requestAnimationFrame(()=>{fill.style.transition=`width ${duration}ms linear`;requestAnimationFrame(()=>{fill.style.width="100%"})})}
 function setStepTimer(callback,duration){if(stepTimer)clearTimeout(stepTimer);stepTimer=setTimeout(callback,duration)}
 function automaticCard(label){return `<div class="autoCard"><div class="autoTop"><span>${label}</span><span class="autoBadge">Automatic</span></div><div class="scanTrack"><div class="scanFill" id="scanFill"></div></div><div class="autoResult" id="autoResult" aria-live="polite"><span class="pulseDot"></span><span>Observing now. Alira will move on automatically.</span></div></div>`}
-function showAutomaticDecision(sign,decision,text,next){
+function showAutomaticDecision(sign,decision,text,next,delayMs=1100){
   answers[sign]=decision;automated[sign].decision=decision;automated[sign].positive=decision==="yes";
   const fill=document.getElementById("scanFill");if(fill){fill.style.transition="none";fill.style.width="100%"}
   const el=document.getElementById("autoResult");if(el){el.className=`autoResult ${decision==="yes"||decision==="unsure"?"warn":"clear"}`;el.innerHTML=`<strong>${decision==="yes"?"Possible FAST sign detected":decision==="no"?"No FAST sign detected in this step":"Check inconclusive"}</strong><span>${text}</span>`}
-  setTimeout(next,1100);
+  setTimeout(next,delayMs);
 }
 function finalizeFace(){
   const face=automated.face;let decision="unsure",reason="The face or smile could not be measured clearly.";
   if(face.samples>=12&&face.positive_samples/face.samples>.26){decision="yes";reason="Persistent left-right smile unevenness was detected."}
+  else if(face.quality==="face_landmarker"&&face.smile_was_established&&face.smile_drop_started_at){decision="yes";reason="The smile dropped after it was detected and was not maintained, which is treated as a possible facial sign."}
   else if(face.quality==="face_landmarker"&&face.engaged_samples>=8&&face.engaged_samples<40){decision="yes";reason="The smile faded quickly and could not be held, which is treated as a possible facial sign."}
   else if(face.quality==="face_landmarker"&&face.samples>=18&&face.engaged_samples>=40&&face.positive_samples/face.samples<=.26){decision="no";reason="A smile was held without persistent left-right unevenness."}
   face.reason=reason;showAutomaticDecision("face",decision,reason,renderArms);
@@ -461,8 +471,8 @@ function renderIntro(){
   document.getElementById("begin").onclick=async()=>{await ensureCamera();renderFace()};
 }
 function renderFace(){
-  current="face";document.body.classList.remove("intro-mode");stepStartedAt=performance.now();automated.face={available:false,positive:false,decision:"pending",samples:0,positive_samples:0,engaged_samples:0,metric:null,smile_activation:null,quality:"pending",reason:""};
-  panel.innerHTML=`${progress(0)}<div class="letter">F</div><div class="eyebrow">Face · automatic observation</div><h1>Please smile and hold</h1><p>Keep your face toward the camera. Alira is checking whether both sides of the smile move evenly.</p><div class="assist" id="assist"><span class="assistDot"></span><span>Finding the face and waiting for a smile.</span></div>${automaticCard("Smile observation")}`;speak("Face. Please smile and hold while I compare both sides.",()=>{if(current!=="face")return;stepStartedAt=performance.now();automated.face={available:false,positive:false,decision:"pending",samples:0,positive_samples:0,engaged_samples:0,metric:null,smile_activation:null,quality:"pending",reason:""};beginScan(FACE_WINDOW_MS);setStepTimer(finalizeFace,FACE_WINDOW_MS)});
+  current="face";document.body.classList.remove("intro-mode");stepStartedAt=performance.now();automated.face={available:false,positive:false,decision:"pending",samples:0,positive_samples:0,engaged_samples:0,smile_streak:0,smile_was_established:false,smile_drop_started_at:null,metric:null,smile_activation:null,quality:"pending",reason:""};
+  panel.innerHTML=`${progress(0)}<div class="letter">F</div><div class="eyebrow">Face · automatic observation</div><h1>Please smile and hold</h1><p>Keep your face toward the camera. Alira is checking whether both sides of the smile move evenly.</p><div class="assist" id="assist"><span class="assistDot"></span><span>Finding the face and waiting for a smile.</span></div>${automaticCard("Smile observation")}`;speak("Face. Please smile and hold while I compare both sides.",()=>{if(current!=="face")return;stepStartedAt=performance.now();automated.face={available:false,positive:false,decision:"pending",samples:0,positive_samples:0,engaged_samples:0,smile_streak:0,smile_was_established:false,smile_drop_started_at:null,metric:null,smile_activation:null,quality:"pending",reason:""};beginScan(FACE_WINDOW_MS);setStepTimer(finalizeFace,FACE_WINDOW_MS)});
 }
 function renderArms(){
   current="arms";stepStartedAt=performance.now();armBaseline=null;automated.arms={available:false,positive:false,decision:"pending",samples:0,positive_samples:0,both_raised_samples:0,one_sided_samples:0,metric:null,quality:"pending",reason:""};

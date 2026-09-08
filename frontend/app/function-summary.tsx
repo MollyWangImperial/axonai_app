@@ -34,13 +34,11 @@ const tones = {
 function presentationFor(domain: BodyFunctionDomainSummary | undefined, id: DomainId): DomainPresentation {
   const title = id === "upper_limb" ? "Reaching" : id === "hand" ? "Hand control" : "Walking";
   if (domain?.survey_affected === true || domain?.status === "survey_reported_affected") {
-    const sides = domain.survey_affected_sides ?? [];
-    const sideLabel = sides.length > 1 ? "Both sides" : sides.length === 1 ? `${sides[0][0].toUpperCase()}${sides[0].slice(1)} side` : "This area";
     return {
       id,
       title,
-      status: "Reported affected",
-      message: `${sideLabel} was reported as affected in your survey. Assessment tasks calculate the numeric score separately.`,
+      status: "Building strength",
+      message: "This area may benefit from building strength. Assessment tasks calculate the numeric score separately.",
       tone: "attention",
     };
   }
@@ -175,7 +173,7 @@ function domainDetail(data: PatientAssessmentSummary, domain: DomainPresentation
   }
 
   let explanation = findings[0] || "No task-level problem was flagged in this area.";
-  if (domain.status === "Reported affected") explanation = domain.message;
+  if (domain.status === "Building strength") explanation = domain.message;
   else if (domain.status === "Not reported affected") explanation = domain.message;
   if (domain.status === "Not observed") explanation = domain.message;
   else if (!findings.length && domain.status === "Captured") explanation = "The task measures are saved. Deeper model analysis can add more detail later.";

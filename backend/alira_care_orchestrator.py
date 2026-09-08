@@ -419,8 +419,7 @@ def survey_functional_problems(profile: Optional[Dict[str, Any]]) -> Dict[str, A
         if reported_affected is True and severity == "moving_well":
             severity = "building_strength"
         if reported_affected is True:
-            side_label = "both sides" if len(affected_sides) > 1 else f"the {pin_side} side"
-            problem = f"Your survey reports that {side_label} was affected in this area."
+            problem = "This area was identified in your survey and may benefit from building strength."
         elif reported_affected is False:
             problem = "Your survey did not identify this area as affected."
         else:

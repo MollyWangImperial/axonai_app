@@ -329,7 +329,7 @@ export default function RehabPlanScreen() {
   // Testing phase: finish today's exercises with an entered score instead of
   // performing them on camera, then collect the award on the next day's visit.
   const [showTestingFinish, setShowTestingFinish] = useState(false);
-  const [testingScore, setTestingScore] = useState("85");
+  const [testingScores, setTestingScores] = useState<Record<string, string>>({});
   const [finishingForTesting, setFinishingForTesting] = useState(false);
   const [savedTestingExercises, setSavedTestingExercises] = useState(0);
   const [saveError, setSaveError] = useState("");
@@ -477,8 +477,6 @@ export default function RehabPlanScreen() {
   // shows FINISHED), and today's check-in mark. Testing phase only.
   const finishTodayForTesting = async () => {
     if (!data || finishingForTesting) return;
-    const parsed = Number.parseInt(testingScore, 10);
-    const score = Number.isFinite(parsed) ? Math.max(0, Math.min(100, parsed)) : 85;
     setFinishingForTesting(true);
     setSavedTestingExercises(0);
     setSaveError("");
@@ -488,8 +486,11 @@ export default function RehabPlanScreen() {
       // These exercises are independent. Wait for every save to settle before
       // completing the day or allowing a retry after a partial failure.
       const saves = await Promise.allSettled(data.rehab_plan.map(async (exercise) => {
+        const parsed = Number.parseInt(testingScores[exercise.id] ?? "85", 10);
+        const score = Number.isFinite(parsed) ? Math.max(0, Math.min(100, parsed)) : 85;
         const totalReps = exercise.sets * exercise.reps;
-        const repetitionScores = Array.from({ length: totalReps }, () => score);
+        let savedScore = score;
+        let savedRepetitionScores = Array.from({ length: totalReps }, () => score);
         if (!isDemo) {
           const response = await authedFetch("/api/alira/activities", {
             method: "POST",
@@ -501,13 +502,16 @@ export default function RehabPlanScreen() {
               completed_reps: totalReps,
               quality_reps: score >= 90 ? totalReps : 0,
               average_score: score,
-              repetition_scores: repetitionScores,
+              repetition_scores: savedRepetitionScores,
               assisted: false,
               completed_at: completedAt,
               testing_shortcut: true,
             }),
           });
-          if (!response.ok || (await response.json()).ok !== true) throw new Error("Your exercise could not be saved to your account. Please retry.");
+          const saved = await response.json().catch(() => null);
+          if (!response.ok || saved?.ok !== true) throw new Error("Your exercise could not be saved to your account. Please retry.");
+          if (Number.isFinite(Number(saved.activity?.average_score))) savedScore = Number(saved.activity.average_score);
+          if (Array.isArray(saved.activity?.repetition_scores)) savedRepetitionScores = saved.activity.repetition_scores;
         }
         try {
           const progressKey = await PROGRESS_KEY(planId, exercise.id);
@@ -520,13 +524,13 @@ export default function RehabPlanScreen() {
             day: today,
             completed_reps: totalReps,
             total_reps: totalReps,
-            last_score: score,
-            best_score: Math.max(previous.best_score ?? 0, score),
+            last_score: savedScore,
+            best_score: Math.max(previous.best_score ?? 0, savedScore),
             sessions: (previous.sessions || 0) + 1,
-            last_session_scores: repetitionScores,
+            last_session_scores: savedRepetitionScores,
             score_history: [
               ...(previous.score_history || []),
-              { completed_at: completedAt, average_score: score, repetition_scores: repetitionScores },
+              { completed_at: completedAt, average_score: savedScore, repetition_scores: savedRepetitionScores },
             ].slice(-60),
           };
           await storage.setItem(progressKey, JSON.stringify(updated));
@@ -595,17 +599,27 @@ export default function RehabPlanScreen() {
         <View style={styles.dailyCard} testID="plan-testing-finish-popup">
           <Text style={styles.dailyEyebrow}>TESTING ONLY</Text>
           <Text style={styles.dailyTitle}>Finish today&apos;s exercises</Text>
-          <Text style={styles.dailyText}>Enter the average score to record for every exercise in today&apos;s plan. It is saved exactly as a finished session would be.</Text>
-          <TextInput
-            testID="plan-testing-score"
-            value={testingScore}
-            onChangeText={(value) => setTestingScore(value.replace(/[^0-9]/g, "").slice(0, 3))}
-            keyboardType="number-pad"
-            maxLength={3}
-            placeholder="0 - 100"
-            style={styles.scoreInput}
-            accessibilityLabel="Average score"
-          />
+          <Text style={styles.dailyText}>Enter the average score for each exercise. These exact values will appear in your Journey.</Text>
+          <ScrollView style={styles.testingScoreList} contentContainerStyle={styles.testingScoreListContent} showsVerticalScrollIndicator={false}>
+            {data?.rehab_plan.map((exercise) => (
+              <View key={exercise.id} style={styles.testingScoreRow}>
+                <Text style={styles.testingScoreName}>{exercise.name}</Text>
+                <TextInput
+                  testID={`plan-testing-score-${exercise.id}`}
+                  value={testingScores[exercise.id] ?? "85"}
+                  onChangeText={(value) => setTestingScores((current) => ({
+                    ...current,
+                    [exercise.id]: value.replace(/[^0-9]/g, "").slice(0, 3),
+                  }))}
+                  keyboardType="number-pad"
+                  maxLength={3}
+                  placeholder="0 - 100"
+                  style={styles.scoreInput}
+                  accessibilityLabel={`${exercise.name} average score`}
+                />
+              </View>
+            ))}
+          </ScrollView>
           {!!saveError && <Text accessibilityRole="alert" style={styles.dailyText}>{saveError}</Text>}
           <Pressable disabled={finishingForTesting} onPress={() => { void finishTodayForTesting(); }} style={[styles.dailyPrimary, finishingForTesting && { opacity: 0.6 }]} testID="plan-testing-finish-confirm">
             <Text style={styles.dailyPrimaryText}>{finishingForTesting ? savedTestingExercises < totalExercises ? `Saving exercises (${savedTestingExercises} of ${totalExercises})...` : "Saving completed day..." : "Mark today as finished"}</Text>
@@ -984,7 +998,11 @@ const styles = StyleSheet.create({
   dailyPrimaryText: { color: "#FFFFFF", fontSize: 16, lineHeight: 22, fontWeight: "800" },
   dailyLater: { minHeight: 42, alignItems: "center", justifyContent: "center" },
   dailyLaterText: { fontSize: 14, fontWeight: "700", color: "#5D6660" },
-  scoreInput: { minHeight: 56, borderWidth: 1.5, borderColor: "#B9C6BD", borderRadius: radius.sm, paddingHorizontal: spacing.md, fontSize: 24, fontWeight: "900", color: "#123E2D", backgroundColor: "#FFFFFF", textAlign: "center", marginTop: spacing.xs },
+  testingScoreList: { maxHeight: 310, marginTop: spacing.xs },
+  testingScoreListContent: { gap: spacing.sm },
+  testingScoreRow: { flexDirection: "row", alignItems: "center", gap: spacing.md },
+  testingScoreName: { flex: 1, minWidth: 0, fontSize: 14, lineHeight: 19, fontWeight: "800", color: "#173C2F" },
+  scoreInput: { width: 92, minHeight: 52, borderWidth: 1.5, borderColor: "#B9C6BD", borderRadius: radius.sm, paddingHorizontal: spacing.sm, fontSize: 21, fontWeight: "900", color: "#123E2D", backgroundColor: "#FFFFFF", textAlign: "center" },
   awardIcon: { width: 72, height: 72, borderRadius: 36, backgroundColor: "#FFF1C9", alignItems: "center", justifyContent: "center", marginBottom: 4 },
   finishButton: { width: "100%", maxWidth: 390, minHeight: 68, alignSelf: "center", marginTop: spacing.xl, borderRadius: radius.sm, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: spacing.sm, backgroundColor: colors.brandPrimary, paddingHorizontal: spacing.lg },
   finishButtonDisabled: { backgroundColor: "#E4E6E4" },

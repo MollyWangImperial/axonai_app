@@ -90,7 +90,7 @@ function descriptionFor(item: ActivityMetric, band: HelpBandId) {
   if (item.activity === "Grooming and self-care" && item.status !== "complete" && band === "full_help") {
     return "Hands-on support may be helpful.";
   }
-  return item.observed && item.status === "complete"
+  return item.observed && item.status === "complete" && item.score_source === "observed"
     ? BAND_DESCRIPTIONS[band].observed
     : BAND_DESCRIPTIONS[band].estimated;
 }

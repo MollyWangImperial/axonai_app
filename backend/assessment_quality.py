@@ -121,6 +121,58 @@ def score_step(step, rubric):
             "status": "not_measured" if score is None else "limited_view" if any(c["status"] == "not_measured" for c in checks) else "measured"}
 
 
+def scored_gait_task(task, rubric):
+    analysis = (value(task, "metrics", {}) or {}).get("gait_analysis") or {}
+    gait_score = number(analysis.get("score")) if analysis.get("status") == "scored" else None
+    if gait_score is None or not 0 <= gait_score <= 100:
+        return None
+    labels = {
+        "step_length_proxy": "2D step-length proxy",
+        "step_length_proxy_symmetry": "2D step-length symmetry",
+        "step_time_symmetry": "Step-time symmetry",
+        "rhythm_regularity": "Walking rhythm",
+        "swing_clearance_proxy": "Swing-clearance proxy",
+        "trunk_stability": "Trunk stability",
+    }
+    criteria = []
+    for metric, component in (analysis.get("components") or {}).items():
+        component_score = number(component.get("score")) if isinstance(component, Mapping) else None
+        if component_score is None:
+            continue
+        criteria.append({
+            "metric": metric,
+            "target": 100,
+            "label": labels.get(metric, metric.replace("_", " ").title()),
+            "unit": "score",
+            "observed": component_score,
+            "attainment": min(1, max(0, component_score / 100)),
+            "weight": component.get("weight"),
+        })
+    duration_ms = value(task, "duration_ms", 0)
+    row = {
+        "step_id": "L6-GAIT",
+        "label": "Walking video analysis",
+        "completed": True,
+        "duration_ms": duration_ms,
+        "score": round(gait_score, 1),
+        "criteria": criteria,
+        "compensations": [],
+        "status": "measured",
+    }
+    return {
+        "task_id": "L6",
+        "label": rubric["label"],
+        "domain": rubric["domain"],
+        "score": round(gait_score, 1),
+        "earned_score": round(gait_score, 1),
+        "assisted": (value(task, "metrics", {}) or {}).get("assisted") is True,
+        "measured_steps": 1,
+        "total_steps": 1,
+        "steps": [row],
+        "gait_analysis_version": analysis.get("version"),
+    }
+
+
 def score_assessment(task_results, rubrics, assigned_task_ids=None):
     submitted = {value(task, "task_id"): task for task in task_results}
     expected = list(dict.fromkeys(assigned_task_ids if assigned_task_ids is not None else submitted))
@@ -130,6 +182,11 @@ def score_assessment(task_results, rubrics, assigned_task_ids=None):
             continue
         rubric = rubrics[tid]
         task = submitted.get(tid)
+        if tid == "L6" and task is not None:
+            gait_task = scored_gait_task(task, rubric)
+            if gait_task is not None:
+                tasks.append(gait_task)
+                continue
         steps = {value(step, "step_id"): step for step in value(task, "steps", []) or []}
         rows = [score_step(steps.get(rule["id"]), rule) for rule in rubric["steps"]]
         measured = [row["score"] for row in rows if row["score"] is not None]

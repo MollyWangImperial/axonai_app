@@ -14,16 +14,15 @@ type DomainId = "upper_limb" | "hand" | "lower_limb";
 
 function statusColor(findings: number, completion: number, surveyAffected = false) {
   if (findings > 0) return { color: "#F05F4C", soft: "#FCE7E3", label: "Needs attention", icon: "alert" as const };
-  if (surveyAffected) return { color: "#DEA128", soft: "#FFF3D8", label: "Reported affected", icon: "barbell-outline" as const };
+  if (surveyAffected) return { color: "#DEA128", soft: "#FFF3D8", label: "Building strength", icon: "barbell-outline" as const };
   if (completion < 100) return { color: "#DEA128", soft: "#FFF3D8", label: "Building strength", icon: "barbell-outline" as const };
   return { color: "#3E8256", soft: "#E5F1E8", label: "Moving well", icon: "checkmark" as const };
 }
 
-function areaTitle(domain: DomainId, affectedSide: "left" | "right") {
-  const side = affectedSide === "left" ? "Left" : "Right";
-  if (domain === "upper_limb") return `${side} shoulder`;
-  if (domain === "hand") return `${side} hand`;
-  return `${side} knee`;
+function areaTitle(domain: DomainId) {
+  if (domain === "upper_limb") return "Shoulder and arm";
+  if (domain === "hand") return "Hand";
+  return "Leg";
 }
 
 type ShinyMapMarkerProps = {
@@ -157,7 +156,6 @@ export default function MovementMapScreen() {
   const selectedDomain = domains.find((domain) => domain.domain === selected) || domains[0];
   const selectedDomainId = selectedDomain?.domain ?? selected;
   const selectedSurveyDomain = bodyDomains.find((domain) => domain.domain === selectedDomainId);
-  const selectedAffectedSide = selectedSurveyDomain?.survey_affected_sides?.[0] ?? affectedSide;
   const selectedStatus = statusColor(selectedDomain?.findings_count || 0, selectedDomain?.completion_percent || 0, selectedSurveyDomain?.survey_affected === true);
   const activation = data?.insights.activation_profile.find((item) => item.domain === selectedDomainId);
   const ratio = activation?.template_mean ? activation.mean / activation.template_mean : null;
@@ -169,11 +167,12 @@ export default function MovementMapScreen() {
   const noRehabNeeded = reviewGate?.rehab_access === "not_needed" || reviewGate?.status === "no_rehab_needed";
   const ageBand = assessment?.patient_parameters?.age_band || profileAgeBand || (isDemo ? "70-79" : null);
   const ageAnatomy = getAgeAnatomyPresentation(ageBand);
-  const selectedAreaTitle = areaTitle(selectedDomainId, selectedAffectedSide);
+  const selectedAreaTitle = areaTitle(selectedDomainId);
 
   const selectedSummary = useMemo(() => {
     const domain = data?.body_function_summary.domains.find((item) => item.domain === selectedDomainId);
     if (!domain) return "This area was not observed in the completed assessment.";
+    if (domain.survey_affected === true) return "This area may benefit from building strength.";
     return domain.summary;
   }, [data?.body_function_summary.domains, selectedDomainId]);
 
@@ -245,7 +244,7 @@ export default function MovementMapScreen() {
                     <ShinyMapMarker
                       key={domain.domain}
                       active={selectedDomainId === domain.domain}
-                      label={areaTitle(domain.domain, domainAffectedSide)}
+                      label={areaTitle(domain.domain)}
                       labelSide={x < 50 ? "left" : "right"}
                       onPress={() => { setSelected(domain.domain); setDetailsExpanded(false); }}
                       status={status}

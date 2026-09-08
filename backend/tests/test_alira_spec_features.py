@@ -389,6 +389,19 @@ def test_survey_only_metrics_carry_a_qualitative_weak_medium_normal_score():
     assert all(item["score_scale"] == "0_to_100" for item in metrics["activities"])
 
 
+def test_affected_leg_prevents_an_independent_daily_life_result():
+    metrics = build_daily_activity_metrics([], profile(
+        affected_areas=["right_lower"],
+        mobility_level="independent",
+    ))
+
+    walking = next(item for item in metrics["activities"] if item["activity"] == "Moving around")
+    assert walking["reported_assistance_level"] == "minimum_assistance"
+    assert walking["qualitative_score"] == "medium"
+    assert walking["score"] == 65
+    assert walking["score_source"] == "survey"
+
+
 def test_survey_interim_rehab_plan_always_gives_a_starting_plan():
     plan = server.survey_interim_rehab_plan({
         "sitting_ability": "independent",
@@ -501,22 +514,25 @@ def test_snapshot_and_report_screens_show_qualitative_scores_and_survey_highligh
     assert 'authedFetch("/api/assessment/survey-report")' in results
     assert "Your movement scores" in scores
     assert "Guided-task scores - not a clinical measure." in scores
-    assert "Guided assessment tasks calculate each score" in scores
-    assert "Affected-area wording follows your survey" in scores
+    assert "Based on today's guided movement tasks" in scores
+    assert "reported affected" not in scores.lower()
+    assert "affectedSideLabel" not in scores
     assert "module?.score_source === \"survey\"" not in scores
     assert 'testID="movement-scores-panel"' in scores
     assert "movement-score-" in scores
     assert 'title="What this means for daily life"' in results
     assert 'testID="results-movement-map"' in results
+    assert "marker.affectedSides.length" not in results
+    assert 'testID="results-map-detail"' not in results
     assert "Your movement map" in results
-    assert "Choose a number to learn about that area." in results
+    assert "Choose a number to highlight that area." in results
     assert 'testID="results-map-areas"' in results
     assert ">Areas</Text>" in results
     assert "results-map-marker-" in results
-    assert 'testID="results-map-detail"' in results
     assert "MAP_DOMAIN_ICONS" in results
     assert "reportedAffected !== true" in results
-    assert "Guided tasks calculate the numeric score separately" in results
+    assert 'upper_limb: "Shoulder and arm"' in results
+    assert 'marker.affectedSide === "left" ? "Left"' not in results
     assert "mapAreaTitleWide" in results
     assert results.count('testID="results-movement-map"') == 1  # shared by demo and real assessment data
     assert results.index("<MovementScoresPanel") < results.index('title="What this means for daily life"')
@@ -797,19 +813,22 @@ def test_shoulder_hike_allows_the_rise_that_comes_with_raising_the_arm():
     assert 'return rule.metric === "shoulder_hike_delta" ? threshold+expectedShoulderRise(raw' in source
     # Every judgement of the shoulder-hike rule uses the per-frame threshold:
     # the confirmation count, the evidence severity and the live label colour.
-    assert "const aboveThreshold=value >= compensationThreshold(rule,raw);" in source
+    assert "function compensationExceeded(rule,raw,value)" in source
+    assert "const aboveThreshold=compensationExceeded(rule,raw,value);" in source
     assert "value/Math.max(1,rule ? compensationThreshold(rule,raw) : 1)" in source
-    assert 'hike>=compensationThreshold(shoulderRule,raw)?"#FF9B8A":"#FFD27A"' in source
+    assert 'compensationExceeded(shoulderRule,raw,hike)?"#FF9B8A":"#FFD27A"' in source
     assert "value >= Number(rule.threshold_deg||0)" not in source.split("REHAB_RUNNER_HTML_TEMPLATE = r", 1)[1]
-    # Worked example with the forward-reach rule (8 degrees at rest): a reach to
-    # 76 degrees of flexion from a 15-degree rest tolerates 8 + 0.10 * 51 = 13.1
-    # degrees, so the ~9 degrees a normal reach produces is not hiking, while a
-    # real shrug (a further 3-4 cm, 15+ degrees) still is.
-    rest, flexion, base = 15, 76, 8
-    allowance = method["shoulder_hike_allowance_per_flexion_deg"] * max(0, flexion - rest - method["shoulder_hike_allowance_free_flexion_deg"])
-    assert round(base + allowance, 1) == 13.1
-    assert 9 < base + allowance < 15
-    assert base + method["shoulder_hike_allowance_per_flexion_deg"] * max(0, 20 - rest - 10) == base  # shrug before the arm is up
+    # Graded Forward Reach has an explicit inclusive normal band: 20 degrees is
+    # normal, and only a value above 20 degrees begins accumulating hike frames.
+    reach_rule = next(
+        rule for rule in server.EXERCISE_MOVEMENT_STANDARDS["ex_reach"]["compensations"]
+        if rule["id"] == "shoulder_hike"
+    )
+    assert reach_rule["threshold_deg"] == 20
+    assert reach_rule["normal_max_inclusive"] is True
+    assert reach_rule["normal_rise_allowance_per_elevation_deg"] == 0
+    assert not (20 > reach_rule["threshold_deg"])
+    assert 20.1 > reach_rule["threshold_deg"]
     # The lap-target calibration window is time-based, so a 60 fps camera can
     # still judge the hand still (24 frames would span only 0.4 s).
     assert source.count("while(samples.length > 120 || (samples.length && now") == 2
@@ -1079,6 +1098,12 @@ def test_cylindrical_grasp_reach_open_close_carry_release_flow_and_compensations
     }
     assert "straight wrist" in grasp["correct_form_cue"] and "straighten your elbow" in grasp["correct_form_cue"]
     assert next(rule for rule in standard["compensations"] if rule["id"] == "wrist_flexion")["threshold_deg"] == 25
+    shoulder_rule = next(rule for rule in standard["compensations"] if rule["id"] == "shoulder_hike")
+    assert shoulder_rule["threshold_deg"] == 20
+    assert shoulder_rule["normal_max_inclusive"] is True
+    assert shoulder_rule["normal_rise_allowance_per_elevation_deg"] == 0
+    assert not (20 > shoulder_rule["threshold_deg"])
+    assert 20.1 > shoulder_rule["threshold_deg"]
 
     # Runner: the hit test uses the same image coordinates the circle is drawn
     # in (the old mirrored comparison put the live circle on the wrong side for
