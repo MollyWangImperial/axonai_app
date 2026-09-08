@@ -782,8 +782,10 @@ export default function HomeScreen() {
         if (!shown && !cancelled) {
           await storage.setItem(key, "1");
           setShowReassessment(true);
-          return;
         }
+        // Keep assessment day focused on the assessment, even after its
+        // once-a-day prompt has been dismissed.
+        return;
       }
       if (medalAvailable) {
         if (!cancelled) setShowMedal(true);
@@ -846,29 +848,38 @@ export default function HomeScreen() {
   const stepTwoRevealed = checkedInToday;
   const stepThreeRevealed = checkedInToday && (assessmentCompletedToday || !isInitialAssessment);
 
+  // A scheduled re-assessment takes priority over the saved exercise plan.
+  // Once it is completed, the refreshed care plan clears followUpDue.
+  const primaryIsAssessment = isInitialAssessment || followUpDue;
   const primaryTitle = isInitialAssessment
     ? "Initial assessment"
-    : nextStep?.destination === "caregiver_plan"
-      ? "Today's routines"
-      : activeExerciseIds.length
-        ? "Today's exercises"
-        : nextStep?.title || "Your next step";
+    : followUpDue
+      ? "Re-assessment"
+      : nextStep?.destination === "caregiver_plan"
+        ? "Today's routines"
+        : activeExerciseIds.length
+          ? "Today's exercises"
+          : nextStep?.title || "Your next step";
   const primaryDescription = isInitialAssessment
     ? carePlanAssessment?.requires_helper
       ? "Alira selected suitable tasks. Please start with a carer or family member nearby."
       : "Alira selected suitable tasks from your readiness answers."
-    : activeExerciseIds.length
-      ? remainingExerciseIds.length
-        ? "Continue the plan Alira selected for this recovery stage."
-        : "Today's planned activities are complete."
-      : nextStep?.message || "Your care plan is up to date.";
-  const primaryComplete = activeExerciseIds.length > 0 && remainingExerciseIds.length === 0;
+    : followUpDue
+      ? "Your re-assessment is due. Complete it to measure your progress and refresh your plan."
+      : activeExerciseIds.length
+        ? remainingExerciseIds.length
+          ? "Continue the plan Alira selected for this recovery stage."
+          : "Today's planned activities are complete."
+        : nextStep?.message || "Your care plan is up to date.";
+  const primaryComplete = !primaryIsAssessment && activeExerciseIds.length > 0 && remainingExerciseIds.length === 0;
   const initialWalkingAssigned = Boolean(isInitialAssessment && carePlanAssessment?.task_ids?.includes("L6"));
   const primaryButton = isInitialAssessment
     ? { label: "Start Initial Assessment", destination: "initial_assessment" }
-    : activeExerciseIds.length
-      ? { label: primaryComplete ? "Review exercises" : "Continue exercises", destination: nextStep?.destination === "caregiver_plan" ? "caregiver_plan" : "rehab_plan" }
-      : { label: nextStep?.cta || "Open next step", destination: nextStep?.destination };
+    : followUpDue
+      ? { label: "Start re-assessment", destination: "assessment" }
+      : activeExerciseIds.length
+        ? { label: primaryComplete ? "Review exercises" : "Continue exercises", destination: nextStep?.destination === "caregiver_plan" ? "caregiver_plan" : "rehab_plan" }
+        : { label: nextStep?.cta || "Open next step", destination: nextStep?.destination };
 
   return (
     <View style={[styles.container, { backgroundColor: palette.page }]}>
@@ -985,12 +996,12 @@ export default function HomeScreen() {
                   />
                 ) : (
                   <DayStep
-                    icon={isInitialAssessment ? "clipboard-outline" : primaryComplete ? "checkmark" : "fitness-outline"}
+                    icon={primaryIsAssessment ? "clipboard-outline" : primaryComplete ? "checkmark" : "fitness-outline"}
                     title={primaryTitle}
                     active
                     badge={<StatusPill icon={primaryComplete ? "checkmark-circle-outline" : "ellipse-outline"} label={primaryComplete ? "Complete" : "In progress"} />}
                     description={primaryDescription}
-                    progress={activeExerciseIds.length ? { completed: completedExerciseIds.length, total: activeExerciseIds.length } : undefined}
+                    progress={!primaryIsAssessment && activeExerciseIds.length ? { completed: completedExerciseIds.length, total: activeExerciseIds.length } : undefined}
                     button={{ label: primaryButton.label, icon: "arrow-forward-circle-outline", onPress: () => primaryButton.destination === "rehab_plan" ? openExercisePlan() : openDestination(primaryButton.destination), primary: true, testID: "home-primary-action" }}
                   />
                 )}

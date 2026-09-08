@@ -11378,7 +11378,7 @@ function rawMovementMetrics(lm, handLm, freshHand=true){
     // Face approach: leaning toward the camera enlarges the ear-to-ear distance.
     const earL=lm[7], earR=lm[8];
     raw.ear_width=(earL&&earR) ? Math.max(.01,Math.hypot(earL.x-earR.x,earL.y-earR.y)) : NaN;
-    if(CFG.exercise_id === "ex_trunk" && (!pointVisible(earL) || !pointVisible(earR))) raw.ear_width=NaN;
+    if((CFG.exercise_id === "ex_trunk" || CFG.exercise_id === "ex_reach") && (!pointVisible(earL) || !pointVisible(earR))) raw.ear_width=NaN;
     // Head pitch: the nose sits ~9 cm in front of the ear axis, so tilting the
     // head down moves it below the ear line by ~0.6 ear-widths per radian of
     // neck flexion. Rigid-head geometry, so leaning the trunk (which moves the
@@ -11462,8 +11462,39 @@ function restrainedForwardLeanDegrees(raw){
   const shortening=rad2deg(Math.acos(clamp((t/w)/(t0/w0),0,1)));
   return Math.min(shoulderApproach,Math.max(0,z-z0),shortening);
 }
+function gradedReachForwardLeanDegrees(raw){
+  if(raw.trunk_projection_visible === false) return NaN;
+  const base=baselineMetrics;
+  const span=metrics=>{
+    const width=Number(metrics.shoulder_width), rise=Number(metrics.shoulder_line_delta);
+    return Number.isFinite(width) && Number.isFinite(rise) && width>Math.abs(rise)
+      ? Math.sqrt(width*width-rise*rise) : NaN;
+  };
+  const w0=span(base), w=span(raw);
+  if(!Number.isFinite(w0) || !Number.isFinite(w) || w0<.03 || w<.03) return NaN;
+  const evidence=[];
+  const e0=Number(base.ear_width), e=Number(raw.ear_width);
+  if(Number.isFinite(e0) && Number.isFinite(e) && e0>.01 && e>.01){
+    const shoulderApproach=rad2deg(Math.asin(clamp(2*(1-w0/w),0,1)));
+    const faceApproach=rad2deg(Math.asin(clamp(1.5*(1-e0/e),0,1)));
+    // Horizontal shoulder span excludes the extra diagonal length of a shrug.
+    // Neither shoulder movement nor head movement alone establishes trunk lean.
+    evidence.push(Math.min(shoulderApproach,faceApproach));
+  }
+  const z0=Number(base.trunk_depth_tilt), z=Number(raw.trunk_depth_tilt);
+  const t0=Number(base.torso_length), t=Number(raw.torso_length);
+  if(Number.isFinite(z0) && Number.isFinite(z) && t0>0 && t>0){
+    const shortening=rad2deg(Math.acos(clamp((t/w)/(t0/w0),0,1)));
+    // A forward pitch can shorten the projected trunk without enlarging the
+    // face or shoulders. Always consider corroborated depth + shortening,
+    // even when the width landmarks are present and report no approach.
+    evidence.push(Math.min(Math.max(0,z-z0),shortening));
+  }
+  return evidence.length ? Math.max(...evidence) : NaN;
+}
 function forwardLeanDegrees(raw){
   if(CFG.exercise_id === "ex_trunk") return restrainedForwardLeanDegrees(raw);
+  if(CFG.exercise_id === "ex_reach") return gradedReachForwardLeanDegrees(raw);
   const base=baselineMetrics;
   const estimates=[];
   const w0=Number(base.shoulder_width), w=Number(raw.shoulder_width);
@@ -11690,6 +11721,15 @@ function activeMovementPhase(){
 // no target phases, so every frame counts there.
 function movementUnderway(raw){
   if(CFG.pose_mode !== "body") return true;
+  if(CFG.exercise_id === "ex_reach"){
+    if(!exerciseTargetIsArmed()) return false;
+    const trunkRule=(STANDARD.compensations||[]).find(rule=>rule.metric === "trunk_lean_delta");
+    const lean=metricValue("trunk_lean_delta",raw);
+    // Trunk substitution itself is movement, even if the arm joint barely
+    // changes. Include the approach to the cutoff in the eligible frames;
+    // the existing 12-degree / frame-count rules still confirm the finding.
+    if(trunkRule && Number.isFinite(lean) && lean>=Number(trunkRule.threshold_deg)*.5) return true;
+  }
   // The affected hand has clearly left its calibrated resting place.
   const base=baselineMetrics;
   if(Number.isFinite(Number(base.active_wrist_x)) && Number.isFinite(raw.active_wrist_x)){
