@@ -69,8 +69,6 @@ const ACTIVITY_ICONS: Record<string, keyof typeof MaterialCommunityIcons.glyphMa
   "Moving around": "walk",
 };
 
-const NUMBER_WORDS = ["No", "One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine", "Ten"];
-
 function bandFor(item: ActivityMetric): HelpBandId | null {
   if (item.reported_assistance_level && ASSISTANCE_TO_BAND[item.reported_assistance_level]) {
     return ASSISTANCE_TO_BAND[item.reported_assistance_level];
@@ -79,29 +77,6 @@ function bandFor(item: ActivityMetric): HelpBandId | null {
     return QUALITATIVE_TO_BAND[item.qualitative_score];
   }
   return null;
-}
-
-function countLabel(count: number) {
-  return NUMBER_WORDS[count] || String(count);
-}
-
-function activitySummary(scored: ActivityMetric[]) {
-  if (!scored.length) return "These activities have not been assessed yet.";
-  const bands = scored.map((item) => ({ item, band: bandFor(item) as HelpBandId }));
-  const independent = bands.filter(({ band }) => band === "independent");
-  const fullHelp = bands.filter(({ band }) => band === "full_help");
-  const aLot = bands.filter(({ band }) => band === "a_lot_of_help");
-  const aLittle = bands.filter(({ band }) => band === "a_little_help");
-  const messages: string[] = [];
-
-  if (independent.length === scored.length) return "These everyday activities look independent.";
-  if (independent.length === 1) messages.push(`${independent[0].item.activity} looks independent.`);
-  if (independent.length > 1) messages.push(`${countLabel(independent.length)} activities look independent.`);
-  if (fullHelp.length) messages.push(`${countLabel(fullHelp.length)} ${fullHelp.length === 1 ? "activity" : "activities"} may need full help.`);
-  else if (aLot.length) messages.push(`${countLabel(aLot.length)} ${aLot.length === 1 ? "activity" : "activities"} may need a lot of help.`);
-  else if (aLittle.length) messages.push(`${countLabel(aLittle.length)} ${aLittle.length === 1 ? "activity" : "activities"} may need a little help.`);
-
-  return messages.join(" ") || "Your answers give an early picture of daily life.";
 }
 
 function toneFor(band: HelpBandId) {
@@ -135,9 +110,6 @@ export function DailyActivitiesBoard({
   const [showMethodology, setShowMethodology] = useState(false);
   const scored = activities.filter((item) => item.status !== "not_assessed" && bandFor(item));
   const notAssessed = activities.filter((item) => item.status === "not_assessed" || !bandFor(item));
-  const allObserved = scored.length > 0 && scored.every((item) => item.status === "complete");
-  const anyObserved = scored.some((item) => item.status === "complete");
-  const sourceBadge = anyObserved ? "Observed and estimated" : "Estimated from your answers";
 
   return (
     <View style={[styles.panel, compact && styles.panelCompact, { backgroundColor: palette.surface, borderColor: palette.border }]} testID="daily-activities-panel">
@@ -146,17 +118,6 @@ export function DailyActivitiesBoard({
           <Text style={[styles.title, sectionHeading && styles.titleSection, compact && styles.titleCompact, { color: palette.text }]}>{title}</Text>
           <Text style={[styles.subtitle, compact && styles.subtitleCompact, { color: palette.muted }]}>How much help you may need with everyday activities.</Text>
         </View>
-        {scored.length > 0 && !allObserved ? (
-          <View style={styles.sourceBadge} testID="daily-activities-source-badge">
-            <Ionicons name="information-circle-outline" size={compact ? 20 : 25} color="#915D05" />
-            <Text style={[styles.sourceBadgeText, compact && styles.sourceBadgeTextCompact]}>{sourceBadge}</Text>
-          </View>
-        ) : null}
-      </View>
-
-      <View style={styles.summaryRow} testID="daily-activities-summary">
-        <Ionicons name="checkmark-circle-outline" size={30} color="#145C43" />
-        <Text style={[styles.summaryText, compact && styles.summaryTextCompact, { color: palette.text }]}>{activitySummary(scored)}</Text>
       </View>
 
       {scored.length > 0 ? (
@@ -272,12 +233,6 @@ const styles = StyleSheet.create({
   titleCompact: { fontSize: 30, lineHeight: 37 },
   subtitle: { marginTop: 8, fontSize: 21, lineHeight: 29 },
   subtitleCompact: { fontSize: 16, lineHeight: 23 },
-  sourceBadge: { minHeight: 56, flexDirection: "row", alignItems: "center", gap: 9, paddingHorizontal: 20, borderRadius: radius.pill, backgroundColor: "#FFECC1" },
-  sourceBadgeText: { fontSize: 18, lineHeight: 24, fontWeight: "900", color: "#8A5700" },
-  sourceBadgeTextCompact: { fontSize: 14, lineHeight: 20 },
-  summaryRow: { minHeight: 42, flexDirection: "row", alignItems: "center", gap: spacing.md },
-  summaryText: { flex: 1, fontSize: 20, lineHeight: 28, fontWeight: "500" },
-  summaryTextCompact: { fontSize: 16, lineHeight: 24 },
   activityList: { borderWidth: 1, borderRadius: radius.md, overflow: "hidden" },
   activityRow: { minHeight: 122, flexDirection: "row", alignItems: "center", gap: spacing.lg, paddingHorizontal: spacing.xl, paddingVertical: spacing.md, position: "relative" },
   activityRowCompact: { minHeight: 0, flexWrap: "wrap", gap: spacing.md, paddingHorizontal: spacing.md, paddingVertical: spacing.lg },

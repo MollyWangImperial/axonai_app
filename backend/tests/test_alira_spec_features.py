@@ -471,17 +471,19 @@ def test_snapshot_and_report_screens_show_qualitative_scores_and_survey_highligh
     report = (root / "frontend" / "app" / "survey-report.tsx").read_text(encoding="utf-8")
     results = (root / "frontend" / "app" / "results.tsx").read_text(encoding="utf-8")
 
-    # "Daily life at a glance": one plain-language row per activity, with the
-    # source, summary, status, and honest not-assessed handling kept visible.
+    # "Daily life at a glance": one plain-language row per activity, with its
+    # status and honest not-assessed handling kept visible.
     assert "Daily life at a glance" in panel
     assert "How much help you may need with everyday activities." in panel
     for label in ("Full help", "A lot of help", "A little help", "Independent"):
         assert f'label: "{label}"' in panel
-    assert 'testID="daily-activities-summary"' in panel
+    assert 'testID="daily-activities-summary"' not in panel
     assert 'testID="daily-activities-list"' in panel
     assert "daily-activity-card-" in panel
     assert "daily-activity-status-" in panel
-    assert 'testID="daily-activities-source-badge"' in panel
+    assert 'testID="daily-activities-source-badge"' not in panel
+    assert "Observed and estimated" not in panel
+    assert "Moving around looks" not in panel
     assert 'testID="daily-activities-methodology"' in panel
     assert 'testID="daily-activities-methodology-modal"' in panel
     assert "Not assessed activities appear separately." in panel
