@@ -12955,6 +12955,7 @@ exitBtn.addEventListener("click", () => {
   postRN({type:"exit"});
 });
 window.addEventListener("pagehide",stopExerciseRunner,{once:true});
+window.addEventListener("pagehide",clearTemporaryCompensationEvidence,{once:true});
 window.addEventListener("pageshow",event=>{
   if(event.persisted && window.parent === window) window.location.reload();
 });
