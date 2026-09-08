@@ -8838,7 +8838,7 @@ REHAB_RUNNER_CONFIG: Dict[str, Dict[str, Any]] = {
         "setup_voice": "We will practice trunk-restrained reaching. Sit tall, with your back firmly against the chair. Try to keep your back touching the chair the whole time. Let's begin.",
         "correct_form_cue": "Next time, keep your back against the chair and your shoulder relaxed, and simply extend your elbow to reach the target.",
         "compensation_problems": {
-            "trunk_lean": "your back came away from the chair and your trunk leaned forward",
+            "trunk_lean": "your trunk leaned beyond the small posture allowance",
             "shoulder_hike": "your shoulder lifted toward your ear",
         },
         "cycle": [
@@ -8846,7 +8846,7 @@ REHAB_RUNNER_CONFIG: Dict[str, Dict[str, Any]] = {
             {"caption": "Return slowly", "voice": "Slowly return your hand to your lap.", "target": {"x": 0.5, "y": 0.78, "r": 0.10}, "hold_ms": 1200},
         ],
         "feedback_rules": [
-            {"if": "trunk_lean_deg > 10", "say": "Your back came away from the chair. On the next repetition, focus on pressing your back firmly into the chair before reaching."},
+            {"if": "trunk_lean_deg >= 12", "say": "Your trunk leaned beyond the small posture allowance. On the next repetition, settle your back against the chair and let your arm do the reaching."},
             {"if": "reach_completion < 0.7", "say": "With your back restrained, that's a great effort. On the next try, reach just a little further if you can."},
             {"default": "Excellent control of your trunk. Try to keep that same posture on the next repetition."},
         ],
@@ -9258,7 +9258,7 @@ EXERCISE_COACHING_PROFILES: Dict[str, Dict[str, Any]] = {
             "shoulder_flexion": "On the next repetition, keep your back settled and move the arm a little farther from the shoulder.",
             "elbow_extension": "On the next repetition, keep chair-back contact and gently straighten the elbow toward the target.",
         },
-        "compensation_labels": {"trunk_lean": "Loss of trunk restraint", "shoulder_hike": "Shoulder hiking"},
+        "compensation_labels": {"trunk_lean": "Excess trunk lean", "shoulder_hike": "Shoulder hiking"},
         "measurement_limit": "Camera posture is a proxy for trunk restraint; the system cannot verify physical contact pressure against the chair.",
     },
     "ex_wallslide": {
@@ -9442,7 +9442,9 @@ EXERCISE_MOVEMENT_STANDARDS: Dict[str, Dict[str, Any]] = {
             {"id": "elbow_extension", "label": "Elbow extension", "metric": "elbow_extension", "targets": {"easy": 125, "medium": 138, "difficult": 145}, "weight": 0.3},
         ],
         "compensations": [
-            {"id": "trunk_lean", "metric": "trunk_lean_delta", "threshold_deg": 8, "min_frames": 8, "min_ratio": 0.35, "penalty": 12, "correction": "Settle your back against the chair before the next reach."},
+            # Allow small posture shifts and require sustained, corroborated
+            # movement; a shrug must not become a trunk-lean finding.
+            {"id": "trunk_lean", "metric": "trunk_lean_delta", "threshold_deg": 12, "min_frames": 12, "min_ratio": 0.45, "min_consecutive_frames": 8, "penalty": 12, "correction": "Settle your back against the chair before the next reach."},
             {"id": "shoulder_hike", "metric": "shoulder_hike_delta", "threshold_deg": 8, "min_frames": 8, "min_ratio": 0.35, "penalty": 7, "correction": "Soften the top of your shoulder and keep it away from your ear."},
         ],
     },
@@ -9513,8 +9515,8 @@ EXERCISE_MOVEMENT_STANDARDS: Dict[str, Dict[str, Any]] = {
             # "Chicken wing": the arm abducts and the elbow rises above the hand to reach,
             # instead of the arm going forward (reach and grasp steps).
             {"id": "elbow_flare", "metric": "elbow_flare_deg", "threshold_deg": 45, "min_frames": 8, "min_ratio": 0.35, "penalty": 7, "correction": "Keep your elbow low and close to your body, and reach forward with your arm.", "steps": [0, 1, 2]},
-            # Gross wrist-to-forearm alignment from one pose coordinate system.
-            # The detector abstains when the pose hand base is not reliable.
+            # Prefer the detailed palm axis in the shared camera image. Retain
+            # the pose-only estimate for views without a usable palm projection.
             {"id": "wrist_flexion", "metric": "wrist_flexion_delta", "threshold_deg": 25, "min_frames": 12, "min_ratio": 0.4, "penalty": 6, "correction": "Keep your wrist straight, in line with your forearm, as you grip and carry the cup.", "steps": [2, 3, 4]},
         ],
     },
@@ -10484,6 +10486,8 @@ let baselineMetrics = {};
 let romBest = {};
 let compensationHits = {};
 let compensationEligible = {};
+let compensationConsecutive = {};
+let compensationLongestStreak = {};
 let trackingFrames = 0;
 let lowQualityFrames = 0;
 let feedbackPending = false;
@@ -11291,11 +11295,43 @@ function poseWristBendDegrees(lm){
   return Number.isFinite(jointAngle) ? Math.abs(180-jointAngle) : NaN;
 }
 
-function rawMovementMetrics(lm, handLm){
+function projectedWristBendDegrees(lm,handLm){
+  if(!lm || !handLm) return NaN;
+  const elbow=lm[ACTIVE.elbow], wrist=lm[ACTIVE.wrist];
+  const handWrist=handLm[0], middleBase=handLm[9];
+  if(![elbow,wrist,handWrist,middleBase,handLm[5],handLm[17]].every(pointVisible)) return NaN;
+  // Both models share image x/y coordinates, but their z origins and scales
+  // differ. Compare directions in source-image pixels, never a mixed 3D joint
+  // or the cropped/mirrored overlay. MCP 9 stays on the palm when fingers curl.
+  const aspect=video.videoWidth>0 && video.videoHeight>0 ? video.videoWidth/video.videoHeight : NaN;
+  if(!Number.isFinite(aspect)) return NaN;
+  const distance=(a,b)=>Math.hypot((a.x-b.x)*aspect,a.y-b.y);
+  const forearm={x:(wrist.x-elbow.x)*aspect,y:wrist.y-elbow.y};
+  const palm={x:(middleBase.x-handWrist.x)*aspect,y:middleBase.y-handWrist.y};
+  const forearmLength=Math.hypot(forearm.x,forearm.y), palmLength=Math.hypot(palm.x,palm.y);
+  const shoulderWidth=pointVisible(lm[11]) && pointVisible(lm[12]) ? distance(lm[11],lm[12]) : NaN;
+  if(!Number.isFinite(shoulderWidth) || forearmLength < shoulderWidth*.40
+    || palmLength < shoulderWidth*.10 || palmLength > forearmLength*.85) return NaN;
+  // Require agreement about which wrist is being measured. Cached/other-hand
+  // landmarks must not create a bend against the affected forearm.
+  if(distance(wrist,handWrist) > palmLength*.60) return NaN;
+  const otherWrist=lm[OTHER.wrist];
+  if(pointVisible(otherWrist) && distance(otherWrist,handWrist) < distance(wrist,handWrist)) return NaN;
+  // A forearm or palm pointing almost into the camera has an unstable image
+  // direction. Each model's own depth is used only to reject that projection.
+  const forearmDepth=(wrist.z-elbow.z)*aspect, palmDepth=(middleBase.z-handWrist.z)*aspect;
+  if(!Number.isFinite(forearmDepth) || !Number.isFinite(palmDepth)
+    || forearmLength < .65*Math.hypot(forearmLength,forearmDepth)
+    || palmLength < .65*Math.hypot(palmLength,palmDepth)) return NaN;
+  return rad2deg(Math.acos(clamp((forearm.x*palm.x+forearm.y*palm.y)/(forearmLength*palmLength),-1,1)));
+}
+
+function rawMovementMetrics(lm, handLm, freshHand=true){
   const raw={};
   if(lm){
     const ls=lm[11],rs=lm[12],lh=lm[23],rh=lm[24];
     const midShoulder=midpoint(ls,rs), midHip=midpoint(lh,rh);
+    raw.trunk_projection_visible=[ls,rs,lh,rh].every(pointVisible);
     const shoulderWidth=Math.max(0.03,Math.hypot(ls.x-rs.x,ls.y-rs.y));
     const hipWidth=Math.max(0.03,Math.hypot(lh.x-rh.x,lh.y-rh.y));
     raw.trunk_angle=rad2deg(Math.atan2(midShoulder.x-midHip.x,-(midShoulder.y-midHip.y)));
@@ -11342,6 +11378,7 @@ function rawMovementMetrics(lm, handLm){
     // Face approach: leaning toward the camera enlarges the ear-to-ear distance.
     const earL=lm[7], earR=lm[8];
     raw.ear_width=(earL&&earR) ? Math.max(.01,Math.hypot(earL.x-earR.x,earL.y-earR.y)) : NaN;
+    if(CFG.exercise_id === "ex_trunk" && (!pointVisible(earL) || !pointVisible(earR))) raw.ear_width=NaN;
     // Head pitch: the nose sits ~9 cm in front of the ear axis, so tilting the
     // head down moves it below the ear line by ~0.6 ear-widths per radian of
     // neck flexion. Rigid-head geometry, so leaning the trunk (which moves the
@@ -11382,6 +11419,9 @@ function rawMovementMetrics(lm, handLm){
     // coordinate system. Mixing a pose elbow with the hand model's 2D axis
     // produced large false angles when the palm faced the camera.
     raw.wrist_bend=poseWristBendDegrees(lm);
+    if(CFG.exercise_id === "ex_grasp" && freshHand){
+      raw.projected_wrist_bend=projectedWristBendDegrees(lm,handLm);
+    }
   }
   return raw;
 }
@@ -11393,7 +11433,37 @@ function rawMovementMetrics(lm, handLm){
 // and ear estimates are averaged (robust to single-signal jitter) and compared
 // with the calibrated upright baseline; the 12-degree workbook threshold then
 // applies. Depth tilt and trunk foreshortening are fallbacks.
+function restrainedForwardLeanDegrees(raw){
+  const base=baselineMetrics;
+  if(raw.trunk_projection_visible === false) return NaN;
+  // The diagonal shoulder distance grows during a one-sided shrug. Recover
+  // its horizontal span so elevation alone cannot look like camera approach.
+  const span=metrics=>{
+    const width=Number(metrics.shoulder_width), rise=Number(metrics.shoulder_line_delta);
+    return Number.isFinite(width) && Number.isFinite(rise) && width>Math.abs(rise)
+      ? Math.sqrt(width*width-rise*rise) : NaN;
+  };
+  const w0=span(base), w=span(raw);
+  if(!Number.isFinite(w0) || !Number.isFinite(w) || w0<.03 || w<.03) return NaN;
+  const shoulderApproach=rad2deg(Math.asin(clamp(2*(1-w0/w),0,1)));
+  const e0=Number(base.ear_width), e=Number(raw.ear_width);
+  if(Number.isFinite(e0) && Number.isFinite(e) && e0>.01 && e>.01){
+    const faceApproach=rad2deg(Math.asin(clamp(1.5*(1-e0/e),0,1)));
+    // Both independent spans must support approach. Averaging a large shoulder
+    // artifact with an unchanged face still produced a false 9-degree lean.
+    return Math.min(shoulderApproach,faceApproach);
+  }
+  // Without the face, require agreement from both pose depth and shortening
+  // of the trunk relative to horizontal shoulder span. A shrug lengthens the
+  // projected trunk instead, and an isolated depth outlier is insufficient.
+  const z0=Number(base.trunk_depth_tilt), z=Number(raw.trunk_depth_tilt);
+  const t0=Number(base.torso_length), t=Number(raw.torso_length);
+  if(!Number.isFinite(z0) || !Number.isFinite(z) || !(t0>0) || !(t>0)) return NaN;
+  const shortening=rad2deg(Math.acos(clamp((t/w)/(t0/w0),0,1)));
+  return Math.min(shoulderApproach,Math.max(0,z-z0),shortening);
+}
 function forwardLeanDegrees(raw){
+  if(CFG.exercise_id === "ex_trunk") return restrainedForwardLeanDegrees(raw);
   const base=baselineMetrics;
   const estimates=[];
   const w0=Number(base.shoulder_width), w=Number(raw.shoulder_width);
@@ -11474,6 +11544,9 @@ function metricValue(metric,raw){
     // ~15 degrees when no calibrated value exists) and only in frames where
     // that is measurable - never the bare hand axis, which turns with the arm.
     if(STANDARD.tracking_mode !== "hand"){
+      // The palm/forearm projection measures alignment directly. Subtracting
+      // a bent lap baseline (or the old default 15 degrees) hides real bends.
+      if(CFG.exercise_id === "ex_grasp" && Number.isFinite(raw.projected_wrist_bend)) return raw.projected_wrist_bend;
       if(!Number.isFinite(raw.wrist_bend)) return NaN;
       const rest=Number.isFinite(Number(base.wrist_bend)) ? Number(base.wrist_bend) : 15;
       return Math.max(0,raw.wrist_bend-rest);
@@ -11668,6 +11741,8 @@ function resetRepMetrics(){
   romBest={};
   compensationHits={};
   compensationEligible={};
+  compensationConsecutive={};
+  compensationLongestStreak={};
   liveCompensationStreaks={};
   liveCompensationIds=new Set();
   trackingFrames=0;
@@ -11680,16 +11755,16 @@ function resetRepMetrics(){
 }
 let peakCompensationDegrees={};
 let lastRawMetrics=null;     // most recent frame's raw metrics, for the live degree readout
-function updateMetrics(lm,handLm){
+function updateMetrics(lm,handLm,freshHand=true){
   const quality=trackingQuality(lm,handLm);
-  if(quality < CALIBRATION_MIN_TRACKING_QUALITY){ lowQualityFrames+=1; return; }
-  const raw=rawMovementMetrics(lm,handLm);
+  if(quality < CALIBRATION_MIN_TRACKING_QUALITY){ lowQualityFrames+=1; compensationConsecutive={}; return; }
+  const raw=rawMovementMetrics(lm,handLm,freshHand);
   latestExercisePoseLandmarks=lm || latestExercisePoseLandmarks;
   lastRawMetrics=raw;
   trackingFrames+=1;
   // Return-to-rest frames are never scored: they cannot earn ROM credit and
   // they do not count toward the compensation denominator.
-  if(!activeMovementPhase()) return;
+  if(!activeMovementPhase()){ compensationConsecutive={}; return; }
   activeFrames+=1;
   if(Number.isFinite(raw.reach_extent) && raw.reach_extent > peakReachExtent){
     peakReachExtent=raw.reach_extent;
@@ -11725,12 +11800,17 @@ function updateMetrics(lm,handLm){
   // still beforehand.
   const underway=movementUnderway(raw);
   for(const rule of STANDARD.compensations||[]){
-    if(!ruleAppliesNow(rule) || !underway) continue;
+    if(!ruleAppliesNow(rule) || !underway){ compensationConsecutive[rule.id]=0; continue; }
+    // Reusing one hand inference for several display frames must not turn
+    // a brief wrist outlier into a confirmed compensation.
+    if(CFG.exercise_id === "ex_grasp" && rule.id === "wrist_flexion" && !freshHand) continue;
     const value=metricValue(rule.metric,raw);
-    if(!Number.isFinite(value)) continue;
+    if(!Number.isFinite(value)){ compensationConsecutive[rule.id]=0; continue; }
     compensationEligible[rule.id]=(compensationEligible[rule.id]||0)+1;
     peakCompensationDegrees[rule.id]=Math.max(Number(peakCompensationDegrees[rule.id]||0),value);
     const aboveThreshold=value >= compensationThreshold(rule,raw);
+    compensationConsecutive[rule.id]=aboveThreshold ? Number(compensationConsecutive[rule.id]||0)+1 : 0;
+    compensationLongestStreak[rule.id]=Math.max(Number(compensationLongestStreak[rule.id]||0),compensationConsecutive[rule.id]);
     if(aboveThreshold) compensationHits[rule.id]=(compensationHits[rule.id]||0)+1;
     const previousStreak=Number(liveCompensationStreaks[rule.id]||0);
     liveCompensationStreaks[rule.id]=aboveThreshold ? previousStreak+1 : Math.max(0,previousStreak-2);
@@ -12319,8 +12399,8 @@ async function startSubStep(){
 function compensationProblemText(rule){
   const degrees=Math.round(peakCompensationDegrees[rule.id]||0);
   const metric=String(rule.metric||"");
-  // Exercise-specific wording first (e.g. "your back came away from the
-  // chair" for trunk-restrained reaching), then the generic descriptions.
+  // Exercise-specific wording first, then the generic descriptions. Camera
+  // posture alone cannot establish whether the back touched the chair.
   const specific=CFG.compensation_problems && CFG.compensation_problems[rule.id];
   if(specific) return `${specific} (${degrees} degrees)`;
   if(metric==="trunk_lean_delta") return `your trunk leaned forward (${degrees} degrees)`;
@@ -12363,6 +12443,9 @@ function pickFeedback(){
   }
   if(unmeasuredRomSteps().some(item=>item.metric==="finger_extension"||item.metric==="pinch_flexion")){
     return "I could not see your affected hand clearly enough to check your grip. Keep your whole hand inside the camera view on the next repetition.";
+  }
+  if(wristAlignmentUnmeasured()){
+    return "I could not see your wrist clearly enough to check its alignment while you gripped and carried the cup. Keep your affected elbow, wrist, and whole hand visible, with your forearm viewed from the side rather than pointing straight into the camera.";
   }
   return "That movement stayed close to today’s target. Keep the same smooth control on the next repetition.";
 }
@@ -12504,6 +12587,7 @@ function confirmedCompensations(){
     const hits=Number(compensationHits[rule.id]||0);
     const eligible=Math.max(1,Number(compensationEligible[rule.id]||0));
     if(hits < Number(rule.min_frames||8)) return false;
+    if(Number(compensationLongestStreak[rule.id]||0) < Number(rule.min_consecutive_frames||0)) return false;
     return hits/eligible >= Number(rule.min_ratio||.35) || hits >= SUSTAINED_COMPENSATION_FRAMES;
   });
 }
@@ -12543,6 +12627,11 @@ function incompleteRomSteps(){
 function unmeasuredRomSteps(){
   return repRomDetails().filter(item=>!item.measured);
 }
+function wristAlignmentUnmeasured(){
+  if(CFG.exercise_id !== "ex_grasp") return false;
+  const rule=(STANDARD.compensations||[]).find(item=>item.id === "wrist_flexion");
+  return !!rule && Number(compensationEligible[rule.id]||0) < Number(rule.min_frames||12);
+}
 function romProblemText(item){
   const achieved=Math.round(item.achieved_deg), target=Math.round(item.target_deg);
   const metric=String(item.metric||"");
@@ -12568,6 +12657,7 @@ function computeRepScore(){
   // An incomplete repetition (a step short of its target, e.g. a bent elbow)
   // never reaches the point threshold either.
   else if(incompleteRomSteps().length) score=Math.min(score,POINT_THRESHOLD-1);
+  else if(wristAlignmentUnmeasured()) score=Math.min(score,POINT_THRESHOLD-1);
   return Math.round(clamp(score,0,100));
 }
 function repEarnsPoint(score){
@@ -12578,11 +12668,12 @@ function repEarnsPoint(score){
   if(confirmedCompensations().length) return false;
   if(incompleteRomSteps().length) return false;
   if(unmeasuredRomSteps().some(item=>FORM_CRITICAL_METRICS.has(item.metric))) return false;
+  if(wristAlignmentUnmeasured()) return false;
   return score >= POINT_THRESHOLD;
 }
 function pointBlockedByVisibility(){
   return !confirmedCompensations().length && !incompleteRomSteps().length
-    && unmeasuredRomSteps().some(item=>FORM_CRITICAL_METRICS.has(item.metric));
+    && (unmeasuredRomSteps().some(item=>FORM_CRITICAL_METRICS.has(item.metric)) || wristAlignmentUnmeasured());
 }
 
 function scoreLabel(s){
@@ -12776,7 +12867,7 @@ function loop(){
       requestAnimationFrame(loop);
       return;
     }
-    if(!fbEl.classList.contains("show")) updateMetrics(lm,handLm);
+    if(!fbEl.classList.contains("show")) updateMetrics(lm,handLm,!!detectedHandLm);
 
     // Sub-step target detection (only while NOT showing feedback)
     if(CFG.pose_mode === "body" && !fbEl.classList.contains("show")){
@@ -12919,6 +13010,7 @@ window.__rehynExerciseScoringTest={
   isAdvancePhrase,
   metricValue,
   poseWristBendDegrees,
+  projectedWristBendDegrees,
   expectedShoulderRise,
   compensationThreshold,
   drawCompensationHighlights,
