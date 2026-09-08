@@ -88,6 +88,29 @@ def test_walking_validator_accepts_any_video_and_collects_optional_2d_gait_evide
     assert "walkingReviewVideo.videoHeight" in validation
 
 
+def test_walking_validator_retries_with_independent_frame_detection():
+    source = server.POSE_RUNNER_HTML
+    validation = source[source.index("async function validateWalkingVideo") : source.index("async function completeUploadedWalkingTask")]
+    fallback = source[source.index("async function inspectWalkingVideo2DImageFallback") : source.index("async function validateWalkingVideo")]
+    assert "inspectWalkingVideo2DImageFallback" in validation
+    assert 'createWalkingVideoValidator("IMAGE")' in fallback
+    assert 'validator.detect(walkingReviewVideo)' in source
+    assert 'frame_detection_mode = runningMode.toLowerCase()' in source
+    assert validation.index("inspectWalkingVideo2D(durationSeconds") < validation.index("inspectWalkingVideo2DImageFallback(durationSeconds")
+    assert 'type:"walking_video_2d_analysis_unavailable"' in validation
+    assert 'gaitAnalysisError' in validation
+
+
+def test_settings_walking_test_distinguishes_model_failure_from_no_detected_pattern():
+    source = server.POSE_RUNNER_HTML
+    scorer = source[source.index("async function scoreWalkingVideoForSettings") : source.index("async function completeUploadedWalkingTask")]
+    assert 'validation.gaitAnalysisError ? "walking_analysis_temporarily_unavailable" : "walking_pattern_not_detected"' in scorer
+
+    root = Path(__file__).resolve().parents[2]
+    assessment = (root / "frontend" / "app" / "assessment.tsx").read_text(encoding="utf-8")
+    assert "walking_analysis_temporarily_unavailable" in assessment
+
+
 def test_browser_gait_evidence_is_body_normalized_and_bound_to_the_uploaded_video():
     source = server.POSE_RUNNER_HTML
     assert 'camera_motion_handling:"body_centric_2d_browser"' in source

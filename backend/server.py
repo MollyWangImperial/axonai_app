@@ -5790,19 +5790,23 @@ async function setupPose(){
   });
 }
 
+async function createWalkingVideoValidator(runningMode="VIDEO"){
+  const filesetResolver = await getVisionFilesetResolver();
+  return PoseLandmarker.createFromOptions(filesetResolver, {
+    baseOptions:{ modelAssetPath:"/vendor/mediapipe/models/pose_landmarker_lite.task" },
+    runningMode,
+    numPoses:2,
+    minPoseDetectionConfidence:0.45,
+    minPosePresenceConfidence:0.45,
+    minTrackingConfidence:0.45,
+  });
+}
+
 async function getWalkingVideoValidator(){
   if(walkingVideoValidator) return walkingVideoValidator;
   if(!walkingVideoValidatorPromise){
     walkingVideoValidatorPromise = (async () => {
-      const filesetResolver = await getVisionFilesetResolver();
-      const validator = await PoseLandmarker.createFromOptions(filesetResolver, {
-        baseOptions:{ modelAssetPath:"/vendor/mediapipe/models/pose_landmarker_lite.task" },
-        runningMode:"VIDEO",
-        numPoses:2,
-        minPoseDetectionConfidence:0.45,
-        minPosePresenceConfidence:0.45,
-        minTrackingConfidence:0.45,
-      });
+      const validator = await createWalkingVideoValidator("VIDEO");
       walkingVideoValidator = validator;
       return validator;
     })().catch(error => {
@@ -6306,28 +6310,51 @@ function buildBrowserWalkingEvidence(samples, sampledFrames, analysisFps, source
   };
 }
 
-async function inspectWalkingVideo2D(durationSeconds, onProgress=()=>{}){
-  const validator = await getWalkingVideoValidator();
+async function inspectWalkingVideo2DWithValidator(durationSeconds, validator, runningMode, onProgress=()=>{}){
   const sampledFrames = Math.max(24, Math.min(60, Math.ceil(durationSeconds*10)));
   const analysisFps = sampledFrames / Math.max(durationSeconds, .1);
   const start = Math.min(.05, durationSeconds*.05);
   const end = Math.max(start, durationSeconds-Math.min(.05, durationSeconds*.05));
-  const timestampBase = walkingValidatorTimestampCursor+1;
-  walkingValidatorTimestampCursor = timestampBase+Math.round(durationSeconds*1000)+1000;
+  const timestampBase = runningMode === "VIDEO" ? walkingValidatorTimestampCursor+1 : 0;
+  if(runningMode === "VIDEO"){
+    walkingValidatorTimestampCursor = timestampBase+Math.round(durationSeconds*1000)+1000;
+  }
   const samples = [];
   for(let index=0; index<sampledFrames; index += 1){
     const fraction = sampledFrames === 1 ? 0 : index/(sampledFrames-1);
     const time = start+(end-start)*fraction;
     await seekWalkingReviewVideo(time);
-    const result = validator.detectForVideo(walkingReviewVideo, timestampBase+Math.round(time*1000));
+    const result = runningMode === "IMAGE"
+      ? validator.detect(walkingReviewVideo)
+      : validator.detectForVideo(walkingReviewVideo, timestampBase+Math.round(time*1000));
     const selected = selectWalkingPose2D(result.landmarks || []);
     if(selected.pose) samples.push({time, pose:selected.pose, multiPerson:selected.count > 1});
     if(index % 4 === 0){
-      onProgress({stage:"analysis", message:`Checking walking pattern (${Math.round((index+1)*100/sampledFrames)}%)...`});
+      const prefix = runningMode === "IMAGE" ? "Retrying frame analysis" : "Checking walking pattern";
+      onProgress({stage:"analysis", message:`${prefix} (${Math.round((index+1)*100/sampledFrames)}%)...`});
       await new Promise(resolve => requestAnimationFrame(resolve));
     }
   }
-  return buildBrowserWalkingEvidence(samples, sampledFrames, analysisFps);
+  const evidence = buildBrowserWalkingEvidence(samples, sampledFrames, analysisFps);
+  if(evidence){
+    evidence.provenance.frame_detection_mode = runningMode.toLowerCase();
+  }
+  return evidence;
+}
+
+async function inspectWalkingVideo2D(durationSeconds, onProgress=()=>{}){
+  const validator = await getWalkingVideoValidator();
+  return inspectWalkingVideo2DWithValidator(durationSeconds, validator, "VIDEO", onProgress);
+}
+
+async function inspectWalkingVideo2DImageFallback(durationSeconds, onProgress=()=>{}){
+  let validator = null;
+  try{
+    validator = await createWalkingVideoValidator("IMAGE");
+    return await inspectWalkingVideo2DWithValidator(durationSeconds, validator, "IMAGE", onProgress);
+  }finally{
+    if(validator && typeof validator.close === "function") validator.close();
+  }
 }
 
 async function validateWalkingVideo(file, onProgress=()=>{}){
@@ -6343,6 +6370,7 @@ async function validateWalkingVideo(file, onProgress=()=>{}){
   let height = 0;
   let metadataReadable = false;
   let gaitAnalysis = null;
+  let gaitAnalysisError = "";
   try{
     onProgress({stage:"metadata", message:"Opening the video on this device..."});
     walkingReviewVideo.src = objectUrl;
@@ -6364,7 +6392,19 @@ async function validateWalkingVideo(file, onProgress=()=>{}){
         onProgress({stage:"analysis", message:"Checking the walking pattern in 2D..."});
         gaitAnalysis = await inspectWalkingVideo2D(durationSeconds, onProgress);
       }catch(error){
-        postRN({type:"walking_video_2d_analysis_unavailable", message:String(error)});
+        gaitAnalysisError = String(error);
+      }
+      if(!gaitAnalysis){
+        try{
+          onProgress({stage:"analysis", message:"Retrying the walking video frame by frame..."});
+          gaitAnalysis = await inspectWalkingVideo2DImageFallback(durationSeconds, onProgress);
+        }catch(error){
+          const fallbackError = String(error);
+          gaitAnalysisError = gaitAnalysisError ? `${gaitAnalysisError}; ${fallbackError}` : fallbackError;
+        }
+      }
+      if(!gaitAnalysis && gaitAnalysisError){
+        postRN({type:"walking_video_2d_analysis_unavailable", message:gaitAnalysisError});
       }
     }
     onProgress({stage:"ready", message:"Walking video accepted. Preparing the secure save..."});
@@ -6379,6 +6419,7 @@ async function validateWalkingVideo(file, onProgress=()=>{}){
       metadataReadable,
       validationMode:"accepted_for_async_gait_analysis",
       gaitAnalysis,
+      gaitAnalysisError,
       sampledFrames:[],
     };
   }catch(error){
@@ -6391,6 +6432,7 @@ async function validateWalkingVideo(file, onProgress=()=>{}){
       metadataReadable:false,
       validationMode:"accepted_for_async_gait_analysis",
       gaitAnalysis:null,
+      gaitAnalysisError:String(error),
       sampledFrames:[],
     };
   }finally{
@@ -6405,7 +6447,7 @@ async function scoreWalkingVideoForSettings(validation){
     return {
       status:"unscorable",
       score:null,
-      reason_codes:["walking_pattern_not_detected"],
+      reason_codes:[validation.gaitAnalysisError ? "walking_analysis_temporarily_unavailable" : "walking_pattern_not_detected"],
       components:{},
       quality:{},
     };

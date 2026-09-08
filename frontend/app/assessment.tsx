@@ -35,6 +35,7 @@ const GAIT_COMPONENTS = [
 
 const GAIT_RETRY_MESSAGES: Record<string, string> = {
   walking_pattern_not_detected: "The walking pattern could not be detected in this video.",
+  walking_analysis_temporarily_unavailable: "The movement model could not finish reading this video. Please try the same video again.",
   camera_motion_not_compensated: "The camera movement could not be separated from the walking motion.",
   too_few_tracked_frames: "Too few clear walking frames were found.",
   insufficient_pose_tracking: "The body was not visible clearly enough throughout the clip.",
