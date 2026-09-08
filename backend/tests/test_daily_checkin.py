@@ -17,6 +17,9 @@ def _user_provider(store):
 def _client_with_user(monkeypatch):
     store = {"user": {"id": "u_daily_checkin", "consent": {"health_data_consent": True}}}
     monkeypatch.setattr(server, "_user_from_header", _user_provider(store))
+    async def completed_plan(_user, **_kwargs):
+        return {"daily_monitoring": {"current_round_complete": True}}
+    monkeypatch.setattr(server, "_adaptive_care_plan_for_user", completed_plan)
 
     original = server.LOCAL_USERS.get("u_daily_checkin")
 

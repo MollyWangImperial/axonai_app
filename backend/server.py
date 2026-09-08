@@ -15465,6 +15465,10 @@ class DailyCheckInSubmit(BaseModel):
     date: str = Field(min_length=10, max_length=10)
 
 
+class DailyMedalCollect(DailyCheckInSubmit):
+    current_date: Optional[str] = Field(default=None, min_length=10, max_length=10)
+
+
 def _validated_checkin_date(value: str) -> str:
     if not DAILY_CHECKIN_DATE_PATTERN.match(value):
         raise HTTPException(status_code=422, detail="date must be a YYYY-MM-DD calendar date")
@@ -15510,6 +15514,10 @@ def _daily_checkin_response(date: str, checkins: Dict[str, Dict[str, Any]]) -> D
         "date": date,
         "status": entry.get("status") or "not_checked_in",
         "medal_collected": bool(entry.get("medal_collected_at")),
+        "available_medal_date": next((
+            day for day, record in sorted(checkins.items())
+            if day < date and record.get("status") == "complete" and not record.get("medal_collected_at")
+        ), None),
         "days": [
             {
                 "date": day,
@@ -15567,22 +15575,28 @@ async def complete_daily_checkin(payload: DailyCheckInSubmit, request: Request):
 
 
 @api_router.post("/users/daily-checkin/medal")
-async def collect_daily_medal(payload: DailyCheckInSubmit, request: Request):
-    """The patient collects the day's medal on Home once the day's exercises
-    are complete; it then shows on that date of the calendar."""
+async def collect_daily_medal(payload: DailyMedalCollect, request: Request):
+    """Offer a completed day's medal on the next visit on a later local day.
+
+    The client supplies its local/testing date, just like daily check-in.
+    Collection always records the medal against the day it was earned.
+    """
     user = await _user_from_header(dict(request.headers))
     if not user:
         raise HTTPException(status_code=401, detail="Sign in required")
     date = _validated_checkin_date(payload.date)
+    current_date = _validated_checkin_date(payload.current_date) if payload.current_date else datetime.now(timezone.utc).date().isoformat()
+    if date >= current_date:
+        raise HTTPException(status_code=409, detail="This medal is available when you return on the next day.")
     checkins = dict(user.get("daily_checkins") or {})
     entry = dict(checkins.get(date) or {})
     if entry.get("status") != "complete":
-        raise HTTPException(status_code=409, detail="Today's exercises are not complete yet.")
+        raise HTTPException(status_code=409, detail="That day's exercises are not complete yet.")
     if not entry.get("medal_collected_at"):
         entry["medal_collected_at"] = datetime.now(timezone.utc).isoformat()
         checkins[date] = entry
         await _save_daily_checkins(user, checkins)
-    return _daily_checkin_response(date, checkins)
+    return _daily_checkin_response(current_date, checkins)
 
 
 async def _reward_assessments_for_user(user_id: str) -> List[Dict[str, Any]]:
@@ -15607,13 +15621,43 @@ async def get_user_rewards(request: Request, as_of: Optional[str] = None):
     user = await _user_from_header(dict(request.headers))
     if not user:
         raise HTTPException(status_code=401, detail="Sign in required")
+    return await _rewards_for_user(user, as_of)
+
+
+async def _rewards_for_user(user: Dict[str, Any], as_of: Optional[str] = None):
     activities = await _care_activities_for_user(user["id"])
     check_ins = await _care_check_ins_for_user(user["id"])
-    rewards = compute_rewards(activities, check_ins, dict(user.get("daily_checkins") or {}), assessments=await _reward_assessments_for_user(user["id"]), now=_as_of_now(as_of))
-    acknowledged = set(user.get("reward_milestones_acknowledged") or [])
+    testing = user.get("reward_points_testing") or {}
+    rewards = compute_rewards(activities, check_ins, dict(user.get("daily_checkins") or {}), assessments=await _reward_assessments_for_user(user["id"]), now=_as_of_now(as_of), testing_points_adjustment=int(testing.get("adjustment") or 0))
+    rewards["testing_revision"] = testing.get("revision")
+    acknowledged = set(testing.get("acknowledged") or []) if testing else set(user.get("reward_milestones_acknowledged") or [])
     for medal in rewards.get("medals") or []:
         medal["celebrated"] = medal.get("id") in acknowledged
     return rewards
+
+
+class TestingPointsSubmit(BaseModel):
+    points: Optional[int] = Field(..., strict=True, ge=0, le=1000000)
+
+
+@api_router.post("/users/testing/points")
+async def set_points_for_testing(payload: TestingPointsSubmit, request: Request):
+    """Set this account's test total without fabricating completed activities.
+
+    Subsequent activity still earns points. Null restores the earned total;
+    each manual setting starts a fresh, separate milestone demonstration.
+    """
+    user = await _user_from_header(dict(request.headers))
+    if not user:
+        raise HTTPException(status_code=401, detail="Sign in required")
+    rewards = await _rewards_for_user(user)
+    testing = None if payload.points is None else {
+        "adjustment": payload.points - rewards["earned_points"],
+        "revision": str(uuid.uuid4()),
+        "acknowledged": [],
+    }
+    await _save_user_fields(user, {"reward_points_testing": testing}, context="points for testing")
+    return await _rewards_for_user({**user, "reward_points_testing": testing})
 
 
 @api_router.post("/users/rewards/milestones/{milestone_id}/acknowledge")
@@ -15624,17 +15668,16 @@ async def acknowledge_reward_milestone(milestone_id: str, request: Request):
     milestone = next((item for item in REWARD_MEDALS if item["id"] == milestone_id), None)
     if not milestone:
         raise HTTPException(status_code=404, detail="Reward milestone not found")
-    activities = await _care_activities_for_user(user["id"])
-    check_ins = await _care_check_ins_for_user(user["id"])
-    rewards = compute_rewards(activities, check_ins, dict(user.get("daily_checkins") or {}), assessments=await _reward_assessments_for_user(user["id"]))
+    rewards = await _rewards_for_user(user)
     if int(rewards.get("points") or 0) < int(milestone["threshold"]):
         raise HTTPException(status_code=409, detail="Reward milestone has not been earned yet")
-    acknowledged = list(dict.fromkeys(user.get("reward_milestones_acknowledged") or []))
+    testing = user.get("reward_points_testing") or {}
+    acknowledged = list(dict.fromkeys(testing.get("acknowledged") or [])) if testing else list(dict.fromkeys(user.get("reward_milestones_acknowledged") or []))
     if milestone_id not in acknowledged:
         acknowledged.append(milestone_id)
         await _save_user_fields(
             user,
-            {"reward_milestones_acknowledged": acknowledged},
+            {"reward_points_testing": {**testing, "acknowledged": acknowledged}} if testing else {"reward_milestones_acknowledged": acknowledged},
             context="reward milestone acknowledgement",
         )
     return {"ok": True, "milestone_id": milestone_id, "celebrated": True}

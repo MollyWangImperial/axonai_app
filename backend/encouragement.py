@@ -75,6 +75,7 @@ def compute_rewards(
     *,
     assessments: Optional[Sequence[Mapping[str, Any]]] = None,
     now: Optional[datetime] = None,
+    testing_points_adjustment: int = 0,
 ) -> Dict[str, Any]:
     now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     activities = list(activities or [])
@@ -141,6 +142,8 @@ def compute_rewards(
         + len(completed_assessments) * POINTS_PER_ASSESSMENT
         + tap_days * POINTS_PER_CHECKIN_TAP
     )
+    earned_points = points
+    points = max(0, earned_points + testing_points_adjustment)
 
     # Streak with freezes: walk backwards from the most recent qualifying day.
     excused = _excused_dates(check_ins)
@@ -176,6 +179,7 @@ def compute_rewards(
     return {
         "version": ENCOURAGEMENT_VERSION,
         "points": points,
+        "earned_points": earned_points,
         "breakdown": {
             "exercises_completed": exercise_count,
             "repetitions_completed": repetition_count,

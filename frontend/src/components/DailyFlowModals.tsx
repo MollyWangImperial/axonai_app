@@ -7,7 +7,7 @@ import { useDisplayPreferences } from "@/src/displayPreferences";
 import { colors, radius, spacing } from "@/src/theme";
 
 // The daily flow on Home: Alira's reminder message, the re-assessment-day
-// prompt, the medal for finishing today's exercises, the calendar that shows
+// prompt, the next-day medal for completed exercises, the calendar that shows
 // the medals and the next assessment date, and (testing phase) the date
 // stepper that lets a tester walk through the days.
 
@@ -260,6 +260,7 @@ type MedalAwardModalProps = {
   visible: boolean;
   date: string;
   collecting: boolean;
+  error?: string;
   onCollect: () => void;
   onLater: () => void;
 };
@@ -280,7 +281,7 @@ function MedalArt({ size = 150 }: { size?: number }) {
   );
 }
 
-export function MedalAwardModal({ visible, date, collecting, onCollect, onLater }: MedalAwardModalProps) {
+export function MedalAwardModal({ visible, date, collecting, error, onCollect, onLater }: MedalAwardModalProps) {
   const { palette } = useDisplayPreferences();
   const pop = useRef(new Animated.Value(0.5)).current;
   const shine = useRef(new Animated.Value(0)).current;
@@ -299,20 +300,21 @@ export function MedalAwardModal({ visible, date, collecting, onCollect, onLater 
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onLater}>
       <View style={styles.backdrop}>
         <View style={[styles.card, styles.medalCard, { backgroundColor: palette.surface }]} testID="daily-medal-award">
-          <Text style={[styles.kicker, { color: palette.brand }]}>TODAY&apos;S EXERCISES COMPLETE</Text>
+          <Text style={[styles.kicker, { color: palette.brand }]}>A COMPLETED DAY TO CELEBRATE</Text>
           <Animated.View style={[styles.medalGlow, { opacity: glow }]} />
           <Animated.View style={{ transform: [{ scale: pop }] }}>
             <MedalArt />
           </Animated.View>
           <Text style={[styles.title, { color: palette.text }]}>Rehyn Daily Achiever</Text>
           <Text style={[styles.body, { color: palette.muted }]}>
-            {longDate(date)}. Every completed day is a step your recovery can build on. Collect the medal to add it to your calendar.
+            You completed your exercises on {longDate(date)}. Welcome back! Collect your medal to add it to that day on your calendar.
           </Text>
+          {error ? <Text accessibilityRole="alert" style={[styles.body, { color: "#B42318" }]}>{error}</Text> : null}
           <Pressable testID="daily-medal-collect" disabled={collecting} onPress={onCollect} style={({ pressed }) => [styles.primary, styles.collectButton, (pressed || collecting) && styles.pressed]}>
             <Ionicons name="medal-outline" size={20} color="#FFFFFF" />
             <Text style={styles.primaryText}>{collecting ? "Collecting..." : "Collect medal"}</Text>
           </Pressable>
-          <Pressable testID="daily-medal-later" onPress={onLater} style={styles.later}>
+          <Pressable testID="daily-medal-later" disabled={collecting} onPress={onLater} style={styles.later}>
             <Text style={[styles.laterText, { color: palette.muted }]}>Later</Text>
           </Pressable>
         </View>

@@ -327,7 +327,7 @@ export default function RehabPlanScreen() {
     `rehab-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
   );
   // Testing phase: finish today's exercises with an entered score instead of
-  // performing them on camera, then collect the day's award on Home.
+  // performing them on camera, then collect the award on the next day's visit.
   const [showTestingFinish, setShowTestingFinish] = useState(false);
   const [testingScore, setTestingScore] = useState("85");
   const [finishingForTesting, setFinishingForTesting] = useState(false);
@@ -625,8 +625,8 @@ export default function RehabPlanScreen() {
         <View style={[styles.dailyCard, { alignItems: "center" }]} testID="plan-award-prompt">
           <View style={styles.awardIcon}><Ionicons name="medal-outline" size={36} color="#B77A0E" /></View>
           <Text style={styles.dailyEyebrow}>TODAY&apos;S EXERCISES FINISHED</Text>
-          <Text style={[styles.dailyTitle, { textAlign: "center" }]}>An award is waiting for you</Text>
-          <Text style={[styles.dailyText, { textAlign: "center" }]}>Well done - today&apos;s session is recorded. Return to the home page to collect today&apos;s medal.</Text>
+          <Text style={[styles.dailyTitle, { textAlign: "center" }]}>Today&apos;s session is complete</Text>
+          <Text style={[styles.dailyText, { textAlign: "center" }]}>Well done - today&apos;s session is recorded. Your Daily Achiever medal will be waiting when you sign in tomorrow.</Text>
           <Pressable onPress={() => { setShowAwardPrompt(false); router.dismissTo("/"); }} style={styles.dailyPrimary} testID="plan-award-go-home">
             <Text style={styles.dailyPrimaryText}>Go to the home page</Text>
             <Ionicons name="home-outline" size={22} color="#FFFFFF" />
@@ -725,7 +725,7 @@ export default function RehabPlanScreen() {
               <Ionicons name="checkmark-circle" size={30} color="#FFFFFF" />
               <View style={styles.finishedCopy}>
                 <Text style={styles.finishedTitle}>FINISHED</Text>
-                <Text style={styles.finishedText}>Today&apos;s exercises are complete. Return to Home to collect today&apos;s award.</Text>
+                <Text style={styles.finishedText}>Today&apos;s exercises are complete. Sign in tomorrow to collect your Daily Achiever medal.</Text>
               </View>
             </View>
           )}
