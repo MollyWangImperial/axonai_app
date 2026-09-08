@@ -464,6 +464,104 @@ LOCAL_TASK_PROGRESS: Dict[str, Dict[str, Any]] = _load_local_dict(LOCAL_TASK_PRO
 LOCAL_CARE_STATE: Dict[str, Dict[str, Any]] = _load_local_dict(LOCAL_CARE_STATE_FILE)
 LOCAL_ASSESSMENTS: List[Dict[str, Any]] = _load_local_list(LOCAL_ASSESSMENTS_FILE)
 LOCAL_CHAT_SESSIONS: Dict[str, Dict[str, Any]] = {}
+PENDING_ASSESSMENT_SYNC_STATUS = "pending_mongodb_sync"
+
+
+def _local_assessment(user_id: str, assessment_id: str) -> Optional[Dict[str, Any]]:
+    return next((
+        item for item in reversed(LOCAL_ASSESSMENTS)
+        if item.get("user_id") == user_id and item.get("id") == assessment_id
+    ), None)
+
+
+def _queue_assessment_for_mongodb_sync(
+    doc: Dict[str, Any],
+    user: Dict[str, Any],
+    error: BaseException,
+) -> Dict[str, Any]:
+    """Keep a completed assessment available while Atlas reconnects."""
+    local_doc = dict(doc)
+    local_doc["persistence_status"] = PENDING_ASSESSMENT_SYNC_STATUS
+    local_doc["pending_mongodb_sync"] = {
+        "queued_at": datetime.now(timezone.utc).isoformat(),
+        "attempts": 0,
+        "last_error": str(error)[:200],
+        "account_generation": user.get("account_generation"),
+    }
+    LOCAL_ASSESSMENTS[:] = [
+        item for item in LOCAL_ASSESSMENTS
+        if not (item.get("user_id") == local_doc.get("user_id") and item.get("id") == local_doc.get("id"))
+    ]
+    LOCAL_ASSESSMENTS.append(local_doc)
+    _persist_local_list(LOCAL_ASSESSMENTS_FILE, LOCAL_ASSESSMENTS)
+    return local_doc
+
+
+async def _sync_pending_assessments_to_mongodb() -> int:
+    """Flush locally queued assessments after the authenticated Atlas probe succeeds."""
+    synced = 0
+    changed = False
+    for local_doc in LOCAL_ASSESSMENTS:
+        if local_doc.get("persistence_status") != PENDING_ASSESSMENT_SYNC_STATUS:
+            continue
+        pending = dict(local_doc.get("pending_mongodb_sync") or {})
+        user_id = str(local_doc.get("user_id") or "")
+        try:
+            mongo_user = await db.users.find_one({"id": user_id}, {"_id": 0})
+            queued_generation = pending.get("account_generation")
+            if not mongo_user or (
+                queued_generation is not None
+                and mongo_user.get("account_generation") != queued_generation
+            ):
+                local_doc["persistence_status"] = "discarded_after_account_reset"
+                local_doc.pop("pending_mongodb_sync", None)
+                changed = True
+                continue
+            mongo_doc = {
+                key: value for key, value in local_doc.items()
+                if key not in {"persistence_status", "pending_mongodb_sync", "mongodb_synced_at"}
+            }
+            await db.assessments.replace_one(
+                {"id": mongo_doc["id"], "user_id": user_id},
+                mongo_doc,
+                upsert=True,
+            )
+            if mongo_doc.get("assessment_trigger") == "initial":
+                await db.users.update_one(
+                    {"id": user_id, "account_generation": mongo_user.get("account_generation"), "reset_pending": None},
+                    {
+                        "$min": {"initial_assessment_completed_at": mongo_doc["created_at"]},
+                        "$set": {"initial_assessment_completion_source": "temporary_local_sync"},
+                    },
+                )
+            report_id = mongo_doc.get("functional_issue_report_id")
+            if report_id:
+                await db.alira_functional_issue_reports.update_one(
+                    {"id": report_id, "user_id": user_id, "status": "pending"},
+                    {"$set": {
+                        "status": "assessed",
+                        "assessment_id": mongo_doc["id"],
+                        "assessed_at": mongo_doc["created_at"],
+                    }},
+                )
+            local_doc["persistence_status"] = "mongodb"
+            local_doc["mongodb_synced_at"] = datetime.now(timezone.utc).isoformat()
+            local_doc.pop("pending_mongodb_sync", None)
+            synced += 1
+            changed = True
+        except Exception as error:
+            pending["attempts"] = int(pending.get("attempts") or 0) + 1
+            pending["last_error"] = str(error)[:200]
+            pending["last_attempt_at"] = datetime.now(timezone.utc).isoformat()
+            local_doc["pending_mongodb_sync"] = pending
+            changed = True
+            logger.warning("Pending assessment sync will retry after MongoDB recovers: %s", str(error)[:160])
+            break
+    if changed:
+        _persist_local_list(LOCAL_ASSESSMENTS_FILE, LOCAL_ASSESSMENTS)
+    if synced:
+        logger.info("Synchronized %s temporarily stored assessment(s) to MongoDB", synced)
+    return synced
 
 # OpenAI TTS: prefer direct OPENAI_API_KEY for local/dev, keep Emergent key as fallback.
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "").strip()
@@ -2517,8 +2615,10 @@ async def _maintain_patient_database_connection() -> None:
     indexes_ready = False
     while True:
         result = await _probe_patient_database()
-        if result["ok"] and not indexes_ready:
-            indexes_ready = await _ensure_user_indexes()
+        if result["ok"]:
+            if not indexes_ready:
+                indexes_ready = await _ensure_user_indexes()
+            await _sync_pending_assessments_to_mongodb()
         await asyncio.sleep(30 if result["ok"] else 5)
 
 
@@ -3830,15 +3930,15 @@ async def submit_assessment(payload: AssessmentSubmit, request: Request):
     doc["account_email"] = str(user.get("email") or "").strip().lower()
     doc["assessment_trigger"] = access.get("trigger")
     doc["functional_issue_report_id"] = access.get("issue_report_id")
+    assessment_saved_to_mongodb = True
     try:
         # Motor may add an ObjectId to the dictionary before a failed insert.
         # Keep the patient-facing fallback copy JSON-safe and unchanged.
         await db.assessments.insert_one(doc.copy())
     except Exception as e:
-        _require_durable_patient_store("assessment result", e)
-        logger.warning(f"Mongo unavailable for assessment insert; using local fallback: {str(e)[:120]}")
-        LOCAL_ASSESSMENTS.append(doc.copy())
-        _persist_local_list(LOCAL_ASSESSMENTS_FILE, LOCAL_ASSESSMENTS)
+        assessment_saved_to_mongodb = False
+        logger.warning("Mongo unavailable for assessment insert; queuing a temporary local copy: %s", str(e)[:160])
+        _queue_assessment_for_mongodb_sync(doc, user, e)
     if browser_gait_analysis:
         _record_alira_action(
             "walking_video_scored",
@@ -3853,8 +3953,14 @@ async def submit_assessment(payload: AssessmentSubmit, request: Request):
             },
         )
     if access.get("trigger") == "initial":
-        await _record_initial_assessment_completion(user, assessment.created_at)
-    await _mark_functional_issue_assessed(user["id"], access.get("issue_report_id"), assessment_id)
+        if assessment_saved_to_mongodb:
+            await _record_initial_assessment_completion(user, assessment.created_at)
+        else:
+            user["initial_assessment_completed_at"] = assessment.created_at
+            user["initial_assessment_completion_source"] = "temporary_local_pending_sync"
+            _remember_local_user(user)
+    if assessment_saved_to_mongodb:
+        await _mark_functional_issue_assessed(user["id"], access.get("issue_report_id"), assessment_id)
     _record_alira_action(
         "movement_snapshot_generated",
         source="assessment_testing_shortcut" if testing_shortcut else "assessment_pipeline",
@@ -3883,7 +3989,7 @@ async def submit_assessment(payload: AssessmentSubmit, request: Request):
     }
     analysis_motion_data = dict(payload.motion_data or {})
     has_analysis_input = bool(analysis_video_records or analysis_motion_data.get("frames"))
-    if not testing_shortcut and LOCAL_GPU_WORKER_URL and ANALYSIS_WORKER_TOKEN and has_analysis_input:
+    if assessment_saved_to_mongodb and not testing_shortcut and LOCAL_GPU_WORKER_URL and ANALYSIS_WORKER_TOKEN and has_analysis_input:
         asyncio.create_task(_queue_local_gpu_stage(
             assessment_id,
             analysis_motion_data,
@@ -3994,6 +4100,9 @@ async def _owned_assessment_doc(assessment_id: str, request: Request, purpose: s
     if not user:
         raise HTTPException(status_code=401, detail="Sign in required")
     _require_health_data_consent(user)
+    local_doc = _local_assessment(user["id"], assessment_id)
+    if local_doc and local_doc.get("persistence_status") == PENDING_ASSESSMENT_SYNC_STATUS:
+        return _assessment_with_current_rehab_policy(local_doc)
     try:
         doc = await db.assessments.find_one({"id": assessment_id, "user_id": user["id"]}, {"_id": 0})
     except Exception as e:
@@ -14482,6 +14591,10 @@ async def _user_from_header(request_headers: Dict[str, str]) -> Optional[Dict[st
     try:
         user = await db.users.find_one({"id": uid}, {"_id": 0})
     except Exception as e:
+        local_user = LOCAL_USERS.get(uid)
+        if local_user:
+            logger.warning("Mongo unavailable for signed-in account lookup; using the temporary local account mirror: %s", str(e)[:120])
+            return dict(local_user)
         _require_durable_patient_store("signed-in account lookup", e)
         logger.warning(f"Mongo unavailable for user header lookup; using local fallback: {str(e)[:120]}")
         return LOCAL_USERS.get(uid)
