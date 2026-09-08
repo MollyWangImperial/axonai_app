@@ -5913,6 +5913,8 @@ function unlockAudioPlayback(){
   const silentUrl = createSilentWavUrl();
   audioEl.preload = "auto";
   audioEl.setAttribute("playsinline", "true");
+  audioEl.muted = false;
+  audioEl.volume = 1;
   audioEl.src = silentUrl;
   const playback = audioEl.play();
   audioUnlockPromise = Promise.resolve(playback)
@@ -5998,7 +6000,10 @@ async function playVoice(text){
     voiceText.textContent = "Playing instruction…";
     const audioB64 = await fetchVoiceAudio(text);
     audioEl.pause();
+    audioEl.muted = false;
+    audioEl.volume = 1;
     audioEl.src = "data:audio/mpeg;base64," + audioB64;
+    audioEl.load();
     await new Promise((resolve, reject) => {
       let settled = false;
       const finish = (callback) => {
@@ -10501,6 +10506,8 @@ function unlockAudioPlayback(){
   const silentUrl = createSilentWavUrl();
   audioEl.preload = "auto";
   audioEl.setAttribute("playsinline", "true");
+  audioEl.muted = false;
+  audioEl.volume = 1;
   audioEl.src = silentUrl;
   const playback = audioEl.play();
   audioUnlockPromise = Promise.resolve(playback)
@@ -10592,7 +10599,10 @@ async function playVoice(text){
     if(sequence !== voiceSequence) return "interrupted";
     if(stopActiveVoice) stopActiveVoice();
     audioEl.pause();
+    audioEl.muted = false;
+    audioEl.volume = 1;
     audioEl.src = audioSource;
+    audioEl.load();
     const playbackStatus=await new Promise((resolve, reject) => {
       let settled = false;
       let timeout = setTimeout(() => finish(() => {

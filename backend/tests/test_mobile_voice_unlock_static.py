@@ -40,6 +40,10 @@ def test_both_runners_build_a_silent_wav_for_ios_user_gesture_unlock():
     primer = ".then(() => new Promise(resolve => setTimeout(resolve, 180)))"
     assert server.POSE_RUNNER_HTML.count(primer) == 1
     assert server.REHAB_RUNNER_HTML_TEMPLATE.count(primer) == 1
+    assert server.POSE_RUNNER_HTML.count("audioEl.muted = false;") >= 2
+    assert server.REHAB_RUNNER_HTML_TEMPLATE.count("audioEl.muted = false;") >= 2
+    assert 'audioEl.src = "data:audio/mpeg;base64," + audioB64;\n    audioEl.load();' in server.POSE_RUNNER_HTML
+    assert "audioEl.src = audioSource;\n    audioEl.load();" in server.REHAB_RUNNER_HTML_TEMPLATE
 
 
 def test_assessment_offers_a_user_gesture_voice_retry_when_playback_is_blocked():
