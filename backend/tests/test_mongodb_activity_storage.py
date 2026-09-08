@@ -28,6 +28,14 @@ class Collection:
         key = query["_id"]
         if key not in self.docs and upsert:
             self.docs[key] = {**query, **copy.deepcopy(update.get("$setOnInsert", {}))}
+        elif key in self.docs and "$set" in update:
+            self.docs[key].update(copy.deepcopy(update["$set"]))
+        return SimpleNamespace(acknowledged=True)
+
+    async def insert_one(self, document):
+        self.check()
+        key = document.get("_id") or document.get("id")
+        self.docs[key] = copy.deepcopy(document)
         return SimpleNamespace(acknowledged=True)
 
     async def find_one(self, query, projection=None):
@@ -125,6 +133,64 @@ def test_retried_completed_activity_returns_the_original_without_duplicate_rewar
     })
     assert response.status_code == 200 and response.json()["already_saved"] is True
     assert len(db.alira_activities.docs) == 1
+
+
+def test_testing_shortcut_can_correct_same_exercise_score_without_duplicate(monkeypatch):
+    key = server._patient_record_id("patient-a", "activity", "testing:plan:2026-09-08:ex_grasp")
+    activities = Collection()
+    activities.docs[key] = {
+        "_id": key,
+        "id": key,
+        "client_activity_id": "testing:plan:2026-09-08:ex_grasp",
+        "user_id": "patient-a",
+        "exercise_id": "ex_grasp",
+        "plan_id": "plan",
+        "completed_reps": 5,
+        "average_score": 85.0,
+        "repetition_scores": [85.0] * 5,
+        "testing_shortcut": True,
+        "completed_at": "2026-09-08T09:00:00+00:00",
+        "created_at": "2026-09-08T09:00:00+00:00",
+    }
+    reviews = Collection()
+    monkeypatch.setattr(server, "db", SimpleNamespace(alira_activities=activities, alira_care_reviews=reviews))
+    monkeypatch.setattr(server, "_require_health_data_consent", lambda _: None)
+
+    async def assessments(_):
+        return [{"created_at": "2026-09-08T08:00:00+00:00", "rehab_plan": [{"id": "ex_grasp"}]}]
+
+    async def empty(_):
+        return []
+
+    monkeypatch.setattr(server, "_care_assessments_for_user", assessments)
+    monkeypatch.setattr(server, "_care_check_ins_for_user", empty)
+    monkeypatch.setattr(server, "_care_issue_reports_for_user", empty)
+    monkeypatch.setattr(server, "build_adaptive_care_plan", lambda *_: {
+        "version": "test",
+        "stage": "practice",
+        "exercise_plan": {"action": "continue"},
+        "daily_monitoring": {"next_day_action": "continue"},
+    })
+    payload = server.AliraActivitySubmit(
+        client_activity_id="testing:plan:2026-09-08:ex_grasp",
+        day="2026-09-08",
+        exercise_id="ex_grasp",
+        plan_id="plan",
+        completed_reps=5,
+        average_score=90,
+        repetition_scores=[90] * 5,
+        completed_at="2026-09-08T10:00:00Z",
+        testing_shortcut=True,
+    )
+
+    result = asyncio.run(server._persist_alira_activity({"id": "patient-a"}, payload))
+
+    assert result["already_saved"] is False
+    assert result["activity"]["average_score"] == 90.0
+    assert result["activity"]["repetition_scores"] == [90.0] * 5
+    assert activities.docs[key]["average_score"] == 90.0
+    assert activities.docs[key]["created_at"] == "2026-09-08T09:00:00+00:00"
+    assert len(activities.docs) == 1
 
 
 def test_journal_round_trip_retry_and_account_isolation(activity_api):

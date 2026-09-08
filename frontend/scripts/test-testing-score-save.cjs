@@ -22,9 +22,12 @@ function fixture({ dayComplete = true } = {}) {
   const pending = [];
   const events = [];
   const state = { busy: false, award: false, error: '', saved: 0 };
+  const exerciseScores = { reach: 85, grasp: 90, pinch: 72, open: 96 };
   const context = {
     exports: {}, data: { rehab_plan: ['reach', 'grasp', 'pinch', 'open'].map(id => ({ id, reps: 10, sets: 2 })) },
-    finishingForTesting: false, testingScore: '90', planId: 'a1', isDemo: false,
+    finishingForTesting: false,
+    testingScores: Object.fromEntries(Object.entries(exerciseScores).map(([id, score]) => [id, String(score)])),
+    planId: 'a1', isDemo: false,
     appNow: () => new Date(`${date}T12:00:00Z`), appDateString: () => date,
     PROGRESS_KEY: async (_plan, exercise) => exercise,
     storage: { getItem: async () => '', setItem: async () => true },
@@ -43,9 +46,14 @@ function fixture({ dayComplete = true } = {}) {
     },
   };
   vm.runInNewContext(compiled, context);
-  return { save: context.exports.save, pending, events, state };
+  return { save: context.exports.save, pending, events, state, exerciseScores };
 }
-const response = ok => ({ ok, json: async () => ({ ok }) });
+const response = (ok, body) => ({
+  ok,
+  json: async () => ok
+    ? { ok: true, activity: { average_score: body.average_score, repetition_scores: body.repetition_scores } }
+    : { ok: false },
+});
 const tick = async () => { for (let i = 0; i < 15; i++) await Promise.resolve(); };
 
 async function test() {
@@ -55,10 +63,12 @@ async function test() {
   assert.equal(good.state.busy, true);
   assert.equal(good.state.award, false);
   for (const [index, save] of good.pending.entries()) {
-    assert.equal(save.body.average_score, 90);
+    const expectedScore = good.exerciseScores[save.body.exercise_id];
+    assert.equal(save.body.average_score, expectedScore);
     assert.equal(save.body.repetition_scores.length, 20);
+    assert.ok(save.body.repetition_scores.every(score => score === expectedScore));
     assert.equal(save.body.testing_shortcut, true);
-    save.resolve(response(true));
+    save.resolve(response(true, save.body));
     await tick();
     if (index < 3) assert.equal(good.events.includes('/api/users/daily-checkin/complete'), false);
   }
@@ -73,7 +83,7 @@ async function test() {
   partial.pending[0].resolve(response(false));
   await tick();
   assert.equal(partial.state.busy, true, 'do not allow a retry while other writes are still running');
-  partial.pending.slice(1).forEach(save => save.resolve(response(true)));
+  partial.pending.slice(1).forEach(save => save.resolve(response(true, save.body)));
   await failed;
   assert.equal(partial.state.award, false);
   assert.ok(partial.state.error);
@@ -82,12 +92,12 @@ async function test() {
 
   const incomplete = fixture({ dayComplete: false });
   const incompleteRun = incomplete.save();
-  incomplete.pending.forEach(save => save.resolve(response(true)));
+  incomplete.pending.forEach(save => save.resolve(response(true, save.body)));
   await incompleteRun;
   assert.equal(incomplete.state.award, false, 'an HTTP 200 without a completed day is not success');
   assert.ok(incomplete.state.error);
   assert.equal(new Set(good.pending.map(save => save.body.client_activity_id)).size, 4);
   assert.deepEqual(good.pending.map(save => save.body.client_activity_id), partial.pending.map(save => save.body.client_activity_id), 'retries keep the same idempotency keys');
-  console.log('Score-save checks passed: concurrent saves, completion ordering, partial failure, safe retries.');
+  console.log('Score-save checks passed: distinct exercise scores, concurrent saves, completion ordering, partial failure, safe retries.');
 }
 test().catch(error => { console.error(error); process.exitCode = 1; });

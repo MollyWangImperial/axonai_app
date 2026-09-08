@@ -171,6 +171,16 @@ def build_daily_activity_metrics(
     baseline = rows[0] if rows else {}
 
     mobility_reported = _MOBILITY_TO_ASSISTANCE.get(str(profile.get("mobility_level") or "").lower())
+    affected_areas = {str(item).strip().lower() for item in profile.get("affected_areas") or []}
+    if affected_areas.intersection({"left_lower", "right_lower"}) and mobility_reported in {
+        None,
+        "fully_independent",
+        "supervision_only",
+    }:
+        # An affected-leg answer must not be presented as full independence.
+        # It supplies only a qualitative daily-life floor; task-derived module
+        # scores remain untouched.
+        mobility_reported = "minimum_assistance"
     arm_reported = _ARM_TO_ASSISTANCE.get(str(profile.get("affected_arm_movement") or "").lower())
     hand_reported = _HAND_TO_ASSISTANCE.get(str(profile.get("affected_hand_movement") or "").lower())
 

@@ -27,7 +27,7 @@ def test_any_observed_or_uncertain_fast_sign_triggers_demo_911_handoff():
     )
 
     assert face["call_999"] is True
-    assert face["algorithm_version"] == "rehyn-fast-1.5-openai-stt"
+    assert face["algorithm_version"] == "rehyn-fast-1.6-early-smile-drop"
     assert face["demo_call_911"] is True
     assert face["emergency_call_mode"] == "simulation"
     assert face["observed_signs"] == ["face"]
@@ -127,6 +127,11 @@ def test_fast_runner_and_audit_endpoint_apply_the_same_rule(monkeypatch):
     assert "isCompleteSpeechCandidate" in runner.text
     # Started-but-not-sustained holds escalate as possible FAST signs.
     assert "The smile faded quickly and could not be held" in runner.text
+    assert "FACE_DROP_CONFIRM_MS=450" in runner.text
+    assert "face.smile_was_established&&face.smile_drop_started_at" in runner.text
+    assert 'showAutomaticDecision("face","yes",reason,renderArms,650)' in runner.text
+    assert "Smile drop detected. Moving to the arm check now." in runner.text
+    assert "if(!face.positive&&smileActivation>FACE_SMILE_ON&&now-stepStartedAt>=2600" in runner.text
     assert "The raised position was lost quickly and could not be held" in runner.text
     # Unclear or partial speech escalates immediately instead of offering a retry.
     assert "so a possible speech sign is treated as present" in runner.text

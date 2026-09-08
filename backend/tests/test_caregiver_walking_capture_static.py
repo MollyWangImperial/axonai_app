@@ -10,7 +10,7 @@ def _walking_task():
     return next(task for task in server.LOWER_LIMB_TASKS_DATA if task["id"] == "L6")
 
 
-def test_walking_task_requests_a_short_frontal_supporting_record():
+def test_walking_task_requests_a_short_frontal_scoring_video():
     task = _walking_task()
     assert task["caregiver_recorded"] is True
     assert task["view"] == "Front view"
@@ -20,7 +20,9 @@ def test_walking_task_requests_a_short_frontal_supporting_record():
         "walking toward the camera",
         "whole body",
         "walking aid",
-        "camera still",
+        "fixed camera is best",
+        "move smoothly",
+        "do not walk backward",
         "score comes only from measurable evidence",
         "affected area and side come from the patient's survey",
     ):
@@ -28,7 +30,7 @@ def test_walking_task_requests_a_short_frontal_supporting_record():
     assert task["steps"][1]["measure"] == []
 
 
-def test_walking_voice_guides_a_front_view_without_promising_video_grading():
+def test_walking_voice_guides_a_safe_front_view_for_video_scoring():
     steps = {step["id"]: step for step in _walking_task()["steps"]}
     setup = steps["L6-S1"]["voice"].lower()
     walking = steps["L6-S2"]["voice"].lower()
@@ -37,7 +39,9 @@ def test_walking_voice_guides_a_front_view_without_promising_video_grading():
     assert "from the front" in setup
     assert "walk toward the camera" in setup
     assert "whole body" in setup
-    assert "camera still" in setup
+    assert "fixed camera is best" in setup
+    assert "move smoothly" in setup
+    assert "not walk backward" in setup
     assert "usual comfortable pace" in walking
     assert "ready to upload" in stopping
 
@@ -68,9 +72,9 @@ def test_walking_can_be_skipped_without_recording_a_failed_gait_task():
 
 def test_walking_validator_accepts_any_video_without_pose_identity_or_framing_checks():
     source = server.POSE_RUNNER_HTML
-    validation = source[source.index("async function validateWalkingVideo") : source.index("function walkingFunctionalMetrics")]
+    validation = source[source.index("async function validateWalkingVideo") : source.index("async function completeUploadedWalkingTask")]
     assert "return {ok:false" not in validation.split("const objectUrl", 1)[1]
-    assert 'validationMode:"record_only"' in validation
+    assert 'validationMode:"accepted_for_async_gait_analysis"' in validation
     assert "sampledFrames:[]" in validation
     assert "getWalkingVideoValidator" not in validation
     assert "detectForVideo" not in validation
@@ -106,17 +110,18 @@ def test_walking_video_recognition_allows_browser_and_common_phone_formats():
 
 def test_walking_upload_keeps_only_file_type_and_size_safety_limits():
     source = server.POSE_RUNNER_HTML
-    validation = source[source.index("async function validateWalkingVideo") : source.index("function walkingFunctionalMetrics")]
+    validation = source[source.index("async function validateWalkingVideo") : source.index("async function completeUploadedWalkingTask")]
     assert "if(!isWalkingVideoFile(file))" in validation
     assert "file.size || 0) > 35 * 1024 * 1024" in validation
     assert "larger than 35 MB" in validation
 
 
-def test_walking_upload_is_saved_as_a_record_without_gait_metrics():
+def test_walking_upload_is_saved_for_trusted_async_gait_scoring():
     source = server.POSE_RUNNER_HTML
     completion = source[source.index("async function completeUploadedWalkingTask") : source.index("function playBrowserVoice")]
-    assert 'walking_video_role:"supporting_record"' in completion
-    assert 'lower_limb_result_source:"assessment_tasks"' in completion
+    assert 'walking_video_role:"gait_scoring_input"' in completion
+    assert 'lower_limb_result_source:"walking_video_analysis"' in completion
+    assert 'walking_video_analysis_status:"queued"' in completion
     assert 'walking_video_accepted:true' in completion
     assert "gait_bilateral_motion_symmetry" not in completion
     assert "walking_same_patient_confirmed" not in completion
@@ -148,7 +153,7 @@ def test_walking_video_picker_recovers_after_processing_errors():
 def test_walking_model_is_not_preloaded_or_used_by_the_upload_validator():
     source = server.POSE_RUNNER_HTML
     assert "preloadWalkingVideoValidator();" not in source
-    validation = source[source.index("async function validateWalkingVideo") : source.index("function walkingFunctionalMetrics")]
+    validation = source[source.index("async function validateWalkingVideo") : source.index("async function completeUploadedWalkingTask")]
     assert "walkingVideoValidatorPromise" not in validation
     assert "PoseLandmarker.createFromOptions" not in validation
     assert "validator.close()" not in validation

@@ -238,7 +238,7 @@ def test_app_wires_the_date_stepper_reminder_medal_calendar_and_finish_button():
     assert 'testID="home-open-calendar"' in home
     # Rehab plan: FINISHED banner, testing finish button with a score, award prompt.
     assert 'testID="plan-finished-banner"' in plan and ">FINISHED<" in plan
-    assert 'testID="plan-testing-finish"' in plan and 'testID="plan-testing-score"' in plan
+    assert 'testID="plan-testing-finish"' in plan and 'testID={`plan-testing-score-${exercise.id}`}' in plan
     assert "testing_shortcut: true," in plan
     assert 'testID="plan-award-go-home"' in plan and 'router.dismissTo("/")' in plan
     # Today's plan starts from zero each day.

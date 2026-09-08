@@ -56,35 +56,16 @@ export function MovementScoresPanel({ domains, metrics, isSample = false }: { do
   ));
   const presentations: ScorePresentation[] = orderedDomains.map((domain) => {
     const module = metrics?.task_quality?.modules?.[domain.domain];
-    const metricDomain = metrics?.domains?.[domain.domain];
     const score = module?.score ?? module?.earned_score ?? null;
     const partial = module?.score == null && score !== null;
     const tone = scoreTone(score);
-    const surveyAnswered = domain.survey_answered ?? metricDomain?.survey_answered;
-    const surveyAffected = domain.survey_affected ?? metricDomain?.survey_affected;
-    const affectedSides = domain.survey_affected_sides ?? metricDomain?.survey_affected_sides ?? [];
-    const affectedSideLabel = affectedSides.length > 1
-      ? "Both sides reported affected"
-      : affectedSides.length === 1
-        ? `${affectedSides[0][0].toUpperCase()}${affectedSides[0].slice(1)} side reported affected`
-        : "Affected area reported";
-    const surveyTone = surveyAnswered
-      ? surveyAffected === true
-        ? { status: affectedSideLabel, color: "#B05D00", soft: "#F5E6C3" }
-        : surveyAffected === false
-          ? { status: "Not reported affected", color: "#27714D", soft: "#DDE9DD" }
-          : { status: "Survey answer unsure", color: "#6D7771", soft: "#E5E8E6" }
-      : null;
     return {
       domain: domain.domain,
       label: DOMAIN_LABELS[domain.domain],
       score,
       ...tone,
-      ...(surveyTone ?? {}),
       ...(partial ? {
         coverage: `${module?.measured_steps}/${module?.total_steps} guided steps measured. Unmeasured steps are not scored.`,
-      } : surveyAnswered ? {
-        coverage: "Affected-area wording follows your survey; the number uses guided assessment tasks only.",
       } : {}),
     };
   });
@@ -97,7 +78,7 @@ export function MovementScoresPanel({ domains, metrics, isSample = false }: { do
           <Text style={[styles.subtitle, compact && styles.subtitleCompact, { color: palette.muted }]}>
             {isSample
               ? "Generated for testing only. Higher sample values represent steadier movement."
-              : "Guided assessment tasks calculate each score. Your survey identifies which body areas were affected."}
+              : "Based on today's guided movement tasks. Higher means steadier movement."}
           </Text>
         </View>
         <View style={styles.measureNote}>
