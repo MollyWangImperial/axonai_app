@@ -952,6 +952,9 @@ def test_trunk_restrained_reaching_is_graded_like_forward_reach_and_recalibrates
     # Same shared engine: a reach phase that is scored and a return phase that is not,
     # with a small-posture allowance and sustained confirmation for trunk lean.
     assert [step["phase"] for step in trunk["cycle"]] == ["movement", "return"]
+    assert trunk["cycle"][1]["target"]["landmark"] == "LAP_DYNAMIC"
+    assert "affected hand" in standard["calibration_instruction"].lower()
+    assert "upper part of your thigh" in standard["calibration_instruction"].lower()
     assert {rule["id"]: rule["threshold_deg"] for rule in standard["compensations"]} == {"trunk_lean": 12, "shoulder_hike": 8}
     assert [step["metric"] for step in standard["rom_steps"]] == ["shoulder_flexion", "elbow_extension"]
 

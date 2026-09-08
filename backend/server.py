@@ -8839,7 +8839,7 @@ REHAB_RUNNER_CONFIG: Dict[str, Dict[str, Any]] = {
         },
         "cycle": [
             {"caption": "Reach forward (back against chair)", "voice": "Reach forward to the target — keep your back pressed into the chair.", "target": {"x": 0.5, "y": 0.40, "r": 0.10}, "hold_ms": 1200},
-            {"caption": "Return slowly", "voice": "Slowly return your hand to your lap.", "target": {"x": 0.5, "y": 0.78, "r": 0.10}, "hold_ms": 1200},
+            {"caption": "Return slowly", "voice": "Slowly return your hand to the same calibrated place on your lap.", "target": {"x": 0.5, "y": 0.78, "r": 0.10, "landmark": "LAP_DYNAMIC"}, "hold_ms": 1200},
         ],
         "feedback_rules": [
             {"if": "trunk_lean_deg >= 12", "say": "Your trunk leaned beyond the small posture allowance. On the next repetition, settle your back against the chair and let your arm do the reaching."},
@@ -9432,7 +9432,7 @@ EXERCISE_MOVEMENT_STANDARDS: Dict[str, Dict[str, Any]] = {
     },
     "ex_trunk": {
         "tracking_mode": "pose", "posture": "seated",
-        "calibration_instruction": "Sit with your back supported, both shoulders and hips visible, and your hands resting. Hold still while I learn your upright position.",
+        "calibration_instruction": "Before we begin, sit with your back supported and place your affected hand on the visible upper part of your thigh on the same side. Keep your face, both shoulders, both hips, your affected arm, and that upper thigh in view. Hold still while I learn your upright posture and lap return point.",
         "rom_steps": [
             {"id": "shoulder_flexion", "label": "Restrained shoulder reach", "metric": "shoulder_flexion", "targets": {"easy": 40, "medium": 55, "difficult": 65}, "weight": 0.7},
             {"id": "elbow_extension", "label": "Elbow extension", "metric": "elbow_extension", "targets": {"easy": 125, "medium": 138, "difficult": 145}, "weight": 0.3},
@@ -11426,9 +11426,12 @@ function rawMovementMetrics(lm, handLm, freshHand=true){
 // the head a little farther; perspective then enlarges shoulder width and
 // ear-to-ear width by D/(D-delta). Inverting that with a typical camera
 // distance of ~2 torso lengths gives theta ~= asin(2*(1-w0/w)). The shoulder
-// and ear estimates are averaged (robust to single-signal jitter) and compared
-// with the calibrated upright baseline; the 12-degree workbook threshold then
-// applies. Depth tilt and trunk foreshortening are fallbacks.
+// and ear estimates are compared with the calibrated upright baseline. A
+// usable estimate needs agreement within either of two independent pairs:
+// shoulder + face approach, or pose depth + trunk foreshortening. The weaker
+// member confirms the direction; averaging it with the stronger member avoids
+// letting one conservative landmark erase a real lean. The 12-degree movement
+// threshold still allows ordinary small posture changes.
 function restrainedForwardLeanDegrees(raw){
   const base=baselineMetrics;
   if(raw.trunk_projection_visible === false) return NaN;
@@ -11442,21 +11445,32 @@ function restrainedForwardLeanDegrees(raw){
   const w0=span(base), w=span(raw);
   if(!Number.isFinite(w0) || !Number.isFinite(w) || w0<.03 || w<.03) return NaN;
   const shoulderApproach=rad2deg(Math.asin(clamp(2*(1-w0/w),0,1)));
+  const evidence=[];
+  const corroborated=(first,second)=>{
+    if(!Number.isFinite(first) || !Number.isFinite(second)) return null;
+    const weaker=Math.min(Math.max(0,first),Math.max(0,second));
+    const stronger=Math.max(Math.max(0,first),Math.max(0,second));
+    // Below four degrees the second cue is indistinguishable from normal pose
+    // jitter, so one large width/depth artifact cannot establish trunk lean.
+    return weaker >= 4 ? (stronger+weaker)/2 : 0;
+  };
   const e0=Number(base.ear_width), e=Number(raw.ear_width);
   if(Number.isFinite(e0) && Number.isFinite(e) && e0>.01 && e>.01){
     const faceApproach=rad2deg(Math.asin(clamp(1.5*(1-e0/e),0,1)));
-    // Both independent spans must support approach. Averaging a large shoulder
-    // artifact with an unchanged face still produced a false 9-degree lean.
-    return Math.min(shoulderApproach,faceApproach);
+    const visual=corroborated(shoulderApproach,faceApproach);
+    if(visual !== null) evidence.push(visual);
   }
-  // Without the face, require agreement from both pose depth and shortening
-  // of the trunk relative to horizontal shoulder span. A shrug lengthens the
-  // projected trunk instead, and an isolated depth outlier is insufficient.
+  // Always consider pose depth and trunk shortening. Previously this pair was
+  // skipped whenever ears were visible, so an underestimated ear span could
+  // force a true lean to zero even when the torso cues clearly agreed.
   const z0=Number(base.trunk_depth_tilt), z=Number(raw.trunk_depth_tilt);
   const t0=Number(base.torso_length), t=Number(raw.torso_length);
-  if(!Number.isFinite(z0) || !Number.isFinite(z) || !(t0>0) || !(t>0)) return NaN;
-  const shortening=rad2deg(Math.acos(clamp((t/w)/(t0/w0),0,1)));
-  return Math.min(shoulderApproach,Math.max(0,z-z0),shortening);
+  if(Number.isFinite(z0) && Number.isFinite(z) && t0>0 && t>0){
+    const shortening=rad2deg(Math.acos(clamp((t/w)/(t0/w0),0,1)));
+    const pose=corroborated(Math.max(0,z-z0),shortening);
+    if(pose !== null) evidence.push(pose);
+  }
+  return evidence.length ? Math.max(...evidence) : NaN;
 }
 function gradedReachForwardLeanDegrees(raw){
   if(raw.trunk_projection_visible === false) return NaN;
@@ -11538,7 +11552,17 @@ function shoulderHikeDegrees(raw){
   const gapShrink=(Number.isFinite(g0)&&Number.isFinite(g)&&Number.isFinite(o0)&&Number.isFinite(o))
     ? Math.max(0,Math.min(g0-g,o0-o)) : 0;
   const bilateral=rad2deg(Math.atan2(Math.min(frameRise,gapShrink),halfWidth));
-  return Math.max(asymmetry,bilateral);
+  let unilateral=asymmetry;
+  if(CFG.exercise_id === "ex_trunk" && [g0,g,o0,o].every(Number.isFinite)){
+    // In restrained reaching, a unilateral shrug must also shorten the
+    // affected neck gap more than the opposite one. Shoulder-line motion on
+    // its own can come from forward-lean perspective or landmark jitter.
+    const affectedGapShrink=Math.max(0,g0-g);
+    const oppositeGapShrink=Math.max(0,o0-o);
+    const neckSupport=rad2deg(Math.atan2(Math.max(0,affectedGapShrink-oppositeGapShrink),halfWidth));
+    unilateral=Math.min(asymmetry,neckSupport);
+  }
+  return Math.max(unilateral,bilateral);
 }
 function metricValue(metric,raw){
   const base=baselineMetrics;
@@ -11717,7 +11741,7 @@ function activeMovementPhase(){
 // no target phases, so every frame counts there.
 function movementUnderway(raw){
   if(CFG.pose_mode !== "body") return true;
-  if(CFG.exercise_id === "ex_reach"){
+  if(CFG.exercise_id === "ex_reach" || CFG.exercise_id === "ex_trunk"){
     if(!exerciseTargetIsArmed()) return false;
     const trunkRule=(STANDARD.compensations||[]).find(rule=>rule.metric === "trunk_lean_delta");
     const lean=metricValue("trunk_lean_delta",raw);

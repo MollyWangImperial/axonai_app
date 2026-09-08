@@ -73,6 +73,16 @@ async function main(){
     13:[.4,.5],14:[.6,.5],15:[.43,.76],16:[.57,.76],23:[.43,.7],24:[.57,.7]};
   for(const [i,[x,y]] of Object.entries(coords)) Object.assign(lm[i],{x,y});
   sandbox.frames=lm;
+  // The other hand resting correctly cannot substitute for the affected hand:
+  // an affected wrist near the face must be rejected instead of calibrating an
+  // abdomen/face target or silently choosing the wrong side.
+  const affectedWrist=input.side==='left'?15:16;
+  const validAffectedWrist={...lm[affectedWrist]};
+  Object.assign(lm[affectedWrist],{x:.5,y:.24});
+  for(let i=0;i<15;i++){now+=100; run('if(calibrating) updateCalibration(frames,null)');}
+  assert.equal(run('calibrationReady'),false);
+  assert.equal(run('exerciseLapTarget'),null);
+  Object.assign(lm[affectedWrist],validAffectedWrist);
   for(let i=0;i<60;i++){
     now+=100;
     run('if(calibrating) updateCalibration(frames,null)');
@@ -133,7 +143,7 @@ main().catch(error=>{console.error(error);process.exitCode=1;});
 """
 
 
-@pytest.mark.parametrize("exercise_id", ["ex_reach", "ex_grasp", "ex_h2m"])
+@pytest.mark.parametrize("exercise_id", ["ex_reach", "ex_trunk", "ex_grasp", "ex_h2m"])
 @pytest.mark.parametrize("side", ["left", "right"])
 def test_fresh_entry_and_lap_target_runtime(exercise_id, side):
     node = shutil.which("node")

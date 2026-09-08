@@ -57,6 +57,15 @@ def test_shrug_alone_is_not_forward_lean_and_bent_elbow_is_reported(trunk_js):
     """)
 
 
+def test_shoulder_line_artifact_without_neck_gap_change_is_not_a_shrug(trunk_js):
+    run_js(trunk_js, """
+      trunkSetup();
+      const raw={...baselineMetrics};
+      raw.shoulder_line_delta+=Math.tan(20*Math.PI/180)*.10;
+      assert.equal(shoulderHikeDegrees(raw),0);
+    """)
+
+
 @pytest.mark.parametrize("lean", [0, 5, 9, 11])
 def test_small_posture_changes_are_allowed(trunk_js, lean):
     run_js(trunk_js, f"""
@@ -90,6 +99,42 @@ def test_isolated_shoulder_or_face_size_artifacts_do_not_count(trunk_js):
       assert.ok(!ids().includes('trunk_lean'));
       base=trunkSetup(); feed(base,{faceArtifact:1.35});
       assert.ok(!ids().includes('trunk_lean'));
+    """)
+
+
+def test_real_lean_survives_one_conservative_visual_landmark(trunk_js):
+    run_js(trunk_js, """
+      trunkSetup();
+      const shoulderLean=20, faceLean=5;
+      const raw={...baselineMetrics};
+      raw.shoulder_width*=1/(1-Math.sin(shoulderLean*Math.PI/180)/2);
+      raw.ear_width*=1/(1-Math.sin(faceLean*Math.PI/180)/1.5);
+      assert.ok(restrainedForwardLeanDegrees(raw)>=12);
+      assert.ok(restrainedForwardLeanDegrees(raw)<20);
+    """)
+
+
+def test_torso_evidence_is_used_even_when_visible_ears_underestimate_lean(trunk_js):
+    run_js(trunk_js, """
+      trunkSetup();
+      const raw={...baselineMetrics};
+      raw.trunk_depth_tilt+=20;
+      raw.torso_length*=Math.cos(6*Math.PI/180);
+      assert.equal(raw.ear_width,baselineMetrics.ear_width);
+      assert.ok(restrainedForwardLeanDegrees(raw)>=12);
+    """)
+
+
+def test_trunk_only_substitution_starts_scoring_without_arm_motion(trunk_js):
+    run_js(trunk_js, """
+      trunkSetup(); stepVoiceFinishedAt=1;
+      const lean=20;
+      const raw={...baselineMetrics};
+      raw.shoulder_width*=1/(1-Math.sin(lean*Math.PI/180)/2);
+      raw.ear_width*=1/(1-Math.sin(lean*Math.PI/180)/1.5);
+      assert.equal(raw.active_wrist_x,baselineMetrics.active_wrist_x);
+      assert.equal(raw.shoulder_flexion,baselineMetrics.shoulder_flexion);
+      assert.equal(movementUnderway(raw),true);
     """)
 
 
