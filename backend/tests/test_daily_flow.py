@@ -105,6 +105,8 @@ def test_alira_sends_the_daily_reminder_once_into_the_chat(monkeypatch):
         with TestClient(server.app) as client:
             first = client.post("/api/chat/daily-reminder", json={"session_id": "s_daily", "date": "2026-09-12"}).json()
             second = client.post("/api/chat/daily-reminder", json={"session_id": "s_daily", "date": "2026-09-12"}).json()
+            store["user"]["daily_checkins"] = {"2026-09-12": {"status": "in_progress"}}
+            after_checkin = client.post("/api/chat/daily-reminder", json={"session_id": "s_daily", "date": "2026-09-12"}).json()
             history = client.get("/api/chat/history?session_id=s_daily").json()
         assert first["sent"] is True
         text = first["text"]
@@ -112,6 +114,10 @@ def test_alira_sends_the_daily_reminder_once_into_the_chat(monkeypatch):
         assert "before the end of today" in text
         assert "today's scores are not saved" in text and "lose track of the progress" in text
         assert "You have got this" in text
+        assert "check in and open today's exercise" in text
+        assert "check in and open" not in after_checkin["text"]
+        assert "open today's plan" in after_checkin["text"]
+        assert after_checkin["sent"] is False
         assert set(first["remaining_exercise_ids"]) >= {"ex_reach", "ex_trunk"}
         # Sent once per day; the chat carries it as a message from Alira.
         assert second["sent"] is False and second["reason"] == "already_sent_today"

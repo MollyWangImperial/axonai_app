@@ -177,12 +177,15 @@ export function AssessmentDateModal({ visible, appDate, currentDate, pinned, sav
 type AliraMessageModalProps = {
   visible: boolean;
   text: string;
+  checkedIn: boolean;
+  checkingIn: boolean;
+  actionError?: string;
   onOpenPlan: () => void;
   onOpenChat: () => void;
   onLater: () => void;
 };
 
-export function AliraMessageModal({ visible, text, onOpenPlan, onOpenChat, onLater }: AliraMessageModalProps) {
+export function AliraMessageModal({ visible, text, checkedIn, checkingIn, actionError, onOpenPlan, onOpenChat, onLater }: AliraMessageModalProps) {
   const { palette } = useDisplayPreferences();
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onLater}>
@@ -198,9 +201,10 @@ export function AliraMessageModal({ visible, text, onOpenPlan, onOpenChat, onLat
           <View style={[styles.aliraBubble, { backgroundColor: palette.soft }]}>
             <Text style={[styles.aliraText, { color: palette.text }]} testID="alira-daily-reminder-text">{text}</Text>
           </View>
-          <Pressable testID="alira-daily-reminder-open-plan" onPress={onOpenPlan} style={({ pressed }) => [styles.primary, pressed && styles.pressed]}>
+          {actionError ? <Text accessibilityRole="alert" style={{ color: palette.text }}>{actionError}</Text> : null}
+          <Pressable testID="alira-daily-reminder-open-plan" disabled={checkingIn} onPress={onOpenPlan} style={({ pressed }) => [styles.primary, styles.aliraPrimary, (pressed || checkingIn) && styles.pressed]}>
             <Ionicons name="fitness-outline" size={19} color="#FFFFFF" />
-            <Text style={styles.primaryText}>Open today&apos;s exercises</Text>
+            <Text style={[styles.primaryText, styles.aliraPrimaryText]}>{checkingIn ? "Checking in..." : checkedIn ? "Open today's exercises" : "Check in and open today's exercise"}</Text>
           </Pressable>
           <Pressable testID="alira-daily-reminder-open-chat" onPress={onOpenChat} style={({ pressed }) => [styles.secondary, { borderColor: palette.border }, pressed && styles.pressed]}>
             <Text style={[styles.secondaryText, { color: palette.text }]}>Reply to Alira</Text>
@@ -437,6 +441,8 @@ const styles = StyleSheet.create({
   body: { fontSize: 14, lineHeight: 21, textAlign: "center" },
   primary: { alignSelf: "stretch", minHeight: 52, borderRadius: radius.sm, backgroundColor: colors.brandPrimary, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, marginTop: spacing.sm },
   primaryText: { color: "#FFFFFF", fontSize: 16, fontWeight: "900" },
+  aliraPrimary: { paddingHorizontal: spacing.md, paddingVertical: spacing.sm },
+  aliraPrimaryText: { flexShrink: 1, textAlign: "center" },
   secondary: { alignSelf: "stretch", minHeight: 46, borderRadius: radius.sm, borderWidth: 1.5, alignItems: "center", justifyContent: "center", marginTop: 4 },
   secondaryText: { fontSize: 15, fontWeight: "800" },
   later: { minHeight: 40, alignSelf: "stretch", alignItems: "center", justifyContent: "center" },

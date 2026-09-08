@@ -14,8 +14,9 @@ const compiled = ts.transpileModule(source, {
   compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX },
 }).outputText;
 
-function render({ due = false, canStart = true, checkedIn = true, complete = false, initial = false, exercises = ['reach', 'grasp'], width = 1440 } = {}) {
+function render({ due = false, canStart = true, checkedIn = true, complete = false, initial = false, exercises = ['reach', 'grasp'], width = 1440, checkInFails = false } = {}) {
   const routes = [];
+  const requests = [];
   const cache = {
     history: initial ? [] : [{ id: 'assessment-1', created_at: '2026-09-01T12:00:00Z', assessment_package: 'hand' }],
     carePlan: {
@@ -35,7 +36,18 @@ function render({ due = false, canStart = true, checkedIn = true, complete = fal
     'expo-router': { useRouter: () => ({ push: route => routes.push(route) }), useFocusEffect: noop },
     'react-native-safe-area-context': { useSafeAreaInsets: () => ({ top: 0 }) },
     'expo-haptics': { selectionAsync: noop, impactAsync: noop, ImpactFeedbackStyle: { Medium: 1 } },
-    '@/src/screenCache': { getScreenCache: () => cache },
+    '@/src/screenCache': { getScreenCache: () => cache, setScreenCache: noop },
+    '@/src/components/DailyFlowModals': { AliraMessageModal: 'AliraMessageModal' },
+    '@/src/components/PointsCelebration': { celebrationEvent: noop },
+    '@/src/auth': {
+      getCachedUser: async () => ({ id: 'patient' }), cacheDailyCheckInActivity: noop,
+      authedFetch: async (url, options) => {
+        requests.push({ url, options });
+        return url === '/api/users/daily-checkin'
+          ? { ok: !checkInFails, json: async () => ({ date: today, status: 'in_progress' }) }
+          : { ok: true, json: async () => ({ points: 2 }) };
+      },
+    },
     '@/src/displayPreferences': { useDisplayPreferences: () => ({ palette: {} }) },
     '@/src/theme': { colors: {}, radius: {}, spacing: {} },
     '@/src/appDate': { appDateString: () => today, parseLocalDate: value => new Date(`${value}T12:00:00`), isAppDateOverridden: () => true },
@@ -44,14 +56,16 @@ function render({ due = false, canStart = true, checkedIn = true, complete = fal
   vm.runInNewContext(compiled, sandbox, { filename: 'HomeScreen.js' });
   const tree = sandbox.exports.default();
   const cards = [];
+  let reminder;
   function visit(node) {
     if (!node || typeof node !== 'object') return;
     if (Array.isArray(node)) return node.forEach(visit);
     if (node.type?.name === 'DayStep') cards.push(node.props);
+    if (node.type === 'AliraMessageModal') reminder = node.props;
     visit(node.props?.children);
   }
   visit(tree);
-  return { cards, routes };
+  return { cards, routes, requests, reminder };
 }
 
 for (const width of [390, 1440]) {
@@ -83,3 +97,24 @@ for (const width of [390, 1440]) {
   assert.equal(render({ due: false, complete: true, width }).cards[1].button.label, 'Review exercises');
 }
 console.log('Home re-assessment regression checks passed at mobile and desktop widths.');
+
+async function testReminder() {
+  const before = render({ checkedIn: false });
+  assert.equal(before.reminder.checkedIn, false);
+  await before.reminder.onOpenPlan();
+  assert.equal(before.requests[0].url, '/api/users/daily-checkin');
+  assert.equal(JSON.parse(before.requests[0].options.body).date, today);
+  assert.equal(before.routes[0].pathname, '/rehab-plan');
+
+  const after = render({ checkedIn: true });
+  assert.equal(after.reminder.checkedIn, true);
+  await after.reminder.onOpenPlan();
+  assert.equal(after.requests.length, 0);
+  assert.equal(after.routes[0].pathname, '/rehab-plan');
+
+  const failure = render({ checkedIn: false, checkInFails: true });
+  await failure.reminder.onOpenPlan();
+  assert.equal(failure.routes.length, 0, 'a failed check-in must not open exercises');
+  console.log('Reminder checks passed: check in first, direct open afterwards, no navigation on save failure.');
+}
+testReminder().catch(error => { console.error(error); process.exitCode = 1; });

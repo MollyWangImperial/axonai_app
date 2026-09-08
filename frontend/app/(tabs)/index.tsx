@@ -417,6 +417,7 @@ export default function HomeScreen() {
   const [loading, setLoading] = useState(!cached);
   const [accountStateUnavailable, setAccountStateUnavailable] = useState(false);
   const [checkingIn, setCheckingIn] = useState(false);
+  const [checkInError, setCheckInError] = useState("");
   const [showWeek, setShowWeek] = useState(false);
   const [showSurveyPreface, setShowSurveyPreface] = useState(false);
   const [celebration, setCelebration] = useState<PointsCelebrationEvent | null>(null);
@@ -672,21 +673,27 @@ export default function HomeScreen() {
   }, [activeExerciseIds.length, latest, latestAssessmentId, router, startNextSession]);
 
   const checkInForToday = useCallback(async () => {
-    if (checkingIn || checkedInToday) return;
+    if (checkedInToday) return true;
+    if (checkingIn) return false;
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     setCheckingIn(true);
-    const response = await authedFetch("/api/users/daily-checkin", {
-      method: "POST",
-      body: JSON.stringify({ date: todayIso }),
-    }).catch(() => null);
-    if (response?.ok) {
-      const user = await getCachedUser();
+    setCheckInError("");
+    try {
+      const response = await authedFetch("/api/users/daily-checkin", {
+        method: "POST",
+        body: JSON.stringify({ date: todayIso }),
+      });
       const payload = await response.json().catch(() => null);
-      if (payload) {
-        const status = payload.status === "complete" ? "complete" : "in_progress";
-        setCheckIn({ date: payload.date || todayIso, status, days: payload.days || [] });
-        if (user?.id) await cacheDailyCheckInActivity(user.id, todayIso, status);
+      if (!response.ok || payload?.date !== todayIso || !["in_progress", "complete"].includes(payload?.status)) {
+        throw new Error("Your check-in could not be saved. Please try again before opening today's exercises.");
       }
+      const user = await getCachedUser();
+      const status = payload.status === "complete" ? "complete" : "in_progress";
+      const nextCheckIn: DailyCheckInState = { date: todayIso, status, days: payload.days || [] };
+      setCheckIn(nextCheckIn);
+      const cachedHome = getScreenCache<HomeScreenCache>("home");
+      if (cachedHome) setScreenCache<HomeScreenCache>("home", { ...cachedHome, checkIn: nextCheckIn });
+      if (user?.id) await cacheDailyCheckInActivity(user.id, todayIso, status);
       // Checking in earns points (2 per day): celebrate briefly, then the
       // toast fades out on its own, and the badge refreshes right away.
       setCelebration(celebrationEvent(2, "Checked in - great start to today!"));
@@ -702,8 +709,13 @@ export default function HomeScreen() {
           }
         }
       }
+      return true;
+    } catch {
+      setCheckInError("Your check-in could not be saved. Please try again before opening today's exercises.");
+      return false;
+    } finally {
+      setCheckingIn(false);
     }
-    setCheckingIn(false);
   }, [checkedInToday, checkingIn, greetName, todayIso]);
 
   const openExercisePlan = () => {
@@ -711,6 +723,12 @@ export default function HomeScreen() {
     else if (latest?.id || latestAssessmentId) router.push({ pathname: "/rehab-plan" as never, params: { id: latest?.id || latestAssessmentId } });
     else if (activeExerciseIds.length) router.push({ pathname: "/rehab-plan" as never, params: { id: CURRENT_ACCOUNT_PLAN_ID } });
     else openDestination(nextStep?.destination);
+  };
+
+  const openPlanFromReminder = async () => {
+    if (!checkedInToday && !await checkInForToday()) return;
+    setAliraReminder(null);
+    openExercisePlan();
   };
 
   // Testing phase: step the app date from Home. Everything that asks "what is
@@ -984,7 +1002,7 @@ export default function HomeScreen() {
                   title="Check in"
                   active={todayCheckInStatus !== "not_checked_in"}
                   badge={todayCheckInStatus === "not_checked_in" ? <StatusPill icon="ellipse-outline" label="Ready" tone="grey" /> : <StatusPill icon="checkmark-circle-outline" label={todayCheckInStatus === "complete" ? "Complete" : "Checked in"} />}
-                  description={todayCheckInStatus === "not_checked_in" ? "Start today's recovery plan. Checking in earns 2 points." : todayCheckInStatus === "complete" ? "Today's plan is complete." : "Daily check-in complete. +2 points earned."}
+                  description={todayCheckInStatus === "not_checked_in" ? checkInError || "Start today's recovery plan. Checking in earns 2 points." : todayCheckInStatus === "complete" ? "Today's plan is complete." : "Daily check-in complete. +2 points earned."}
                   button={todayCheckInStatus === "not_checked_in" ? { label: checkingIn ? "Checking in..." : "Check in", icon: "hand-right-outline", onPress: checkInForToday, testID: "daily-checkin-button" } : undefined}
                 />
                 {!stepTwoRevealed ? (
@@ -1162,7 +1180,10 @@ export default function HomeScreen() {
       <AliraMessageModal
         visible={!hundredPointAward && Boolean(aliraReminder)}
         text={aliraReminder || ""}
-        onOpenPlan={() => { setAliraReminder(null); openExercisePlan(); }}
+        checkedIn={checkedInToday}
+        checkingIn={checkingIn}
+        actionError={checkInError}
+        onOpenPlan={openPlanFromReminder}
         onOpenChat={() => { setAliraReminder(null); router.push("/(tabs)/chat" as never); }}
         onLater={() => setAliraReminder(null)}
       />

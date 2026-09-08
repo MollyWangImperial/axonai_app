@@ -14641,8 +14641,15 @@ async def _adaptive_care_plan_for_user(
     *,
     now: Optional[datetime] = None,
 ) -> Dict[str, Any]:
-    if assessments is None:
-        assessments = await _care_assessments_for_user(user["id"])
+    async def load_or_keep(records, loader):
+        return records if records is not None else await loader(user["id"])
+
+    assessments, check_ins, activities, issue_reports = await asyncio.gather(
+        load_or_keep(assessments, _care_assessments_for_user),
+        load_or_keep(check_ins, _care_check_ins_for_user),
+        load_or_keep(activities, _care_activities_for_user),
+        load_or_keep(issue_reports, _care_issue_reports_for_user),
+    )
     if assessments and not user.get("initial_assessment_completed_at"):
         earliest_assessment_at = min(
             (str(item.get("created_at") or "") for item in assessments if item.get("created_at")),
@@ -14658,12 +14665,6 @@ async def _adaptive_care_plan_for_user(
                 completed_at or datetime.now(timezone.utc).isoformat(),
                 source="server_task_progress_recovery",
             )
-    if check_ins is None:
-        check_ins = await _care_check_ins_for_user(user["id"])
-    if activities is None:
-        activities = await _care_activities_for_user(user["id"])
-    if issue_reports is None:
-        issue_reports = await _care_issue_reports_for_user(user["id"])
     profile = dict(user.get("profile") or {})
     profile["_initial_assessment_completed_at"] = user.get("initial_assessment_completed_at")
     if user.get("initial_assessment_completed_at") and not assessments:
@@ -14887,7 +14888,12 @@ async def _persist_alira_activity(user: Dict[str, Any], payload: AliraActivitySu
             raise _patient_activity_unavailable(exc) from exc
         if existing:
             return {"ok": True, "activity": existing, "already_saved": True}
-    assessments = await _care_assessments_for_user(user["id"])
+    assessments, check_ins, existing_activities, issue_reports = await asyncio.gather(
+        _care_assessments_for_user(user["id"]),
+        _care_check_ins_for_user(user["id"]),
+        _care_activities_for_user(user["id"]),
+        _care_issue_reports_for_user(user["id"]),
+    )
     latest_assessment = max(assessments, key=lambda item: item.get("created_at", ""), default=None)
     approved_ids = {
         str(exercise.get("id"))
@@ -14897,9 +14903,6 @@ async def _persist_alira_activity(user: Dict[str, Any], payload: AliraActivitySu
     # Caregiver-delivered routines (CG_*) are approved from the current care
     # plan rather than an assessment's rehab plan - they exist precisely for
     # patients who cannot complete a camera assessment yet.
-    check_ins = await _care_check_ins_for_user(user["id"])
-    existing_activities = await _care_activities_for_user(user["id"])
-    issue_reports = await _care_issue_reports_for_user(user["id"])
     profile_for_plan = dict(user.get("profile") or {})
     profile_for_plan["_assessment_deferrals"] = dict(user.get("assessment_deferrals") or {})
     profile_for_plan["_next_assessment_override"] = user.get("next_assessment_override")
@@ -15338,14 +15341,16 @@ async def get_exercise_progress(request: Request, plan_id: str, date: str):
     day = _validated_checkin_date(date)
     query = {"user_id": user["id"], "plan_id": plan_id, "day": day}
     try:
-        repetitions = await db.exercise_repetitions.find(query, {"_id": 0}).sort("created_at", 1).to_list(None)
-        activities = await db.alira_activities.find({
-            "user_id": user["id"], "plan_id": plan_id,
-            "$or": [
-                {"day": day},
-                {"day": None, "completed_at": {"$regex": "^" + re.escape(day) + "T"}},
-            ],
-        }, {"_id": 0}).sort("completed_at", 1).to_list(None)
+        repetitions, activities = await asyncio.gather(
+            db.exercise_repetitions.find(query, {"_id": 0}).sort("created_at", 1).to_list(None),
+            db.alira_activities.find({
+                "user_id": user["id"], "plan_id": plan_id,
+                "$or": [
+                    {"day": day},
+                    {"day": None, "completed_at": {"$regex": "^" + re.escape(day) + "T"}},
+                ],
+            }, {"_id": 0}).sort("completed_at", 1).to_list(None),
+        )
     except Exception as exc:
         raise _patient_activity_unavailable(exc) from exc
     return {"ok": True, "progress": _exercise_progress_summary(repetitions, activities, day)}
@@ -16434,7 +16439,7 @@ class DailyReminderRequest(BaseModel):
     date: str = Field(min_length=10, max_length=10)
 
 
-def _alira_daily_reminder_message(plan: Dict[str, Any], name: str = "", streak: int = 0) -> str:
+def _alira_daily_reminder_message(plan: Dict[str, Any], name: str = "", streak: int = 0, *, checked_in: bool = True) -> str:
     monitoring = plan.get("daily_monitoring") or {}
     remaining = [str(item) for item in (monitoring.get("remaining_exercise_ids_today") or [])]
     completed = [str(item) for item in (monitoring.get("completed_exercise_ids_today") or [])]
@@ -16449,12 +16454,13 @@ def _alira_daily_reminder_message(plan: Dict[str, Any], name: str = "", streak: 
         f" You are on a {streak}-day run, and every day you show up adds to it."
         if streak >= 2 else ""
     )
+    next_action = "open today's plan" if checked_in else "check in and open today's exercise"
     return (
         f"{greeting} Today's plan is ready and {exercises} are waiting for you.{progress} "
         "Please finish them before the end of today: only completed days are recorded, so if today "
         "passes without them, today's scores are not saved and we lose track of the progress you are "
         "making. A short session done today is worth far more than a perfect one planned for tomorrow. "
-        f"{momentum} You have got this - open today's plan and I will guide you through it, one exercise at a time."
+        f"{momentum} You have got this - {next_action} and I will guide you through it, one exercise at a time."
     ).replace("  ", " ")
 
 
@@ -16472,6 +16478,7 @@ async def chat_daily_reminder(req: DailyReminderRequest, request: Request):
         raise HTTPException(status_code=401, detail="Sign in required")
     _require_health_data_consent(user)
     reminder_date = _validated_checkin_date(req.date)
+    checked_in = ((user.get("daily_checkins") or {}).get(reminder_date) or {}).get("status") in {"in_progress", "complete"}
     plan = await _adaptive_care_plan_for_user(user, now=_as_of_now(reminder_date))
     account_state = plan.get("account_state") or {}
     monitoring = plan.get("daily_monitoring") or {}
@@ -16493,7 +16500,11 @@ async def chat_daily_reminder(req: DailyReminderRequest, request: Request):
         None,
     )
     if already:
-        return {"sent": False, "text": already.get("text"), "reason": "already_sent_today", "remaining_exercise_ids": remaining}
+        # A saved reminder can be reopened after the check-in state changes.
+        # Adapt its call to action without posting another chat message.
+        text = str(already.get("text") or "")
+        text = text.replace("check in and open today's exercise", "open today's plan") if checked_in else text.replace("open today's plan", "check in and open today's exercise")
+        return {"sent": False, "text": text, "reason": "already_sent_today", "remaining_exercise_ids": remaining}
     try:
         rewards = compute_rewards(
             await _care_activities_for_user(user["id"]),
@@ -16505,7 +16516,7 @@ async def chat_daily_reminder(req: DailyReminderRequest, request: Request):
         streak = int((rewards.get("streak") or {}).get("current_days") or 0)
     except Exception:
         streak = 0
-    text = _alira_daily_reminder_message(plan, name, streak)
+    text = _alira_daily_reminder_message(plan, name, streak, checked_in=checked_in)
     now = datetime.now(timezone.utc).isoformat()
     turns.append({"role": "assistant", "text": text, "ts": now, "daily_reminder_date": reminder_date})
     await _save_chat_session(session_filter, local_session_key, req.session_id, user["id"], turns, now)
