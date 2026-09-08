@@ -1,6 +1,7 @@
 """Run the served assessment JavaScript with one opening, including the voice transition."""
 import json
 import os
+import re
 import shutil
 import subprocess
 
@@ -39,7 +40,6 @@ const sandbox={URLSearchParams,console,performance:{now:()=>now},
   location:{origin:'http://localhost',search:`?package=initial&library_test=1&affected_side=${input.side}`},
   addEventListener(){},ReactNativeWebView:{postMessage:v=>messages.push(JSON.parse(v))},
   PoseLandmarker:{POSE_CONNECTIONS:[]},HandLandmarker:{HAND_CONNECTIONS:[]},
-  REHYN_ASSESSMENT_RUBRIC:input.rubric,
 };
 sandbox.window=sandbox;
 const context=vm.createContext(sandbox), run=code=>vm.runInContext(code,context);
@@ -131,8 +131,8 @@ def test_initial_task_four_accepts_the_first_opening(side, projection):
     result = subprocess.run(
         [node, "-e", HARNESS], input=json.dumps({
             "script": script, "tasks": tasks, "side": side, "projection": projection,
-            "quality": server._assessment_quality_script,
-            "rubric": json.loads(html.split("window.REHYN_ASSESSMENT_RUBRIC=", 1)[1].split(";</script>", 1)[0]),
+            "quality": next((script for script in re.findall(r"<script>(.*?)</script>", html, re.S)
+                             if "window.REHYN_ASSESSMENT_RUBRIC=" in script), ""),
         }), text=True, capture_output=True, encoding="utf-8", timeout=30,
     )
     assert result.returncode == 0, result.stdout + result.stderr
