@@ -38,9 +38,11 @@ def test_home_becomes_next_assessment_after_initial_completion():
     journey = read("frontend/app/(tabs)/journey.tsx")
     assert "history.length > 0" in home
     assert "carePlan?.account_state?.has_completed_initial_assessment" in home
-    assert 'activeExerciseIds.length\n        ? "Today\'s exercises"' in home
+    assert "activeExerciseIds.length" in home and '"Today\'s exercises"' in home
     assert "followUpDue" in home
-    assert 'testID: "home-assessment-action"' in home
+    assert 'label: "Start re-assessment", destination: "assessment"' in home
+    assert 'testID: "home-primary-action"' in home
+    assert 'testID: "home-assessment-action"' not in home
     assert 'testID="home-see-full-progress"' in home
     assert "startNextSession" in home
     assert 'testID="assessment-history"' in journey

@@ -77,6 +77,10 @@ for (const width of [390, 1440]) {
     assert.equal(primary.icon, 'clipboard-outline');
     assert.equal(primary.progress, undefined);
     assert.notEqual(primary.badge.props.label, 'Complete');
+    const scheduled = cards[2];
+    assert.equal(scheduled.title, 'Next assessment');
+    assert.equal(scheduled.active, false);
+    assert.equal(scheduled.button, undefined);
     primary.button.onPress();
     assert.equal(routes[0].pathname, '/session-check');
     assert.equal(routes[0].params.target, 'assessment');

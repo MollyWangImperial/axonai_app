@@ -1075,7 +1075,7 @@ export default function HomeScreen() {
                 <DayStep
                   icon={isInitialAssessment || walkingOutstanding ? "videocam-outline" : carePlan?.survey?.due ? "chatbubble-ellipses-outline" : "calendar-outline"}
                   title={isInitialAssessment ? "Walking observation" : walkingOutstanding ? "Walking video" : carePlan?.survey?.due ? "Short check-in" : "Next assessment"}
-                  active={Boolean(initialWalkingAssigned || carePlan?.survey?.due || followUpDue)}
+                  active={Boolean(initialWalkingAssigned || carePlan?.survey?.due)}
                   badge={isInitialAssessment
                     ? initialWalkingAssigned
                       ? <StatusPill icon="checkmark-circle-outline" label="Selected if safe" />
@@ -1100,9 +1100,7 @@ export default function HomeScreen() {
                       ? { label: "Record later", icon: "camera-outline", onPress: () => startNextSession(missingTaskIds.length ? missingTaskIds : ["L6"]), testID: "home-walking-action" }
                       : carePlan?.survey?.due
                         ? { label: "Start check-in", icon: "chatbubble-outline", onPress: () => setShowSurveyPreface(true), testID: "home-survey-action" }
-                        : followUpDue
-                          ? { label: "Start assessment", icon: "clipboard-outline", onPress: () => startNextSession(), testID: "home-assessment-action" }
-                          : undefined}
+                        : undefined}
                 />
                 )}
               </View>
