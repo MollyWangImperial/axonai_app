@@ -13,6 +13,7 @@ from backend import server
 ROOT = Path(__file__).resolve().parents[2]
 JOURNEY = (ROOT / "frontend" / "app" / "(tabs)" / "journey.tsx").read_text(encoding="utf-8")
 PANEL = (ROOT / "frontend" / "src" / "components" / "JourneyExerciseScoresPanel.tsx").read_text(encoding="utf-8")
+SCORE_LOGIC = (ROOT / "frontend" / "src" / "journeyExerciseScores.ts").read_text(encoding="utf-8")
 REHAB_PLAN = (ROOT / "frontend" / "app" / "rehab-plan.tsx").read_text(encoding="utf-8")
 REHAB_TIMING = (ROOT / "frontend" / "src" / "rehabTiming.ts").read_text(encoding="utf-8")
 
@@ -44,10 +45,11 @@ def test_journey_and_plan_share_the_same_dose_based_time_estimate():
     assert "exercise.sets * exercise.reps * 15" in REHAB_TIMING
 
 
-def test_exercise_score_panel_uses_persisted_session_averages_and_goal_line():
-    assert 'authedFetch("/api/alira/activities?limit=100")' in PANEL
-    assert "activity.average_score" in PANEL
-    assert "activities.reduce((sum, activity) => sum + activity.average_score, 0) / activities.length" in PANEL
+def test_exercise_score_panel_uses_fresh_persisted_daily_averages_and_goal_line():
+    assert '/api/alira/activities?limit=500&fresh=${Date.now()}' in PANEL
+    assert 'cache: "no-store"' in PANEL
+    assert "weeklyExerciseScoreData" in PANEL
+    assert "dailyScores.reduce((sum, score) => sum + score.average_score, 0) / dailyScores.length" in PANEL
     assert "const DEFAULT_TARGET = 80" in PANEL
     assert 'strokeDasharray="7 7"' in PANEL
     assert "Personal goal {target}" in PANEL
@@ -58,8 +60,17 @@ def test_exercise_score_panel_has_real_empty_loading_and_detail_states():
     assert 'testID="journey-exercise-score-chart"' in PANEL
     assert 'testID="journey-exercise-score-details-toggle"' in PANEL
     assert 'testID="journey-exercise-score-details"' in PANEL
-    assert "Each point will show the average of all scored repetitions" in PANEL
+    assert "Each point is one day's average" in PANEL
+    assert "manually entered testing scores" in PANEL
     assert "activity.repetition_scores?.length" in PANEL
+
+
+def test_daily_score_logic_includes_testing_scores_and_groups_by_saved_calendar_day():
+    assert "Number(activity.average_score)" in SCORE_LOGIC
+    assert "activity.day" in SCORE_LOGIC
+    assert "testing_shortcut" in SCORE_LOGIC
+    assert "byDay.get(activity.day)" in SCORE_LOGIC
+    assert "scores.reduce((sum, score) => sum + score, 0) / scores.length" in SCORE_LOGIC
 
 
 def test_demo_scores_are_explicitly_labelled_as_sample_data():
