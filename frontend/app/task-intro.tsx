@@ -253,7 +253,7 @@ export default function TaskIntro() {
     }
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     router.push({
-      pathname: "/camera-check",
+      pathname: "/assessment",
       params: {
         package: packageId,
         start_task: taskToStart,

@@ -14,6 +14,7 @@ import { API_BASE as BASE } from "@/src/config";
 import { loadUserPreferences } from "@/src/userPreferences";
 import { getUserId } from "@/src/auth";
 import { exerciseProgressKey, flushPatientActivities, queuePatientActivity } from "@/src/patientActivitySync";
+import { CameraSetup } from "@/src/components/CameraSetup";
 
 type ExerciseProgress = {
   completed_reps: number;
@@ -41,7 +42,14 @@ export default function ExerciseScreen() {
   }, []);
 
   // Unmount the camera on exit, even when navigation retains this screen.
-  return isFocused ? <ExerciseSession key={`${exercise_id}:${entryVersion}`} /> : null;
+  return isFocused ? <ExerciseEntry key={`${exercise_id}:${entryVersion}`} /> : null;
+}
+
+function ExerciseEntry() {
+  const router = useRouter();
+  const [cameraReady, setCameraReady] = useState(false);
+  if (!cameraReady) return <CameraSetup purpose="exercise" onReady={() => setCameraReady(true)} onExit={() => router.canGoBack() ? router.back() : router.replace("/")} />;
+  return <ExerciseSession />;
 }
 
 function ExerciseSession() {

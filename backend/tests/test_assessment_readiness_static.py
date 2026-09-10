@@ -26,7 +26,7 @@ def test_existing_accounts_get_readiness_only_update_flow():
 
     assert 'params.mode === "assessment-readiness"' in onboarding
     assert "ASSESSMENT_READINESS_KEYS.includes" in onboarding
-    assert 'router.replace(isReadinessUpdate ? "/task-intro?mode=initial" : "/")' in onboarding
+    assert 'if (isReadinessUpdate) {\n          router.replace("/task-intro?mode=initial" as never);' in onboarding
     assert 'router.push("/onboarding?mode=assessment-readiness"' in task_intro
 
 
@@ -37,8 +37,10 @@ def test_assigned_tasks_are_carried_through_the_real_camera_path():
     server = (ROOT / "backend" / "server.py").read_text(encoding="utf-8")
 
     assert 'task_ids: taskIds.join(",")' in task_intro
-    assert 'task_ids: params.task_ids || ""' in camera_check
+    assert 'pathname: "/assessment", params' in camera_check
+    assert '<CameraSetup purpose="assessment"' in assessment
     assert 'query.set("task_ids", assignedTaskIdsParam)' in assessment
-    assert 'headers: CURRENT_USER_ID ? {"X-User-Id": CURRENT_USER_ID}' in server
+    assert 'headers: CURRENT_USER_ID ? ACCOUNT_HEADERS : {}' in server
+    assert 'const ACCOUNT_HEADERS = {"X-User-Id": CURRENT_USER_ID, "X-Account-Generation": ACCOUNT_GENERATION};' in server
     assert 'assigned_task_ids: tasks.map(task => task.id)' in server
     assert "Assigned initial tasks do not match the saved readiness survey" in server

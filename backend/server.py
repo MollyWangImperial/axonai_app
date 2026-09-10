@@ -15,7 +15,7 @@ import base64
 import logging
 from pathlib import Path
 from pydantic import BaseModel, EmailStr, Field, field_validator
-from typing import List, Dict, Any, Optional, Sequence, Tuple
+from typing import List, Dict, Any, Literal, Optional, Sequence, Tuple
 import uuid
 import re
 import asyncio
@@ -740,6 +740,9 @@ FRONTEND_ROOT_DIR = Path(__file__).resolve().parents[1] / "frontend"
 FRONTEND_PUBLIC_DIR = FRONTEND_ROOT_DIR / "public"
 FRONTEND_STATIC_DIR = FRONTEND_PUBLIC_DIR if FRONTEND_PUBLIC_DIR.is_dir() else FRONTEND_ROOT_DIR / "dist"
 MEDIAPIPE_ASSET_DIR = FRONTEND_STATIC_DIR / "vendor" / "mediapipe"
+CAMERA_SETUP_DIR = FRONTEND_STATIC_DIR / "camera-setup"
+if CAMERA_SETUP_DIR.is_dir():
+    app.mount("/camera-setup", StaticFiles(directory=str(CAMERA_SETUP_DIR), html=True), name="camera-setup")
 PREPARED_TTS_DIR = FRONTEND_STATIC_DIR / "audio" / "prepared"
 if MEDIAPIPE_ASSET_DIR.is_dir():
     app.mount(
@@ -14956,6 +14959,7 @@ async def complete_login_handoff(payload: LoginHandoffCompletion):
 
 class PatientOnboarding(BaseModel):
     preferred_name: Optional[str] = None
+    camera_devices: Optional[List[Literal["iphone", "phone", "tablet", "laptop", "webcam", "other_camera", "none"]]] = None
     age_band: Optional[str] = None
     gender: Optional[str] = None
     gender_self_description: Optional[str] = None
@@ -15127,6 +15131,11 @@ async def submit_patient_onboarding(payload: PatientOnboarding, request: Request
         raise HTTPException(status_code=401, detail="Sign in required")
     existing_profile = user.get("profile") if isinstance(user.get("profile"), dict) else {}
     submitted_profile = {k: v for k, v in payload.model_dump().items() if v is not None}
+    if "camera_devices" in submitted_profile:
+        devices = submitted_profile["camera_devices"]
+        if "none" in devices and len(devices) > 1:
+            raise HTTPException(status_code=422, detail="Choose camera devices or no camera, not both.")
+        submitted_profile["camera_devices"] = list(dict.fromkeys(devices))
     # This endpoint also powers small profile edits. Merge them so changing a
     # display name cannot erase safety/readiness answers used by the plan.
     update = {**existing_profile, **submitted_profile}

@@ -10,6 +10,8 @@ import { cacheAssessmentActivity, completedTasksKey, getAccountGeneration, getUs
 import { storage } from "@/src/utils/storage";
 import { SafetyStopStrip } from "@/src/components/SafetyStopStrip";
 import { loadUserPreferences } from "@/src/userPreferences";
+import { useIsFocused } from "@react-navigation/native";
+import { CameraSetup } from "@/src/components/CameraSetup";
 
 type GaitScoreComponent = {
   score: number | null;
@@ -71,6 +73,30 @@ async function markTaskVideoSaved(userId: string, packageId: AssessmentPackageId
 }
 
 export default function AssessmentScreen() {
+  const isFocused = useIsFocused();
+  const params = useLocalSearchParams<{ package?: string; start_task?: string }>();
+  const [entryVersion, setEntryVersion] = useState(0);
+  useEffect(() => {
+    if (Platform.OS !== "web") return;
+    const onPageShow = (event: PageTransitionEvent) => {
+      if (event.persisted) setEntryVersion((value) => value + 1);
+    };
+    window.addEventListener("pageshow", onPageShow);
+    return () => window.removeEventListener("pageshow", onPageShow);
+  }, []);
+  return isFocused ? <AssessmentEntry key={`${params.package}:${params.start_task}:${entryVersion}`} /> : null;
+}
+
+function AssessmentEntry() {
+  const router = useRouter();
+  const { walking_test } = useLocalSearchParams<{ walking_test?: string }>();
+  const [cameraReady, setCameraReady] = useState(false);
+  // Uploaded-video testing does not use the patient's camera.
+  if (!cameraReady && walking_test !== "1") return <CameraSetup purpose="assessment" onReady={() => setCameraReady(true)} onExit={() => router.canGoBack() ? router.back() : router.replace("/")} />;
+  return <AssessmentSession />;
+}
+
+function AssessmentSession() {
   const router = useRouter();
   const params = useLocalSearchParams<{ package?: string; start_task?: string; completed_tasks?: string; affected_side?: string; task_ids?: string; library_test?: string; walking_test?: string }>();
   const packageParam = params["package"];

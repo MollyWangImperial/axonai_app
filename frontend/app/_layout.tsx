@@ -145,7 +145,7 @@ export default function RootLayout() {
 
 function AppStack() {
   const { palette } = useDisplayPreferences();
-  const [accountEpoch, setAccountEpoch] = useState("");
+  const [accountEpoch, setAccountEpoch] = useState<string | null>(null);
   useEffect(() => {
     const update = () => { void getCachedUser().then((user) => setAccountEpoch(`${user?.id || ""}:${user?.account_generation || 0}`)); };
     update();
@@ -168,6 +168,9 @@ function AppStack() {
       if (Platform.OS === "web") window.removeEventListener("storage", onStorage);
     };
   }, []);
+  // Resolve cached identity before mounting routes; otherwise the initial key
+  // change restarts an in-progress camera check immediately after its first tap.
+  if (accountEpoch === null) return null;
   return (
     <>
       <AuthGate key={`gate:${accountEpoch}`} />

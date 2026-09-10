@@ -897,6 +897,9 @@ export default function OnboardingScreen() {
               <Pressable
                 key={o.value}
                 testID={`onb-multi-${step.key}-${o.value}`}
+                accessibilityRole="checkbox"
+                accessibilityState={{ checked: active }}
+                aria-checked={active}
                 onPress={() => {
                   if (step.key === "affected_areas" && o.value === "other") {
                     if (active) {

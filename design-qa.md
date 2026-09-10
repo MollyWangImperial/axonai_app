@@ -253,3 +253,42 @@ Viewport and normalization:
 - [x] Verify production export and browser console.
 
 Final result: passed.
+
+---
+
+# Camera Setup Design QA
+
+## Reference and Scope
+
+Reference artboards supplied by the user: `codex-clipboard-5ec223c3-b2da-4b6e-9a35-3ad86291204b.png` (placement) and `codex-clipboard-e3311b03-32e2-4233-bb7b-8226ce377929.png` (live check), each 853 x 1844.
+
+The implementation adds camera availability to onboarding, followed by device-specific preparation before camera-based assessment and exercise sessions. The detailed illustration and three-step visual demonstration cover iPhone. Other devices receive text instructions. No-camera users can return to their saved survey and plan; this change does not implement an expanded survey-only assessment.
+
+## Visual Review
+
+Compared the supplied artboards with rendered screenshots at 393 x 852, 375 x 667 and 1440 x 1000. Files are generated in `output/playwright/camera-setup/`:
+
+- `iphone-placement.png`, `small-iphone-placement.png`, `desktop-placement.png`
+- `iphone-check.png`, `small-iphone-check.png`, `desktop-check.png`
+- `iphone-denied.png`, `iphone-device-survey.png`
+
+Typography: readable fixed-size headings, wrapped supporting copy, no viewport-scaled fonts. Layout: single-column mobile and two-column desktop, stable preview proportions, no horizontal overflow. Color: white background, dark text and green actions consistent with the supplied design. Imagery: generated placement illustration; the production check shows only the actual camera stream. Content: placement, framing, demonstration, setup confirmations, error recovery and stop/continue actions are present.
+
+Iterations fixed a visible programmatic heading-focus outline, redundant mobile instructions, and heading size at small widths. The live screen intentionally uses explicit patient confirmations for upright placement and shoulder height: a monocular preview cannot reliably prove those physical facts. MediaPipe verifies upper-body framing. Seated guidance is added for the existing arm/hand tasks. The patient can approach the device to continue after a successful framing check; the movement runner still performs its own calibration.
+
+## Verification
+
+- Production web export: passed.
+- TypeScript: passed.
+- Backend camera profile/static routes, assessment readiness and gait regression tests: 23 passed.
+- Framing unit checks: passed for viewport cropping, mirroring, missing landmarks and stable detection.
+- PWA update checks: passed for first installation, active session updates and standalone camera route isolation.
+- Account-reset regression script: passed.
+- Browser tests: passed at both mobile sizes and desktop, including real MediaPipe inference on a simulated camera stream, permission denial, model failure, camera stop/restart/release, and no-camera navigation.
+- Full Expo route tests: passed for assessment and exercise handoff, preserved task parameters and fresh setup on re-entry. Registration multi-select and exclusive no-camera selection passed.
+
+Browser camera tests use a cropped user-supplied reference image as an isolated fake stream. No personal account or real camera is accessed and no assessment records are written. These tests are not physical iPhone/Safari verification. An unrelated legacy viewport static test expects an obsolete renderer string; this change does not alter that renderer.
+
+## Asset Provenance
+
+`frontend/public/camera-setup/iphone-setup.png` was generated with Image Gen using the first supplied artboard as reference. The prompt requested only the patient/phone setup illustration, stable upright phone support, screen facing the patient, shoulder-height alignment and upper-body framing callouts, without a surrounding app screenshot. The generated image was inspected before inclusion. The second artboard is not included in production assets.

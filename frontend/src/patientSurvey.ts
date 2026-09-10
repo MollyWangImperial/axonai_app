@@ -24,6 +24,16 @@ export const ASSESSMENT_READINESS_KEYS = [
 
 export const PATIENT_SURVEY_STEPS: PatientSurveyStep[] = [
   { key: "preferred_name", question: "What should we call you?", helper: "We'll use this name in your exercises and check-ins.", type: "text" },
+  { key: "camera_devices", question: "Which cameras can you use?", helper: "Choose every device you have access to, including a device someone can help you use.", type: "multi",
+    options: [
+      { value: "iphone", label: "iPhone" },
+      { value: "phone", label: "Another smartphone" },
+      { value: "tablet", label: "iPad or tablet" },
+      { value: "laptop", label: "Laptop with a camera" },
+      { value: "webcam", label: "Computer with a webcam" },
+      { value: "other_camera", label: "Another camera" },
+      { value: "none", label: "I do not have access to a camera" },
+    ] },
   { key: "age_band", question: "Which age range are you in?", type: "single",
     options: [
       { value: "under_20", label: "Under 20" },

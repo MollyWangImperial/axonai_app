@@ -20,14 +20,22 @@ const PWA_TAGS = `
     <script>
       if ("serviceWorker" in navigator) {
         let reloadingForUpdate = false;
+        let hadController = Boolean(navigator.serviceWorker.controller);
         navigator.serviceWorker.addEventListener("controllerchange", () => {
+          // First installation already has the current bundle. Do not restart
+          // the patient's setup just because the worker takes control.
+          if (!hadController) { hadController = true; return; }
+          const sessionRoutes = ["assessment", "exercise", "camera-check", "task-intro", "session-check", "emergency"];
+          if (sessionRoutes.includes(window.location.pathname.split("/")[1])) return;
           if (reloadingForUpdate) return;
           reloadingForUpdate = true;
           window.location.reload();
         });
         window.addEventListener("load", async () => {
-          const registration = await navigator.serviceWorker.register("/sw.js", { updateViaCache: "none" });
-          await registration.update();
+          try {
+            const registration = await navigator.serviceWorker.register("/sw.js", { updateViaCache: "none" });
+            await registration.update();
+          } catch { /* The app also works when offline caching is unavailable. */ }
         });
       }
     </script>
