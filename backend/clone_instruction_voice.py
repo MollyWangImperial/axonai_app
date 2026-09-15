@@ -64,7 +64,10 @@ def create_voice_clone(
         for path in samples:
             handle = stack.enter_context(path.open("rb"))
             mime_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
-            files.append(("files[]", (path.name, handle, mime_type)))
+            # ElevenLabs' OpenAPI schema names this multipart field `files`.
+            # Using the curl-style `files[]` spelling makes the current API
+            # reject the request as though no audio file was supplied.
+            files.append(("files", (path.name, handle, mime_type)))
         response = httpx.post(
             CREATE_VOICE_URL,
             headers={"xi-api-key": api_key},

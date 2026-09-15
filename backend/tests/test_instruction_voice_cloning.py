@@ -127,7 +127,7 @@ def test_clone_utility_uploads_samples_without_copying_them(tmp_path, monkeypatc
 
     assert voice_id == "created-voice-id"
     assert captured["url"] == clone_instruction_voice.CREATE_VOICE_URL
-    assert captured["file_fields"] == ["files[]"]
+    assert captured["file_fields"] == ["files"]
     assert captured["file_names"] == ["my-voice.mp3"]
     assert captured["headers"] == {"xi-api-key": "private-key"}
     assert list(tmp_path.iterdir()) == [sample]

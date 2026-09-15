@@ -4,6 +4,8 @@ Rehyn can use one ElevenLabs voice clone for fixed assessment and exercise instr
 
 ## Create the clone
 
+The ElevenLabs account must be on a plan that includes Instant Voice Cloning.
+
 Use 1–2 minutes of clean, single-speaker audio with a consistent, calm instruction style. MP3 at 192 kbps or higher is preferred. Avoid music, room echo, other speakers, long silences, and aggressive noise removal.
 
 Keep recordings in `backend/voice_samples/` or another private local folder. That repository folder is ignored by Git.
