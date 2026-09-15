@@ -22,6 +22,16 @@ services:
         value: nova
       - key: TTS_MODEL
         value: tts-1
+      - key: INSTRUCTION_TTS_PROVIDER
+        value: elevenlabs
+      - key: ELEVENLABS_API_KEY
+        sync: false
+      - key: ELEVENLABS_VOICE_ID
+        sync: false
+      - key: ELEVENLABS_TTS_MODEL
+        value: eleven_multilingual_v2
+      - key: ELEVENLABS_OUTPUT_FORMAT
+        value: mp3_44100_128
       - key: ALIRA_REALTIME_MODEL
         value: gpt-realtime-2.1
       - key: ALIRA_REALTIME_VOICE

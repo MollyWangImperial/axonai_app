@@ -52,4 +52,4 @@ def test_assessment_offers_a_user_gesture_voice_retry_when_playback_is_blocked()
     assert 'voiceText.classList.add("voiceRetry");' in source
     assert 'audioUnlockPromise = null;' in source
     assert 'await unlockAudioPlayback();' in source
-    assert 'await playVoice(text);' in source
+    assert 'await playVoice(text,purpose);' in source

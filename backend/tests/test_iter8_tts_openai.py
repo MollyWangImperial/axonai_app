@@ -2,7 +2,7 @@
 Iteration 8 backend regression tests.
 
 Covers:
-- TTS migration to OpenAI Nova via Emergent LLM key (/api/tts/health, /api/tts/generate)
+- Instruction TTS via a scoped clone with OpenAI Nova fallback (/api/tts/health, /api/tts/generate)
 - Assessment tasks payload (7 tasks, voice_id=nova, icon fields present)
 - Pose runner HTML contains required tokens for new dynamic landmark logic
 - Existing endpoints still work (/api/credits/balance, /api/assessment/history, /api/status)
@@ -30,16 +30,20 @@ def api():
     return s
 
 
-# --------------------------- TTS (OpenAI Nova) ---------------------------
+# --------------------------- TTS ---------------------------
 class TestTTS:
-    def test_tts_health_openai_nova(self, api):
+    def test_tts_health_reports_active_instruction_voice(self, api):
         r = api.get(f"{BASE_URL}/api/tts/health", timeout=60)
         assert r.status_code == 200, r.text
         data = r.json()
         assert data.get("ok") is True, f"Expected ok=true, got {data}"
-        assert data.get("provider") == "openai", data
-        assert data.get("voice") == "nova", data
-        assert data.get("model") == "tts-1", data
+        assert data.get("provider") in {"elevenlabs", "openai-direct", "openai-emergent"}, data
+        if data.get("provider") == "elevenlabs":
+            assert data.get("voice") == "custom-cloned-voice", data
+            assert data.get("instruction_clone_ready") is True, data
+        else:
+            assert data.get("voice") == "nova", data
+            assert data.get("instruction_clone_ready") is False, data
         assert isinstance(data.get("bytes"), int) and data["bytes"] > 0
 
     def test_tts_generate_returns_valid_mp3_base64(self, api):

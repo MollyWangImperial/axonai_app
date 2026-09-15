@@ -164,8 +164,9 @@ class TestTTSIter11:
         assert r.status_code == 200, r.text
         data = r.json()
         assert data.get("ok") is True
-        assert data.get("provider") == "openai"
-        assert data.get("voice") == "nova"
+        assert data.get("provider") in {"elevenlabs", "openai-direct", "openai-emergent"}
+        expected_voice = "custom-cloned-voice" if data.get("provider") == "elevenlabs" else "nova"
+        assert data.get("voice") == expected_voice
 
     def test_tts_generate_returns_valid_base64_mp3(self, api):
         r = api.post(

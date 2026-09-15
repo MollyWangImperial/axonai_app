@@ -1,4 +1,4 @@
-"""Generate reusable OpenAI voice files for fixed Cylindrical Grasp prompts.
+"""Generate reusable instruction-voice files for fixed Cylindrical Grasp prompts.
 
 Run this only when the wording, TTS model, or voice changes. The generated MP3
 files are public app assets; the API key is read from the environment and is
@@ -44,7 +44,7 @@ def fixed_prompts() -> list[str]:
 
 
 async def generate_one(text: str, semaphore: asyncio.Semaphore) -> dict[str, str | int]:
-    key = server._tts_cache_key(text, server.TTS_VOICE)
+    key = server._tts_cache_key(text, server.TTS_VOICE, purpose="instruction")
     destination = server.PREPARED_TTS_DIR / f"{key}.mp3"
     if not destination.is_file() or destination.stat().st_size < 1000:
         async with semaphore:
@@ -54,7 +54,12 @@ async def generate_one(text: str, semaphore: asyncio.Semaphore) -> dict[str, str
                     response.raise_for_status()
                     audio = base64.b64decode(response.json()["audio_b64"])
             else:
-                audio = await asyncio.to_thread(server._synthesize_tts_audio_bytes, text, server.TTS_VOICE)
+                audio = await asyncio.to_thread(
+                    server._synthesize_tts_audio_bytes,
+                    text,
+                    server.TTS_VOICE,
+                    "instruction",
+                )
         if len(audio) < 1000:
             raise RuntimeError(f"Prepared audio was unexpectedly small for {key}")
         temporary = destination.with_suffix(".mp3.part")
@@ -69,16 +74,23 @@ async def generate_one(text: str, semaphore: asyncio.Semaphore) -> dict[str, str
 
 
 async def main() -> None:
-    if not TTS_SOURCE_URL and not server.openai_tts_client:
-        raise RuntimeError("OPENAI_API_KEY must be set to generate prepared exercise audio")
+    config = server._tts_request_config("instruction", server.TTS_VOICE)
+    if not TTS_SOURCE_URL and config["provider"] == "unavailable":
+        raise RuntimeError("Configure an instruction text-to-speech provider before generating audio")
+    if config["provider"] == "elevenlabs" and os.environ.get("ALLOW_PUBLIC_CLONED_VOICE_ASSETS") != "1":
+        raise RuntimeError(
+            "Cloned voice files are generated at runtime and must not be added to public assets. "
+            "Set ALLOW_PUBLIC_CLONED_VOICE_ASSETS=1 only after an explicit distribution decision."
+        )
     server.PREPARED_TTS_DIR.mkdir(parents=True, exist_ok=True)
     semaphore = asyncio.Semaphore(3)
     assets = await asyncio.gather(*(generate_one(text, semaphore) for text in fixed_prompts()))
     manifest = {
         "version": 1,
         "exercise_id": EXERCISE_ID,
-        "model": server.TTS_MODEL,
-        "voice": server.TTS_VOICE,
+        "provider": config["provider"],
+        "model": config["model"],
+        "voice": config["public_voice"],
         "assets": assets,
     }
     MANIFEST_PATH.write_text(json.dumps(manifest, indent=2, ensure_ascii=True) + "\n", encoding="utf-8")

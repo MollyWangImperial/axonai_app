@@ -89,6 +89,8 @@ android-sdk/
 credentials.json
 *.key
 .credentials
+backend/voice_samples/
+**/.pytest_cache/
 # Local QA and generated browser exports
 .codex-qa/
 .playwright-cli/

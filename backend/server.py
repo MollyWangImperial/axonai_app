@@ -25,6 +25,7 @@ import hashlib
 import inspect
 import time
 from collections import OrderedDict
+from functools import lru_cache
 import hmac
 import secrets
 import sys
@@ -564,11 +565,18 @@ async def _sync_pending_assessments_to_mongodb() -> int:
         logger.info("Synchronized %s temporarily stored assessment(s) to MongoDB", synced)
     return synced
 
-# OpenAI TTS: prefer direct OPENAI_API_KEY for local/dev, keep Emergent key as fallback.
+# General speech keeps the existing OpenAI voice. Assessment and exercise
+# instructions can use an ElevenLabs voice clone without changing Alira's chat
+# voice. When the clone is not configured, instructions fall back to OpenAI.
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "").strip()
 EMERGENT_LLM_KEY = os.environ.get("EMERGENT_LLM_KEY", "").strip()
 TTS_VOICE = os.environ.get("TTS_VOICE", "nova")  # warm/encouraging default
 TTS_MODEL = os.environ.get("TTS_MODEL", "tts-1")
+INSTRUCTION_TTS_PROVIDER = os.environ.get("INSTRUCTION_TTS_PROVIDER", "openai").strip().lower()
+ELEVENLABS_API_KEY = os.environ.get("ELEVENLABS_API_KEY", "").strip()
+ELEVENLABS_VOICE_ID = os.environ.get("ELEVENLABS_VOICE_ID", "").strip()
+ELEVENLABS_TTS_MODEL = os.environ.get("ELEVENLABS_TTS_MODEL", "eleven_multilingual_v2").strip()
+ELEVENLABS_OUTPUT_FORMAT = os.environ.get("ELEVENLABS_OUTPUT_FORMAT", "mp3_44100_128").strip()
 STT_MODEL = os.environ.get("STT_MODEL", "gpt-transcribe").strip() or "gpt-transcribe"
 ALIRA_CHAT_MODEL = os.environ.get("ALIRA_CHAT_MODEL", "gpt-4o-mini")
 ALIRA_REALTIME_MODEL = os.environ.get("ALIRA_REALTIME_MODEL", "gpt-realtime-2.1").strip()
@@ -772,6 +780,7 @@ class StatusCheckCreate(BaseModel):
 class TTSRequest(BaseModel):
     text: str
     voice_id: Optional[str] = None
+    purpose: str = Field(default="general", pattern="^(general|instruction)$")
 
 
 class TTSResponse(BaseModel):
@@ -3259,7 +3268,7 @@ async def get_task_video_for_worker(video_id: str, request: Request):
 # Spoken instructions are generated once and reused. The runner asks for the
 # same lines at the start of every exercise (setup voice, calibration
 # instruction, every step's voice, "Wonderful, here we go"), so each line is
-# kept in memory and on disk keyed by model, voice and text. The OpenAI call
+# kept in memory and on disk keyed by provider, model, voice and text. The provider call
 # itself runs in a worker thread: it used to run inline inside the async
 # handler, which stalled the whole server for the duration of every voice line
 # and made an exercise start wait for six or seven of them in a row.
@@ -3286,12 +3295,56 @@ EXERCISE_INDEPENDENT_COMPLETE_VOICE = (
 )
 
 
-def _tts_cache_key(text: str, voice: str) -> str:
-    return hashlib.sha256(f"{TTS_MODEL}|{voice}|{text}".encode("utf-8")).hexdigest()
+OPENAI_TTS_VOICES = {"alloy", "ash", "coral", "echo", "fable", "nova", "onyx", "sage", "shimmer"}
+
+
+def _instruction_clone_ready() -> bool:
+    return (
+        INSTRUCTION_TTS_PROVIDER == "elevenlabs"
+        and bool(ELEVENLABS_API_KEY)
+        and bool(ELEVENLABS_VOICE_ID)
+    )
+
+
+def _tts_request_config(purpose: str, requested_voice: Optional[str] = None) -> Dict[str, str]:
+    if purpose == "instruction" and _instruction_clone_ready():
+        return {
+            "provider": "elevenlabs",
+            "model": ELEVENLABS_TTS_MODEL,
+            "voice": ELEVENLABS_VOICE_ID,
+            "public_voice": "custom-cloned-voice",
+            "output_format": ELEVENLABS_OUTPUT_FORMAT,
+        }
+    voice = requested_voice if requested_voice in OPENAI_TTS_VOICES else TTS_VOICE
+    provider = "openai-direct" if openai_tts_client else "openai-emergent" if tts_client else "unavailable"
+    return {
+        "provider": provider,
+        "model": TTS_MODEL,
+        "voice": voice,
+        "public_voice": voice,
+        "output_format": "mp3",
+    }
+
+
+def _tts_cache_key(text: str, voice: str, purpose: str = "general") -> str:
+    config = _tts_request_config(purpose, voice)
+    if config["provider"] != "elevenlabs":
+        # Preserve existing OpenAI hashes so the committed nova assets keep
+        # working whenever the cloned instruction voice is not enabled.
+        material = f"{config['model']}|{config['voice']}|{text}"
+    else:
+        material = "|".join((
+            config["provider"],
+            config["model"],
+            config["voice"],
+            config["output_format"],
+            text,
+        ))
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()
 
 
 def _prepared_tts_asset_url(text: str, voice: Optional[str] = None) -> Optional[str]:
-    key = _tts_cache_key(text, voice or TTS_VOICE)
+    key = _tts_cache_key(text, voice or TTS_VOICE, purpose="instruction")
     path = PREPARED_TTS_DIR / f"{key}.mp3"
     return f"/audio/prepared/{key}.mp3" if path.is_file() else None
 
@@ -3326,11 +3379,34 @@ def _tts_cache_put(key: str, audio_b64: str, persist: bool = True) -> None:
             pass
 
 
-def _synthesize_tts_audio_bytes(text: str, voice: str) -> bytes:
-    """Blocking OpenAI call - always run through asyncio.to_thread."""
+def _synthesize_tts_audio_bytes(text: str, voice: str, purpose: str = "general") -> bytes:
+    """Blocking provider call - always run through asyncio.to_thread."""
+    config = _tts_request_config(purpose, voice)
+    if config["provider"] == "elevenlabs":
+        response = httpx.post(
+            f"https://api.elevenlabs.io/v1/text-to-speech/{config['voice']}",
+            params={"output_format": config["output_format"]},
+            headers={"xi-api-key": ELEVENLABS_API_KEY, "Content-Type": "application/json"},
+            json={
+                "text": text,
+                "model_id": config["model"],
+                "voice_settings": {
+                    "stability": 0.65,
+                    "similarity_boost": 0.85,
+                    "style": 0.0,
+                    "use_speaker_boost": True,
+                    "speed": 0.92,
+                },
+            },
+            timeout=90,
+        )
+        response.raise_for_status()
+        return response.content
+    if config["provider"] != "openai-direct" or not openai_tts_client:
+        raise RuntimeError("Direct text-to-speech provider is not configured")
     response = openai_tts_client.audio.speech.create(
-        model=TTS_MODEL,
-        voice=voice,
+        model=config["model"],
+        voice=config["voice"],
         input=text,
         response_format="mp3",
     )
@@ -3341,10 +3417,11 @@ def _synthesize_tts_audio_bytes(text: str, voice: str) -> bytes:
     return bytes(response)
 
 
-async def _generate_tts_audio_base64(text: str, voice: str) -> str:
-    if not openai_tts_client and not tts_client:
-        raise HTTPException(status_code=503, detail="Voice service unavailable: OPENAI_API_KEY is not configured.")
-    key = _tts_cache_key(text, voice)
+async def _generate_tts_audio_base64(text: str, voice: str, purpose: str = "general") -> str:
+    config = _tts_request_config(purpose, voice)
+    if config["provider"] == "unavailable":
+        raise HTTPException(status_code=503, detail="Voice service unavailable: no text-to-speech provider is configured.")
+    key = _tts_cache_key(text, voice, purpose)
     cached = _tts_cache_get(key)
     if cached is not None:
         return cached
@@ -3356,14 +3433,14 @@ async def _generate_tts_audio_base64(text: str, voice: str) -> str:
     future: "asyncio.Future[str]" = loop.create_future()
     _tts_inflight[key] = future
     try:
-        if openai_tts_client:
-            audio_bytes = await asyncio.to_thread(_synthesize_tts_audio_bytes, text, voice)
+        if config["provider"] in {"openai-direct", "elevenlabs"}:
+            audio_bytes = await asyncio.to_thread(_synthesize_tts_audio_bytes, text, voice, purpose)
             audio_b64 = base64.b64encode(audio_bytes).decode("ascii")
         else:
             audio_b64 = await tts_client.generate_speech_base64(
                 text=text,
-                model=TTS_MODEL,
-                voice=voice,
+                model=config["model"],
+                voice=config["voice"],
                 response_format="mp3",
             )
         _tts_cache_put(key, audio_b64)
@@ -3378,14 +3455,62 @@ async def _generate_tts_audio_base64(text: str, voice: str) -> str:
         _tts_inflight.pop(key, None)
 
 
+@lru_cache(maxsize=1)
+def _instruction_text_catalog() -> frozenset[str]:
+    allowed: set[str] = {
+        EXERCISE_POSTURE_CHANGED_VOICE,
+        EXERCISE_TRANSITION_VOICE,
+        EXERCISE_ASSISTANCE_QUESTION_VOICE,
+        EXERCISE_ASSISTED_COMPLETE_VOICE,
+        EXERCISE_INDEPENDENT_COMPLETE_VOICE,
+    }
+    voice_fields = {"voice", "setup_voice", "calibration_instruction", "coaching_cue"}
+
+    def collect(value: Any, field: str = "") -> None:
+        if isinstance(value, dict):
+            for key, nested in value.items():
+                collect(nested, str(key))
+        elif isinstance(value, (list, tuple)):
+            for nested in value:
+                collect(nested, field)
+        elif isinstance(value, str) and field in voice_fields and value.strip():
+            allowed.add(value.strip())
+
+    collect(globals().get("ASSESSMENT_PACKAGES") or {})
+    collect(globals().get("REHAB_RUNNER_CONFIG") or {})
+    configure_runner = globals().get("_configure_rehab_runner")
+    runner_configs = globals().get("REHAB_RUNNER_CONFIG") or {}
+    if callable(configure_runner):
+        for exercise_id in runner_configs:
+            for difficulty in ("easy", "medium", "difficult"):
+                for variation in ("standard", "alternate"):
+                    collect(configure_runner(exercise_id, difficulty, variation))
+    return frozenset(allowed)
+
+
+def _instruction_text_allowed(text: str) -> bool:
+    """Limit a configured voice clone to app-authored rehabilitation speech."""
+    candidate = str(text or "").strip()
+    if not candidate or len(candidate) > 2000:
+        return False
+
+    # Fixed runner speech is embedded in these server-authored templates.
+    for template_name in ("POSE_RUNNER_HTML", "REHAB_RUNNER_HTML_TEMPLATE"):
+        template = globals().get(template_name)
+        if isinstance(template, str) and candidate in template:
+            return True
+    return candidate in _instruction_text_catalog()
+
+
 @api_router.post("/tts/generate", response_model=TTSResponse)
 async def generate_tts(req: TTSRequest):
-    # Use OpenAI TTS (nova by default).
-    # `voice_id` from old clients is accepted but ignored unless it matches a valid OpenAI voice.
-    valid_voices = {"alloy", "ash", "coral", "echo", "fable", "nova", "onyx", "sage", "shimmer"}
-    voice = req.voice_id if (req.voice_id in valid_voices) else TTS_VOICE
+    # Instruction requests use the server-configured clone. The client cannot
+    # select arbitrary ElevenLabs voice IDs or access the provider credential.
+    voice = req.voice_id if (req.voice_id in OPENAI_TTS_VOICES) else TTS_VOICE
+    if req.purpose == "instruction" and _instruction_clone_ready() and not _instruction_text_allowed(req.text):
+        raise HTTPException(status_code=403, detail="The cloned instruction voice is limited to app-authored rehabilitation guidance.")
     try:
-        audio_b64 = await _generate_tts_audio_base64(req.text, voice)
+        audio_b64 = await _generate_tts_audio_base64(req.text, voice, req.purpose)
         return TTSResponse(audio_b64=audio_b64, text=req.text)
     except Exception as e:
         msg = str(e)
@@ -3399,22 +3524,31 @@ async def generate_tts(req: TTSRequest):
 
 
 @api_router.get("/tts/health")
-async def tts_health():
-    """Diagnostic: check whether OpenAI TTS works."""
+async def tts_health(purpose: str = "instruction"):
+    """Diagnostic for the instruction clone, with OpenAI fallback visibility."""
+    purpose = "instruction" if purpose == "instruction" else "general"
+    config = _tts_request_config(purpose, TTS_VOICE)
     try:
-        audio_b64 = await _generate_tts_audio_base64("ok", TTS_VOICE)
+        audio_b64 = await _generate_tts_audio_base64("ok", TTS_VOICE, purpose)
         return {
             "ok": True,
             "bytes": len(base64.b64decode(audio_b64)),
-            "voice": TTS_VOICE,
-            "model": TTS_MODEL,
-            "provider": "openai-direct" if openai_tts_client else "openai-emergent",
+            "voice": config["public_voice"],
+            "model": config["model"],
+            "provider": config["provider"],
+            "purpose": purpose,
+            "instruction_clone_ready": _instruction_clone_ready(),
+            "configured_instruction_provider": INSTRUCTION_TTS_PROVIDER,
         }
     except Exception as e:
         msg = str(e)
         quota = "quota_exceeded" in msg or "402" in msg
         return {
             "ok": False,
+            "provider": config["provider"],
+            "purpose": purpose,
+            "instruction_clone_ready": _instruction_clone_ready(),
+            "configured_instruction_provider": INSTRUCTION_TTS_PROVIDER,
             "quota_exceeded": quota,
             "hint": (
                 "Top up your Emergent Universal Key balance at Profile → Universal Key → Add Balance."
@@ -6911,17 +7045,17 @@ function unlockAudioPlayback(){
   return audioUnlockPromise;
 }
 
-function voiceCacheKey(text){
-  return `${voiceId}::${text}`;
+function voiceCacheKey(text,purpose="instruction"){
+  return `${purpose}::${voiceId}::${text}`;
 }
 
-async function fetchVoiceAudio(text){
-  const key = voiceCacheKey(text);
+async function fetchVoiceAudio(text,purpose="instruction"){
+  const key = voiceCacheKey(text,purpose);
   if(voiceAudioCache.has(key)) return voiceAudioCache.get(key);
   if(voiceAudioInflight.has(key)) return voiceAudioInflight.get(key);
   const promise = fetch(`${API_BASE}/tts/generate`,{
     method:"POST", headers:{"Content-Type":"application/json"},
-    body: JSON.stringify({text, voice_id: voiceId})
+    body: JSON.stringify({text, voice_id: voiceId, purpose})
   })
     .then(async (res) => {
       if(!res.ok) throw new Error("tts failed");
@@ -6953,18 +7087,18 @@ function clearVoiceRetry(){
   voiceText.onclick = null;
 }
 
-function offerVoiceRetry(text){
+function offerVoiceRetry(text,purpose="instruction"){
   voiceText.textContent = "Tap here to replay the voice instruction";
   voiceText.classList.add("voiceRetry");
   voiceText.onclick = async () => {
     clearVoiceRetry();
     audioUnlockPromise = null;
     await unlockAudioPlayback();
-    await playVoice(text);
+    await playVoice(text,purpose);
   };
 }
 
-async function playVoice(text){
+async function playVoice(text,purpose="instruction"){
   if(!VOICE_GUIDANCE_ENABLED){
     voiceText.textContent = "Voice guidance off · follow on-screen text";
     return;
@@ -6972,7 +7106,7 @@ async function playVoice(text){
   clearVoiceRetry();
   try{
     voiceText.textContent = "Playing instruction…";
-    const audioB64 = await fetchVoiceAudio(text);
+    const audioB64 = await fetchVoiceAudio(text,purpose);
     audioEl.pause();
     audioEl.muted = false;
     audioEl.volume = 1;
@@ -7003,7 +7137,7 @@ async function playVoice(text){
     if(spoke){
       voiceText.textContent = "Instruction ready · follow the target";
     }else{
-      offerVoiceRetry(text);
+      offerVoiceRetry(text,purpose);
     }
     postRN({type:"voice_error", message:String(e)});
   }
@@ -8608,7 +8742,7 @@ async function speakTargetNearMiss(diagnostic){
   captionEl.textContent = correction;
   postRN({type:"target_near_miss", ...diagnostic});
   try{
-    await playVoice(correction);
+    await playVoice(correction,"general");
   }finally{
     const current = getCurrentStep();
     if(current && current.id === expectedStepId){
@@ -11590,7 +11724,7 @@ function playBrowserVoice(text){
 let voiceSequence = 0;
 let activeVoiceSequence = 0;
 let stopActiveVoice = null;
-async function playVoice(text){
+async function playVoice(text,purpose="instruction"){
   if(runnerExited) return "interrupted";
   if(!VOICE_GUIDANCE_ENABLED || !text){
     voiceText.textContent = "Voice guidance off · follow on-screen text";
@@ -11601,7 +11735,7 @@ async function playVoice(text){
   activeVoiceSequence=sequence;
   try{
     voiceText.textContent = "Listen to the full instruction…";
-    const audioSource = await fetchVoiceAudio(text);
+    const audioSource = await fetchVoiceAudio(text,purpose);
     if(sequence !== voiceSequence) return "interrupted";
     if(stopActiveVoice) stopActiveVoice();
     audioEl.pause();
@@ -11672,9 +11806,9 @@ async function playVoice(text){
   }
 }
 
-function fetchVoiceAudio(text){
-  const preparedUrl = CFG.prepared_voice_assets && CFG.prepared_voice_assets[text];
-  const key = `${preparedUrl || "generated"}::${text}`;
+function fetchVoiceAudio(text,purpose="instruction"){
+  const preparedUrl = purpose === "instruction" && CFG.prepared_voice_assets && CFG.prepared_voice_assets[text];
+  const key = `${purpose}::${preparedUrl || "generated"}::${text}`;
   if(voiceAudioCache.has(key)) return Promise.resolve(voiceAudioCache.get(key));
   if(voiceAudioInflight.has(key)) return voiceAudioInflight.get(key);
   const pendingRequest = preparedUrl
@@ -11687,7 +11821,7 @@ function fetchVoiceAudio(text){
     : fetch(`${API_BASE}/tts/generate`,{
         method:"POST",
         headers:{"Content-Type":"application/json"},
-        body:JSON.stringify({text})
+        body:JSON.stringify({text,purpose})
       }).then(async res => {
         if(!res.ok) throw new Error("tts fail");
         const data = await res.json();
@@ -13736,7 +13870,7 @@ async function showFeedback(){
   const feedbackVoice = cameraScored
     ? `${rewardVoice} Your score is ${lastRepScore} out of 100. ${label}. ${feedback} When you're ready, tap continue, or say yes to keep going.`
     : `${rewardVoice} ${label}. ${feedback} When you're ready, tap continue, or say yes to keep going.`;
-  await playVoice(feedbackVoice);
+  await playVoice(feedbackVoice,"general");
   if(fbEl.classList.contains("show")) startListening();
 }
 
@@ -13826,7 +13960,7 @@ fbConfirmBtn.addEventListener("click", () => {
 fbReplay.addEventListener("click", async () => {
   if(!lastFeedbackText) return;
   stopListening();
-  await playVoice(lastFeedbackText + " When you're ready, say yes or tap Continue.");
+  await playVoice(lastFeedbackText + " When you're ready, say yes or tap Continue.","general");
   startListening();
 });
 

@@ -41,7 +41,7 @@ def test_near_miss_coaching_reports_reason_and_specific_correction():
     ):
         assert reason in source
     assert 'postRN({type:"target_near_miss", ...diagnostic});' in source
-    assert "await playVoice(correction);" in source
+    assert 'await playVoice(correction,"general");' in source
     assert "target_near_miss_count: nearMissEvents.length" in source
     assert "target_near_miss_events: nearMissEvents.slice()" in source
 
@@ -50,5 +50,5 @@ def test_coaching_is_limited_and_does_not_compete_with_target_detection():
     source = server.POSE_RUNNER_HTML
     assert "const NEAR_MISS_MAX_COACHING_PER_STEP = 2;" in source
     assert "if(correctionVoicePlaying || nearMissCoachingCount >= NEAR_MISS_MAX_COACHING_PER_STEP) return;" in source
-    assert "const inTarget = correctionVoicePlaying ? false : checkTarget(landmarks);" in source
+    assert "const inTarget = !calibratingAssessment && !correctionVoicePlaying && checkTarget(landmarks);" in source
     assert "voiceFinishedAt = performance.now();" in source
