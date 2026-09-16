@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  AccessibilityInfo,
   ActivityIndicator,
+  Animated,
+  Easing,
   Image,
   KeyboardAvoidingView,
   Modal,
@@ -26,6 +29,7 @@ const DEEP_GREEN = "#004A38";
 const INK = "#083547";
 const MUTED = "#254D63";
 const WARM_WHITE = "#FCFAF7";
+const HERO_PHRASES = ["guided at home.", "moving with you.", "showing small wins.", "giving you direction."];
 
 type Overlay = "auth" | "how" | "about" | "discovery" | null;
 type AuthIntent = "start" | "signin";
@@ -63,8 +67,56 @@ export default function SignInScreen() {
   const [showTrialCode, setShowTrialCode] = useState(false);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [reduceMotion, setReduceMotion] = useState(false);
+  const [phraseIndex, setPhraseIndex] = useState(0);
+  const phraseOpacity = useRef(new Animated.Value(1)).current;
+  const phraseOffset = useRef(new Animated.Value(0)).current;
   const [handoffError, setHandoffError] = useState<string | null>(null);
   const handoffStarted = useRef(false);
+
+  useEffect(() => {
+    let mounted = true;
+    void AccessibilityInfo.isReduceMotionEnabled().then((enabled) => {
+      if (mounted) setReduceMotion(enabled);
+    });
+    const subscription = AccessibilityInfo.addEventListener("reduceMotionChanged", setReduceMotion);
+    return () => {
+      mounted = false;
+      subscription.remove();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (reduceMotion) {
+      setPhraseIndex(0);
+      phraseOpacity.setValue(1);
+      phraseOffset.setValue(0);
+      return;
+    }
+
+    let active = true;
+    const timer = setInterval(() => {
+      Animated.parallel([
+        Animated.timing(phraseOpacity, { toValue: 0, duration: 170, useNativeDriver: true }),
+        Animated.timing(phraseOffset, { toValue: -10, duration: 170, easing: Easing.in(Easing.quad), useNativeDriver: true }),
+      ]).start(({ finished }) => {
+        if (!active || !finished) return;
+        setPhraseIndex((current) => (current + 1) % HERO_PHRASES.length);
+        phraseOffset.setValue(12);
+        Animated.parallel([
+          Animated.timing(phraseOpacity, { toValue: 1, duration: 280, useNativeDriver: true }),
+          Animated.timing(phraseOffset, { toValue: 0, duration: 280, easing: Easing.out(Easing.cubic), useNativeDriver: true }),
+        ]).start();
+      });
+    }, 2600);
+
+    return () => {
+      active = false;
+      clearInterval(timer);
+      phraseOpacity.stopAnimation();
+      phraseOffset.stopAnimation();
+    };
+  }, [phraseOffset, phraseOpacity, reduceMotion]);
 
   const routePatientAfterLogin = useCallback(async (user: Me) => {
     // The sign-in response carries the account state saved in MongoDB:
@@ -218,7 +270,7 @@ export default function SignInScreen() {
         <View style={[styles.landing, { minHeight: pageHeight }]}>
           {isWide ? (
             <Image
-              source={require("../assets/images/rehyn-landing-hero-realistic.png")}
+              source={require("../assets/images/rehyn-landing-hero-patient.png")}
               resizeMode="cover"
               accessible={false}
               style={styles.heroImage}
@@ -262,34 +314,33 @@ export default function SignInScreen() {
             styles.heroContent,
             isWide ? { paddingTop: Math.max(64, pageHeight * 0.263 - 92) } : styles.heroContentCompact,
           ]}>
-            <Text
-              accessibilityRole="header"
-              style={[styles.heroTitle, { fontSize: headingSize, lineHeight: headingSize * (isWide ? 1.13 : 1.12) }]}
-            >
-              {"Personalised stroke\nrehabilitation,\n"}
-              <Text style={styles.heroAccent}>guided at home.</Text>
-            </Text>
-            <Text style={[
-              styles.heroDescription,
-              isWide && { fontSize: Math.min(32, width * 0.01833), lineHeight: Math.min(42, width * 0.0241) },
-              !isWide && styles.heroDescriptionCompact,
-            ]}>
-              {isWide ? "A short movement check creates a\nprogramme shaped around you." : "A short movement check creates a programme shaped around you."}
-            </Text>
-            <Pressable
-              testID="signin-explore"
-              accessibilityRole="button"
-              onPress={() => openAuth("start")}
-              style={({ pressed }) => [styles.heroCta, !isWide && styles.heroCtaCompact, pressed && styles.buttonPressed]}
-            >
-              <Text style={[styles.heroCtaText, !isWide && styles.heroCtaTextCompact]}>Explore Rehyn</Text>
-              <Ionicons name="arrow-forward" size={isWide ? 34 : 26} color="#FFFFFF" />
-            </Pressable>
+            <View style={styles.heroHeadingBlock}>
+              <Text
+                accessibilityRole="header"
+                accessibilityLabel="Personalised stroke rehabilitation, guided at home."
+                style={[styles.heroTitle, { fontSize: headingSize, lineHeight: headingSize * (isWide ? 1.13 : 1.12) }]}
+              >
+                {"Personalised stroke\nrehabilitation,"}
+              </Text>
+              <Animated.Text
+                testID="signin-rotating-phrase"
+                accessibilityElementsHidden
+                importantForAccessibility="no-hide-descendants"
+                style={[
+                  styles.heroTitle,
+                  styles.heroAccent,
+                  { fontSize: headingSize, lineHeight: headingSize * (isWide ? 1.13 : 1.12) },
+                  { opacity: phraseOpacity, transform: [{ translateY: phraseOffset }] },
+                ]}
+              >
+                {HERO_PHRASES[phraseIndex]}
+              </Animated.Text>
+            </View>
           </View>
           {!isWide ? (
             <View style={[styles.mobilePhotoFrame, { height: isSmall ? width * 0.87 : width * 0.63 }]}>
               <Image
-                source={require("../assets/images/rehyn-landing-hero-realistic.png")}
+                source={require("../assets/images/rehyn-landing-hero-patient.png")}
                 accessibilityLabel="A man practising a seated reaching movement at home with a phone on a tripod."
                 resizeMode="cover"
                 style={[styles.mobilePhoto, { width: width * 1.9, height: width * 0.98 }]}
@@ -424,14 +475,9 @@ const styles = StyleSheet.create({
   mobileNavText: { color: INK, fontSize: 16 },
   heroContent: { paddingLeft: "6%", paddingBottom: 60, alignItems: "flex-start" },
   heroContentCompact: { paddingTop: 32, paddingHorizontal: 24, paddingBottom: 30 },
+  heroHeadingBlock: { alignItems: "flex-start" },
   heroTitle: { color: INK, fontFamily: Platform.OS === "web" ? "Arial" : undefined, fontWeight: "700", letterSpacing: -2.4 },
   heroAccent: { color: DEEP_GREEN },
-  heroDescription: { color: MUTED, fontSize: 32, lineHeight: 42, fontWeight: "400", marginTop: 16, letterSpacing: -0.6 },
-  heroDescriptionCompact: { maxWidth: 540, fontSize: 21, lineHeight: 29, marginTop: 22, letterSpacing: -0.3 },
-  heroCta: { minWidth: 369, minHeight: 80, paddingHorizontal: 40, marginTop: 38, borderRadius: 16, backgroundColor: DEEP_GREEN, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 24 },
-  heroCtaCompact: { minWidth: 250, minHeight: 62, paddingHorizontal: 26, marginTop: 26, borderRadius: 13, gap: 18 },
-  heroCtaText: { color: "#FFFFFF", fontSize: 32, fontWeight: "400", letterSpacing: -0.5 },
-  heroCtaTextCompact: { fontSize: 23 },
   mobilePhotoFrame: { width: "100%", overflow: "hidden", marginTop: "auto" },
   mobilePhoto: { position: "absolute", right: 0, top: 0 },
   modalRoot: { flex: 1, padding: 20, backgroundColor: "rgba(4,31,22,0.56)", alignItems: "center", justifyContent: "center" },

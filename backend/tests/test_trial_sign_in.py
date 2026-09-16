@@ -112,12 +112,15 @@ def test_sign_in_page_matches_the_selected_welcome_flow():
 
     assert "Personalised stroke" in source
     assert "guided at home." in source
-    assert "Explore Rehyn" in source
+    assert "rehyn-landing-hero-patient.png" in source
+    assert 'const HERO_PHRASES = ["guided at home.", "moving with you.", "showing small wins.", "giving you direction."]' in source
+    assert "A short movement check creates a" not in source
     assert 'testID="signin-start-free"' in source
+    assert 'testID="signin-rotating-phrase"' in source
     assert 'testID="signin-start-assessment"' not in source
     assert "Good morning, Molly" not in source
     assert "PULSE NETWORK" not in source
-    assert 'testID="signin-explore"' in source
+    assert 'testID="signin-explore"' not in source
     assert "Continue with Google" not in source
 
 
