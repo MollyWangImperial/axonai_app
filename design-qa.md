@@ -7,6 +7,7 @@ Date: 2026-09-16
 - Source visual truth: `C:\Users\LENOVO\AppData\Local\Temp\codex-clipboard-fa8daf29-3d19-4341-b733-0f3428f9621f.png` at 1851 × 849 pixels.
 - Survey visual truth: `C:\Users\LENOVO\AppData\Local\Temp\codex-clipboard-915bbe6e-c3c7-4b2e-ad91-5277282506c7.png` at 1207 × 1305 pixels.
 - Survey result visual truth: `C:\Users\LENOVO\AppData\Local\Temp\codex-clipboard-38be15ce-8f08-48f5-b15e-4ed473b4f11c.png` at 1386 × 1132 pixels.
+- Latest compact survey result visual truth: `C:\Users\LENOVO\AppData\Local\Temp\codex-clipboard-182e09ca-117a-4652-a984-123110d67faf.png` at 852 × 1858 pixels.
 - Supplied background asset: `C:\Users\LENOVO\AppData\Local\Temp\codex-clipboard-744c1103-65fd-4ec8-b185-514dbbe15e46.png` at 1746 × 901 pixels.
 - Phone issue reference: `D:\xwechat_files\wxid_ycyjacdoxojk12_3fec\temp\RWTemp\2026-09\9e20f478899dc29eb19741386f9343c8\42f11f3a7e3df24fdf4a22b3130ed073.jpg` at 1179 × 2556 pixels.
 - Project background asset: `frontend/assets/images/rehyn-landing-hero-background.png`; its SHA-256 matches the supplied background.
@@ -33,8 +34,8 @@ No outstanding P0, P1, or P2 visual or interaction findings.
 - The survey now uses the reference's full white surface, large close control, compact step counter, long progress bar, two-line title, grouped answer rows, large circular selectors, and full-width action.
 - At 1207 × 1305, the survey's progress bar, title, description, grouped options, and Continue button align within approximately 12 pixels of the supplied reference.
 - At 390 × 844, the survey preserves the same hierarchy without clipped copy or horizontal overflow; answer rows wrap naturally and the action remains visible.
-- The completion screen now matches the supplied result reference with the “Start with a movement check” heading, supporting line, large movement-check graphic, three checkmarked benefits, divider, and full-width “Sign up to try Rehyn” action.
-- At 390 × 844, the completion screen stacks the illustration and benefits without horizontal overflow, and the sign-up action remains fully visible.
+- The completion screen now matches the latest compact reference with the “Start with a movement check” heading, two-line supporting copy, and one bordered card containing three icon-led benefit rows.
+- At 426 × 929, the title, supporting copy, card, divider, and full-width “Sign up to try Rehyn” action remain visible without horizontal overflow.
 
 ## Required fidelity surfaces
 
@@ -52,6 +53,7 @@ No outstanding P0, P1, or P2 visual or interaction findings.
 - Focused responsive review: the 390 × 844 capture shows no horizontal overflow, clipped copy, or hidden CTA. No additional crop was needed for legibility.
 - Survey full view: the source and implementation were compared at 1207 × 1305. Counter, progress, title wrapping, description, four-row option group, and primary action follow the reference composition.
 - Survey focused review: selected rows use a pale-green fill and check icon, the Continue action becomes active after selection, and the close control remains clear at desktop and compact sizes.
+- Result focused review: the three benefits use the supplied search, progress-chart, and spoken-guidance icon treatments in a single card; the divider and sign-up action follow the compact reference's vertical rhythm.
 
 ## Comparison history
 
@@ -60,6 +62,7 @@ No outstanding P0, P1, or P2 visual or interaction findings.
 - First compact pass: the small-screen headline was too large for the available width. The small-screen scale was reduced and the final 390-pixel capture confirms every line fits.
 - Survey pass: the previous 640-pixel dialog, separated option cards, small title, and compact action were replaced with the full white 1208-pixel survey surface and source-sized controls. The final 1207 × 1305 capture matches the supplied hierarchy and spacing.
 - Result pass: the former personalised feature card was replaced with the supplied 1386 × 1132 completion composition. The modal cap expands to 1400 pixels for this reference while the existing question layout remains unchanged at its 1207-pixel comparison viewport.
+- Latest result pass: the prior horizontal illustration and checkmark composition was replaced with the user's compact stacked card. The first compact pass kept the supporting copy on one line and placed the card too high; the final pass enlarged the copy so it wraps to two lines and aligned the card, divider, and button to the 426 × 929 reference proportions.
 - Latest desktop pass: the changing third line was removed at the user's request. A screenshot also revealed “More confidence.” crossing the curved panel edge at a wide, shorter viewport, so the desktop headline cap was reduced to 68 pixels, its fluid scale was tightened, and the text column narrowed to 43.5%. The subtitle uses a narrower three-line treatment near the desktop breakpoint so it also remains inside the panel.
 - Post-fix desktop and compact captures show no remaining P0/P1/P2 mismatch.
 - Phone-photo pass: the user's iPhone capture showed the wide desktop asset forced into a tall mobile frame, making the patient appear over-cropped and pushing the tripod off screen. The mobile image frame was shortened from 385 to 285 pixels, and the image rendering was moved to `expo-image` so a 70% horizontal focal point can be applied reliably. The revised 390 × 844 capture shows the patient, reaching arm, and tripod together; a second desktop capture confirms no desktop regression.
@@ -71,10 +74,12 @@ No outstanding P0, P1, or P2 visual or interaction findings.
 - The hero CTA opens question 1 of the four-question discovery survey.
 - Selecting an answer sets its accessible checked state, enables Continue, and advances to the next question.
 - Back navigation, all four question transitions, the redesigned result, sign-up handoff, and existing sign-in handoff remain reachable.
+- The result's “Sign up to try Rehyn” action opens the existing sign-up form with the selected movement focus preserved.
 - The header Sign in button opens the existing Sign in to Rehyn form.
 - The production Expo web export passed.
 - TypeScript and ESLint passed for the changed screen.
 - The browser console reported no errors.
+- The latest result render was verified at 426 × 929 and 1440 × 900. The browser reported no new errors; the only warning is the existing Expo web notification-listener warning.
 - The final iPhone-sized render measured 390 CSS pixels wide with a 390 × 285 image, `object-fit: cover`, `object-position: 70% 50%`, and no horizontal overflow.
 
 ## Implementation checklist
@@ -89,6 +94,7 @@ No outstanding P0, P1, or P2 visual or interaction findings.
 - [x] Working discovery survey CTA
 - [x] Reference-matched full-screen survey design
 - [x] Responsive selected, progress, Back, and result states
+- [x] Latest stacked-icon sign-up result design at phone and desktop widths
 - [x] Working sign-in action
 - [x] Production build, TypeScript, lint, and browser verification
 

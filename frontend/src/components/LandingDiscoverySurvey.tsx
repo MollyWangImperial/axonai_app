@@ -7,10 +7,10 @@ type Props = { onSignUp: (focus: string) => void };
 const GREEN = "#004A38";
 const INK = "#083547";
 const RESULT_BENEFITS = [
-  "Understand your movement",
-  "Track changes over time",
-  "Follow spoken guidance",
-];
+  { label: "Understand your movement", icon: "search-outline" },
+  { label: "Track changes over time", icon: "stats-chart-outline" },
+  { label: "Follow spoken guidance", icon: "volume-high-outline" },
+] as const;
 
 export default function LandingDiscoverySurvey({ onSignUp }: Props) {
   const [step, setStep] = useState(0);
@@ -40,26 +40,18 @@ export default function LandingDiscoverySurvey({ onSignUp }: Props) {
             We’ll use it to shape your programme.
           </Text>
 
-          <View style={[styles.resultBody, compact && styles.compactResultBody]}>
-            <View style={[styles.movementGraphic, compact && styles.compactMovementGraphic]} accessible={false}>
-              <View style={[styles.movementHalo, compact && styles.compactMovementHalo]}>
-                <Ionicons name="body-outline" size={compact ? 126 : 220} color={GREEN} />
-                <View style={[styles.movementBadge, compact && styles.compactMovementBadge]}>
-                  <Ionicons name="checkmark" size={compact ? 31 : 55} color={GREEN} />
-                </View>
-              </View>
-            </View>
-
-            <View style={[styles.resultBenefits, compact && styles.compactResultBenefits]}>
-              {RESULT_BENEFITS.map((benefit) => (
-                <View key={benefit} style={[styles.resultBenefit, compact && styles.compactResultBenefit]}>
-                  <View style={[styles.resultCheck, compact && styles.compactResultCheck]}>
-                    <Ionicons name="checkmark" size={compact ? 25 : 43} color={GREEN} />
+          <View style={[styles.resultBenefitsCard, compact && styles.compactResultBenefitsCard]}>
+            {RESULT_BENEFITS.map((benefit, index) => (
+              <View key={benefit.label}>
+                <View style={[styles.resultBenefit, compact && styles.compactResultBenefit]}>
+                  <View style={[styles.resultIcon, compact && styles.compactResultIcon]} accessible={false}>
+                    <Ionicons name={benefit.icon} size={compact ? 39 : 49} color={GREEN} />
                   </View>
-                  <Text style={[styles.resultBenefitText, compact && styles.compactResultBenefitText]}>{benefit}</Text>
+                  <Text style={[styles.resultBenefitText, compact && styles.compactResultBenefitText]}>{benefit.label}</Text>
                 </View>
-              ))}
-            </View>
+                {index < RESULT_BENEFITS.length - 1 ? <View style={[styles.resultBenefitDivider, compact && styles.compactResultBenefitDivider]} /> : null}
+              </View>
+            ))}
           </View>
 
           <View style={[styles.resultDivider, compact && styles.compactResultDivider]} />
@@ -150,32 +142,26 @@ const styles = StyleSheet.create({
   backButton: { alignSelf: "flex-start", minHeight: 48, flexDirection: "row", alignItems: "center", gap: 8, paddingRight: 10 },
   link: { color: GREEN, fontSize: 16, fontWeight: "700", textDecorationLine: "underline" },
   textButton: { minHeight: 48, alignItems: "center", justifyContent: "center", marginTop: 10 },
-  result: { width: "100%", paddingTop: 42, paddingHorizontal: 10 },
-  compactResult: { paddingTop: 8, paddingHorizontal: 0 },
+  result: { width: "100%", maxWidth: 1120, alignSelf: "center", paddingTop: 42, paddingHorizontal: 10 },
+  compactResult: { maxWidth: 640, paddingTop: 62, paddingHorizontal: 0 },
   resultTitle: { color: INK, fontSize: 80, lineHeight: 90, fontWeight: "800", letterSpacing: -2.5, marginBottom: 4 },
-  compactResultTitle: { fontSize: 34, lineHeight: 41, letterSpacing: -1, marginBottom: 7, paddingRight: 45 },
-  resultSubtitle: { color: "#657F77", fontSize: 39, lineHeight: 50, fontWeight: "600", marginBottom: 67 },
-  compactResultSubtitle: { fontSize: 20, lineHeight: 28, marginBottom: 30, paddingRight: 28 },
-  resultBody: { width: "100%", minHeight: 370, flexDirection: "row", alignItems: "center", gap: 16, marginBottom: 48 },
-  compactResultBody: { minHeight: 0, flexDirection: "column", alignItems: "stretch", gap: 28, marginBottom: 32 },
-  movementGraphic: { width: 490, alignItems: "center", justifyContent: "center" },
-  compactMovementGraphic: { width: "100%" },
-  movementHalo: { width: 350, height: 350, borderRadius: 175, backgroundColor: "#E0F3E5", alignItems: "center", justifyContent: "center" },
-  compactMovementHalo: { width: 190, height: 190, borderRadius: 95 },
-  movementBadge: { position: "absolute", right: 18, bottom: 25, width: 112, height: 112, borderRadius: 56, backgroundColor: "#D7EFDE", borderWidth: 8, borderColor: "#E0F3E5", alignItems: "center", justifyContent: "center" },
-  compactMovementBadge: { right: 0, bottom: 5, width: 66, height: 66, borderRadius: 33, borderWidth: 5 },
-  resultBenefits: { flex: 1, gap: 40 },
-  compactResultBenefits: { gap: 18 },
-  resultBenefit: { flexDirection: "row", alignItems: "center", gap: 40 },
-  compactResultBenefit: { gap: 16 },
-  resultCheck: { width: 72, height: 72, borderRadius: 36, backgroundColor: "#E1F2E5", alignItems: "center", justifyContent: "center", flexShrink: 0 },
-  compactResultCheck: { width: 46, height: 46, borderRadius: 23 },
-  resultBenefitText: { flex: 1, color: INK, fontSize: 38, lineHeight: 48, fontWeight: "700", letterSpacing: -1 },
-  compactResultBenefitText: { fontSize: 20, lineHeight: 27, letterSpacing: -0.3 },
+  compactResultTitle: { fontSize: 34, lineHeight: 41, letterSpacing: -1, marginBottom: 20, paddingRight: 45 },
+  resultSubtitle: { color: "#657F77", fontSize: 39, lineHeight: 50, fontWeight: "600", marginBottom: 54 },
+  compactResultSubtitle: { fontSize: 23, lineHeight: 31, marginBottom: 40, paddingRight: 28 },
+  resultBenefitsCard: { width: "100%", borderWidth: 1, borderColor: "#D6E7E2", borderRadius: 26, backgroundColor: "#FFFFFF", overflow: "hidden", marginBottom: 96, shadowColor: "#76A797", shadowOpacity: 0.13, shadowRadius: 22, shadowOffset: { width: 0, height: 10 } },
+  compactResultBenefitsCard: { borderRadius: 14, marginBottom: 96, shadowOpacity: 0.1, shadowRadius: 14, shadowOffset: { width: 0, height: 7 } },
+  resultBenefit: { minHeight: 150, flexDirection: "row", alignItems: "center", gap: 36, paddingHorizontal: 40, paddingVertical: 26 },
+  compactResultBenefit: { minHeight: 116, gap: 24, paddingHorizontal: 20, paddingVertical: 18 },
+  resultIcon: { width: 96, height: 96, borderRadius: 48, backgroundColor: "#EAF7F1", alignItems: "center", justifyContent: "center", flexShrink: 0 },
+  compactResultIcon: { width: 78, height: 78, borderRadius: 39 },
+  resultBenefitText: { flex: 1, color: INK, fontSize: 36, lineHeight: 45, fontWeight: "800", letterSpacing: -0.8 },
+  compactResultBenefitText: { fontSize: 22, lineHeight: 28, letterSpacing: -0.4 },
+  resultBenefitDivider: { height: 1, marginHorizontal: 40, backgroundColor: "#D6E7E2" },
+  compactResultBenefitDivider: { marginHorizontal: 20 },
   resultDivider: { width: "100%", height: 1, backgroundColor: "#C8D7D2", marginBottom: 34 },
   compactResultDivider: { marginBottom: 22 },
   resultPrimary: { width: "100%", minHeight: 108, backgroundColor: GREEN, borderRadius: 18, paddingHorizontal: 28, paddingVertical: 20, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 20 },
-  compactResultPrimary: { minHeight: 64, borderRadius: 13, paddingHorizontal: 18, paddingVertical: 14, gap: 10 },
+  compactResultPrimary: { minHeight: 68, borderRadius: 18, paddingHorizontal: 18, paddingVertical: 14, gap: 10 },
   resultPrimaryText: { color: "#FFFFFF", fontSize: 31, lineHeight: 39, fontWeight: "800", textAlign: "center" },
   compactResultPrimaryText: { fontSize: 19, lineHeight: 25 },
   disabled: { opacity: 0.42 },
