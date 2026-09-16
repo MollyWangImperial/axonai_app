@@ -18,6 +18,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import * as Haptics from "expo-haptics";
 import { colors, radius } from "@/src/theme";
+import LandingDiscoverySurvey from "@/src/components/LandingDiscoverySurvey";
 import { signIn, completeSignInHandoff, authedFetch, cachePatientOnboarding, getCachedPatientProfile, hasAcceptedConsent, type Me } from "@/src/auth";
 
 // Sampled from the supplied Rehyn logo; shared by every landing-page accent.
@@ -26,7 +27,7 @@ const INK = "#083547";
 const MUTED = "#254D63";
 const WARM_WHITE = "#FCFAF7";
 
-type Overlay = "auth" | "how" | "about" | null;
+type Overlay = "auth" | "how" | "about" | "discovery" | null;
 type AuthIntent = "start" | "signin";
 
 function RehynBrand({ compact = false }: { compact?: boolean }) {
@@ -49,12 +50,13 @@ export default function SignInScreen() {
   const requestedAuth = Array.isArray(auth) ? auth[0] : auth;
   const requestedHandoff = Array.isArray(handoff) ? handoff[0] : handoff;
   const { width, height } = useWindowDimensions();
-  const isWide = width >= 980;
+  const isWide = width >= 1120;
   const isSmall = width < 600;
   const pageHeight = Math.max(height - insets.top - insets.bottom, isWide ? 620 : 0);
   const headingSize = isWide ? Math.min(74, width * 0.0424) : isSmall ? Math.min(40, width * 0.097) : 56;
   const [overlay, setOverlay] = useState<Overlay>(requestedAuth === "signin" || requestedAuth === "start" ? "auth" : null);
   const [authIntent, setAuthIntent] = useState<AuthIntent>(requestedAuth === "signin" ? "signin" : "start");
+  const [discoveryFocus, setDiscoveryFocus] = useState<string | null>(null);
   const [email, setEmail] = useState("");
   const [name, setName] = useState("");
   const [trialCode, setTrialCode] = useState("");
@@ -126,7 +128,8 @@ export default function SignInScreen() {
       });
   }, [requestedHandoff, routePatientAfterLogin]);
 
-  const openAuth = (intent: AuthIntent) => {
+  const openAuth = (intent: AuthIntent, focus: string | null = null) => {
+    setDiscoveryFocus(focus);
     setAuthIntent(intent);
     setErr(null);
     setOverlay("auth");
@@ -215,7 +218,7 @@ export default function SignInScreen() {
         <View style={[styles.landing, { minHeight: pageHeight }]}>
           {isWide ? (
             <Image
-              source={require("../assets/images/rehyn-landing-hero.png")}
+              source={require("../assets/images/rehyn-landing-hero-realistic.png")}
               resizeMode="cover"
               accessible={false}
               style={styles.heroImage}
@@ -223,7 +226,7 @@ export default function SignInScreen() {
           ) : null}
           <View style={[styles.header, !isWide && styles.headerCompact]}>
             <RehynBrand compact={!isWide} />
-            <View style={styles.headerActions}>
+            <View style={[styles.headerActions, !isWide && styles.headerActionsCompact]}>
               {isWide ? (
                 <>
                   <Pressable accessibilityRole="button" onPress={() => setOverlay("how")} style={({ pressed }) => [styles.navLink, pressed && styles.pressed]}>
@@ -237,10 +240,10 @@ export default function SignInScreen() {
               <Pressable
                 testID="signin-start-free"
                 accessibilityRole="button"
-                onPress={() => openAuth("start")}
+                onPress={() => setOverlay("discovery")}
                 style={({ pressed }) => [styles.headerCta, !isWide && styles.headerCtaCompact, pressed && styles.buttonPressed]}
               >
-                <Text style={[styles.headerCtaText, !isWide && styles.headerCtaTextCompact]}>Explore Rehyn</Text>
+                <Text style={[styles.headerCtaText, isWide && { fontSize: Math.max(18, Math.min(22, width * 0.013)) }, !isWide && styles.headerCtaTextCompact]}>See if Rehyn could help you</Text>
                 <Ionicons name="arrow-forward" size={isWide ? 25 : 18} color="#FFFFFF" />
               </Pressable>
             </View>
@@ -286,7 +289,7 @@ export default function SignInScreen() {
           {!isWide ? (
             <View style={[styles.mobilePhotoFrame, { height: isSmall ? width * 0.87 : width * 0.63 }]}>
               <Image
-                source={require("../assets/images/rehyn-landing-hero.png")}
+                source={require("../assets/images/rehyn-landing-hero-realistic.png")}
                 accessibilityLabel="A man practising a seated reaching movement at home with a phone on a tripod."
                 resizeMode="cover"
                 style={[styles.mobilePhoto, { width: width * 1.9, height: width * 0.98 }]}
@@ -299,15 +302,18 @@ export default function SignInScreen() {
       <Modal visible={overlay !== null} transparent animationType="fade" onRequestClose={closeOverlay}>
         <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={styles.modalRoot}>
           <Pressable accessibilityLabel="Close" onPress={closeOverlay} style={StyleSheet.absoluteFill} />
-          <View style={[styles.modalCard, overlay !== "auth" && styles.infoCard]} accessibilityViewIsModal>
+          <View style={[styles.modalCard, overlay !== "auth" && styles.infoCard, overlay === "discovery" && styles.discoveryCard]} accessibilityViewIsModal>
             <Pressable accessibilityLabel="Close" onPress={closeOverlay} style={({ pressed }) => [styles.closeButton, pressed && styles.pressed]}>
               <Ionicons name="close" size={24} color={INK} />
             </Pressable>
 
-            {overlay === "auth" ? (
+            {overlay === "discovery" ? (
+              <LandingDiscoverySurvey onSignUp={(focus) => openAuth("start", focus)} onSignIn={() => openAuth("signin")} />
+            ) : overlay === "auth" ? (
               <ScrollView contentContainerStyle={styles.formContent} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
                 <View style={styles.modalBrand}><RehynBrand compact /></View>
-                <Text style={styles.formTitle}>{authIntent === "start" ? "Start free" : "Sign in to Rehyn"}</Text>
+                <Text style={styles.formTitle}>{authIntent === "start" ? "Sign up to Rehyn" : "Sign in to Rehyn"}</Text>
+                {discoveryFocus ? <Text testID="signin-discovery-focus" style={styles.focusNote}>Your focus: {discoveryFocus}</Text> : null}
                 <Text style={styles.formSubtitle}>Enter your name and email to continue.</Text>
 
                 <Text style={styles.inputLabel}>Your name</Text>
@@ -337,7 +343,7 @@ export default function SignInScreen() {
                   returnKeyType="next"
                 />
 
-                <Text style={styles.inputLabel}>Trial code (optional)</Text>
+                <Text style={styles.inputLabel}>Trial code</Text>
                 <View style={styles.trialInputShell}>
                   <TextInput
                     value={trialCode}
@@ -406,13 +412,14 @@ const styles = StyleSheet.create({
   brandFrameCompact: { width: 134, height: 54 },
   brandLogo: { width: 250, height: 83, marginLeft: -28 },
   brandLogoCompact: { width: 147, height: 49, marginLeft: -16 },
+  headerActionsCompact: { flex: 1, minWidth: 0, justifyContent: "flex-end" },
   headerActions: { flexDirection: "row", alignItems: "center", gap: 28 },
   navLink: { minHeight: 48, paddingHorizontal: 6, alignItems: "center", justifyContent: "center" },
   navLinkText: { color: INK, fontSize: 20, fontWeight: "400" },
   headerCta: { minWidth: 229, minHeight: 58, paddingHorizontal: 26, borderRadius: 14, backgroundColor: DEEP_GREEN, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 14 },
-  headerCtaCompact: { minWidth: 140, minHeight: 46, paddingHorizontal: 12, borderRadius: 11, gap: 6 },
+  headerCtaCompact: { minWidth: 0, minHeight: 58, maxWidth: 240, paddingHorizontal: 12, paddingVertical: 10, borderRadius: 11, gap: 6, flexShrink: 1 },
   headerCtaText: { color: "#FFFFFF", fontSize: 22, fontWeight: "400" },
-  headerCtaTextCompact: { fontSize: 14 },
+  headerCtaTextCompact: { fontSize: 14, lineHeight: 19, flexShrink: 1, textAlign: "center" },
   mobileNavigation: { flexDirection: "row", gap: 24, paddingHorizontal: 22 },
   mobileNavText: { color: INK, fontSize: 16 },
   heroContent: { paddingLeft: "6%", paddingBottom: 60, alignItems: "flex-start" },
@@ -430,6 +437,8 @@ const styles = StyleSheet.create({
   modalRoot: { flex: 1, padding: 20, backgroundColor: "rgba(4,31,22,0.56)", alignItems: "center", justifyContent: "center" },
   modalCard: { width: "100%", maxWidth: 520, maxHeight: "92%", borderRadius: radius.lg, backgroundColor: "#FFFFFF", borderWidth: 1, borderColor: "#DADFD9", shadowColor: "#071E16", shadowOpacity: 0.22, shadowRadius: 30, shadowOffset: { width: 0, height: 14 } },
   infoCard: { maxWidth: 560 },
+  discoveryCard: { maxWidth: 640 },
+  focusNote: { color: DEEP_GREEN, fontSize: 15, lineHeight: 22, fontWeight: "600", marginBottom: 12 },
   closeButton: { position: "absolute", zIndex: 2, right: 18, top: 18, width: 44, height: 44, borderRadius: 22, alignItems: "center", justifyContent: "center", backgroundColor: "#F1F4F0" },
   modalBrand: { marginBottom: 26 },
   formContent: { paddingHorizontal: 34, paddingTop: 34, paddingBottom: 30 },
