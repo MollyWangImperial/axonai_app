@@ -55,8 +55,13 @@ export default function SignInScreen() {
   const { width, height } = useWindowDimensions();
   const isWide = width >= 1120;
   const isSmall = width < 600;
+  const isPhone = width < 700;
   const isSurveyCompact = width < 1100;
   const pageHeight = Math.max(height - insets.top - insets.bottom, isWide ? 620 : 0);
+  const phoneHeaderHeight = 72;
+  const phonePhotoHeight = Math.round(width * 0.875);
+  const phoneHeroHeight = Math.max(700, pageHeight - phoneHeaderHeight);
+  const phoneCopyHeight = Math.max(420, phoneHeroHeight - phonePhotoHeight);
   const headingSize = isWide ? Math.min(68, width * 0.038) : isSmall ? Math.min(40, width * 0.097) : 58;
   const [overlay, setOverlay] = useState<Overlay>(requestedAuth === "signin" || requestedAuth === "start" ? "auth" : null);
   const [authIntent, setAuthIntent] = useState<AuthIntent>(requestedAuth === "signin" ? "signin" : "start");
@@ -220,7 +225,7 @@ export default function SignInScreen() {
         showsVerticalScrollIndicator={false}
       >
         <View style={[styles.landing, { minHeight: pageHeight }]}>
-          <View style={[styles.header, !isWide && styles.headerCompact]}>
+          <View style={[styles.header, !isWide && styles.headerCompact, isPhone && styles.headerPhone]}>
             <RehynBrand compact={!isWide} />
             <View style={[styles.headerActions, !isWide && styles.headerActionsCompact]}>
               {isWide ? (
@@ -244,13 +249,13 @@ export default function SignInScreen() {
                 testID="signin-header"
                 accessibilityRole="button"
                 onPress={() => openAuth("signin")}
-                style={({ pressed }) => [styles.signInButton, !isWide && styles.signInButtonCompact, pressed && styles.buttonPressed]}
+                style={({ pressed }) => [styles.signInButton, !isWide && styles.signInButtonCompact, isPhone && styles.signInButtonPhone, pressed && styles.buttonPressed]}
               >
                 <Text style={[styles.signInButtonText, !isWide && styles.signInButtonTextCompact]}>Sign in</Text>
               </Pressable>
             </View>
           </View>
-          {!isWide ? (
+          {!isWide && !isPhone ? (
             <View style={styles.mobileNavigation}>
               <Pressable accessibilityRole="button" onPress={() => setOverlay("how")} style={({ pressed }) => [styles.navLink, pressed && styles.pressed]}>
                 <Text style={styles.mobileNavText}>How it works</Text>
@@ -260,31 +265,33 @@ export default function SignInScreen() {
               </Pressable>
             </View>
           ) : null}
-          <View style={[styles.hero, isWide ? { minHeight: Math.max(620, pageHeight - 92) } : styles.heroCompact]}>
+          <View style={[styles.hero, isWide ? { minHeight: Math.max(620, pageHeight - 92) } : isPhone ? [styles.heroPhone, { minHeight: phoneHeroHeight }] : styles.heroCompact]}>
             <ExpoImage
               source={require("../assets/images/rehyn-landing-hero-background.png")}
               contentFit="cover"
-              contentPosition={isWide ? "center" : { left: "70%", top: "50%" }}
+              contentPosition={isWide ? "center" : isPhone ? { left: "90%", top: "50%" } : { left: "70%", top: "50%" }}
               accessibilityLabel="A man practising a seated reaching movement at home with a phone on a tripod."
               style={[
-                styles.heroImage,
+                isPhone ? [styles.heroImagePhone, { height: phonePhotoHeight }] : styles.heroImage,
                 isWide && Platform.OS === "web"
                   ? ({ top: -100, bottom: "auto", height: "calc(100% + 100px)" } as never)
                   : null,
-                !isWide && styles.heroImageCompact,
+                !isWide && !isPhone && styles.heroImageCompact,
               ]}
             />
-            <View
-              style={[
-                styles.heroPanel,
-                isWide
-                  ? Platform.OS === "web"
-                    ? ({ width: "100%", clipPath: "polygon(0 0, 44.2% 0, 43.6% 6%, 42.9% 12%, 42.2% 19%, 41.5% 27%, 40.8% 35%, 40.5% 43%, 40.7% 51%, 41.3% 59%, 42.2% 67%, 43.5% 75%, 45.0% 83%, 47.0% 91%, 50.0% 100%, 0 100%)" } as never)
-                    : styles.heroPanelDesktopNative
-                  : styles.heroPanelCompact,
-              ]}
-            />
-            <View style={[styles.heroContent, !isWide && styles.heroContentCompact]}>
+            {!isPhone ? (
+              <View
+                style={[
+                  styles.heroPanel,
+                  isWide
+                    ? Platform.OS === "web"
+                      ? ({ width: "100%", clipPath: "polygon(0 0, 44.2% 0, 43.6% 6%, 42.9% 12%, 42.2% 19%, 41.5% 27%, 40.8% 35%, 40.5% 43%, 40.7% 51%, 41.3% 59%, 42.2% 67%, 43.5% 75%, 45.0% 83%, 47.0% 91%, 50.0% 100%, 0 100%)" } as never)
+                      : styles.heroPanelDesktopNative
+                    : styles.heroPanelCompact,
+                ]}
+              />
+            ) : null}
+            <View style={[styles.heroContent, !isWide && styles.heroContentCompact, isPhone && [styles.heroContentPhone, { minHeight: phoneCopyHeight }]]}>
               <View
                 accessible
                 accessibilityRole="header"
@@ -312,9 +319,12 @@ export default function SignInScreen() {
                   styles.heroSubtitle,
                   isWide && width < 1350 && styles.heroSubtitleNarrowDesktop,
                   !isWide && styles.heroSubtitleCompact,
+                  isPhone && styles.heroSubtitlePhone,
                 ]}
               >
-                {isWide && width < 1350
+                {isPhone
+                  ? "Personalised stroke rehabilitation,\nguided by experts and built around\neveryday life."
+                  : isWide && width < 1350
                   ? "Personalised stroke rehabilitation,\nguided by experts and built around\neveryday life."
                   : "Personalised stroke rehabilitation, guided by\nexperts and built around everyday life."}
               </Text>
@@ -322,7 +332,7 @@ export default function SignInScreen() {
                 testID="signin-start-free"
                 accessibilityRole="button"
                 onPress={() => setOverlay("discovery")}
-                style={({ pressed }) => [styles.heroCta, !isWide && styles.heroCtaCompact, pressed && styles.buttonPressed]}
+                style={({ pressed }) => [styles.heroCta, !isWide && styles.heroCtaCompact, isPhone && styles.heroCtaPhone, pressed && styles.buttonPressed]}
               >
                 <Text style={[styles.heroCtaText, !isWide && styles.heroCtaTextCompact]}>See if Rehyn could help you</Text>
                 <Ionicons name="arrow-forward" size={isWide ? 29 : 23} color={DEEP_GREEN} />
@@ -441,14 +451,17 @@ const styles = StyleSheet.create({
   scrollContent: { flexGrow: 1 },
   landing: { flex: 1, backgroundColor: "#FFFFFF", overflow: "hidden" },
   hero: { position: "relative", overflow: "hidden", flex: 1, backgroundColor: "#EDE9E2" },
+  heroPhone: { flex: 0, backgroundColor: DEEP_GREEN },
   heroCompact: { minHeight: 715 },
   heroImage: { ...StyleSheet.absoluteFillObject, width: "100%", height: "100%" },
+  heroImagePhone: { position: "relative", width: "100%", flexShrink: 0 },
   heroImageCompact: { top: 430, height: 285 },
   heroPanel: { ...StyleSheet.absoluteFillObject, backgroundColor: DEEP_GREEN },
   heroPanelDesktopNative: { right: undefined, width: "50.5%", borderTopRightRadius: 360, borderBottomRightRadius: 130 },
   heroPanelCompact: { width: "100%", bottom: undefined, height: 455, borderTopRightRadius: 0, borderBottomRightRadius: 90 },
   header: { minHeight: 92, paddingLeft: "6%", paddingRight: "4.35%", flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 20, zIndex: 1 },
   headerCompact: { minHeight: 80, paddingHorizontal: 16, gap: 8 },
+  headerPhone: { minHeight: 72, paddingHorizontal: 18, backgroundColor: "#FFFFFF" },
   brandFrame: { width: 230, height: 83, overflow: "hidden" },
   brandFrameCompact: { width: 134, height: 54 },
   brandLogo: { width: 250, height: 83, marginLeft: -28 },
@@ -460,20 +473,24 @@ const styles = StyleSheet.create({
   navDivider: { width: 1, height: 44, backgroundColor: "#C8CBC8", marginHorizontal: 2 },
   signInButton: { minWidth: 150, minHeight: 60, paddingHorizontal: 28, borderRadius: 14, backgroundColor: LIGHT_GREEN, alignItems: "center", justifyContent: "center" },
   signInButtonCompact: { minWidth: 88, minHeight: 48, paddingHorizontal: 16, borderRadius: 10 },
+  signInButtonPhone: { minWidth: 88, minHeight: 44, borderWidth: 1.5, borderColor: DEEP_GREEN, borderRadius: 24, backgroundColor: "#FFFFFF" },
   signInButtonText: { color: DEEP_GREEN, fontSize: 21, fontWeight: "800" },
   signInButtonTextCompact: { fontSize: 16 },
   mobileNavigation: { flexDirection: "row", gap: 24, paddingHorizontal: 22 },
   mobileNavText: { color: INK, fontSize: 16 },
   heroContent: { width: "43.5%", paddingLeft: "5.8%", paddingTop: 70, paddingBottom: 72, justifyContent: "center", alignItems: "flex-start", zIndex: 1 },
   heroContentCompact: { width: "100%", height: 455, paddingTop: 36, paddingHorizontal: 24, paddingBottom: 34, justifyContent: "flex-start" },
+  heroContentPhone: { height: "auto", flexGrow: 1, paddingTop: 42, paddingHorizontal: 24, paddingBottom: 24, backgroundColor: DEEP_GREEN },
   heroHeadingBlock: { width: "100%", alignItems: "flex-start" },
   heroTitle: { color: "#FFFFFF", fontFamily: Platform.OS === "web" ? "Arial" : undefined, fontWeight: "800", letterSpacing: -2.6 },
   heroAccent: { color: LIGHT_GREEN },
   heroSubtitle: { color: "#FFFFFF", fontSize: 25, lineHeight: 34, fontWeight: "400", marginTop: 24, marginBottom: 54 },
   heroSubtitleNarrowDesktop: { maxWidth: 380 },
   heroSubtitleCompact: { fontSize: 16, lineHeight: 23, marginTop: 16, marginBottom: 24 },
+  heroSubtitlePhone: { marginTop: 22, marginBottom: 34 },
   heroCta: { minWidth: 416, minHeight: 72, paddingHorizontal: 30, borderRadius: 13, backgroundColor: LIGHT_GREEN, flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 20 },
   heroCtaCompact: { minWidth: 0, width: "100%", maxWidth: 360, minHeight: 56, paddingHorizontal: 20, borderRadius: 10 },
+  heroCtaPhone: { maxWidth: "100%", minHeight: 58, borderRadius: 12 },
   heroCtaText: { color: DEEP_GREEN, fontSize: 22, fontWeight: "800" },
   heroCtaTextCompact: { fontSize: 16 },
   modalRoot: { flex: 1, padding: 20, backgroundColor: "rgba(4,31,22,0.56)", alignItems: "center", justifyContent: "center" },

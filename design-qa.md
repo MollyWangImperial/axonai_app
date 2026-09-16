@@ -8,6 +8,7 @@ Date: 2026-09-16
 - Survey visual truth: `C:\Users\LENOVO\AppData\Local\Temp\codex-clipboard-915bbe6e-c3c7-4b2e-ad91-5277282506c7.png` at 1207 × 1305 pixels.
 - Survey result visual truth: `C:\Users\LENOVO\AppData\Local\Temp\codex-clipboard-38be15ce-8f08-48f5-b15e-4ed473b4f11c.png` at 1386 × 1132 pixels.
 - Latest compact survey result visual truth: `C:\Users\LENOVO\AppData\Local\Temp\codex-clipboard-182e09ca-117a-4652-a984-123110d67faf.png` at 852 × 1858 pixels.
+- Selected mobile landing visual truth: `C:\Users\LENOVO\AppData\Local\Temp\codex-clipboard-8973164d-3339-4b49-ab25-f4f2e21bdd4b.png` at 852 × 1858 pixels.
 - Supplied background asset: `C:\Users\LENOVO\AppData\Local\Temp\codex-clipboard-744c1103-65fd-4ec8-b185-514dbbe15e46.png` at 1746 × 901 pixels.
 - Phone issue reference: `D:\xwechat_files\wxid_ycyjacdoxojk12_3fec\temp\RWTemp\2026-09\9e20f478899dc29eb19741386f9343c8\42f11f3a7e3df24fdf4a22b3130ed073.jpg` at 1179 × 2556 pixels.
 - Project background asset: `frontend/assets/images/rehyn-landing-hero-background.png`; its SHA-256 matches the supplied background.
@@ -29,8 +30,9 @@ No outstanding P0, P1, or P2 visual or interaction findings.
 - The white-and-green, three-line display headline retains the source hierarchy. The third line is fixed as “All from home.”
 - The desktop headline scale and text column are constrained so all three lines remain inside the green panel without crossing its curved edge.
 - The subtitle and bright-green discovery CTA match the source's placement, scale, and contrast.
-- At 390 × 844, the header stays usable, all headline lines fit without horizontal clipping, the CTA remains fully visible, and the image follows beneath the green panel.
-- At 390 × 844, the photo uses a shorter 285-pixel frame and a 70% horizontal focal point. The patient, reaching arm, and phone on its tripod are all visible without horizontal page overflow. The desktop crop is unchanged.
+- At 390 × 844, the landing page follows the selected mobile split: a 72-pixel white brand header, a 341-pixel photo, and a deep-green copy section with the full headline, supporting copy, and CTA visible in one viewport.
+- The phone photo uses a 90% horizontal focal point so the patient, reaching arm, phone, and tripod are all visible. The mobile page has no horizontal or vertical overflow.
+- At 1440 × 900, the existing wide-screen hero remains unchanged, including its full navigation, curved green panel, photo composition, and CTA.
 - The survey now uses the reference's full white surface, large close control, compact step counter, long progress bar, two-line title, grouped answer rows, large circular selectors, and full-width action.
 - At 1207 × 1305, the survey's progress bar, title, description, grouped options, and Continue button align within approximately 12 pixels of the supplied reference.
 - At 390 × 844, the survey preserves the same hierarchy without clipped copy or horizontal overflow; answer rows wrap naturally and the action remains visible.
@@ -50,7 +52,7 @@ No outstanding P0, P1, or P2 visual or interaction findings.
 - Full view: the source and implementation were opened at the source's 1851 × 849 dimensions. The header-to-hero proportion, left text block, curved green boundary, patient placement, and right-side tripod are visibly aligned.
 - Focused header review: logo scale, five navigation items, divider, and Sign in button are readable and vertically centered.
 - Focused hero review: the headline, subtitle, and CTA maintain the requested ordering and do not collide with the clipped panel edge. The eyebrow text, divider line, and pulse icon have been removed.
-- Focused responsive review: the 390 × 844 capture shows no horizontal overflow, clipped copy, or hidden CTA. No additional crop was needed for legibility.
+- Focused responsive review: the 390 × 844 capture matches the selected photo-first split, uses the outlined mobile Sign in action, omits secondary mobile navigation, and shows the whole conversion path without scrolling.
 - Survey full view: the source and implementation were compared at 1207 × 1305. Counter, progress, title wrapping, description, four-row option group, and primary action follow the reference composition.
 - Survey focused review: selected rows use a pale-green fill and check icon, the Continue action becomes active after selection, and the close control remains clear at desktop and compact sizes.
 - Result focused review: the three benefits use the supplied search, progress-chart, and spoken-guidance icon treatments in a single card; the divider and sign-up action follow the compact reference's vertical rhythm.
@@ -66,6 +68,7 @@ No outstanding P0, P1, or P2 visual or interaction findings.
 - Latest desktop pass: the changing third line was removed at the user's request. A screenshot also revealed “More confidence.” crossing the curved panel edge at a wide, shorter viewport, so the desktop headline cap was reduced to 68 pixels, its fluid scale was tightened, and the text column narrowed to 43.5%. The subtitle uses a narrower three-line treatment near the desktop breakpoint so it also remains inside the panel.
 - Post-fix desktop and compact captures show no remaining P0/P1/P2 mismatch.
 - Phone-photo pass: the user's iPhone capture showed the wide desktop asset forced into a tall mobile frame, making the patient appear over-cropped and pushing the tripod off screen. The mobile image frame was shortened from 385 to 285 pixels, and the image rendering was moved to `expo-image` so a 70% horizontal focal point can be applied reliably. The revised 390 × 844 capture shows the patient, reaching arm, and tripod together; a second desktop capture confirms no desktop regression.
+- Selected mobile-layout pass: the previous green-panel-first stack was replaced below 700 pixels with the chosen header → photo → green-copy sequence. The image frame is sized from the viewport width and uses a 90% focal point, while widths from 1120 pixels retain the existing desktop branch.
 
 ## Interaction and engineering verification
 
@@ -80,7 +83,8 @@ No outstanding P0, P1, or P2 visual or interaction findings.
 - TypeScript and ESLint passed for the changed screen.
 - The browser console reported no errors.
 - The latest result render was verified at 426 × 929 and 1440 × 900. The browser reported no new errors; the only warning is the existing Expo web notification-listener warning.
-- The final iPhone-sized render measured 390 CSS pixels wide with a 390 × 285 image, `object-fit: cover`, `object-position: 70% 50%`, and no horizontal overflow.
+- The final phone render measured 390 × 844 CSS pixels with a 390 × 341 photo, no page overflow, and no browser console errors.
+- The phone CTA opens question 1 of the discovery survey, and the desktop render was rechecked at 1440 × 900 after the responsive change.
 
 ## Implementation checklist
 
@@ -91,6 +95,8 @@ No outstanding P0, P1, or P2 visual or interaction findings.
 - [x] Headline constrained within the curved green panel
 - [x] Responsive compact layout
 - [x] Phone-specific photo frame and focal crop with the tripod retained
+- [x] Selected mobile header → photo → copy layout below 700 pixels
+- [x] Existing wide-screen desktop hero preserved at 1120 pixels and above
 - [x] Working discovery survey CTA
 - [x] Reference-matched full-screen survey design
 - [x] Responsive selected, progress, Back, and result states
