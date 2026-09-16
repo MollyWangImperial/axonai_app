@@ -1,294 +1,50 @@
-# Design QA: Affected Body Areas Survey
+# Rehyn landing page verification
 
-Reference: `C:\Users\LENOVO\AppData\Local\Temp\codex-clipboard-db4f0448-eeab-447e-8d5b-52ffd0ea50cb.png`
+Date: 2026-09-16
 
-Implementation captures:
+## Visual truth and evidence
 
-- Desktop: `output/playwright/affected-area-final-wide.png` at 1600 x 1000.
-- Mobile: `output/playwright/affected-area-final-mobile.png` at 390 x 844.
-- Selected state: `output/playwright/affected-area-selected.png`.
+- Source layout: user-supplied `4e6e064503444ec02ec7af189157a602.png`, copied to `.codex-tmp/landing/reference.png` (1746 x 901 pixels).
+- Source logo: `frontend/assets/images/rehyn-logo.png` (306 x 95 pixels). Its square's dominant colour is RGB (0, 74, 56), or `#004A38`.
+- Implementation: `/sign-in`; screenshots in `.codex-tmp/landing/desktop.png`, `laptop.png`, `tablet.png`, `mobile.png`, and `small-mobile.png`.
+- Viewports: 1746 x 901, 1366 x 768, 768 x 1024, 390 x 844, and 320 x 740 CSS pixels. Device scale factor 1; screenshot dimensions match CSS dimensions.
+- State: signed out, default display preferences, no modal. `mobile-auth.png` also records the opened form and empty-submit validation.
+- Full-view comparison: opened the 1746 x 901 source and implementation together at matching dimensions. Compared tablet screenshots together before and after the image-framing correction.
+- Focused review: the complete logo, three headline lines, navigation, and primary button remain legible at the original screenshot resolution, so an additional enlarged crop was unnecessary.
 
-## Comparison
+## Findings and comparison history
 
-- The question, helper text, progress indicator, central body figure, four limb controls, and three additional-area controls follow the reference hierarchy.
-- The body figure uses Rehyn's age-appropriate anatomy asset to remain consistent with the movement-map experience.
-- Selected controls use a green border, soft green fill, side badge, and check icon.
-- `Not sure yet` is exclusive and clears conflicting body-area selections.
-- Tablet and mobile widths switch to a stacked layout so controls do not overlap and all text remains readable.
-- Desktop and mobile captures showed no application console errors.
-
-## Remaining Differences
-
-- Rehyn's existing photorealistic anatomy asset is used instead of the reference's illustrated male figure.
-- Connector lines and per-limb tinting are omitted because the app supports age-specific anatomy images and the selectable cards already provide the interactive state.
-
-Final result: passed.
-
----
-
-# Design QA: Arm Activity Difficulties Survey
-
-Source visual truth: `C:\Users\LENOVO\AppData\Local\Temp\codex-clipboard-1a32de51-e989-41f5-99c7-8cf506bb9ca6.png`.
-
-Implementation under test: `frontend/app/onboarding.tsx`, question 9 of 19 (`arm_activity_difficulties`).
-
-## Comparison setup
-
-- Compared the supplied 1818 × 893 reference and the rendered local screen in the same review pass at an explicit 1818 × 893 browser viewport.
-- Matched state: question 9 of 19 with “Raising my arm” and “Keeping my shoulder down while lifting my arm” selected.
-- Also reviewed the responsive implementation at 390 × 844 with the same question and fixed Continue footer.
-
-## Visual and content checks
-
-- Three-column by two-row illustrated card structure matches the selected direction at the reference viewport.
-- The six labels and the original survey helper text are unchanged; no extra information was added.
-- Selected cards use a dark-green outline, pale-green fill, and a high-contrast check badge.
-- “None of these” and “I am not sure” remain visually subordinate and span the bottom row.
-- At 390 × 844, cards become compact horizontal rows with readable copy, no horizontal clipping, and scrolling for the full set.
-- The illustrations use one consistent older-patient character, sage/green palette, transparent backgrounds, and concrete everyday actions.
-
-## Interaction and accessibility checks
-
-- Multi-select works for the six movement cards.
-- Selecting “None of these” or “I am not sure” clears movement selections; choosing a movement clears either exclusive answer.
-- The Continue control becomes enabled after a valid selection.
-- Every choice retains the existing test ID pattern, checkbox role, accessible label, checked state, and keyboard focusability on web.
-
-## Verification
-
-- `frontend/app/onboarding.tsx` passes ESLint.
-- Project-wide TypeScript still reports pre-existing errors in unrelated files (`assessment.tsx`, `exercise.tsx`, `persona-chat.tsx`, and `src/auth.ts`); no TypeScript error points to this survey implementation.
-- No current-route console error was observed in the local question-9 preview.
-
-## Findings
-
-- No actionable P0, P1, or P2 visual, content, responsive, or interaction issues remain.
-
-final result: passed
-
----
-
-# Design QA: iPhone Home Layout
-
-Source bug reports:
-
-- `C:\Users\LENOVO\AppData\Local\Temp\codex-clipboard-75fbad6f-2f84-4ced-acbd-1b233216164d.jpg`
-- `C:\Users\LENOVO\AppData\Local\Temp\codex-clipboard-1e5dfb77-8a7e-4a76-97ff-335266a143d0.jpg`
-
-Combined comparison evidence:
-
-- Daily flow: `output/playwright/iphone-day-before-after.png`
-- Weekly summary: `output/playwright/iphone-week-before-after.png`
-
-## Viewport and state
-
-- The source captures are 1280 x 2781-pixel iPhone screenshots, approximately a 430 CSS-pixel viewport at phone pixel density.
-- The corrected implementation was inspected in WebKit at 430 x 932 CSS pixels and at 393 x 659 CSS pixels.
-- State: signed-in patient, not yet checked in today, initial assessment available, default text scale, light theme.
-
-## Comparison
-
-- Daily steps now use content-sized stacked rows on phone. The Check in button no longer collides with the next step's lock icon, and each title, status, description, and action remains within its own section.
-- The weekly summary now has a full-width heading and readable summary line. Calendar and Show details occupy a separate equal-width action row instead of compressing the summary into a one-character column.
-- The expanded weekly details and calendar dialog were checked separately at phone width; labels wrap normally and actions remain within the viewport.
-- Home, Journey, Alira, and My Time all reported document width equal to viewport width with no visible overflowing elements.
-- The iOS standalone-app status bar uses the non-overlay style so app content begins below the system status area.
-
-## Findings
-
-- P1 fixed: the weekly status sentence collapsed into a one-character-wide column and expanded the panel to nearly a full page.
-- P1 fixed: vertically flexible daily steps allowed the first action to overlap the following lock marker.
-- P2 fixed: phone header and points-badge sizing used desktop proportions and reduced available content width.
-- No remaining P0, P1, or P2 responsive issues were found in the four primary tabs, the weekly expanded state, or the calendar dialog.
-
-Final result: passed.
-
----
-
-# Design QA: Affected-arm Movement Spectrum
-
-Source visual truth: `C:\Users\LENOVO\AppData\Local\Temp\codex-clipboard-9d330231-65b1-4bf5-8b33-672b4d24e007.png`
-
-Implementation evidence:
-
-- Desktop selected state: `D:\repos\axonai_app_conflict_290826_1558\.codex-qa\affected-arm-spectrum-desktop.png`
-- Local QA route: `http://localhost:4175/onboarding`
-- Reference: 1999 × 786 pixels. Implementation capture: 1999 × 782 pixels.
-- State: question 8 of 19, “With help” selected, default text scale, light theme.
-
-## Full-view comparison evidence
-
-- The final implementation and reference were inspected together at original resolution in a single comparison pass.
-- The content order matches the reference: question and safety helper, centered picture prompt, four-step movement spectrum, and two large secondary choices.
-- The four circular pictures use one consistent older patient, chair, palette, crop, and illustration treatment. The selected state uses the reference’s green halo, stronger border, and check badge.
-- The horizontal line and “More movement” / “Less movement” cues preserve the intended left-to-right meaning without changing the stored survey values.
-- Rehyn’s existing survey back control, step counter, sticky Continue action, and brand tokens are intentionally retained around the selected design.
-
-## Focused responsive comparison evidence
-
-- Desktop: image scale was increased after the first pass to match the reference’s dominant pictorial hierarchy and to keep labels directly below each picture.
-- Mobile at 390 × 844: the spectrum becomes a two-column picture grid with a compact direction key. All six radio choices remain reachable in the existing scroll container and there is no horizontal overflow.
-- The first mobile pass exposed cramped wrapping in “My arm was not affected.” The secondary-choice artwork, label, and indicator were rebalanced; the final label wraps cleanly to two lines.
+1. Initial comparison (`desktop-v1.png`, `small-mobile-v1.png`): [P2] logo background appeared as a visible rectangle; the narrowest phone added an unwanted headline line; desktop headline extended too close to the reaching hand. Removed the logo background using the image editing tool and adjusted responsive type and header spacing.
+2. Second comparison (`tablet-v2.png`): [P2] bottom-aligning the tablet image cropped the person's head. Changed the image to top alignment.
+3. Final comparison (`desktop.png`, `tablet.png`, `small-mobile.png`): those findings are resolved. No outstanding P0/P1/P2 findings.
 
 ## Required fidelity surfaces
 
-- Typography: large, high-weight question and answer labels preserve the patient-facing hierarchy and remain readable on phone and desktop.
-- Spacing and layout: wide screens use the reference’s single horizontal spectrum; smaller screens wrap predictably without clipping.
-- Colors and states: the existing Rehyn green palette supplies the track, borders, halo, check state, and Continue action with sufficient contrast.
-- Image quality: six dedicated 640 × 640 transparent PNG assets are used; no emoji, CSS drawings, inline SVG artwork, or placeholder imagery substitutes for the patient illustrations.
-- Accessibility: every choice is a semantic radio with an explicit selected state and descriptive image label; controls remain large touch targets and keyboard focus remains visible.
-- Behavior: selecting another answer clears the previous radio state, enables Continue, and Continue advances to “Which arm movements are difficult in everyday life?”
+- Typography: static, selectable headline with the reference's three-line hierarchy. Arial bold provides a close available match; mobile sizing preserves the line structure. Exact font metrics cannot be recovered from the supplied raster.
+- Spacing: preserved left alignment, large negative space, top navigation, rounded buttons, and the desktop photo composition. Narrow screens stack copy and photography while keeping every control reachable.
+- Colours: all landing-page green accents and buttons use `#004A38`, intentionally replacing the reference's brighter green to match the supplied logo. Dark blue text follows the layout reference. Existing app display-brightness preferences still apply.
+- Assets: supplied logo retained as source; transparent display version extracted with the built-in image tool. Hero background derived from the supplied reference with its UI text removed; page text and buttons are real controls.
+- Copy: reproduced the headline, supporting sentence, both Explore Rehyn buttons, How it works, and About. About opens a description of Rehyn; existing authentication and direct sign-in/handoff routes are retained.
 
 ## Verification
 
-- Expo web production export: passed in an isolated worktree so unrelated user worktree deletions were not modified.
-- `frontend/app/onboarding.tsx` ESLint: passed.
-- `backend/tests/test_survey_exercise_plan.py`: 11 passed.
-- Browser console: zero application errors. One expected Expo Notifications web-support warning was observed on mobile.
-
-## Findings and history
-
-- P2 fixed: mobile secondary-choice copy wrapped one trailing character onto its own line.
-- P3 accepted: the attached concept omits the production survey’s persistent Continue action; the existing action is retained so the real flow remains explicit and consistent.
-- No remaining P0, P1, or P2 visual, interaction, accessibility, or responsive issues were found.
-
-Final result: passed.
-
----
-
-# Design QA: Forward Reach Compensation Evidence
-
-Source visual truth: the phone-camera demonstration supplied in the conversation on 2026-09-03, showing a red dotted outline around an observed trunk and shoulder compensation.
-
-Implementation route: `http://127.0.0.1:8001/api/rehab/runner?exercise_id=ex_reach&reps=3&test_mode=compensation_feedback`
-
-## Visual comparison
-
-- The live camera overlay uses a high-contrast red dotted outline around the torso for forward trunk lean.
-- Shoulder hiking uses a separate red dotted shoulder-and-neck outline on the survey-selected affected side.
-- The repetition feedback places the annotated camera frame directly below the score, followed by plain-language problem labels and measured degrees.
-- The temporary-image label and deletion message make the short-lived handling visible to the patient.
-- Desktop and 390 x 844 phone captures were inspected. Text stays readable, the image remains contained, and the feedback actions stay reachable while scrolling.
-
-## Interaction and privacy checks
-
-- A three-frame live streak prevents single-frame flicker; final evidence is shown only for compensation that passes the existing stricter frame-count and ratio confirmation.
-- The frame is encoded only into an in-memory data URL. The capture function contains no fetch, WebView message, local/session storage, IndexedDB, or file write.
-- Continue, Exit, the next repetition reset, exercise completion, and page close all clear the image source and JavaScript reference.
-- The annotated frame is not included in repetition telemetry or Alira action logs.
-
-## Findings
-
-- No actionable P0, P1, or P2 visual or interaction issues remain.
-- Actual camera-frame appearance depends on the patient's lighting and framing; the red outline geometry itself was verified in both responsive layouts.
-
-Final result: passed.
-
----
-
-# Design QA: Rehyn Landing Page
-
-Source visual truth: conversation://rehyn-landing-reference-2026-09-03 (the 1536 × 1024 landing-page image selected by the user immediately before implementation).
-
-Implementation evidence:
-
-- Desktop: D:\repos\axonai_app_conflict_290826_1558\output\browser\landing-page-desktop-viewport.png
-- Mobile: D:\repos\axonai_app_conflict_290826_1558\output\browser\landing-page-mobile-viewport.png
-- Route: http://localhost:8090/sign-in
-
-Viewport and normalization:
-
-- Desktop source and implementation are both 1536 × 1024 pixels at a 1536 × 1024 CSS viewport.
-- Mobile implementation is 390 × 844 pixels at a 390 × 844 CSS viewport.
-- Browser density is 1 CSS pixel per captured pixel; no density normalization was required.
-- State: signed-out landing page, no modal, first headline phrase (“feels clearer.”), animations settled.
-
-## Full-view comparison evidence
-
-- Information architecture matches the selected design: white navigation, a short deep blue-green hero with only the large recovery statement, one white transition band, and the three connected product stages below.
-- All copy the user explicitly removed is absent from the landing surface. The only conversion action above the fold is the compact “Start free” header button.
-- Desktop proportions, left-aligned headline, right-weighted pulse artwork, and the green/white contrast preserve the source composition.
-- The mobile layout keeps the same hierarchy, moves the product stages into one readable column, preserves 44px+ controls, and shows no overlap or horizontal clipping.
-
-## Focused-region comparison evidence
-
-- Hero and header: the Rehyn pulse logo, navigation density, two-line display headline, dark field, and luminous right-side trajectory asset were checked at native screenshot size.
-- Product story: the “Check movement,” “Follow your plan,” and “See progress” previews were checked in the rendered viewport; labels, icons, card radii, progress chart, and action affordance remain readable.
-- Separate crops were not required because both focused regions are legible at 1:1 in the desktop capture.
-
-## Required fidelity surfaces
-
-- Fonts and typography: uses the product’s existing system-font treatment with large, high-weight display type; wrapping and line height match the source hierarchy on desktop and remain readable on mobile.
-- Spacing and layout rhythm: hero height, transition-band height, page gutters, three-column stage grid, and mobile stacking follow the selected composition without repeated sections.
-- Colors and visual tokens: deep Rehyn green, warm white, white headline, and brighter green changing phrase align with the supplied reference and existing product palette.
-- Image quality and asset fidelity: frontend/assets/images/landing-pulse-network.png is a dedicated 1774 × 887 generated raster asset, positioned and cropped for the hero rather than approximated with placeholder shapes.
-- Copy and content: removed the eyebrow, descriptive paragraph, assessment CTA, timing line, animation controls, and supporting sentence requested by the user. Rotating phrases remain concise and stroke-recovery appropriate.
-- Icons: visible interface icons use the existing Ionicons family and Rehyn pulse mark.
-- Accessibility and behavior: semantic headings and links are present, modal fields retain labels and test IDs, reduced-motion preferences stop rotation/drift, and large tap targets are preserved.
-
-## Interaction and runtime checks
-
-- Headline changed from “feels clearer.” to “moves with you.” after the timed transition.
-- “How it works,” “For families,” “Sign in,” “Start free,” the preview cards, and the existing authentication modal were exercised.
-- Desktop and mobile browser console checks returned zero errors.
-- frontend/app/sign-in.tsx passes ESLint.
-- Expo web production export completed successfully.
-- Project-wide TypeScript still reports pre-existing errors in unrelated screens; no errors remain in app/sign-in.tsx.
-
-## Findings
-
-- No actionable P0, P1, or P2 differences remain.
-- P3: the generated pulse paths are slightly quieter than the reference’s more numerous trajectories. This is acceptable because it preserves the calm visual hierarchy and keeps the headline dominant.
-
-## Comparison history
-
-- Final comparison pass: no P0/P1/P2 findings; no post-comparison visual fix was required.
+- Production Expo web build passed.
+- TypeScript check and ESLint for `app/sign-in.tsx` passed.
+- Eight existing sign-in tests passed after updating obsolete landing-copy expectations.
+- Isolated Chrome browser checks passed at all five viewport sizes: both Explore buttons, How it works, About, close controls, empty-form validation, and `?auth=signin`.
+- No horizontal overflow or browser console errors in the final run. Machine-readable results: `.codex-tmp/landing/browser-results.json`.
+- Automated checks cover the changed entry flow. They do not create a real patient account or repeat camera/rehabilitation workflows, which were not changed.
 
 ## Implementation checklist
 
-- [x] Match the selected simplified landing-page hierarchy.
-- [x] Preserve functional navigation and account entry.
-- [x] Add calm headline and hero motion with reduced-motion support.
-- [x] Verify desktop and mobile rendering.
-- [x] Verify production export and browser console.
+- [x] Reference layout and supplied branding
+- [x] Desktop and mobile screenshot comparison
+- [x] Photo framing and readable responsive text
+- [x] Working entry buttons and information dialogs
+- [x] Existing sign-in contracts and production build
 
-Final result: passed.
+## Follow-up polish
 
----
+- [P3] A source font file could further refine glyph widths; the supplied raster does not identify its typeface.
 
-# Camera Setup Design QA
-
-## Reference and Scope
-
-Reference artboards supplied by the user: `codex-clipboard-5ec223c3-b2da-4b6e-9a35-3ad86291204b.png` (placement) and `codex-clipboard-e3311b03-32e2-4233-bb7b-8226ce377929.png` (live check), each 853 x 1844.
-
-The implementation adds camera availability to onboarding, followed by device-specific preparation before camera-based assessment and exercise sessions. The detailed illustration and three-step visual demonstration cover iPhone. Other devices receive text instructions. No-camera users can return to their saved survey and plan; this change does not implement an expanded survey-only assessment.
-
-## Visual Review
-
-Compared the supplied artboards with rendered screenshots at 393 x 852, 375 x 667 and 1440 x 1000. Files are generated in `output/playwright/camera-setup/`:
-
-- `iphone-placement.png`, `small-iphone-placement.png`, `desktop-placement.png`
-- `iphone-check.png`, `small-iphone-check.png`, `desktop-check.png`
-- `iphone-denied.png`, `iphone-device-survey.png`
-
-Typography: readable fixed-size headings, wrapped supporting copy, no viewport-scaled fonts. Layout: single-column mobile and two-column desktop, stable preview proportions, no horizontal overflow. Color: white background, dark text and green actions consistent with the supplied design. Imagery: generated placement illustration; the production check shows only the actual camera stream. Content: placement, framing, demonstration, setup confirmations, error recovery and stop/continue actions are present.
-
-Iterations fixed a visible programmatic heading-focus outline, redundant mobile instructions, and heading size at small widths. The live screen intentionally uses explicit patient confirmations for upright placement and shoulder height: a monocular preview cannot reliably prove those physical facts. MediaPipe verifies upper-body framing. Seated guidance is added for the existing arm/hand tasks. The patient can approach the device to continue after a successful framing check; the movement runner still performs its own calibration.
-
-## Verification
-
-- Production web export: passed.
-- TypeScript: passed.
-- Backend camera profile/static routes, assessment readiness and gait regression tests: 23 passed.
-- Framing unit checks: passed for viewport cropping, mirroring, missing landmarks and stable detection.
-- PWA update checks: passed for first installation, active session updates and standalone camera route isolation.
-- Account-reset regression script: passed.
-- Browser tests: passed at both mobile sizes and desktop, including real MediaPipe inference on a simulated camera stream, permission denial, model failure, camera stop/restart/release, and no-camera navigation.
-- Full Expo route tests: passed for assessment and exercise handoff, preserved task parameters and fresh setup on re-entry. Registration multi-select and exclusive no-camera selection passed.
-
-Browser camera tests use a cropped user-supplied reference image as an isolated fake stream. No personal account or real camera is accessed and no assessment records are written. These tests are not physical iPhone/Safari verification. An unrelated legacy viewport static test expects an obsolete renderer string; this change does not alter that renderer.
-
-## Asset Provenance
-
-`frontend/public/camera-setup/iphone-setup.png` was generated with Image Gen using the first supplied artboard as reference. The prompt requested only the patient/phone setup illustration, stable upright phone support, screen facing the patient, shoulder-height alignment and upper-body framing callouts, without a surrounding app screenshot. The generated image was inspected before inclusion. The second artboard is not included in production assets.
+final result: passed

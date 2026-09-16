@@ -110,14 +110,14 @@ def test_trial_code_is_not_bundled_into_the_frontend():
 def test_sign_in_page_matches_the_selected_welcome_flow():
     source = (server.ROOT_DIR.parent / "frontend" / "app" / "sign-in.tsx").read_text(encoding="utf-8")
 
-    assert "Recovery at home that" in source
-    assert "feels clearer." in source
-    assert "From uncertainty to" in source
+    assert "Personalised stroke" in source
+    assert "guided at home." in source
+    assert "Explore Rehyn" in source
     assert 'testID="signin-start-free"' in source
     assert 'testID="signin-start-assessment"' not in source
     assert "Good morning, Molly" not in source
     assert "PULSE NETWORK" not in source
-    assert 'testID="signin-progress-preview"' in source
+    assert 'testID="signin-explore"' in source
     assert "Continue with Google" not in source
 
 
