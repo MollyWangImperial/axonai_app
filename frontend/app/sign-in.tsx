@@ -15,6 +15,7 @@ import {
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
+import { Image as ExpoImage } from "expo-image";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import * as Haptics from "expo-haptics";
 import { colors, radius } from "@/src/theme";
@@ -260,9 +261,10 @@ export default function SignInScreen() {
             </View>
           ) : null}
           <View style={[styles.hero, isWide ? { minHeight: Math.max(620, pageHeight - 92) } : styles.heroCompact]}>
-            <Image
+            <ExpoImage
               source={require("../assets/images/rehyn-landing-hero-background.png")}
-              resizeMode="cover"
+              contentFit="cover"
+              contentPosition={isWide ? "center" : { left: "70%", top: "50%" }}
               accessibilityLabel="A man practising a seated reaching movement at home with a phone on a tripod."
               style={[
                 styles.heroImage,
@@ -439,9 +441,9 @@ const styles = StyleSheet.create({
   scrollContent: { flexGrow: 1 },
   landing: { flex: 1, backgroundColor: "#FFFFFF", overflow: "hidden" },
   hero: { position: "relative", overflow: "hidden", flex: 1, backgroundColor: "#EDE9E2" },
-  heroCompact: { minHeight: 790 },
+  heroCompact: { minHeight: 715 },
   heroImage: { ...StyleSheet.absoluteFillObject, width: "100%", height: "100%" },
-  heroImageCompact: { top: 405, height: 385 },
+  heroImageCompact: { top: 430, height: 285 },
   heroPanel: { ...StyleSheet.absoluteFillObject, backgroundColor: DEEP_GREEN },
   heroPanelDesktopNative: { right: undefined, width: "50.5%", borderTopRightRadius: 360, borderBottomRightRadius: 130 },
   heroPanelCompact: { width: "100%", bottom: undefined, height: 455, borderTopRightRadius: 0, borderBottomRightRadius: 90 },

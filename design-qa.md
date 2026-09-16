@@ -8,8 +8,9 @@ Date: 2026-09-16
 - Survey visual truth: `C:\Users\LENOVO\AppData\Local\Temp\codex-clipboard-915bbe6e-c3c7-4b2e-ad91-5277282506c7.png` at 1207 × 1305 pixels.
 - Survey result visual truth: `C:\Users\LENOVO\AppData\Local\Temp\codex-clipboard-38be15ce-8f08-48f5-b15e-4ed473b4f11c.png` at 1386 × 1132 pixels.
 - Supplied background asset: `C:\Users\LENOVO\AppData\Local\Temp\codex-clipboard-744c1103-65fd-4ec8-b185-514dbbe15e46.png` at 1746 × 901 pixels.
+- Phone issue reference: `D:\xwechat_files\wxid_ycyjacdoxojk12_3fec\temp\RWTemp\2026-09\9e20f478899dc29eb19741386f9343c8\42f11f3a7e3df24fdf4a22b3130ed073.jpg` at 1179 × 2556 pixels.
 - Project background asset: `frontend/assets/images/rehyn-landing-hero-background.png`; its SHA-256 matches the supplied background.
-- Implementation route: `http://127.0.0.1:4185/sign-in`.
+- Implementation route for the latest responsive-image pass: `http://127.0.0.1:4187/sign-in`.
 - Browser-rendered implementation capture: Codex in-app browser capture emitted during this QA run. The browser API does not persist the screenshot to a filesystem path.
 - Desktop comparison viewport: 1851 × 849 CSS pixels at device scale factor 1, matching the source visual's pixel dimensions.
 - Responsive comparison viewport: 390 × 844 CSS pixels at device scale factor 1.
@@ -28,6 +29,7 @@ No outstanding P0, P1, or P2 visual or interaction findings.
 - The desktop headline scale and text column are constrained so all three lines remain inside the green panel without crossing its curved edge.
 - The subtitle and bright-green discovery CTA match the source's placement, scale, and contrast.
 - At 390 × 844, the header stays usable, all headline lines fit without horizontal clipping, the CTA remains fully visible, and the image follows beneath the green panel.
+- At 390 × 844, the photo uses a shorter 285-pixel frame and a 70% horizontal focal point. The patient, reaching arm, and phone on its tripod are all visible without horizontal page overflow. The desktop crop is unchanged.
 - The survey now uses the reference's full white surface, large close control, compact step counter, long progress bar, two-line title, grouped answer rows, large circular selectors, and full-width action.
 - At 1207 × 1305, the survey's progress bar, title, description, grouped options, and Continue button align within approximately 12 pixels of the supplied reference.
 - At 390 × 844, the survey preserves the same hierarchy without clipped copy or horizontal overflow; answer rows wrap naturally and the action remains visible.
@@ -60,6 +62,7 @@ No outstanding P0, P1, or P2 visual or interaction findings.
 - Result pass: the former personalised feature card was replaced with the supplied 1386 × 1132 completion composition. The modal cap expands to 1400 pixels for this reference while the existing question layout remains unchanged at its 1207-pixel comparison viewport.
 - Latest desktop pass: the changing third line was removed at the user's request. A screenshot also revealed “More confidence.” crossing the curved panel edge at a wide, shorter viewport, so the desktop headline cap was reduced to 68 pixels, its fluid scale was tightened, and the text column narrowed to 43.5%. The subtitle uses a narrower three-line treatment near the desktop breakpoint so it also remains inside the panel.
 - Post-fix desktop and compact captures show no remaining P0/P1/P2 mismatch.
+- Phone-photo pass: the user's iPhone capture showed the wide desktop asset forced into a tall mobile frame, making the patient appear over-cropped and pushing the tripod off screen. The mobile image frame was shortened from 385 to 285 pixels, and the image rendering was moved to `expo-image` so a 70% horizontal focal point can be applied reliably. The revised 390 × 844 capture shows the patient, reaching arm, and tripod together; a second desktop capture confirms no desktop regression.
 
 ## Interaction and engineering verification
 
@@ -72,6 +75,7 @@ No outstanding P0, P1, or P2 visual or interaction findings.
 - The production Expo web export passed.
 - TypeScript and ESLint passed for the changed screen.
 - The browser console reported no errors.
+- The final iPhone-sized render measured 390 CSS pixels wide with a 390 × 285 image, `object-fit: cover`, `object-position: 70% 50%`, and no horizontal overflow.
 
 ## Implementation checklist
 
@@ -81,6 +85,7 @@ No outstanding P0, P1, or P2 visual or interaction findings.
 - [x] Static “All from home.” green headline line
 - [x] Headline constrained within the curved green panel
 - [x] Responsive compact layout
+- [x] Phone-specific photo frame and focal crop with the tripod retained
 - [x] Working discovery survey CTA
 - [x] Reference-matched full-screen survey design
 - [x] Responsive selected, progress, Back, and result states
