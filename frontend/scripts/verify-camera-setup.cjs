@@ -4,22 +4,23 @@ const path = require("node:path");
 const { chromium } = require("playwright");
 const base = process.env.CAMERA_TEST_URL || "http://127.0.0.1:8001";
 const fixture = process.env.CAMERA_SETUP_FIXTURE;
-if (!fixture) throw new Error("Set CAMERA_SETUP_FIXTURE to the supplied camera-preview design image for a simulated camera. No real camera is used.");
+if (!fixture) throw new Error("Set CAMERA_SETUP_FIXTURE to an upper-body image for a simulated camera. No real camera is used.");
+const crop = JSON.parse(process.env.CAMERA_FIXTURE_CROP || "[24,295,806,908]");
 const out = path.resolve(__dirname, "../../output/playwright/camera-setup");
 fs.mkdirSync(out, { recursive: true });
 
-async function installCamera(context, captureBridge = true) {
-  await context.route("**/__camera_fixture.png", (route) => route.fulfill({ path: fixture, contentType: "image/png" }));
-  await context.addInitScript((captureBridge) => {
+async function installCamera(context, captureBridge = true, source = { fixture, crop, size: [720,960] }) {
+  await context.route("**/__camera_fixture.png", (route) => route.fulfill({ path: source.fixture, contentType: "image/png" }));
+  await context.addInitScript(({ captureBridge, crop, size }) => {
     window.testStreams = [];
     window.setupMessages = [];
     if (captureBridge) window.ReactNativeWebView = { postMessage: (data) => window.setupMessages.push(JSON.parse(data)) };
     navigator.mediaDevices.getUserMedia = async () => {
       if (window.denyCamera) throw new DOMException("Permission denied", "NotAllowedError");
       const image = new Image(); image.src = "/__camera_fixture.png"; await image.decode();
-      const canvas = document.createElement("canvas"); canvas.width = 720; canvas.height = 960;
+      const canvas = document.createElement("canvas"); [canvas.width,canvas.height] = size;
       const ctx = canvas.getContext("2d");
-      function draw() { ctx.drawImage(image, 24, 295, 806, 908, 0, 0, 720, 960); }
+      function draw() { ctx.drawImage(image, ...crop, 0, 0, ...size); }
       draw();
       const timer = setInterval(draw, 100);
       const stream = canvas.captureStream(10);
@@ -30,7 +31,7 @@ async function installCamera(context, captureBridge = true) {
       }
       return stream;
     };
-  }, captureBridge);
+  }, { captureBridge, crop: source.crop, size: source.size });
 }
 
 async function noOverflow(page) {
@@ -58,20 +59,17 @@ async function noOverflow(page) {
       await page.getByRole("button", { name: "Close demonstration" }).click();
       await page.getByRole("button", { name: "Open camera check" }).click();
       await page.locator("#live").waitFor();
-      await page.getByText("Upper body framing checked", { exact: true }).waitFor({ timeout: 60000 });
-      assert.equal(await page.locator("#continue").isEnabled(), false, "physical setup must be confirmed");
-      await page.getByLabel("Phone upright and secure").check();
-      await page.getByLabel("Camera at shoulder height").check();
+      await page.getByText("All camera checks complete", { exact: true }).waitFor({ timeout: 60000 });
+      assert.equal(await page.locator("#continue").isEnabled(), true, "setup should pass automatically");
+      assert.equal(await page.getByRole("checkbox").count(),0);
       await page.waitForFunction(() => !document.getElementById("continue").disabled);
       await noOverflow(page);
       await page.screenshot({ path: path.join(out, `${label}-check.png`), fullPage: true });
       await page.getByRole("button", { name: "Stop test", exact: true }).click();
       assert.equal(await page.evaluate(() => window.testStreams.every((s) => s.getTracks().every((t) => t.readyState === "ended"))), true);
       await page.getByRole("button", { name: "Open camera check" }).click();
-      assert.equal(await page.getByLabel("Phone upright and secure").isChecked(), false);
-      await page.getByText("Upper body framing checked", { exact: true }).waitFor({ timeout: 60000 });
-      await page.getByLabel("Phone upright and secure").check();
-      await page.getByLabel("Camera at shoulder height").check();
+      assert.equal(await page.locator("#continue").isEnabled(), false, "restart needs new observations");
+      await page.getByText("All camera checks complete", { exact: true }).waitFor({ timeout: 60000 });
       await page.getByRole("button", { name: "Continue to assessment", exact: true }).click();
       assert.equal(await page.evaluate(() => window.setupMessages.some((m) => m.type === "camera_setup_ready")), true);
       assert.equal(await page.evaluate(() => window.testStreams.every((s) => s.getTracks().every((t) => t.readyState === "ended"))), true);
@@ -99,6 +97,22 @@ async function noOverflow(page) {
     assert.equal(await page.evaluate(() => window.testStreams.length),0);
     console.log("permission denial, model failure, and no-camera path passed");
     await context.close();
+    if (process.env.CAMERA_NEGATIVE_FIXTURE) {
+      const incomplete = await browser.newContext({viewport:{width:1440,height:1000}});
+      await installCamera(incomplete,true,{fixture:process.env.CAMERA_NEGATIVE_FIXTURE,
+        crop:JSON.parse(process.env.CAMERA_NEGATIVE_CROP || "[110,146,720,480]"),size:[720,480]});
+      const check = await incomplete.newPage();
+      await check.goto(`${base}/camera-setup/index.html?devices=laptop`);
+      await check.getByRole("button",{name:"Open camera check"}).click();
+      await check.getByText("Head and shoulders in view",{exact:true}).waitFor({timeout:45000});
+      await check.getByText("View is steady",{exact:true}).waitFor();
+      assert.equal(await check.locator("#continue").isDisabled(),true,"real partial-body image must not pass");
+      assert.match(await check.locator("#frame-hint").innerText(),/both arms and hands|Keep both hands visible/);
+      await check.screenshot({path:path.join(out,"real-model-hands-out-of-frame.png"),fullPage:true});
+      await check.getByRole("button",{name:"Stop test",exact:true}).click();
+      await incomplete.close();
+      console.log("real MediaPipe model: supplied partial-body screenshot correctly requires arms and hands in view");
+    }
     const appContext = await browser.newContext({viewport:{width:393,height:852}});
     await installCamera(appContext, false);
     const user = {id:"camera-local-test",name:"Test",email:"camera-test@example.invalid",role:"patient",trial_access_granted:true,consent_accepted:true,onboarding_complete:true,account_generation:0,profile:{camera_devices:["iphone"]}};
@@ -112,7 +126,7 @@ async function noOverflow(page) {
     await appContext.route("**/api/**", (route) => {
       const url = route.request().url();
       if (url.includes("/runner")) return route.fulfill({contentType:"text/html",body:"<!doctype html><html><body><h1>Session runner reached</h1></body></html>"});
-      return route.fulfill({json:url.includes("/users/me") ? user : {ok:true,profile:user.profile,onboarding_complete:true}});
+      return route.fulfill({json:url.includes("/users/me") ? user : {ok:true,accepted:true,profile:user.profile,onboarding_complete:true}});
     });
     const app = await appContext.newPage();
     app.on("pageerror",error=>console.error("App browser error:",error.message));
@@ -129,17 +143,20 @@ async function noOverflow(page) {
         await app.screenshot({path:path.join(out,"app-error.png"),fullPage:true});
         throw error;
       }
-      try { await setup.getByText("Upper body framing checked",{exact:true}).waitFor({timeout:45000}); }
+      try { await setup.getByText("All camera checks complete",{exact:true}).waitFor({timeout:45000}); }
       catch (error) {
         for (const frame of app.frames()) console.error("Frame at failure:",frame.url(),await frame.locator("body").innerText().catch(()=>"unavailable"));
         await app.screenshot({path:path.join(out,"app-error.png"),fullPage:true});
         throw error;
       }
-      await setup.getByLabel("Phone upright and secure").check();
-      await setup.getByLabel("Camera at shoulder height").check();
       await setup.getByRole("button",{name:/Continue to (assessment|exercise)/}).click();
       const frame=app.locator(`iframe[src*="${runner}"]`);
-      await frame.waitFor({timeout:20000});
+      try { await frame.waitFor({timeout:20000}); }
+      catch(error) {
+        console.error("After setup:", app.url(), await app.locator("body").innerText(), await app.locator("iframe").evaluateAll(frames=>frames.map(frame=>frame.src)));
+        await app.screenshot({path:path.join(out,"app-error.png"),fullPage:true});
+        throw error;
+      }
       const src=await frame.getAttribute("src");
       assert.ok(src.includes(marker),src);
       assert.ok(src.includes("affected_side=left"),src);

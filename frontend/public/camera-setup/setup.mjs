@@ -1,4 +1,4 @@
-import { checkFraming, createFramingTracker, project } from "./framing.mjs";
+import { checkFraming, createSetupTracker, project } from "./framing.mjs";
 
 const $ = (id) => document.getElementById(id);
 const query = new URLSearchParams(location.search);
@@ -23,7 +23,8 @@ let lastFrameAt = 0;
 let lastDetectedAt = 0;
 let lastVideoTime = -1;
 let activeCameraId = "";
-const tracker = createFramingTracker();
+const tracker = createSetupTracker();
+let setupChecks = { steady: false, position: false, framing: false };
 const video = $("video");
 const canvas = $("overlay");
 const ctx = canvas.getContext("2d");
@@ -55,7 +56,6 @@ function chooseDevice(id) {
   $("illustration").hidden = !phone;
   $("play-demo").hidden = !phone;
   document.querySelector(".setup-layout").classList.toggle("no-illustration", !phone);
-  $("upright-text").textContent = phone ? "Phone upright and secure" : id === "tablet" ? "Tablet upright and secure" : "Camera securely positioned";
   show("placement");
 }
 
@@ -78,13 +78,25 @@ function setStatus(text, busy = true) {
 function refreshReady() {
   const running = !!stream && stream.getVideoTracks().some((track) => track.readyState === "live") && !video.paused;
   const measured = running && frameReady && performance.now() - lastFrameAt < 1800;
-  const ready = measured && $("upright").checked && $("height").checked;
+  const ready = measured;
   $("continue").disabled = !ready;
-  $("continue").textContent = ready ? `Continue to ${purpose}` : measured ? "Confirm your setup above" : "Testing camera...";
-  $("frame-icon").className = measured ? "check" : "spinner";
-  $("frame-icon").textContent = measured ? "\u2713" : "";
-  $("frame-text").textContent = measured ? "Upper body framing checked" : "Upper body in frame";
-  if (measured) setStatus(ready ? "Your setup is checked" : "Framing checked", false);
+  $("continue").textContent = ready ? `Continue to ${purpose}` : "Checking camera automatically...";
+  const fresh = running && performance.now() - lastFrameAt < 1800;
+  for (const [id, check, pending, passed] of [
+    ["steady", "steady", "Checking view steadiness", "View is steady"],
+    ["position", "position", "Checking head and shoulders", "Head and shoulders in view"],
+    ["frame", "framing", "Checking arms and hands", "Arms and hands in view"],
+  ]) {
+    const ok = fresh && setupChecks[check];
+    $(`${id}-icon`).className = ok ? "check" : "spinner";
+    $(`${id}-icon`).textContent = ok ? "\u2713" : "";
+    $(`${id}-text`).textContent = ok ? passed : pending;
+  }
+  if (measured) setStatus("All camera checks complete", false);
+  else if (running && !fresh) {
+    setStatus("Waiting for a fresh camera image...");
+    $("frame-hint").textContent = "The camera image has paused. Keep Rehyn open while the preview resumes.";
+  }
 }
 
 function stopCamera() {
@@ -96,6 +108,7 @@ function stopCamera() {
   model?.close();
   model = null;
   frameReady = false;
+  setupChecks = { steady: false, position: false, framing: false };
   tracker.reset();
   lastFrameAt = 0;
   lastDetectedAt = 0;
@@ -166,11 +179,11 @@ function frame(now, token) {
       const rect = canvas.getBoundingClientRect();
       const geometry = [video.videoWidth, video.videoHeight, rect.width, rect.height, getComputedStyle(video).objectFit];
       const framing = checkFraming(landmarks, geometry);
-      // Keep a successful check for this camera session so a patient can approach
-      // the phone to tap Continue. The movement runner calibrates again afterward.
-      frameReady = tracker.update(framing.ready, now) || frameReady;
+      const setup = tracker.update(framing, landmarks, geometry, now);
+      frameReady = setup.ready;
+      setupChecks = setup.checks;
       lastFrameAt = now;
-      $("frame-hint").textContent = frameReady ? "Setup checked. Tap Continue, then return to your seated position." : framing.hint;
+      $("frame-hint").textContent = setup.hint;
       if (!frameReady) setStatus("Checking your camera...");
       draw(landmarks, geometry);
     }
@@ -186,8 +199,6 @@ async function startCamera() {
   $("error").hidden = true;
   $("retry").hidden = true;
   $("continue").hidden = false;
-  $("upright").checked = false;
-  $("height").checked = false;
   setStatus("Opening camera...");
   try {
     if (!navigator.mediaDevices?.getUserMedia) throw new Error("Camera access needs a secure browser connection. Open Rehyn using HTTPS.");
@@ -238,8 +249,6 @@ async function startCamera() {
 $("open-check").addEventListener("click", startCamera);
 $("retry").addEventListener("click", startCamera);
 $("camera-source").addEventListener("change", () => { activeCameraId = $("camera-source").value; startCamera(); });
-$("upright").addEventListener("change", refreshReady);
-$("height").addEventListener("change", refreshReady);
 $("stop").addEventListener("click", () => { stopCamera(); show("placement"); });
 $("continue").addEventListener("click", () => {
   refreshReady();
