@@ -21,7 +21,7 @@
     }
     reset(rubric) {
       this.rubric=rubric;
-      this.measurements={}; this.compensations={}; this.lastTime=null;
+      this.measurements={}; this.observations={}; this.compensations={}; this.lastTime=null;
       this.sawClosed=false; this.openCloseCycle=0;
     }
     raw(p,w) {
@@ -31,6 +31,8 @@
         r.elbow_extension=angle(w[a.s],w[a.e],w[a.w]);
         r.elbow_flexion=180-r.elbow_extension;
         r.arm_elevation=angle(w[a.h],w[a.s],w[a.e]);
+        const armLength=length(sub(w[a.s],w[a.e]))+length(sub(w[a.e],w[a.w]));
+        if(armLength>.15) r.reach_ratio=length(sub(w[a.s],w[a.w]))/armLength;
       }
       if(usable([11,12,23,24])) {
         const sh=midpoint(w[11],w[12]), hip=midpoint(w[23],w[24]);
@@ -105,6 +107,18 @@
         if(finite(r.ankle) && finite(b.ankle)) r.ankle_change=Math.abs(r.ankle-b.ankle);
         if(finite(r.wrist_bend) && finite(b.wrist_bend)) r.wrist_extension_change=Math.abs(r.wrist_bend-b.wrist_bend);
       }
+      // Keep diagnostic measurements separate from the scoring criteria. These
+      // make a test run inspectable without changing the patient scoring rubric.
+      const diagnosticKeys=new Set([...this.rubric.criteria.map(rule=>rule.metric),
+        ...this.rubric.compensations,"arm_elevation","elbow_extension","elbow_flexion","reach_ratio","wrist_bend","target_control"]);
+      for(const key of diagnosticKeys) {
+        const v=r[key];
+        if(!finite(v)) continue;
+        const record=this.observations[key] ||= {samples:0,values:[],endpoints:[],min:v,max:v,targetSamples:0};
+        record.samples++; record.min=Math.min(record.min,v); record.max=Math.max(record.max,v);
+        record.values.push(v); if(record.values.length>600) record.values.shift();
+        if(inTarget) {record.targetSamples++; record.endpoints.push(v); if(record.endpoints.length>120) record.endpoints.shift();}
+      }
       for(const rule of this.rubric.criteria) {
         const v=r[rule.metric];
         if(!finite(v)) continue;
@@ -127,7 +141,10 @@
     }
     snapshot() {
       return {version:this.config.version,measurements:Object.fromEntries(Object.entries(this.measurements).map(([k,r])=>[k,{samples:r.samples,value:quantile(r.endpoints.length>=5?r.endpoints:r.values,.5)}])),
-        compensations:Object.fromEntries(Object.entries(this.compensations).map(([k,c])=>[k,{eligible_ms:Math.round(c.eligible_ms),max_value:c.max_value,max_streak_ms:Math.round(c.max_streak_ms)}]))};
+        compensations:Object.fromEntries(Object.entries(this.compensations).map(([k,c])=>[k,{eligible_ms:Math.round(c.eligible_ms),max_value:c.max_value,max_streak_ms:Math.round(c.max_streak_ms)}])),
+        observations:Object.fromEntries(Object.entries(this.observations).map(([k,r])=>[k,{samples:r.samples,
+          median:quantile(r.values),endpoint:r.endpoints.length>=5?quantile(r.endpoints):null,
+          min:r.min,max:r.max,target_fraction:r.targetSamples/r.samples}]))};
     }
     active() {return Object.keys(this.compensations).filter(id=>this.compensations[id].active);}
     draw(ctx,pose,width,height) {

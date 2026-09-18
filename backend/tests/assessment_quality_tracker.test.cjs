@@ -70,3 +70,32 @@ test('normal shoulder rise and opposite shoulder drop do not become shoulder hik
   for(let now=2000;now<3000;now+=50)t.sample({now});
   assert.deepEqual(t.active(),['shoulder_hike']);
 });
+
+
+test('diagnostic observations keep endpoint, peak and target fraction without changing scoring',()=>{
+  const t=new Tracker(config,'right'); t.reset(rule);
+  let elevation=20;
+  t.raw=()=>({arm_elevation:elevation,elbow_extension:150,torso:[0,-.5,0]});
+  for(let now=0;now<500;now+=50)t.sample({now,inTarget:false});
+  elevation=60;
+  for(let now=500;now<1000;now+=50)t.sample({now,inTarget:true});
+  const snapshot=t.snapshot();
+  assert.equal(snapshot.observations.arm_elevation.endpoint,60);
+  assert.equal(snapshot.observations.arm_elevation.max,60);
+  assert.equal(snapshot.observations.arm_elevation.min,20);
+  assert.equal(snapshot.observations.target_control.target_fraction,.5);
+  assert.equal(snapshot.measurements.arm_elevation,undefined);
+  t.raw=()=>({});t.sample({now:1100});
+  assert.equal(t.snapshot().observations.arm_elevation.samples,20);
+  t.reset(rule);assert.deepEqual(t.snapshot().observations,{});
+});
+
+test('reach ratio describes extension without assuming real-world distance',()=>{
+  const t=new Tracker(config,'right');
+  const p=Array.from({length:33},()=>({x:.5,y:.5,z:0,visibility:.99}));
+  const w=structuredClone(p);
+  w[12]={x:0,y:0,z:0};w[14]={x:.2,y:0,z:0};w[16]={x:.4,y:0,z:0};w[24]={x:0,y:.4,z:0};
+  assert.equal(t.raw(p,w).reach_ratio,1);
+  w[16]={x:.2,y:.2,z:0};assert.ok(t.raw(p,w).reach_ratio<.71);
+  p[16].visibility=.1;assert.equal(t.raw(p,w).reach_ratio,undefined);
+});

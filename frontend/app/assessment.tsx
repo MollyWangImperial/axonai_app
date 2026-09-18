@@ -5,12 +5,13 @@ import { Ionicons } from "@expo/vector-icons";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import * as Haptics from "expo-haptics";
 import { colors, spacing, radius } from "@/src/theme";
-import { AssessmentPackageId, POSE_RUNNER_URL } from "@/src/api";
+import { AssessmentPackageId, POSE_RUNNER_URL, scoreTestingAssessment, TestingAssessmentReport, TestingTaskResult } from "@/src/api";
 import { cacheAssessmentActivity, completedTasksKey, getAccountGeneration, getUserId, savedTaskVideosKey } from "@/src/auth";
 import { storage } from "@/src/utils/storage";
 import { SafetyStopStrip } from "@/src/components/SafetyStopStrip";
 import { loadUserPreferences } from "@/src/userPreferences";
 import { useIsFocused } from "@react-navigation/native";
+import { AssessmentTestResults } from "@/src/components/AssessmentTestResults";
 import { CameraSetup } from "@/src/components/CameraSetup";
 
 type GaitScoreComponent = {
@@ -112,6 +113,21 @@ function AssessmentSession() {
   const [error, setError] = useState<string | null>(null);
   const [runnerUri, setRunnerUri] = useState<string | null>(null);
   const [testComplete, setTestComplete] = useState(false);
+  const [testReport, setTestReport] = useState<TestingAssessmentReport | null>(null);
+  const [testReportError, setTestReportError] = useState<string | null>(null);
+  const [scoringTest, setScoringTest] = useState(false);
+  const testResultRef = useRef<TestingTaskResult | null>(null);
+  const loadTestReport = async () => {
+    if (!testResultRef.current) {
+      setTestReportError("No movement evidence was returned. Please test the task again.");
+      return;
+    }
+    setScoringTest(true);
+    setTestReportError(null);
+    try { setTestReport(await scoreTestingAssessment(testResultRef.current)); }
+    catch (reason) { setTestReportError(reason instanceof Error ? reason.message : "Could not calculate the test results."); }
+    finally { setScoringTest(false); }
+  };
   const [walkingTestResult, setWalkingTestResult] = useState<WalkingTestResult | null>(null);
   const [runnerRevision, setRunnerRevision] = useState(0);
 
@@ -181,9 +197,12 @@ function AssessmentSession() {
           );
         }
         router.replace({ pathname: "/results", params: { id: msg.assessment.id, entry: "assessment_complete" } });
-      } else if (msg.type === "library_test_complete") {
+      } else if (msg.type === "library_test_complete" && isLibraryTest) {
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        testResultRef.current = msg.task_result || null;
+        setLoading(false);
         setTestComplete(true);
+        void loadTestReport();
       } else if (msg.type === "walking_test_result") {
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
         setWalkingTestResult(msg.gait_analysis as WalkingTestResult);
@@ -216,7 +235,7 @@ function AssessmentSession() {
 
   return (
     <View style={styles.container}>
-      {runnerUri ? (
+      {runnerUri && !testComplete ? (
       <WebView
         key={`assessment-runner-${runnerRevision}`}
         ref={webRef}
@@ -264,15 +283,17 @@ function AssessmentSession() {
       )}
 
       {testComplete && (
-        <View style={styles.testCompleteWrap} testID="assessment-library-test-complete">
-          <Ionicons name="checkmark-circle" size={58} color={colors.success} />
-          <Text style={styles.testCompleteTitle}>Task test complete</Text>
-          <Text style={styles.testCompleteBody}>This test was not added to Assessment history, Progress, or your care plan.</Text>
-          <Pressable onPress={() => router.back()} style={styles.testCompleteButton} testID="assessment-library-back">
-            <Ionicons name="arrow-back" size={20} color="#FFFFFF" />
-            <Text style={styles.testCompleteButtonText}>Back to library</Text>
-          </Pressable>
-        </View>
+        <AssessmentTestResults
+          report={testReport} loading={scoringTest} error={testReportError}
+          affectedSide={affectedSideParam === "left" ? "Left" : "Right"}
+          onRetryScore={() => { void loadTestReport(); }}
+          onBack={() => router.dismissTo("/testing-library")}
+          onTryAgain={() => {
+            setTestComplete(false); setTestReport(null); setTestReportError(null);
+            testResultRef.current = null; setLoading(true);
+            setRunnerRevision(current => current + 1);
+          }}
+        />
       )}
 
       {walkingTestResult && (
@@ -345,11 +366,6 @@ const styles = StyleSheet.create({
   errorTitle: { color: colors.onSurfaceInverse, fontSize: 16, textAlign: "center", lineHeight: 22 },
   errorBtn: { backgroundColor: colors.brandPrimary, paddingHorizontal: spacing.lg, paddingVertical: spacing.md, borderRadius: radius.lg },
   errorBtnText: { color: "#fff", fontWeight: "700" },
-  testCompleteWrap: { ...StyleSheet.absoluteFillObject, alignItems: "center", justifyContent: "center", padding: spacing.xl, gap: spacing.md, backgroundColor: "#F8FBF8" },
-  testCompleteTitle: { color: colors.onSurface, fontSize: 24, lineHeight: 30, fontWeight: "800", textAlign: "center" },
-  testCompleteBody: { maxWidth: 420, color: colors.onSurfaceSecondary, fontSize: 15, lineHeight: 22, textAlign: "center" },
-  testCompleteButton: { minHeight: 54, minWidth: 210, marginTop: spacing.sm, paddingHorizontal: spacing.lg, borderRadius: radius.md, backgroundColor: colors.brandPrimary, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: spacing.sm },
-  testCompleteButtonText: { color: "#FFFFFF", fontSize: 16, fontWeight: "800" },
   walkingResultOverlay: { ...StyleSheet.absoluteFillObject, backgroundColor: "#F8FBF8" },
   walkingResultWrap: { flexGrow: 1, minHeight: "100%", alignItems: "center", justifyContent: "center", paddingHorizontal: spacing.md, paddingTop: spacing.xl, paddingBottom: 88, backgroundColor: "#F8FBF8" },
   walkingResultPanel: { width: "100%", maxWidth: 680, alignItems: "center", gap: spacing.sm },

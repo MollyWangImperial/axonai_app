@@ -69,3 +69,30 @@ account's calendar date and unique assessment id, respectively.
   verify rendering and logic, not real-world diagnostic accuracy.
 - Full TypeScript checking still reports pre-existing errors in assessment.tsx,
   exercise.tsx and persona-chat.tsx, outside these changes.
+
+## Settings testing results
+
+Settings > Testing defaults to the six initial patient tasks T1, T2, T3, H1,
+H3 and H4; the L6 walking upload is excluded from this list. Existing guided
+exercises remain on their own tab. Tests launch one selected task through the
+same camera calibration, instructions and target checks used for patients.
+
+Completing a test sends its transient step evidence to
+`POST /api/testing/assessment-score`. The signed-in endpoint calculates the
+existing rubric, returns step equations and supplemental measurement summaries,
+and performs no patient-history, care-plan, credit or reward writes. Failed
+calculations can be retried without repeating the movement; missing evidence
+stays unscored. Retesting starts a fresh runner and returning dismisses to Testing.
+
+Supplemental shoulder elevation, elbow extension/bend, shoulder-to-wrist reach
+normalised by arm length, trunk lean, shoulder lift, wrist alignment and target
+occupancy are captured from valid samples. They do not introduce a new scoring
+formula. Shoulder elevation is an upper-arm/torso angle, not isolated sagittal
+shoulder flexion. Per-step summaries show the median of up to 600 recent valid
+samples, an endpoint median of up to 120 in-target samples when at least five
+exist, full-step extrema and sample counts. Target occupancy counts all valid
+samples. Duration includes instructions and waiting, not just movement time.
+
+Tests cover the six-task list, authentication, invalid task/step IDs, missing
+measurements, exact score components, and isolation from patient storage.
+Browser verification uses synthetic evidence, not a physical patient movement.
