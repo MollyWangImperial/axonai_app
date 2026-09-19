@@ -6,13 +6,19 @@ os.environ.setdefault("DB_NAME", "axonai_camera_viewport_test")
 from backend import server
 
 
-def _assert_responsive_camera_mapping(source: str) -> None:
+def _assert_responsive_camera_mapping(source: str, *, needs_lower_body: bool = False) -> None:
     assert 'id="cameraFrame"' in source
     assert "function classifyCameraDevice({" in source
     assert '/iPhone|iPod/i.test(userAgent)' in source
     assert 'return "tablet";' in source
     assert 'return maxTouchPoints > 0 && shortScreenEdge <= 600 ? "phone" : "web";' in source
-    assert 'const CAMERA_FIT_MODE = CAMERA_DEVICE_CLASS === "phone" ? "cover" : "contain";' in source
+    if needs_lower_body:
+        # Full-body exercise framing must keep the legs visible even on phones.
+        assert '''const CAMERA_FIT_MODE = STANDARD.posture === "full_body" || NEEDS_LOWER_BODY_VIEW
+  ? "contain"
+  : CAMERA_DEVICE_CLASS === "phone" ? "cover" : "contain";''' in source
+    else:
+        assert 'const CAMERA_FIT_MODE = CAMERA_DEVICE_CLASS === "phone" ? "cover" : "contain";' in source
     assert "function fitCameraViewport(containerWidth, containerHeight, sourceWidth, sourceHeight, fitMode=CAMERA_FIT_MODE)" in source
     assert 'fitMode === "cover"' in source
     assert "Math.max(safeContainerWidth / safeSourceWidth, safeContainerHeight / safeSourceHeight)" in source
@@ -50,10 +56,11 @@ def test_assessment_runner_uses_one_mode_aware_camera_viewport_for_video_and_can
 
 def test_rehab_runner_uses_the_same_responsive_camera_mapping():
     source = server.REHAB_RUNNER_HTML_TEMPLATE
-    _assert_responsive_camera_mapping(source)
+    _assert_responsive_camera_mapping(source, needs_lower_body=True)
     assert '#cameraFrame video,#cameraFrame canvas' in source
-    assert 'const tx = sub.target.x*canvas.width;' in source
-    assert 'const ty = sub.target.y*canvas.height;' in source
+    assert 'const target=effectiveExerciseTarget(sub);' in source
+    assert 'const tx = target.x*canvas.width;' in source
+    assert 'const ty = target.y*canvas.height;' in source
 
 
 def test_phone_cover_projection_fills_portrait_viewport_without_black_bands():

@@ -24,7 +24,7 @@ def runner_js():
         headDropDegrees shoulderHikeDegrees metricValue targetActivationReady exerciseTargetIsArmed
         poseAlignmentDeviation poseTrackingQuality handTrackingQuality trackingQuality
         activeMovementPhase movementUnderway ruleAppliesNow expectedShoulderRise
-        compensationThreshold resetRepMetrics updateMetrics reachKeyMetric elbowAtPeakReach
+        compensationThreshold compensationExceeded resetRepMetrics updateMetrics reachKeyMetric elbowAtPeakReach
         confirmedCompensations repRomDetails measuredRomDetails incompleteRomSteps
         unmeasuredRomSteps wristAlignmentUnmeasured computeRepScore repEarnsPoint
         pointBlockedByVisibility compensationProblemText joinProblems romProblemText pickFeedback

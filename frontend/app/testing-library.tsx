@@ -115,8 +115,8 @@ export default function TestingLibraryScreen() {
       ) : library ? (
         <ScrollView contentContainerStyle={[styles.content, isWide && styles.contentWide]} showsVerticalScrollIndicator={false}>
           <View style={styles.intro}>
-            <Text style={[styles.title, { color: palette.text, fontSize: 28 * scale, lineHeight: 34 * scale }]}>Test guided activities</Text>
-            <Text style={[styles.subtitle, { color: palette.muted, fontSize: 14 * scale, lineHeight: 21 * scale }]}>Open one item at a time. Test runs are kept separate from the patient record.</Text>
+            <Text style={[styles.title, { color: palette.text, fontSize: 28 * scale, lineHeight: 34 * scale }]}>Patient assessment testing</Text>
+            <Text style={[styles.subtitle, { color: palette.muted, fontSize: 14 * scale, lineHeight: 21 * scale }]}>The six patient tasks, without walking videos. Finish a task to see measured movement metrics and how its score is calculated.</Text>
           </View>
 
           <View style={[styles.notice, { backgroundColor: palette.soft, borderColor: palette.border }]}>

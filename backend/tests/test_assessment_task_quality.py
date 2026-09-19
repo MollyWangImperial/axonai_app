@@ -190,3 +190,14 @@ def test_between_task_celebration_is_brief_and_advances_without_a_button():
     assert "currentTaskIdx += 1;" in html
     assert "#celebrate{overflow:auto;padding:24px 16px;box-sizing:border-box;justify-content:center" in html
     assert "justify-content:flex-start;background:#244d3c" not in html
+
+
+def test_elbow_extension_uses_the_aspect_corrected_image_plane_angle():
+    from backend import server
+
+    assessment_html = server.POSE_RUNNER_HTML
+    rehab_html = server.REHAB_RUNNER_HTML_TEMPLATE
+    assert "const elbowAspect=video.videoWidth>0 && video.videoHeight>0 ? video.videoWidth/video.videoHeight : 1;" in rehab_html
+    assert "raw.elbow_extension=angle(elbowPoint(lm[ACTIVE.shoulder]),elbowPoint(lm[ACTIVE.elbow]),elbowPoint(lm[ACTIVE.wrist]));" in rehab_html
+    assert "assessmentQuality.calibrate(landmarks, latestPoseWorldLandmarks, qualityAspect);" in assessment_html
+    assert "aspectRatio:qualityAspect" in assessment_html

@@ -214,3 +214,74 @@ def score_assessment(task_results, rubrics, assigned_task_ids=None):
                            "measured_steps": measured_steps, "total_steps": sum(task["total_steps"] for task in selected),
                            "maximum": 100, "task_count": len(selected), "measured_tasks": sum(task["score"] is not None for task in selected)}
     return {"version": VERSION, "modules": modules, "tasks": tasks, "clinical_measure": False}
+
+
+TEST_METRICS = {
+    "arm_elevation": ("Shoulder elevation", "deg"),
+    "elbow_extension": ("Elbow extension", "deg"),
+    "elbow_flexion": ("Elbow bend", "deg"),
+    "reach_ratio": ("Reach distance / arm length", "ratio"),
+    "trunk_lean": ("Trunk lean from starting posture", "deg"),
+    "shoulder_hike": ("Excess shoulder lift", "deg"),
+    "wrist_bend": ("Wrist alignment change", "deg"),
+    "target_control": ("Samples inside target", "ratio"),
+}
+
+
+def testing_task_report(task, rubrics):
+    """Calculate an ephemeral diagnostic report using the patient rubric.
+
+    This function has no account, storage, rewards or clinical-plan side effects.
+    Supplemental observations do not change the score.
+    """
+    tid = value(task, "task_id")
+    quality = score_assessment([task], rubrics, [tid])
+    result = quality["tasks"][0]
+    submitted = {value(step, "step_id"): step for step in value(task, "steps", [])}
+    for step, rule in zip(result["steps"], rubrics[tid]["steps"]):
+        raw = submitted.get(step["step_id"])
+        evidence = (value(raw, "metrics", {}) or {}).get("quality") or {}
+        current = evidence.get("version") == VERSION
+        observations = evidence.get("observations") or {}
+        definitions = {rule["metric"]: (rule["label"], rule["unit"]) for rule in step["criteria"]}
+        if tid.startswith("T"):
+            definitions.update(TEST_METRICS)
+        else:
+            definitions.update({cid: (COMPENSATIONS[cid]["label"], "deg") for cid in rule["compensations"]})
+        metrics = []
+        for key, (label, unit) in definitions.items():
+            observation = observations.get(key) or {}
+            count = int(number(observation.get("samples")) or 0) if current else 0
+            available = current and count >= MIN_SAMPLES
+            metrics.append({"metric": key, "label": label, "unit": unit, "samples": count,
+                            "median": number(observation.get("target_fraction" if key == "target_control" else "median")) if available else None,
+                            "endpoint": number(observation.get("endpoint")) if available else None,
+                            "min": number(observation.get("min")) if available else None,
+                            "max": number(observation.get("max")) if available else None})
+        step["measurements"] = metrics
+        for criterion in step["criteria"]:
+            measurement = (evidence.get("measurements") or {}).get(criterion["metric"]) or {}
+            raw_series = measurement.get("series") if current else []
+            series = []
+            if isinstance(raw_series, list):
+                for point in raw_series[:240]:
+                    if not isinstance(point, Mapping):
+                        continue
+                    elapsed_ms, sample_value = number(point.get("elapsed_ms")), number(point.get("value"))
+                    if elapsed_ms is None or sample_value is None or elapsed_ms < 0:
+                        continue
+                    series.append({"elapsed_ms": round(elapsed_ms), "value": sample_value,
+                                   "in_target": bool(point.get("in_target", False))})
+            criterion["series"] = series
+            source = measurement.get("statistic_source")
+            criterion["statistic_source"] = source if source in {"target_median", "movement_median", "sample_proportion"} else None
+        detections = sum(check["status"] == "detected" for check in step["compensations"])
+        rom = (sum(rule["attainment"] for rule in step["criteria"]) / len(step["criteria"])
+               if all(rule["attainment"] is not None for rule in step["criteria"]) else None)
+        step["calculation"] = {"completion_points": 20 if step["completed"] else 0,
+                               "range_points": round(80 * rom, 3) if rom is not None else None,
+                               "detected_compensations": detections, "form_factor": max(.4, 1 - .2 * detections)}
+    return {"version": VERSION, "task": result,
+            "duration_ms": sum(step["duration_ms"] for step in result["steps"]),
+            "completed_steps": sum(step["completed"] for step in result["steps"]),
+            "recorded": False, "clinical_measure": False}

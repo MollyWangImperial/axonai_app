@@ -65,7 +65,7 @@ try:
     from backend.patient_insights import build_patient_insights
     from backend.fast_screening import FAST_RUNNER_HTML, evaluate_fast_screen
     from backend.encouragement import MEDALS as REWARD_MEDALS, compute_rewards
-    from backend.assessment_quality import VERSION as ASSESSMENT_QUALITY_VERSION, COMPENSATIONS as ASSESSMENT_COMPENSATIONS, build_rubrics, score_assessment
+    from backend.assessment_quality import VERSION as ASSESSMENT_QUALITY_VERSION, COMPENSATIONS as ASSESSMENT_COMPENSATIONS, build_rubrics, score_assessment, testing_task_report
     from backend.daily_activity_metrics import build_daily_activity_metrics
     from backend.gait_scoring import score_gait_features
     from backend.alira_care_orchestrator import (
@@ -113,7 +113,7 @@ except ImportError:
     from patient_insights import build_patient_insights
     from fast_screening import FAST_RUNNER_HTML, evaluate_fast_screen
     from encouragement import MEDALS as REWARD_MEDALS, compute_rewards
-    from assessment_quality import VERSION as ASSESSMENT_QUALITY_VERSION, COMPENSATIONS as ASSESSMENT_COMPENSATIONS, build_rubrics, score_assessment
+    from assessment_quality import VERSION as ASSESSMENT_QUALITY_VERSION, COMPENSATIONS as ASSESSMENT_COMPENSATIONS, build_rubrics, score_assessment, testing_task_report
     from daily_activity_metrics import build_daily_activity_metrics
     from gait_scoring import score_gait_features
     from alira_care_orchestrator import (
@@ -9350,7 +9350,8 @@ async function finishAssessment(){
   if(LIBRARY_TEST_MODE){
     captionEl.textContent = "Task test complete";
     voiceText.textContent = "This test was not added to Assessment history or Progress.";
-    postRN({type:"library_test_complete", package_id:ASSESSMENT_PACKAGE, task_id:tasks[0] ? tasks[0].id : null});
+    postRN({type:"library_test_complete", package_id:ASSESSMENT_PACKAGE, task_id:tasks[0] ? tasks[0].id : null, task_result:taskResults.filter(Boolean)[0] || null});
+    if(video.srcObject) video.srcObject.getTracks().forEach(track=>track.stop());
     return;
   }
   captionEl.textContent = "Saving your task videos and results…";
@@ -9472,10 +9473,11 @@ function loop(){
   const inTarget = !calibratingAssessment && !correctionVoicePlaying && checkTarget(landmarks);
   if(lastPoseScanTs !== lastQualityPoseAt){
     lastQualityPoseAt = lastPoseScanTs;
-    if(calibratingAssessment || (!assessmentQuality.baseline && voiceFinishedAt === 0)) assessmentQuality.calibrate(landmarks, latestPoseWorldLandmarks);
+    const qualityAspect=video.videoWidth>0 && video.videoHeight>0 ? video.videoWidth/video.videoHeight : 1;
+    if(calibratingAssessment || (!assessmentQuality.baseline && voiceFinishedAt === 0)) assessmentQuality.calibrate(landmarks, latestPoseWorldLandmarks, qualityAspect);
     if(!calibratingAssessment && voiceFinishedAt > 0 && !stepCompleted && !celebrateEl.classList.contains("show")){
       const freshHand = now - latestHandSeenAt <= 150 ? latestHandLandmarks : null;
-      assessmentQuality.sample({pose:landmarks,world:latestPoseWorldLandmarks,hand:freshHand,handOpen:handOpenScore,handClosed:fistClosureScore,pinch:pinchScore,gaitAlternations:gaitAlternationCount,inTarget,now});
+      assessmentQuality.sample({pose:landmarks,world:latestPoseWorldLandmarks,hand:freshHand,handOpen:handOpenScore,handClosed:fistClosureScore,pinch:pinchScore,gaitAlternations:gaitAlternationCount,inTarget,now,aspectRatio:qualityAspect});
       const active=assessmentQuality.active();
       if(active.includes("shoulder_hike")) shoulderHikeDetected=true;
       const qualityCaption=active.map(id=>window.REHYN_ASSESSMENT_RUBRIC.compensations[id].cue).join(" ");
@@ -11089,12 +11091,13 @@ async def record_emergency_fast_check(payload: FastCheckSubmit, request: Request
 
 
 @api_router.get("/testing/library")
-async def get_testing_library(request: Request):
+async def get_testing_library(request: Request, patient_tasks_only: bool = False):
     user = await _user_from_header(dict(request.headers))
     if not user:
         raise HTTPException(status_code=401, detail="Sign in required")
 
     assessment_packages = []
+    patient_ids = {task["id"] for task in INITIAL_ASSESSMENT_TASKS if task["id"] != "L6"}
     for package_id in ("upper_limb", "hand", "lower_limb", "balance"):
         package = ASSESSMENT_PACKAGES[package_id]
         assessment_packages.append({
@@ -11111,10 +11114,11 @@ async def get_testing_library(request: Request):
                     "safety_tier": task.get("safety_tier", "seated"),
                     "safety_note": task.get("safety_note"),
                 }
-                for task in package["tasks"]
+                for task in package["tasks"] if not patient_tasks_only or task["id"] in patient_ids
             ],
         })
 
+    assessment_packages = [package for package in assessment_packages if package["tasks"]]
     exercises = []
     seen_exercise_ids = set()
     for exercise in EXERCISE_LIBRARY.values():
@@ -11156,6 +11160,20 @@ async def get_testing_library(request: Request):
         "exercises": exercises,
         "test_runs_are_recorded": False,
     }
+
+
+@api_router.post("/testing/assessment-score")
+async def get_testing_assessment_score(payload: TaskResult, request: Request):
+    user = await _user_from_header(dict(request.headers))
+    if not user:
+        raise HTTPException(status_code=401, detail="Sign in required")
+    if payload.task_id not in ASSESSMENT_RUBRICS or payload.task_id == "L6":
+        raise HTTPException(status_code=422, detail="Choose a guided assessment task from Testing")
+    expected = {step["id"] for step in ASSESSMENT_RUBRICS[payload.task_id]["steps"]}
+    ids = [step.step_id for step in payload.steps]
+    if len(ids) != len(set(ids)) or not set(ids).issubset(expected):
+        raise HTTPException(status_code=422, detail="The recorded steps do not match this task")
+    return testing_task_report(payload, ASSESSMENT_RUBRICS)
 
 
 def _rehab_runner_html(
@@ -12416,7 +12434,9 @@ function rawMovementMetrics(lm, handLm, freshHand=true){
     raw.shoulder_flexion=angle(lm[ACTIVE.hip],lm[ACTIVE.shoulder],lm[ACTIVE.elbow]);
     raw.shoulder_abduction=angle(lm[ACTIVE.hip],lm[ACTIVE.shoulder],lm[ACTIVE.wrist]);
     raw.other_shoulder_flexion=angle(lm[OTHER.hip],lm[OTHER.shoulder],lm[OTHER.elbow]);
-    raw.elbow_extension=angle(lm[ACTIVE.shoulder],lm[ACTIVE.elbow],lm[ACTIVE.wrist]);
+    const elbowAspect=video.videoWidth>0 && video.videoHeight>0 ? video.videoWidth/video.videoHeight : 1;
+    const elbowPoint=point=>({x:point.x*elbowAspect,y:point.y,z:0});
+    raw.elbow_extension=angle(elbowPoint(lm[ACTIVE.shoulder]),elbowPoint(lm[ACTIVE.elbow]),elbowPoint(lm[ACTIVE.wrist]));
     raw.knee_extension=angle(lm[ACTIVE.hip],lm[ACTIVE.knee],lm[ACTIVE.ankle]);
     raw.other_knee_extension=angle(lm[OTHER.hip],lm[OTHER.knee],lm[OTHER.ankle]);
     raw.hip_extension=angle(lm[ACTIVE.shoulder],lm[ACTIVE.hip],lm[ACTIVE.knee]);

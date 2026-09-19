@@ -31,16 +31,18 @@ test('full elbow at rest cannot hide bent elbow at target; steps reset evidence'
   assert.deepEqual(t.snapshot().measurements,{});
 });
 
-test('pose world-space angle is rotation invariant and visibility-gated',()=>{
+test('elbow extension uses the aspect-corrected 2D image angle and is visibility-gated',()=>{
   const t=new Tracker(config,'right');
   const p=Array.from({length:33},()=>({x:.5,y:.5,z:0,visibility:.99}));
   const w=structuredClone(p);
-  w[12]={x:0,y:0,z:0};w[14]={x:.2,y:0,z:0};w[16]={x:.4,y:0,z:0};w[24]={x:0,y:.4,z:0};
-  assert.equal(t.raw(p,w).elbow_extension,180);
-  const rotated=w.map(v=>({x:v.z,y:v.y,z:-v.x}));
-  assert.equal(t.raw(p,rotated).elbow_extension,180);
+  p[12]={x:.3,y:.5,z:0,visibility:.99};p[14]={x:.5,y:.5,z:0,visibility:.99};p[16]={x:.7,y:.5,z:0,visibility:.99};
+  w[12]={x:0,y:0,z:0};w[14]={x:.2,y:0,z:0};w[16]={x:.2,y:.2,z:0};w[24]={x:0,y:.4,z:0};
+  assert.equal(t.raw(p,w,16/9).elbow_extension,180);
+  assert.equal(t.raw(p,null,16/9).elbow_extension,180);
+  p[12]={x:.4,y:.4,z:0,visibility:.99};p[14]={x:.5,y:.5,z:0,visibility:.99};p[16]={x:.6,y:.5,z:0,visibility:.99};
+  assert.ok(Math.abs(t.raw(p,w,2).elbow_extension-153.4349488)<.0001);
   p[16].visibility=.2;
-  assert.equal(t.raw(p,w).elbow_extension,undefined);
+  assert.equal(t.raw(p,w,2).elbow_extension,undefined);
 });
 
 test('baseline is a stable median, and a bent trunk is detected after calibration',()=>{
@@ -69,4 +71,47 @@ test('normal shoulder rise and opposite shoulder drop do not become shoulder hik
   r={...r,neckGap:.1,arm_elevation:40};
   for(let now=2000;now<3000;now+=50)t.sample({now});
   assert.deepEqual(t.active(),['shoulder_hike']);
+});
+
+
+test('diagnostic observations keep endpoint, peak and target fraction without changing scoring',()=>{
+  const t=new Tracker(config,'right'); t.reset(rule);
+  let elevation=20;
+  t.raw=()=>({arm_elevation:elevation,elbow_extension:150,torso:[0,-.5,0]});
+  for(let now=0;now<500;now+=50)t.sample({now,inTarget:false});
+  elevation=60;
+  for(let now=500;now<1000;now+=50)t.sample({now,inTarget:true});
+  const snapshot=t.snapshot();
+  assert.equal(snapshot.observations.arm_elevation.endpoint,60);
+  assert.equal(snapshot.observations.arm_elevation.max,60);
+  assert.equal(snapshot.observations.arm_elevation.min,20);
+  assert.equal(snapshot.observations.target_control.target_fraction,.5);
+  assert.equal(snapshot.measurements.arm_elevation,undefined);
+  t.raw=()=>({});t.sample({now:1100});
+  assert.equal(t.snapshot().observations.arm_elevation.samples,20);
+  t.reset(rule);assert.deepEqual(t.snapshot().observations,{});
+});
+
+test('reach ratio describes extension without assuming real-world distance',()=>{
+  const t=new Tracker(config,'right');
+  const p=Array.from({length:33},()=>({x:.5,y:.5,z:0,visibility:.99}));
+  const w=structuredClone(p);
+  w[12]={x:0,y:0,z:0};w[14]={x:.2,y:0,z:0};w[16]={x:.4,y:0,z:0};w[24]={x:0,y:.4,z:0};
+  assert.equal(t.raw(p,w).reach_ratio,1);
+  w[16]={x:.2,y:.2,z:0};assert.ok(t.raw(p,w).reach_ratio<.71);
+  p[16].visibility=.1;assert.equal(t.raw(p,w).reach_ratio,undefined);
+});
+
+test('scoring measurements include a bounded time series and target control uses the observed proportion',()=>{
+  const t=new Tracker(config,'right');
+  t.reset({criteria:[{metric:'target_control',target:.8}],compensations:[]});
+  t.raw=()=>({torso:[0,-.5,0]});
+  for(let now=0;now<1000;now+=50)t.sample({now,inTarget:now>=250});
+  const measurement=t.snapshot().measurements.target_control;
+  assert.equal(measurement.value,.75);
+  assert.equal(measurement.statistic_source,'sample_proportion');
+  assert.equal(measurement.series[0].elapsed_ms,0);
+  assert.equal(measurement.series.at(-1).elapsed_ms,900);
+  assert.equal(measurement.series.some(point=>point.in_target),true);
+  assert.ok(measurement.series.length<=240);
 });

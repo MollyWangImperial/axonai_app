@@ -37,9 +37,8 @@ canvas { pointer-events: none; }
 .camera-status { position: absolute; bottom: 18px; left: 16px; right: 16px; background: #08634ee8; border: 1px solid #8cdeb5; color: white; padding: 16px; border-radius: 8px; display: flex; gap: 12px; align-items: center; justify-content: center; font-size: 18px; font-weight: 700; text-align: center; }
 .preview-empty { position: absolute; inset: 25% 10%; display: flex; align-items: center; justify-content: center; text-align: center; color: #d8e6e3; font-size: 20px; line-height: 1.5; }
 .checklist { border: 1px solid #d5dedb; border-radius: 8px; padding: 0 18px; background: white; }
-.checklist label, .frame-row { display: flex; align-items: center; gap: 16px; min-height: 88px; padding: 18px 0; font-size: 23px; font-weight: 700; line-height: 1.3; }
-.checklist label { border-bottom: 1px solid #e0e5e3; cursor: pointer; }
-input[type=checkbox] { flex-shrink: 0; width: 32px; height: 32px; margin: 0; accent-color: var(--green); }
+.check-row { display: flex; align-items: center; gap: 16px; min-height: 88px; padding: 18px 0; font-size: 23px; font-weight: 700; line-height: 1.3; }
+.check-row:not(:last-child) { border-bottom: 1px solid #e0e5e3; }
 .spinner { display: inline-block; width: 28px; height: 28px; flex-shrink: 0; border: 4px solid #9cdbcc; border-right-color: #08a7b8; border-radius: 50%; animation: spin 1s linear infinite; }
 .check { display: inline-flex; width: 32px; height: 32px; align-items: center; justify-content: center; flex-shrink: 0; border-radius: 50%; background: #168353; color: white; font-size: 24px; }
 .check-note, .privacy { font-size: 15px; color: var(--muted); line-height: 1.5; margin: 14px 0 20px; }
@@ -75,7 +74,7 @@ dialog::backdrop { background: #102922b8; }
   .preview { aspect-ratio: 3 / 4; max-height: 68dvh; }
   video { object-fit: cover; }
   .camera-status { font-size: 16px; padding: 12px; }
-  .checklist label, .frame-row { font-size: 21px; min-height: 78px; }
+  .check-row { font-size: 21px; min-height: 78px; }
   .device-options { grid-template-columns: 1fr; }
   .device-page { margin-top: 16px; }
 }

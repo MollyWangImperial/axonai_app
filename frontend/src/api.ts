@@ -288,6 +288,43 @@ export type AssessmentTaskQuality = {
   }[];
 };
 
+export type TestingTaskResult = {
+  task_id: string;
+  completed_steps: number;
+  total_steps: number;
+  duration_ms: number;
+  steps: { step_id: string; completed: boolean; duration_ms: number; metrics: Record<string, unknown> }[];
+  metrics: Record<string, unknown>;
+};
+
+export type TestingAssessmentReport = {
+  version: string;
+  completed_steps: number;
+  duration_ms: number;
+  recorded: false;
+  clinical_measure: false;
+  task: Omit<AssessmentTaskQuality["tasks"][number], "steps"> & {
+    steps: (Omit<AssessmentTaskQuality["tasks"][number]["steps"][number], "criteria" | "compensations"> & {
+      criteria: {
+        metric: string; label: string; target: number; observed: number | null; unit: string; attainment: number | null;
+        statistic_source?: "target_median" | "movement_median" | "sample_proportion" | null;
+        series?: { elapsed_ms: number; value: number; in_target: boolean }[];
+      }[];
+      compensations: { id: string; label: string; cue: string; status: string; threshold: number }[];
+      measurements: { metric: string; label: string; unit: string; samples: number; median: number | null; endpoint: number | null; min: number | null; max: number | null }[];
+      calculation: { completion_points: number; range_points: number | null; detected_compensations: number; form_factor: number };
+    })[];
+  };
+};
+
+export async function scoreTestingAssessment(result: TestingTaskResult): Promise<TestingAssessmentReport> {
+  const response = await authedFetch("/api/testing/assessment-score", {
+    method: "POST", body: JSON.stringify(result),
+  });
+  if (!response.ok) throw new Error("Could not calculate the test results. Please retry.");
+  return response.json();
+}
+
 export type BodyFunctionDomainSummary = {
   domain: "upper_limb" | "hand" | "lower_limb";
   label: string;
@@ -565,7 +602,7 @@ export async function fetchTasks(packageId: AssessmentPackageId = "upper_limb", 
 }
 
 export async function fetchTestingLibrary(): Promise<TestingLibrary> {
-  const res = await authedFetch("/api/testing/library");
+  const res = await authedFetch("/api/testing/library?patient_tasks_only=true");
   if (!res.ok) {
     const body = await res.json().catch(() => null);
     throw new Error(body?.detail || "Could not load the testing library");
