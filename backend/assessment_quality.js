@@ -22,6 +22,7 @@
     reset(rubric) {
       this.rubric=rubric;
       this.measurements={}; this.observations={}; this.compensations={}; this.lastTime=null;
+      this.seriesStart=null;
       this.sawClosed=false; this.openCloseCycle=0;
     }
     raw(p,w) {
@@ -80,6 +81,7 @@
     }
     sample({pose,world,hand,handOpen,handClosed,pinch,gaitAlternations,inTarget,now}) {
       if(!this.rubric) return;
+      if(this.seriesStart===null) this.seriesStart=now;
       const dt=this.lastTime===null ? 0 : clamp(now-this.lastTime,0,100);
       const gap=this.lastTime!==null && now-this.lastTime>200;
       this.lastTime=now;
@@ -122,11 +124,19 @@
       for(const rule of this.rubric.criteria) {
         const v=r[rule.metric];
         if(!finite(v)) continue;
-        const record=this.measurements[rule.metric] ||= {samples:0,values:[],endpoints:[]};
+        const record=this.measurements[rule.metric] ||= {samples:0,values:[],endpoints:[],series:[],seriesInterval:100,lastSeriesAt:null};
         record.samples++;
         record.values.push(v);
         if(record.values.length>600) record.values.shift();
         if(inTarget) {record.endpoints.push(v); if(record.endpoints.length>120) record.endpoints.shift();}
+        if(record.lastSeriesAt===null || now-record.lastSeriesAt>=record.seriesInterval) {
+          record.series.push({elapsed_ms:Math.max(0,Math.round(now-this.seriesStart)),value:+v.toFixed(3),in_target:!!inTarget});
+          record.lastSeriesAt=now;
+          if(record.series.length>240) {
+            record.series=record.series.filter((_,index)=>index%2===0);
+            record.seriesInterval*=2;
+          }
+        }
       }
       for(const id of this.rubric.compensations) {
         const c=this.compensations[id] ||= {eligible_ms:0,max_value:0,max_streak_ms:0,streak:0,active:false};
@@ -140,7 +150,10 @@
       }
     }
     snapshot() {
-      return {version:this.config.version,measurements:Object.fromEntries(Object.entries(this.measurements).map(([k,r])=>[k,{samples:r.samples,value:quantile(r.endpoints.length>=5?r.endpoints:r.values,.5)}])),
+      return {version:this.config.version,measurements:Object.fromEntries(Object.entries(this.measurements).map(([k,r])=>[k,{samples:r.samples,
+        value:k==="target_control" ? r.values.reduce((sum,value)=>sum+value,0)/r.values.length : quantile(r.endpoints.length>=5?r.endpoints:r.values,.5),
+        statistic_source:k==="target_control" ? "sample_proportion" : r.endpoints.length>=5 ? "target_median" : "movement_median",
+        series:r.series}])),
         compensations:Object.fromEntries(Object.entries(this.compensations).map(([k,c])=>[k,{eligible_ms:Math.round(c.eligible_ms),max_value:c.max_value,max_streak_ms:Math.round(c.max_streak_ms)}])),
         observations:Object.fromEntries(Object.entries(this.observations).map(([k,r])=>[k,{samples:r.samples,
           median:quantile(r.values),endpoint:r.endpoints.length>=5?quantile(r.endpoints):null,

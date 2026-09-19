@@ -305,7 +305,11 @@ export type TestingAssessmentReport = {
   clinical_measure: false;
   task: Omit<AssessmentTaskQuality["tasks"][number], "steps"> & {
     steps: (Omit<AssessmentTaskQuality["tasks"][number]["steps"][number], "criteria" | "compensations"> & {
-      criteria: { metric: string; label: string; target: number; observed: number | null; unit: string; attainment: number | null }[];
+      criteria: {
+        metric: string; label: string; target: number; observed: number | null; unit: string; attainment: number | null;
+        statistic_source?: "target_median" | "movement_median" | "sample_proportion" | null;
+        series?: { elapsed_ms: number; value: number; in_target: boolean }[];
+      }[];
       compensations: { id: string; label: string; cue: string; status: string; threshold: number }[];
       measurements: { metric: string; label: string; unit: string; samples: number; median: number | null; endpoint: number | null; min: number | null; max: number | null }[];
       calculation: { completion_points: number; range_points: number | null; detected_compensations: number; form_factor: number };

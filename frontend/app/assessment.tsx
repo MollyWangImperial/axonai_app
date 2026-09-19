@@ -285,7 +285,6 @@ function AssessmentSession() {
       {testComplete && (
         <AssessmentTestResults
           report={testReport} loading={scoringTest} error={testReportError}
-          affectedSide={affectedSideParam === "left" ? "Left" : "Right"}
           onRetryScore={() => { void loadTestReport(); }}
           onBack={() => router.dismissTo("/testing-library")}
           onTryAgain={() => {

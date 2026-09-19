@@ -259,6 +259,22 @@ def testing_task_report(task, rubrics):
                             "min": number(observation.get("min")) if available else None,
                             "max": number(observation.get("max")) if available else None})
         step["measurements"] = metrics
+        for criterion in step["criteria"]:
+            measurement = (evidence.get("measurements") or {}).get(criterion["metric"]) or {}
+            raw_series = measurement.get("series") if current else []
+            series = []
+            if isinstance(raw_series, list):
+                for point in raw_series[:240]:
+                    if not isinstance(point, Mapping):
+                        continue
+                    elapsed_ms, sample_value = number(point.get("elapsed_ms")), number(point.get("value"))
+                    if elapsed_ms is None or sample_value is None or elapsed_ms < 0:
+                        continue
+                    series.append({"elapsed_ms": round(elapsed_ms), "value": sample_value,
+                                   "in_target": bool(point.get("in_target", False))})
+            criterion["series"] = series
+            source = measurement.get("statistic_source")
+            criterion["statistic_source"] = source if source in {"target_median", "movement_median", "sample_proportion"} else None
         detections = sum(check["status"] == "detected" for check in step["compensations"])
         rom = (sum(rule["attainment"] for rule in step["criteria"]) / len(step["criteria"])
                if all(rule["attainment"] is not None for rule in step["criteria"]) else None)

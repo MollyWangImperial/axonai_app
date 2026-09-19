@@ -99,3 +99,17 @@ test('reach ratio describes extension without assuming real-world distance',()=>
   w[16]={x:.2,y:.2,z:0};assert.ok(t.raw(p,w).reach_ratio<.71);
   p[16].visibility=.1;assert.equal(t.raw(p,w).reach_ratio,undefined);
 });
+
+test('scoring measurements include a bounded time series and target control uses the observed proportion',()=>{
+  const t=new Tracker(config,'right');
+  t.reset({criteria:[{metric:'target_control',target:.8}],compensations:[]});
+  t.raw=()=>({torso:[0,-.5,0]});
+  for(let now=0;now<1000;now+=50)t.sample({now,inTarget:now>=250});
+  const measurement=t.snapshot().measurements.target_control;
+  assert.equal(measurement.value,.75);
+  assert.equal(measurement.statistic_source,'sample_proportion');
+  assert.equal(measurement.series[0].elapsed_ms,0);
+  assert.equal(measurement.series.at(-1).elapsed_ms,900);
+  assert.equal(measurement.series.some(point=>point.in_target),true);
+  assert.ok(measurement.series.length<=240);
+});

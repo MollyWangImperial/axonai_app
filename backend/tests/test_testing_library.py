@@ -151,7 +151,10 @@ def _measured_reach():
     for rule in server.ASSESSMENT_RUBRICS["T1"]["steps"]:
         steps.append({"step_id": rule["id"], "completed": True, "duration_ms": 2000,
                       "metrics": {"quality": {"version": VERSION,
-                          "measurements": {c["metric"]: {"value": c["target"], "samples": 10} for c in rule["criteria"]},
+                          "measurements": {c["metric"]: {"value": c["target"], "samples": 10,
+                              "statistic_source": "sample_proportion" if c["metric"] == "target_control" else "target_median",
+                              "series": [{"elapsed_ms": index * 100, "value": c["target"] * (index + 1) / 10,
+                                          "in_target": index >= 5} for index in range(10)]} for c in rule["criteria"]},
                           "compensations": {cid: {"eligible_ms": 900, "max_value": 0, "max_streak_ms": 0} for cid in rule["compensations"]},
                           "observations": {"arm_elevation": {"samples": 10, "median": 50, "endpoint": 60, "min": 10, "max": 70}}
                       }}})
@@ -185,6 +188,9 @@ def test_testing_report_explains_score_without_persisting_or_charging(monkeypatc
     shoulder = next(row for row in step["measurements"] if row["metric"] == "arm_elevation")
     assert shoulder["endpoint"] == 60 and shoulder["max"] == 70
     assert next(row for row in step["measurements"] if row["metric"] == "wrist_bend")["median"] is None
+    criterion = step["criteria"][0]
+    assert criterion["statistic_source"] == "target_median"
+    assert len(criterion["series"]) == 10 and criterion["series"][-1]["in_target"] is True
 
 
 def test_testing_report_preserves_missing_evidence_and_rejects_wrong_steps(monkeypatch):
