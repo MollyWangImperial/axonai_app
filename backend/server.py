@@ -9473,10 +9473,11 @@ function loop(){
   const inTarget = !calibratingAssessment && !correctionVoicePlaying && checkTarget(landmarks);
   if(lastPoseScanTs !== lastQualityPoseAt){
     lastQualityPoseAt = lastPoseScanTs;
-    if(calibratingAssessment || (!assessmentQuality.baseline && voiceFinishedAt === 0)) assessmentQuality.calibrate(landmarks, latestPoseWorldLandmarks);
+    const qualityAspect=video.videoWidth>0 && video.videoHeight>0 ? video.videoWidth/video.videoHeight : 1;
+    if(calibratingAssessment || (!assessmentQuality.baseline && voiceFinishedAt === 0)) assessmentQuality.calibrate(landmarks, latestPoseWorldLandmarks, qualityAspect);
     if(!calibratingAssessment && voiceFinishedAt > 0 && !stepCompleted && !celebrateEl.classList.contains("show")){
       const freshHand = now - latestHandSeenAt <= 150 ? latestHandLandmarks : null;
-      assessmentQuality.sample({pose:landmarks,world:latestPoseWorldLandmarks,hand:freshHand,handOpen:handOpenScore,handClosed:fistClosureScore,pinch:pinchScore,gaitAlternations:gaitAlternationCount,inTarget,now});
+      assessmentQuality.sample({pose:landmarks,world:latestPoseWorldLandmarks,hand:freshHand,handOpen:handOpenScore,handClosed:fistClosureScore,pinch:pinchScore,gaitAlternations:gaitAlternationCount,inTarget,now,aspectRatio:qualityAspect});
       const active=assessmentQuality.active();
       if(active.includes("shoulder_hike")) shoulderHikeDetected=true;
       const qualityCaption=active.map(id=>window.REHYN_ASSESSMENT_RUBRIC.compensations[id].cue).join(" ");
@@ -12433,7 +12434,9 @@ function rawMovementMetrics(lm, handLm, freshHand=true){
     raw.shoulder_flexion=angle(lm[ACTIVE.hip],lm[ACTIVE.shoulder],lm[ACTIVE.elbow]);
     raw.shoulder_abduction=angle(lm[ACTIVE.hip],lm[ACTIVE.shoulder],lm[ACTIVE.wrist]);
     raw.other_shoulder_flexion=angle(lm[OTHER.hip],lm[OTHER.shoulder],lm[OTHER.elbow]);
-    raw.elbow_extension=angle(lm[ACTIVE.shoulder],lm[ACTIVE.elbow],lm[ACTIVE.wrist]);
+    const elbowAspect=video.videoWidth>0 && video.videoHeight>0 ? video.videoWidth/video.videoHeight : 1;
+    const elbowPoint=point=>({x:point.x*elbowAspect,y:point.y,z:0});
+    raw.elbow_extension=angle(elbowPoint(lm[ACTIVE.shoulder]),elbowPoint(lm[ACTIVE.elbow]),elbowPoint(lm[ACTIVE.wrist]));
     raw.knee_extension=angle(lm[ACTIVE.hip],lm[ACTIVE.knee],lm[ACTIVE.ankle]);
     raw.other_knee_extension=angle(lm[OTHER.hip],lm[OTHER.knee],lm[OTHER.ankle]);
     raw.hip_extension=angle(lm[ACTIVE.shoulder],lm[ACTIVE.hip],lm[ACTIVE.knee]);

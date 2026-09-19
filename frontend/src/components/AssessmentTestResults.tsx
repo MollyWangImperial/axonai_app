@@ -38,7 +38,7 @@ function metricMeaning(rule: Criterion, stepIndex: number) {
     return `Arm elevation is the angle of the upper arm relative to the torso, where 0° is beside the body. The ${measure(rule.target, rule.unit)} reference represents ${phase}.`;
   }
   if (rule.metric === "elbow_extension") {
-    return `Elbow extension is the angle at the elbow, where 180° is a straight elbow. The ${measure(rule.target, rule.unit)} reference represents a near-straight functional reach while allowing a comfortable amount of elbow bend.`;
+    return `Elbow extension is the 2D image-plane angle formed by the shoulder, elbow and wrist, where 180° is a straight elbow in the camera view. The ${measure(rule.target, rule.unit)} reference represents a near-straight functional reach while allowing a comfortable amount of elbow bend.`;
   }
   if (rule.metric === "target_control") {
     return `Target control is the proportion of valid camera samples in which the hand remains inside the target. The ${measure(rule.target, rule.unit)} reference allows brief tracking fluctuations while requiring the hand to remain at the target for most of the step.`;

@@ -31,16 +31,18 @@ test('full elbow at rest cannot hide bent elbow at target; steps reset evidence'
   assert.deepEqual(t.snapshot().measurements,{});
 });
 
-test('pose world-space angle is rotation invariant and visibility-gated',()=>{
+test('elbow extension uses the aspect-corrected 2D image angle and is visibility-gated',()=>{
   const t=new Tracker(config,'right');
   const p=Array.from({length:33},()=>({x:.5,y:.5,z:0,visibility:.99}));
   const w=structuredClone(p);
-  w[12]={x:0,y:0,z:0};w[14]={x:.2,y:0,z:0};w[16]={x:.4,y:0,z:0};w[24]={x:0,y:.4,z:0};
-  assert.equal(t.raw(p,w).elbow_extension,180);
-  const rotated=w.map(v=>({x:v.z,y:v.y,z:-v.x}));
-  assert.equal(t.raw(p,rotated).elbow_extension,180);
+  p[12]={x:.3,y:.5,z:0,visibility:.99};p[14]={x:.5,y:.5,z:0,visibility:.99};p[16]={x:.7,y:.5,z:0,visibility:.99};
+  w[12]={x:0,y:0,z:0};w[14]={x:.2,y:0,z:0};w[16]={x:.2,y:.2,z:0};w[24]={x:0,y:.4,z:0};
+  assert.equal(t.raw(p,w,16/9).elbow_extension,180);
+  assert.equal(t.raw(p,null,16/9).elbow_extension,180);
+  p[12]={x:.4,y:.4,z:0,visibility:.99};p[14]={x:.5,y:.5,z:0,visibility:.99};p[16]={x:.6,y:.5,z:0,visibility:.99};
+  assert.ok(Math.abs(t.raw(p,w,2).elbow_extension-153.4349488)<.0001);
   p[16].visibility=.2;
-  assert.equal(t.raw(p,w).elbow_extension,undefined);
+  assert.equal(t.raw(p,w,2).elbow_extension,undefined);
 });
 
 test('baseline is a stable median, and a bent trunk is detected after calibration',()=>{

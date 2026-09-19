@@ -4,10 +4,12 @@
   const finite = Number.isFinite;
   const clamp = (x, lo, hi) => Math.max(lo, Math.min(hi, x));
   const sub = (a, b) => [a.x-b.x, a.y-b.y, a.z-b.z];
+  const sub2D = (a, b, aspect) => [(a.x-b.x)*aspect,a.y-b.y];
   const length = a => Math.hypot(...a);
   const midpoint = (a,b) => ({x:(a.x+b.x)/2,y:(a.y+b.y)/2,z:(a.z+b.z)/2});
   const angleV = (a,b) => length(a) > .005 && length(b) > .005 ? Math.acos(clamp(a.reduce((v,x,i)=>v+x*b[i],0)/(length(a)*length(b)),-1,1))*180/Math.PI : NaN;
   const angle = (a,b,c) => a && b && c ? angleV(sub(a,b),sub(c,b)) : NaN;
+  const angle2D = (a,b,c,aspect) => a && b && c ? angleV(sub2D(a,b,aspect),sub2D(c,b,aspect)) : NaN;
   const quantile = (a,q=.5) => a.length ? [...a].sort((x,y)=>x-y)[Math.floor((a.length-1)*q)] : NaN;
 
   class Tracker {
@@ -25,12 +27,16 @@
       this.seriesStart=null;
       this.sawClosed=false; this.openCloseCycle=0;
     }
-    raw(p,w) {
+    raw(p,w,aspectRatio=1) {
       const a=this.a,o=this.o,r={};
-      const usable = ids => p && w && ids.every(i=>p[i] && w[i] && [w[i].x,w[i].y,w[i].z,p[i].x,p[i].y].every(finite) && (p[i].visibility ?? 0)>=.65);
-      if(usable([a.s,a.e,a.w,a.h])) {
-        r.elbow_extension=angle(w[a.s],w[a.e],w[a.w]);
+      const imageAspect=finite(aspectRatio) && aspectRatio>0 ? aspectRatio : 1;
+      const visible = ids => p && ids.every(i=>p[i] && [p[i].x,p[i].y].every(finite) && (p[i].visibility ?? 0)>=.65);
+      const usable = ids => w && visible(ids) && ids.every(i=>w[i] && [w[i].x,w[i].y,w[i].z].every(finite));
+      if(visible([a.s,a.e,a.w])) {
+        r.elbow_extension=angle2D(p[a.s],p[a.e],p[a.w],imageAspect);
         r.elbow_flexion=180-r.elbow_extension;
+      }
+      if(usable([a.s,a.e,a.w,a.h])) {
         r.arm_elevation=angle(w[a.h],w[a.s],w[a.e]);
         const armLength=length(sub(w[a.s],w[a.e]))+length(sub(w[a.e],w[a.w]));
         if(armLength>.15) r.reach_ratio=length(sub(w[a.s],w[a.w]))/armLength;
@@ -67,8 +73,8 @@
       }
       return r;
     }
-    calibrate(p,w) {
-      const r=this.raw(p,w);
+    calibrate(p,w,aspectRatio=1) {
+      const r=this.raw(p,w,aspectRatio);
       if(!r.torso || !finite(r.width)) return;
       this.baselines.push(r);
       if(this.baselines.length>45) this.baselines.shift();
@@ -79,13 +85,13 @@
       b.torso=[0,1,2].map(i=>quantile(directions.map(v=>v[i])));
       if(Math.max(...directions.map(v=>angleV(v,b.torso)))<6) this.baseline=b;
     }
-    sample({pose,world,hand,handOpen,handClosed,pinch,gaitAlternations,inTarget,now}) {
+    sample({pose,world,hand,handOpen,handClosed,pinch,gaitAlternations,inTarget,now,aspectRatio=1}) {
       if(!this.rubric) return;
       if(this.seriesStart===null) this.seriesStart=now;
       const dt=this.lastTime===null ? 0 : clamp(now-this.lastTime,0,100);
       const gap=this.lastTime!==null && now-this.lastTime>200;
       this.lastTime=now;
-      const r=this.raw(pose,world), b=this.baseline;
+      const r=this.raw(pose,world,aspectRatio), b=this.baseline;
       const handValid=hand && hand.length===21 && hand.every(p=>p && finite(p.x) && finite(p.y));
       if(handValid) {
         r.hand_open=handOpen; r.hand_closed=handClosed; r.pinch=pinch;
