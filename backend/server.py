@@ -11200,9 +11200,10 @@ async def rehab_runner(
     return HTMLResponse(content=_rehab_runner_html(exercise_id, reps, difficulty, variation))
 
 
-TRUNK_LEAN_COMPARISON_HTML = ROOT_DIR / "trunk_lean_comparison.html"
-TRUNK_LEAN_COMPARISON_APP = ROOT_DIR / "trunk_lean_comparison.js"
-TRUNK_LEAN_COMPARISON_METRICS = ROOT_DIR / "trunk_lean_metrics.js"
+TRUNK_LEAN_COMPARISON_DIR = ROOT_DIR.parent / "testing" / "trunk-lean-comparison"
+TRUNK_LEAN_COMPARISON_HTML = TRUNK_LEAN_COMPARISON_DIR / "trunk_lean_comparison.html"
+TRUNK_LEAN_COMPARISON_APP = TRUNK_LEAN_COMPARISON_DIR / "trunk_lean_comparison.js"
+TRUNK_LEAN_COMPARISON_METRICS = TRUNK_LEAN_COMPARISON_DIR / "trunk_lean_metrics.js"
 TRUNK_LEAN_COMPARISON_HEADERS = {
     "Cache-Control": "no-store, max-age=0, must-revalidate",
     "Pragma": "no-cache",

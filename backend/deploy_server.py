@@ -36,7 +36,7 @@ async def web_index() -> FileResponse:
 @app.get("/testing/trunk-lean-comparison", include_in_schema=False)
 async def direct_trunk_lean_comparison() -> FileResponse:
     return FileResponse(
-        Path(__file__).resolve().parent / "trunk_lean_comparison.html",
+        Path(__file__).resolve().parents[1] / "testing" / "trunk-lean-comparison" / "trunk_lean_comparison.html",
         media_type="text/html",
         headers=APP_SHELL_HEADERS,
     )
