@@ -11200,6 +11200,42 @@ async def rehab_runner(
     return HTMLResponse(content=_rehab_runner_html(exercise_id, reps, difficulty, variation))
 
 
+TRUNK_LEAN_COMPARISON_HTML = ROOT_DIR / "trunk_lean_comparison.html"
+TRUNK_LEAN_COMPARISON_APP = ROOT_DIR / "trunk_lean_comparison.js"
+TRUNK_LEAN_COMPARISON_METRICS = ROOT_DIR / "trunk_lean_metrics.js"
+TRUNK_LEAN_COMPARISON_HEADERS = {
+    "Cache-Control": "no-store, max-age=0, must-revalidate",
+    "Pragma": "no-cache",
+    "Expires": "0",
+}
+
+
+@api_router.get("/testing/trunk-lean-comparison", response_class=HTMLResponse)
+async def trunk_lean_comparison():
+    return HTMLResponse(
+        content=TRUNK_LEAN_COMPARISON_HTML.read_text(encoding="utf-8"),
+        headers=TRUNK_LEAN_COMPARISON_HEADERS,
+    )
+
+
+@api_router.get("/testing/trunk-lean-comparison/app.js", response_class=Response)
+async def trunk_lean_comparison_app():
+    return Response(
+        content=TRUNK_LEAN_COMPARISON_APP.read_text(encoding="utf-8"),
+        media_type="application/javascript",
+        headers=TRUNK_LEAN_COMPARISON_HEADERS,
+    )
+
+
+@api_router.get("/testing/trunk-lean-comparison/metrics.js", response_class=Response)
+async def trunk_lean_comparison_metrics():
+    return Response(
+        content=TRUNK_LEAN_COMPARISON_METRICS.read_text(encoding="utf-8"),
+        media_type="application/javascript",
+        headers=TRUNK_LEAN_COMPARISON_HEADERS,
+    )
+
+
 @api_router.get("/rehab/games")
 async def rehab_games_catalog():
     return {"games": game_catalog(), "optional_practice": True}

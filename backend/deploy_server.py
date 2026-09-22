@@ -33,6 +33,15 @@ async def web_index() -> FileResponse:
     return FileResponse(index, headers=APP_SHELL_HEADERS)
 
 
+@app.get("/testing/trunk-lean-comparison", include_in_schema=False)
+async def direct_trunk_lean_comparison() -> FileResponse:
+    return FileResponse(
+        Path(__file__).resolve().parent / "trunk_lean_comparison.html",
+        media_type="text/html",
+        headers=APP_SHELL_HEADERS,
+    )
+
+
 @app.get("/{full_path:path}", include_in_schema=False)
 async def web_assets_or_spa(full_path: str) -> FileResponse:
     # Unknown API routes must remain API 404s instead of returning index.html.
