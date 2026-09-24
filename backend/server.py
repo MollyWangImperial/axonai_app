@@ -958,7 +958,7 @@ TASKS_DATA: List[Dict[str, Any]] = [
                 "voice": "Now, slowly reach your affected arm forward, as far as you comfortably can, toward the bright circle in front of you. Keep your back straight and stay relaxed.",
                 "target": {"x": 0.64, "y": 0.40, "r": 0.10, "landmark": "WRIST"},
                 "hold_ms": 1500,
-                "caption": "Reach forward to the target",
+                "caption": "Reach the target, then keep your hand there. Do not lower it until asked.",
                 "measure": ["reach_distance", "trunk_lean", "elbow_extension"],
                 "failure_phenotype": {"code": "REACH_INCOMPLETE", "domain": "forward_reach_range", "label": "Limited forward reach", "description": "The affected arm initiated the movement but did not reach the forward target.", "severity": "moderate", "source": "Fugl-Meyer UE; ARAT", "rehab_code": "REACH_INCOMPLETE"},
             },
@@ -7329,7 +7329,15 @@ async function startStep(){
   document.body.classList.add("voice-playing");
   document.body.classList.remove("step-active");
   postRN({type:"step_start", task_id: task.id, step_id: step.id});
-  await playVoice(step.voice);
+  if(testingReachEnabled()){
+    for(const line of reachStepVoiceLines(step))await playVoice(line);
+    if(step.id==="T1-S2"){
+      reachCaption.textContent=step.caption;
+      syncReachCaption();
+    }
+  }else{
+    await playVoice(step.voice);
+  }
   prefetchUpcomingVoice();
   // Voice finished → unlock the target and fade the bottom card
   voiceFinishedAt = performance.now();

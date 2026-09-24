@@ -66,3 +66,23 @@ test('failed Molly audio leaves the test waiting for retry or captions', async (
   assert.equal(await guide.speak('Reach forward'), true);
   assert.equal(guide.status, 'Captions only');
 });
+
+test('Testing gives the hold instruction before the raised target unlocks', () => {
+  const flow=fs.readFileSync(path.join(__dirname,'..','testing_reach_flow.js'),'utf8');
+  const start=flow.indexOf('function reachStepVoiceLines(step){');
+  const end=flow.indexOf('\n}',start)+2;
+  assert.ok(start>=0 && end>start);
+  const reach='Reach toward the bright circle.';
+  const hold='Hold your hand steadily at the forward target for a moment.';
+  const tasks=[{steps:[{id:'T1-S2',voice:reach},{id:'T1-S3',voice:hold}]}];
+  const context=vm.createContext({tasks});
+  vm.runInContext(flow.slice(start,end),context);
+  assert.deepEqual(Array.from(context.reachStepVoiceLines(tasks[0].steps[0])),[reach,hold]);
+  assert.deepEqual(Array.from(context.reachStepVoiceLines(tasks[0].steps[1])),[]);
+
+  const server=fs.readFileSync(path.join(__dirname,'..','server.py'),'utf8');
+  const runner=server.slice(server.indexOf('async function startStep(){'),server.indexOf('function distance(a,b){'));
+  assert.ok(runner.indexOf('for(const line of reachStepVoiceLines(step))await playVoice(line);')
+    < runner.indexOf('voiceFinishedAt = performance.now();'));
+  assert.match(server,/Reach the target, then keep your hand there\. Do not lower it until asked\./);
+});
