@@ -3,9 +3,14 @@
 from pathlib import Path
 
 from fastapi import HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, RedirectResponse
 
 from backend.server import app
+from backend.local_assessment_recordings import router as local_recordings_router
+from backend.testing_reach_voice import router as testing_reach_voice_router
+
+app.include_router(local_recordings_router)
+app.include_router(testing_reach_voice_router)
 
 
 WEB_DIST = Path(__file__).resolve().parents[1] / "frontend" / "dist"
@@ -31,6 +36,12 @@ async def web_index() -> FileResponse:
     if not index.is_file():
         raise HTTPException(status_code=503, detail="Web application has not been built")
     return FileResponse(index, headers=APP_SHELL_HEADERS)
+
+
+@app.get("/testing/seated-forward-reach", include_in_schema=False)
+async def direct_seated_forward_reach(affected_side: str = "right"):
+    side = "left" if affected_side == "left" else "right"
+    return RedirectResponse(f"/assessment?package=upper_limb&start_task=T1&task_ids=T1&library_test=1&affected_side={side}", status_code=307)
 
 
 @app.get("/testing/trunk-lean-comparison", include_in_schema=False)

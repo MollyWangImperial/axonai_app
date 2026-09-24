@@ -297,6 +297,12 @@ export type TestingTaskResult = {
   metrics: Record<string, unknown>;
 };
 
+export type LocalAssessmentRecording = {
+  status: "saved" | "video_saved" | "download_requested" | "error";
+  id?: string; filename?: string; path?: string; evidence_path?: string; playback_url?: string;
+  duration_ms?: number; size_bytes?: number; error?: string; warning?: string | null;
+};
+
 export type TestingAssessmentReport = {
   version: string;
   completed_steps: number;
@@ -304,18 +310,26 @@ export type TestingAssessmentReport = {
   recorded: false;
   clinical_measure: false;
   task: Omit<AssessmentTaskQuality["tasks"][number], "steps"> & {
+    adaptation_applied?: boolean;
     steps: (Omit<AssessmentTaskQuality["tasks"][number]["steps"][number], "criteria" | "compensations"> & {
+      scoring_method?: "target_completion";
       criteria: {
         metric: string; label: string; target: number; observed: number | null; unit: string; attainment: number | null;
-        statistic_source?: "target_median" | "movement_median" | "sample_proportion" | null;
+        statistic_source?: "target_median" | "movement_median" | "sample_proportion" | "movement_maximum" | null;
+        peak_elapsed_ms?: number | null;
         series?: { elapsed_ms: number; value: number; in_target: boolean }[];
       }[];
-      compensations: { id: string; label: string; cue: string; status: string; threshold: number }[];
+      compensations: { id: string; label: string; cue: string; status: string; threshold: number;
+        method?: string; face_threshold?: number; shoulder_peak?: number | null; face_peak?: number | null;
+        confirmed_cues?: Record<string, { duration_ms: number; peak: number; threshold: number }> }[];
       measurements: { metric: string; label: string; unit: string; samples: number; median: number | null; endpoint: number | null; min: number | null; max: number | null }[];
-      calculation: { completion_points: number; range_points: number | null; detected_compensations: number; form_factor: number };
+      calculation: { completion_points: number; range_points: number | null; detected_compensations: number; form_factor: number; raw_range_points?: number | null; difficulty_factor?: number | null; assistance_factor?: number };
+      adaptation?: { difficulty: number | null; assisted: boolean; reduction_count: number; support_available: boolean; axis: string; inherited: boolean; learning?: TestingReachLearning | null; learning_history?: TestingReachLearning[] };
     })[];
   };
 };
+
+type TestingReachLearning = { success: boolean; terminal_reward: number; reductions: number; updates: { state: string; action: number; probabilities: number[]; return: number; advantage: number }[] };
 
 export async function scoreTestingAssessment(result: TestingTaskResult): Promise<TestingAssessmentReport> {
   const response = await authedFetch("/api/testing/assessment-score", {

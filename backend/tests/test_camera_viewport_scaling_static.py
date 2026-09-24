@@ -47,8 +47,9 @@ def test_assessment_runner_uses_one_mode_aware_camera_viewport_for_video_and_can
     source = server.POSE_RUNNER_HTML
     _assert_responsive_camera_mapping(source)
     assert '#cameraFrame video,#cameraFrame canvas' in source
-    assert 'const tx = targetXY.x * canvas.width;' in source
-    assert 'const ty = targetXY.y * canvas.height;' in source
+    assert 'const canvasTarget = targetCanvasPoint(step, targetXY);' in source
+    assert 'const tx = canvasTarget.x * canvas.width;' in source
+    assert 'const ty = canvasTarget.y * canvas.height;' in source
     assert 'fit: CAMERA_FIT_MODE' in source
     assert 'device_class: CAMERA_DEVICE_CLASS' in source
     assert 'mirrored_for_patient: true' in source

@@ -2,7 +2,9 @@ const {test} = require('node:test');
 const assert = require('node:assert/strict');
 const {
   legacyForwardLeanDegrees,
+  metricsFromLandmarks,
   newForwardLeanEvidence,
+  predictedDepthEvidence,
   createTemporalState,
   updateTemporalState,
 } = require('../trunk_lean_metrics.js');
@@ -58,22 +60,105 @@ test('new detector cancels uniform camera approach using hip normalization', () 
   assert.ok(Math.abs(result.pelvisScale - 1.2) < 1e-10);
 });
 
-test('new detector requires two agreeing geometric cues', () => {
+test('new detector identifies trunk lean when the shoulder cue alone exceeds 12 degrees', () => {
   const baseline = sample();
   const lean = sample({
     shoulder_width_corrected: 0.345,
     hip_width_corrected: 0.28,
-    ear_width: 0.0944,
-    torso_length_corrected: 0.376,
-    trunk_depth_tilt: 21,
   });
   const result = newForwardLeanEvidence(lean, baseline);
   assert.equal(result.supported, true);
   assert.equal(result.detected, true);
   assert.ok(result.degrees > 12);
+  assert.match(result.supportReason, /Shoulder cue/);
 });
 
-test('both detectors use the production 8-frame and 35-percent confirmation rule', () => {
+test('new detector identifies trunk lean when the face cue alone reaches 7 degrees', () => {
+  const baseline = sample();
+  const earWidthAtSevenDegrees = baseline.ear_width / (1 - Math.sin(7 * Math.PI / 180) / 1.5);
+  const lean = sample({ear_width: earWidthAtSevenDegrees});
+  const result = newForwardLeanEvidence(lean, baseline);
+  assert.equal(result.detected, true);
+  assert.ok(Math.abs(result.cues.pelvisNormalizedFaceScale - 7) < 1e-10);
+  assert.ok(result.cues.pelvisNormalizedShoulderScale < 0.001);
+  assert.match(result.supportReason, /Face cue/);
+});
+
+test('faceScale exposes ear-width change divided by hip-width change', () => {
+  const baseline = sample();
+  const current = sample({ear_width: baseline.ear_width * 1.10,
+    hip_width_corrected: baseline.hip_width_corrected * 1.05});
+  const result = newForwardLeanEvidence(current, baseline);
+  assert.ok(Math.abs(result.faceScale - 1.10 / 1.05) < 1e-10);
+  assert.ok(result.cues.pelvisNormalizedFaceScale > 0);
+});
+
+test('new detector does not flag the face cue just below 7 degrees', () => {
+  const baseline = sample();
+  const earWidthBelowSeven = baseline.ear_width / (1 - Math.sin(6.9 * Math.PI / 180) / 1.5);
+  const result = newForwardLeanEvidence(sample({ear_width: earWidthBelowSeven}), baseline);
+  assert.equal(result.detected, false);
+  assert.ok(result.cues.pelvisNormalizedFaceScale < 7);
+});
+
+test('new detector does not require or use depth and torso-shortening cues', () => {
+  const baseline = sample();
+  const depthOnly = sample({trunk_depth_tilt: 45, torso_length_corrected: 0.25});
+  const result = newForwardLeanEvidence(depthOnly, baseline);
+  assert.equal(result.detected, false);
+  assert.deepEqual(Object.keys(result.cues).sort(), [
+    'pelvisNormalizedFaceScale',
+    'pelvisNormalizedShoulderScale',
+  ]);
+});
+
+test('predicted depth detects a depth-only lean on the same frame', () => {
+  const baseline = sample();
+  const depthOnly = sample({trunk_depth_tilt: 22});
+  assert.equal(newForwardLeanEvidence(depthOnly, baseline).detected, false);
+  const depth = predictedDepthEvidence(depthOnly, baseline);
+  assert.equal(depth.degrees, 17);
+  assert.equal(depth.detected, true);
+
+  const shoulderOnly = sample({shoulder_width_corrected: 0.345});
+  assert.equal(newForwardLeanEvidence(shoulderOnly, baseline).detected, true);
+  assert.equal(predictedDepthEvidence(shoulderOnly, baseline).detected, false);
+});
+
+test('predicted depth requires a change strictly above 12 degrees', () => {
+  const baseline = sample();
+  assert.equal(predictedDepthEvidence(sample({trunk_depth_tilt: 17}), baseline).detected, false);
+  assert.equal(predictedDepthEvidence(sample({trunk_depth_tilt: 17.1}), baseline).detected, true);
+  assert.equal(predictedDepthEvidence(sample({trunk_depth_tilt: -10}), baseline).degrees, 0);
+});
+
+test('predicted depth remains unavailable when MediaPipe provides no z coordinates', () => {
+  const landmarks = Array.from({length: 25}, () => ({x: 0.5, y: 0.5, visibility: 1}));
+  landmarks[11] = {x: 0.4, y: 0.3, visibility: 1};
+  landmarks[12] = {x: 0.6, y: 0.3, visibility: 1};
+  landmarks[23] = {x: 0.45, y: 0.7, visibility: 1};
+  landmarks[24] = {x: 0.55, y: 0.7, visibility: 1};
+  const frame = metricsFromLandmarks(landmarks, 1.5);
+  assert.equal(frame.valid, true);
+  assert.equal(Number.isNaN(frame.trunk_depth_tilt), true);
+  const depth = predictedDepthEvidence(frame, sample());
+  assert.equal(depth.detected, false);
+  assert.equal(Number.isNaN(depth.degrees), true);
+});
+
+test('predicted depth angle follows the model z difference between shoulders and hips', () => {
+  const landmarks = Array.from({length: 25}, () => ({x: 0.5, y: 0.5, z: 0, visibility: 1}));
+  landmarks[11] = {x: 0.4, y: 0.3, z: -0.1, visibility: 1};
+  landmarks[12] = {x: 0.6, y: 0.3, z: -0.1, visibility: 1};
+  landmarks[23] = {x: 0.45, y: 0.7, z: 0, visibility: 1};
+  landmarks[24] = {x: 0.55, y: 0.7, z: 0, visibility: 1};
+  const frame = metricsFromLandmarks(landmarks, 1.5);
+  const depth = predictedDepthEvidence(frame, sample({trunk_depth_tilt: 0}));
+  assert.ok(Math.abs(depth.degrees - Math.asin(0.1 / 0.4) * 180 / Math.PI) < 1e-10);
+  assert.equal(depth.detected, true);
+});
+
+test('legacy detector keeps the production 8-frame and 35-percent confirmation rule', () => {
   const state = createTemporalState();
   for (let index = 0; index < 7; index += 1) updateTemporalState(state, 15);
   assert.equal(state.confirmed, false);

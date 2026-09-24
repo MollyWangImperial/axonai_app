@@ -1,4 +1,5 @@
-/* Camera screening evidence. All joint angles use one model's world space.
+/* Camera screening evidence. Elbow angles use aspect-corrected 2D image space;
+ * other joint angles use one model's world space.
  * Missing/occluded landmarks abstain; thresholds are not clinical diagnoses. */
 (function(root) {
   const finite = Number.isFinite;
@@ -13,8 +14,13 @@
   const quantile = (a,q=.5) => a.length ? [...a].sort((x,y)=>x-y)[Math.floor((a.length-1)*q)] : NaN;
 
   class Tracker {
-    constructor(config, side) {
+    constructor(config, side, {peakReachAngles=false,testingReachTrunkLean=false,trunkLeanMetrics=root.TrunkLeanMetrics}={}) {
       this.config=config;
+      this.peakReachAngles=peakReachAngles;
+      this.testingReachTrunkLean=testingReachTrunkLean;
+      this.trunkLeanMetrics=trunkLeanMetrics;
+      this.trunkLeanBaselineFrames=[];
+      this.trunkLeanBaseline=null;
       this.a=side === "left" ? {s:11,e:13,w:15,h:23,k:25,f:27,ear:7,i:19,p:17,t:31} : {s:12,e:14,w:16,h:24,k:26,f:28,ear:8,i:20,p:18,t:32};
       this.o=side === "left" ? {s:12,h:24,k:26,f:28,ear:8} : {s:11,h:23,k:25,f:27,ear:7};
       this.baselines=[];
@@ -74,6 +80,15 @@
       return r;
     }
     calibrate(p,w,aspectRatio=1) {
+      if(this.testingReachTrunkLean && !this.trunkLeanBaseline && this.trunkLeanMetrics) {
+        const frame=this.trunkLeanMetrics.metricsFromLandmarks(p,aspectRatio);
+        // Build the upright reference from 45 clear frames. Briefly occluded
+        // frames do not erase the clear frames already collected.
+        if(frame.valid)
+          this.trunkLeanBaselineFrames=[...this.trunkLeanBaselineFrames,frame].slice(-45);
+        if(this.trunkLeanBaselineFrames.length===45)
+          this.trunkLeanBaseline=this.trunkLeanMetrics.baselineFromSamples(this.trunkLeanBaselineFrames);
+      }
       const r=this.raw(p,w,aspectRatio);
       if(!r.torso || !finite(r.width)) return;
       this.baselines.push(r);
@@ -84,6 +99,12 @@
       const directions=this.baselines.map(x=>x.torso);
       b.torso=[0,1,2].map(i=>quantile(directions.map(v=>v[i])));
       if(Math.max(...directions.map(v=>angleV(v,b.torso)))<6) this.baseline=b;
+    }
+    trunkLeanReadout(p,aspectRatio=1) {
+      if(!this.testingReachTrunkLean || !this.trunkLeanMetrics || !this.trunkLeanBaseline)
+        return {supported:false,detected:false,degrees:NaN};
+      const frame=this.trunkLeanMetrics.metricsFromLandmarks(p,aspectRatio);
+      return this.trunkLeanMetrics.newForwardLeanEvidence(frame,this.trunkLeanBaseline);
     }
     sample({pose,world,hand,handOpen,handClosed,pinch,gaitAlternations,inTarget,now,aspectRatio=1}) {
       if(!this.rubric) return;
@@ -102,7 +123,8 @@
       if(r.torso) r.target_control=inTarget ? 1 : 0;
       if(finite(r.step_distance)) r.gait_alternations=gaitAlternations;
       if(b && r.torso && finite(r.screenWidth) && Math.abs(r.screenWidth/b.screenWidth-1)<.3) {
-        r.trunk_lean=angleV(r.torso,b.torso);
+        if(!this.testingReachTrunkLean || !/^T1-S/.test(this.rubric.id))
+          r.trunk_lean=angleV(r.torso,b.torso);
         // Subtract normal elevation-related shoulder rise. Require both line
         // elevation and neck shortening so opposite shoulder drop alone is not a shrug.
         if(finite(r.neckGap) && finite(b.neckGap)) {
@@ -114,6 +136,15 @@
         if(finite(r.headPitch) && finite(b.headPitch)) r.head_drop=Math.max(0,r.headPitch-b.headPitch)*60;
         if(finite(r.ankle) && finite(b.ankle)) r.ankle_change=Math.abs(r.ankle-b.ankle);
         if(finite(r.wrist_bend) && finite(b.wrist_bend)) r.wrist_extension_change=Math.abs(r.wrist_bend-b.wrist_bend);
+      }
+      const comparisonLean=this.testingReachTrunkLean && /^T1-S/.test(this.rubric.id);
+      if(comparisonLean) {
+        const evidence=this.trunkLeanReadout(pose,aspectRatio);
+        if(evidence.supported && finite(evidence.degrees)) {
+          r.trunk_lean=evidence.degrees;
+          r.trunk_lean_detected=evidence.detected;
+          r.trunk_lean_evidence=evidence;
+        }
       }
       // Keep diagnostic measurements separate from the scoring criteria. These
       // make a test run inspectable without changing the patient scoring rubric.
@@ -132,6 +163,7 @@
         if(!finite(v)) continue;
         const record=this.measurements[rule.metric] ||= {samples:0,values:[],endpoints:[],series:[],seriesInterval:100,lastSeriesAt:null};
         record.samples++;
+        if(!record.peak || v>record.peak.value) record.peak={elapsed_ms:Math.max(0,Math.round(now-this.seriesStart)),value:v,in_target:!!inTarget};
         record.values.push(v);
         if(record.values.length>600) record.values.shift();
         if(inTarget) {record.endpoints.push(v); if(record.endpoints.length>120) record.endpoints.shift();}
@@ -146,21 +178,53 @@
       }
       for(const id of this.rubric.compensations) {
         const c=this.compensations[id] ||= {eligible_ms:0,max_value:0,max_streak_ms:0,streak:0,active:false};
+        const comparison=id==="trunk_lean" && comparisonLean;
+        if(comparison) {
+          c.method="pelvis_normalized_shoulder_or_face_v1";
+          const cues=r.trunk_lean_evidence?.cues;
+          if(finite(cues?.pelvisNormalizedShoulderScale)) c.shoulder_peak=Math.max(c.shoulder_peak||0,cues.pelvisNormalizedShoulderScale);
+          if(finite(cues?.pelvisNormalizedFaceScale)) c.face_peak=Math.max(c.face_peak||0,cues.pelvisNormalizedFaceScale);
+          c.cue_runs ||= {shoulder:{streak_ms:0,run_peak:null,confirmed_ms:0,confirmed_peak:null},face:{streak_ms:0,run_peak:null,confirmed_ms:0,confirmed_peak:null}};
+          for(const [name,key,threshold] of [["shoulder","pelvisNormalizedShoulderScale",12],["face","pelvisNormalizedFaceScale",7]]) {
+            const cue=cues?.[key], run=c.cue_runs[name];
+            const over=finite(cue) && (name==="shoulder" ? cue>threshold : cue+1e-9>=threshold);
+            if(!over || gap) {run.streak_ms=0;run.run_peak=null;}
+            if(over) {
+              run.streak_ms+=dt;
+              run.run_peak=Math.max(run.run_peak??cue,cue);
+              if(run.streak_ms>=500 && run.streak_ms>=run.confirmed_ms) {
+                run.confirmed_ms=run.streak_ms;
+                run.confirmed_peak=run.run_peak;
+              }
+            }
+          }
+        }
         const v=r[id];
         if(!finite(v)) {c.streak=0; c.active=false; continue;}
         c.eligible_ms+=dt;
         c.max_value=Math.max(c.max_value,v);
-        c.streak=v>this.config.compensations[id].threshold ? (gap?0:c.streak)+dt : 0;
-        c.max_streak_ms=Math.max(c.max_streak_ms,c.streak);
-        c.active=c.streak>=500;
+        if(comparison) {
+          c.max_streak_ms=Math.max(...Object.values(c.cue_runs).map(run=>run.confirmed_ms));
+          c.active=Object.values(c.cue_runs).some(run=>run.streak_ms>=500);
+        } else {
+          c.streak=v>this.config.compensations[id].threshold ? (gap?0:c.streak)+dt : 0;
+          c.max_streak_ms=Math.max(c.max_streak_ms,c.streak);
+          c.active=c.streak>=500;
+        }
       }
     }
     snapshot() {
-      return {version:this.config.version,measurements:Object.fromEntries(Object.entries(this.measurements).map(([k,r])=>[k,{samples:r.samples,
-        value:k==="target_control" ? r.values.reduce((sum,value)=>sum+value,0)/r.values.length : quantile(r.endpoints.length>=5?r.endpoints:r.values,.5),
-        statistic_source:k==="target_control" ? "sample_proportion" : r.endpoints.length>=5 ? "target_median" : "movement_median",
-        series:r.series}])),
-        compensations:Object.fromEntries(Object.entries(this.compensations).map(([k,c])=>[k,{eligible_ms:Math.round(c.eligible_ms),max_value:c.max_value,max_streak_ms:Math.round(c.max_streak_ms)}])),
+      return {version:this.config.version,measurements:Object.fromEntries(Object.entries(this.measurements).map(([k,r])=>{
+        const peak=this.peakReachAngles && /^T1-S/.test(this.rubric.id) && ["arm_elevation","elbow_extension"].includes(k);
+        // Preserve the exact winning frame even if chart decimation drops it.
+        const series=peak && r.peak ? [...r.series.filter(p=>p.elapsed_ms!==r.peak.elapsed_ms).slice(-239),r.peak].sort((a,b)=>a.elapsed_ms-b.elapsed_ms) : r.series;
+        return [k,{samples:r.samples,
+        value:peak ? r.peak?.value : k==="target_control" ? r.values.reduce((sum,value)=>sum+value,0)/r.values.length : quantile(r.endpoints.length>=5?r.endpoints:r.values,.5),
+        statistic_source:peak ? "movement_maximum" : k==="target_control" ? "sample_proportion" : r.endpoints.length>=5 ? "target_median" : "movement_median",
+        peak_elapsed_ms:peak ? r.peak?.elapsed_ms : null,series}];})),
+        compensations:Object.fromEntries(Object.entries(this.compensations).map(([k,c])=>[k,{eligible_ms:Math.round(c.eligible_ms),max_value:c.max_value,max_streak_ms:Math.round(c.max_streak_ms),
+          ...(c.method?{method:c.method,shoulder_peak:c.shoulder_peak??null,face_peak:c.face_peak??null,
+            cue_evidence:Object.fromEntries(Object.entries(c.cue_runs||{}).map(([name,run])=>[name,{duration_ms:Math.round(run.confirmed_ms),peak:run.confirmed_peak}]))}: {})}])),
         observations:Object.fromEntries(Object.entries(this.observations).map(([k,r])=>[k,{samples:r.samples,
           median:quantile(r.values),endpoint:r.endpoints.length>=5?quantile(r.endpoints):null,
           min:r.min,max:r.max,target_fraction:r.targetSamples/r.samples}]))};

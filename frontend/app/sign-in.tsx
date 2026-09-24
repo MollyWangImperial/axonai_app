@@ -20,7 +20,7 @@ import { useLocalSearchParams, useRouter } from "expo-router";
 import * as Haptics from "expo-haptics";
 import { colors, radius } from "@/src/theme";
 import LandingDiscoverySurvey from "@/src/components/LandingDiscoverySurvey";
-import { signIn, completeSignInHandoff, authedFetch, cachePatientOnboarding, getCachedPatientProfile, hasAcceptedConsent, type Me } from "@/src/auth";
+import { signIn, completeSignInHandoff, authedFetch, cachePatientOnboarding, getCachedPatientProfile, getCachedUser, hasAcceptedConsent, type Me } from "@/src/auth";
 
 // Sampled from the supplied Rehyn logo; shared by every landing-page accent.
 const DEEP_GREEN = "#004A38";
@@ -74,6 +74,7 @@ export default function SignInScreen() {
   const [err, setErr] = useState<string | null>(null);
   const [handoffError, setHandoffError] = useState<string | null>(null);
   const handoffStarted = useRef(false);
+  const localResumeStarted = useRef(false);
 
   const routePatientAfterLogin = useCallback(async (user: Me) => {
     // The sign-in response carries the account state saved in MongoDB:
@@ -136,6 +137,18 @@ export default function SignInScreen() {
         setHandoffError(error instanceof Error ? error.message : "We could not finish signing you in. Please try again.");
       });
   }, [requestedHandoff, routePatientAfterLogin]);
+
+  useEffect(() => {
+    // Reuse the account already signed in on this local browser. No embedded
+    // patient identity, credentials, consent bypass, or remote auto-login.
+    if (Platform.OS !== "web" || typeof window === "undefined"
+      || !["localhost", "127.0.0.1", "[::1]"].includes(window.location.hostname)
+      || requestedHandoff || requestedAuth || localResumeStarted.current) return;
+    localResumeStarted.current = true;
+    void getCachedUser().then(user => {
+      if (user?.role === "patient") return routePatientAfterLogin(user);
+    }).catch(() => { /* Keep the normal sign-in form available if storage fails. */ });
+  }, [requestedAuth, requestedHandoff, routePatientAfterLogin]);
 
   const openAuth = (intent: AuthIntent, focus: string | null = null) => {
     setDiscoveryFocus(focus);

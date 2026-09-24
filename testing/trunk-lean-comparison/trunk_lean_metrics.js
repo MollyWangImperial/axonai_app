@@ -107,7 +107,8 @@
     const earWidth = pointUsable(earLeft) && pointUsable(earRight)
       ? Math.max(0.01, Math.hypot(earLeft.x - earRight.x, earLeft.y - earRight.y))
       : NaN;
-    const depthDifference = (Number(midHip.z) || 0) - (Number(midShoulder.z) || 0);
+    const hasPredictedDepth = torsoPoints.every(point => Number.isFinite(point.z));
+    const depthDifference = midHip.z - midShoulder.z;
     const confidences = torsoPoints.concat(pointUsable(core.nose) ? [core.nose] : []).map(point => (
       Number.isFinite(point.visibility) ? point.visibility : (Number.isFinite(point.presence) ? point.presence : 1)
     ));
@@ -120,7 +121,9 @@
       shoulder_line_delta: core.rightShoulder.y - core.leftShoulder.y,
       ear_width: earWidth,
       torso_length: torsoLength,
-      trunk_depth_tilt: radToDeg(Math.asin(clamp(depthDifference / Math.max(0.05, torsoLength), -1, 1))),
+      trunk_depth_tilt: hasPredictedDepth
+        ? radToDeg(Math.asin(clamp(depthDifference / Math.max(0.05, torsoLength), -1, 1)))
+        : NaN,
       shoulder_width_corrected: correctedShoulderWidth,
       hip_width_corrected: correctedHipWidth,
       torso_length_corrected: correctedTorsoLength,
@@ -170,8 +173,7 @@
       : NaN;
   }
 
-  // This is the current Graded Forward Reach calculation copied without
-  // modification so the right-hand panel remains a faithful benchmark.
+  // Preserved as the original Graded Forward Reach calculation for reference.
   function legacyForwardLeanDegrees(raw, baseline) {
     if (!raw || !baseline || raw.trunk_projection_visible === false) return NaN;
     const width0 = horizontalShoulderSpan(baseline);
@@ -196,42 +198,6 @@
     return evidence.length ? Math.max(...evidence) : NaN;
   }
 
-  function relativeVector(point, hip, aspect) {
-    if (!point || !hip) return null;
-    return {x: (point.x - hip.x) * aspect, y: point.y - hip.y};
-  }
-
-  function vectorDelta(current, baseline) {
-    if (!current || !baseline) return null;
-    return {x: current.x - baseline.x, y: current.y - baseline.y};
-  }
-
-  function vectorLength(vector) {
-    return vector ? Math.hypot(vector.x, vector.y) : 0;
-  }
-
-  function directionAgreement(first, second, minimumLength) {
-    const firstLength = vectorLength(first);
-    const secondLength = vectorLength(second);
-    if (firstLength < minimumLength || secondLength < minimumLength) return null;
-    return clamp((first.x * second.x + first.y * second.y) / (firstLength * secondLength), 0, 1);
-  }
-
-  function bilateralVerticalAgreement(raw, baseline, minimumMovement) {
-    const rawPoints = raw.points || {};
-    const basePoints = baseline.points || {};
-    if (![rawPoints.leftShoulder, rawPoints.rightShoulder, rawPoints.leftHip, rawPoints.rightHip,
-      basePoints.leftShoulder, basePoints.rightShoulder, basePoints.leftHip, basePoints.rightHip].every(Boolean)) return null;
-    const leftDelta = (rawPoints.leftShoulder.y - rawPoints.leftHip.y)
-      - (basePoints.leftShoulder.y - basePoints.leftHip.y);
-    const rightDelta = (rawPoints.rightShoulder.y - rawPoints.rightHip.y)
-      - (basePoints.rightShoulder.y - basePoints.rightHip.y);
-    if (Math.abs(leftDelta) < minimumMovement && Math.abs(rightDelta) < minimumMovement) return null;
-    if (leftDelta * rightDelta < 0) return 0;
-    return clamp(1 - Math.abs(Math.abs(leftDelta) - Math.abs(rightDelta))
-      / Math.max(0.0001, Math.abs(leftDelta) + Math.abs(rightDelta)), 0, 1);
-  }
-
   function approachAngle(scale, distanceFactor) {
     if (!Number.isFinite(scale) || scale <= 0) return NaN;
     return radToDeg(Math.asin(clamp(distanceFactor * (1 - 1 / scale), 0, 1)));
@@ -245,8 +211,6 @@
     const width = Number(raw.shoulder_width_corrected);
     const hip0 = Number(baseline.hip_width_corrected);
     const hip = Number(raw.hip_width_corrected);
-    const torso0 = Number(baseline.torso_length_corrected);
-    const torso = Number(raw.torso_length_corrected);
     const pelvisScale = hip0 > 0 && hip > 0 ? hip / hip0 : NaN;
     const upperScale = width0 > 0 && width > 0 && Number.isFinite(pelvisScale) && pelvisScale > 0
       ? (width / width0) / pelvisScale
@@ -256,68 +220,51 @@
     const faceScale = face0 > 0 && face > 0 && Number.isFinite(pelvisScale) && pelvisScale > 0
       ? (face / face0) / pelvisScale
       : NaN;
-    const normalizedTorsoRatio = torso0 > 0 && torso > 0 && hip0 > 0 && hip > 0
-      ? (torso / hip) / (torso0 / hip0)
-      : NaN;
-    const depth0 = Number(baseline.trunk_depth_tilt);
-    const depth = Number(raw.trunk_depth_tilt);
     const cues = {
       pelvisNormalizedShoulderScale: approachAngle(upperScale, 2),
       pelvisNormalizedFaceScale: approachAngle(faceScale, 1.5),
-      pelvisNormalizedTorsoShortening: Number.isFinite(normalizedTorsoRatio)
-        ? radToDeg(Math.acos(clamp(normalizedTorsoRatio, 0, 1)))
-        : NaN,
-      relativePoseDepth: Number.isFinite(depth0) && Number.isFinite(depth) ? Math.max(0, depth - depth0) : NaN,
     };
-
-    const aspect = Number.isFinite(raw.aspect) ? raw.aspect : (Number.isFinite(baseline.aspect) ? baseline.aspect : 1);
-    const rawPoints = raw.points || {};
-    const basePoints = baseline.points || {};
-    const rawShoulder = relativeVector(rawPoints.midShoulder, rawPoints.midHip, aspect);
-    const baseShoulder = relativeVector(basePoints.midShoulder, basePoints.midHip, aspect);
-    const rawNose = relativeVector(rawPoints.nose, rawPoints.midHip, aspect);
-    const baseNose = relativeVector(basePoints.nose, basePoints.midHip, aspect);
-    const shoulderDelta = vectorDelta(rawShoulder, baseShoulder);
-    const noseDelta = vectorDelta(rawNose, baseNose);
-    const minimumCoherentMovement = Math.max(0.004, torso0 * 0.025);
-    const headShoulderCoherence = directionAgreement(shoulderDelta, noseDelta, minimumCoherentMovement);
-    const bilateralShoulderCoherence = bilateralVerticalAgreement(raw, baseline, minimumCoherentMovement * 0.5);
-    const coherenceValues = [headShoulderCoherence, bilateralShoulderCoherence].filter(Number.isFinite);
-    const coherence = coherenceValues.length
-      ? coherenceValues.reduce((sum, value) => sum + value, 0) / coherenceValues.length
-      : null;
-
-    // Four degrees is the existing runner's pose-jitter floor. The new
-    // detector requires two independent geometric cues, then uses the weaker
-    // one as the conservative estimate instead of allowing one cue to decide.
-    const cueFloor = 4;
-    const eligible = Object.values(cues).filter(value => Number.isFinite(value) && value >= cueFloor).sort((a, b) => b - a);
-    const visualPair = cues.pelvisNormalizedShoulderScale >= cueFloor
-      && cues.pelvisNormalizedFaceScale >= cueFloor;
-    const torsoPair = cues.relativePoseDepth >= cueFloor
-      && cues.pelvisNormalizedTorsoShortening >= cueFloor;
-    const coherentMixedPair = eligible.length >= 2 && Number.isFinite(coherence) && coherence >= 0.5;
-    const supported = eligible.length >= 2 && (visualPair || torsoPair || coherentMixedPair);
-    const degrees = supported ? eligible[1] : 0;
-    let supportReason = "Waiting for two agreeing trunk cues.";
-    if (visualPair) supportReason = "Shoulder and face scale changed relative to the pelvis.";
-    else if (torsoPair) supportReason = "Pose depth and pelvis-normalized torso shortening agree.";
-    else if (coherentMixedPair) supportReason = "Head and both shoulders moved coherently relative to the pelvis.";
+    const availableCues = Object.values(cues).filter(Number.isFinite);
+    const degrees = availableCues.length ? Math.max(...availableCues) : NaN;
+    const shoulderDetected = Number.isFinite(cues.pelvisNormalizedShoulderScale)
+      && cues.pelvisNormalizedShoulderScale > 12;
+    const faceDetected = Number.isFinite(cues.pelvisNormalizedFaceScale)
+      && cues.pelvisNormalizedFaceScale + 1e-9 >= 7;
+    const detected = shoulderDetected || faceDetected;
+    const supported = availableCues.length > 0;
+    let supportReason = "Waiting for a measurable shoulder or face cue.";
+    if (shoulderDetected && faceDetected) supportReason = "Shoulder is above 12 degrees and face is at least 7 degrees.";
+    else if (shoulderDetected) supportReason = "Shoulder cue is above 12 degrees.";
+    else if (faceDetected) supportReason = "Face cue is at least 7 degrees.";
+    else if (supported) supportReason = "Shoulder is within 12 degrees and face is below 7 degrees.";
 
     return {
       degrees,
-      detected: Number.isFinite(degrees) && degrees > 12,
+      detected,
       supported,
       supportReason,
       cues,
-      coherence,
-      headShoulderCoherence,
-      bilateralShoulderCoherence,
       pelvisScale,
       upperScale,
-      normalizedTorsoRatio,
-      shoulderDeltaMagnitude: vectorLength(shoulderDelta) / Math.max(0.04, torso0),
-      noseDeltaMagnitude: vectorLength(noseDelta) / Math.max(0.04, torso0),
+      faceScale,
+    };
+  }
+
+  function predictedDepthEvidence(raw, baseline) {
+    const current = raw && raw.valid ? raw.trunk_depth_tilt : NaN;
+    const upright = baseline && baseline.valid ? baseline.trunk_depth_tilt : NaN;
+    const available = Number.isFinite(current) && Number.isFinite(upright);
+    const degrees = available ? Math.max(0, current - upright) : NaN;
+    return {
+      degrees,
+      current,
+      upright,
+      detected: Number.isFinite(degrees) && degrees > 12,
+      supportReason: !available
+        ? "Predicted shoulder and hip depth is unavailable."
+        : degrees > 12
+          ? "Predicted depth change is above 12 degrees."
+          : "Predicted depth change is within 12 degrees.",
     };
   }
 
@@ -349,6 +296,7 @@
     legacyForwardLeanDegrees,
     metricsFromLandmarks,
     newForwardLeanEvidence,
+    predictedDepthEvidence,
     updateTemporalState,
   });
 });

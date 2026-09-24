@@ -1,4 +1,5 @@
 import os
+import subprocess
 
 os.environ.setdefault("MONGO_URL", "mongodb://127.0.0.1:27017")
 os.environ.setdefault("DB_NAME", "axonai_pre_assessment_calibration_test")
@@ -55,7 +56,7 @@ def test_calibration_runs_before_task_one_and_is_not_recorded_as_task_motion():
     source = server.POSE_RUNNER_HTML
     start_handler = source[source.index("async function beginAssessmentSetup()") : source.index('markerConfirmBtn.addEventListener')]
     assert "calibratingAssessment = shouldRunSeatedCalibration();" in start_handler
-    assert start_handler.index("requestAnimationFrame(loop);") < start_handler.index("await playVoice(CALIBRATION_INSTRUCTION);")
+    assert start_handler.index("requestAnimationFrame(loop);") < start_handler.index("await playVoice(testingReachEnabled() ? TESTING_REACH_CALIBRATION_INSTRUCTION : CALIBRATION_INSTRUCTION);")
     assert "await startStep();" in start_handler
     assert "prefetchVoice(CALIBRATION_COMPLETE_INSTRUCTION);" in start_handler
     assert "if(!running || calibratingAssessment || motionFrames.length >= MAX_MOTION_FRAMES) return;" in source
@@ -96,3 +97,47 @@ def test_browser_hook_can_drive_the_real_calibration_gate():
     assert "updatePreAssessmentCalibrationUI(landmarks);" in source
     assert "autoStarting:calibrationAutoStartInProgress" in source
     assert "statusText:calibrationAutoStatus.textContent" in source
+
+
+def test_testing_calibration_starts_after_bounded_posture_wait_when_hips_cannot_be_tracked():
+    source = server.POSE_RUNNER_HTML
+    start = source.index("function updatePreAssessmentCalibrationUI(lm){")
+    end = source.index("\n}\n\nasync function completePreAssessmentCalibration()", start) + 2
+    function = source[start:end]
+    script = function + r'''
+const assert=require('node:assert/strict');
+const TESTING_REACH_TRUNK_BASELINE_WAIT_MS=6000;
+let fakeNow=0,testingReachTrunkBaselineWaitSince=null;
+const performance={now:()=>fakeNow};
+let calibratingAssessment=true,preAssessmentCalibrationReady=false;
+let calibrationAutoStartInProgress=false,calibrationInstructionFinished=true;
+const lapTargetCalibration={ready:true};let forwardReachPlacement={ready:true};
+const assessmentQuality={trunkLeanBaseline:null,trunkLeanBaselineFrames:[],
+  trunkLeanMetrics:{metricsFromLandmarks:()=>({reason:'Keep both shoulders and both hips in view.'})}};
+const video={videoWidth:640,videoHeight:480};
+const calibrationCamera={},calibrationArm={},calibrationSeat={},calibrationLap={};
+const calibrationProgressFill={style:{}},calibrationTitle={textContent:''},calibrationLead={textContent:''};
+const calibrationAutoStatus={textContent:'',classList:{add(){},remove(){}}};
+function testingReachEnabled(){return true;}
+function calibrationLandmarkStatus(){return {ready:forwardReachPlacement.ready,cameraReady:true,armVisible:true,
+  seatedAnchorsVisible:true,lapReady:forwardReachPlacement.ready,
+  lapGuidance:'Move slightly left to leave room for the reach circles.'};}
+function setCalibrationCheck(){}
+let starts=0;function completePreAssessmentCalibration(){starts++;}
+updatePreAssessmentCalibrationUI([]);
+assert.equal(preAssessmentCalibrationReady,false);
+assert.match(calibrationAutoStatus.textContent,/both hips/);
+fakeNow=5999;updatePreAssessmentCalibrationUI([]);
+assert.equal(starts,0);
+fakeNow=6001;updatePreAssessmentCalibrationUI([]);
+assert.equal(preAssessmentCalibrationReady,true);
+assert.equal(starts,1);
+assert.match(calibrationLead.textContent,/trunk-lean reference was unavailable/);
+forwardReachPlacement={ready:false};preAssessmentCalibrationReady=false;starts=0;
+fakeNow=12000;updatePreAssessmentCalibrationUI([]);
+assert.equal(starts,0);
+assert.equal(calibrationTitle.textContent,'Positioning the reach circles');
+assert.match(calibrationAutoStatus.textContent,/Lap point saved.*Move slightly left/);
+'''
+    result = subprocess.run(["node", "-e", script], text=True, capture_output=True, timeout=10)
+    assert result.returncode == 0, result.stderr

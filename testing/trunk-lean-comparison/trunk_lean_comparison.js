@@ -3,7 +3,7 @@ import {PoseLandmarker, FilesetResolver} from "/vendor/mediapipe/vision_bundle.m
 const metrics = window.TrunkLeanMetrics;
 const video = document.getElementById("sourceVideo");
 const newCanvas = document.getElementById("newCanvas");
-const oldCanvas = document.getElementById("oldCanvas");
+const depthCanvas = document.getElementById("depthCanvas");
 const sharedFrameCanvas = document.createElement("canvas");
 const cameraButton = document.getElementById("cameraButton");
 const startButton = document.getElementById("startButton");
@@ -12,7 +12,6 @@ const instructionTitle = document.getElementById("instructionTitle");
 const instructionText = document.getElementById("instructionText");
 const calibrationFill = document.getElementById("calibrationFill");
 const CALIBRATION_SAMPLES = 45;
-const THRESHOLD = 12;
 
 let landmarker = null;
 let stream = null;
@@ -21,42 +20,35 @@ let lastVideoTime = -1;
 let calibrationSamples = [];
 let baseline = null;
 let comparing = false;
-let newTemporal = metrics.createTemporalState();
-let oldTemporal = metrics.createTemporalState();
 let latestLandmarks = null;
 let latestNewEvidence = {detected: false};
-let latestOldDegrees = NaN;
+let latestDepthEvidence = {detected: false};
 
 function setText(id, value) {
   document.getElementById(id).textContent = value;
 }
 
-function formatDegrees(value) {
-  return Number.isFinite(value) ? `${value.toFixed(1)}°` : "--°";
+function formatDegrees(value, decimals = 1) {
+  return Number.isFinite(value) ? `${value.toFixed(decimals)}°` : "--°";
 }
 
-function formatPercent(value) {
-  return Number.isFinite(value) ? `${Math.round(value * 100)}%` : "--";
-}
-
-function setState(elementId, temporal, degrees) {
+function setState(elementId, detected, degrees) {
   const element = document.getElementById(elementId);
   element.className = "state";
-  if (temporal.confirmed) {
+  if (detected) {
     element.textContent = "Trunk lean detected";
     element.classList.add("detected");
-  } else if (Number.isFinite(degrees) && degrees > THRESHOLD) {
-    element.textContent = "Lean signal";
-    element.classList.add("signal");
+  } else if (!Number.isFinite(degrees) && comparing) {
+    element.textContent = "Cue unavailable";
   } else {
-    element.textContent = comparing ? "Within current threshold" : "Ready";
+    element.textContent = comparing ? "Below thresholds" : "Ready";
   }
 }
 
 function sizeCanvases() {
   const width = video.videoWidth || 1280;
   const height = video.videoHeight || 720;
-  for (const canvas of [newCanvas, oldCanvas]) {
+  for (const canvas of [newCanvas, depthCanvas]) {
     if (canvas.width !== width || canvas.height !== height) {
       canvas.width = width;
       canvas.height = height;
@@ -116,12 +108,18 @@ function drawSharedFrame(canvas, landmarks, accent, detected) {
 }
 
 function resetComparison() {
-  newTemporal = metrics.createTemporalState();
-  oldTemporal = metrics.createTemporalState();
   latestNewEvidence = {detected: false};
-  latestOldDegrees = NaN;
-  setText("oldFrames", "0 / 0");
-  setText("oldRatio", "0%");
+  latestDepthEvidence = {detected: false};
+  for (const id of ["newDegrees", "depthDegrees", "newShoulder", "newFace", "depthBaseline", "depthCurrent"]) {
+    setText(id, "--°");
+  }
+  for (const id of ["newState", "depthState"]) {
+    const element = document.getElementById(id);
+    element.className = "state";
+    element.textContent = "Waiting";
+  }
+  setText("newReason", "Calibrate before comparing.");
+  setText("depthReason", "Calibrate before comparing.");
 }
 
 function beginCalibration() {
@@ -162,31 +160,25 @@ function updateCalibration(frameMetrics) {
     instructionTitle.textContent = "Baseline ready.";
     instructionText.textContent = "Press Start both, then complete one seated forward reach.";
     setText("newReason", "Ready to compare from the shared upright baseline.");
-    setText("oldReason", "Ready to compare from the shared upright baseline.");
+    setText("depthReason", "Ready to compare from the shared upright baseline.");
   }
 }
 
 function updateReadouts(frameMetrics) {
   const newEvidence = metrics.newForwardLeanEvidence(frameMetrics, baseline);
-  const oldDegrees = metrics.legacyForwardLeanDegrees(frameMetrics, baseline);
-  metrics.updateTemporalState(newTemporal, newEvidence.degrees);
-  metrics.updateTemporalState(oldTemporal, oldDegrees);
+  const depthEvidence = metrics.predictedDepthEvidence(frameMetrics, baseline);
 
-  setText("newDegrees", formatDegrees(newEvidence.degrees));
-  setText("oldDegrees", formatDegrees(oldDegrees));
-  setState("newState", newTemporal, newEvidence.degrees);
-  setState("oldState", oldTemporal, oldDegrees);
-  setText("newScale", formatDegrees(newEvidence.cues.pelvisNormalizedShoulderScale));
-  setText("newShortening", formatDegrees(newEvidence.cues.pelvisNormalizedTorsoShortening));
-  setText("newDepth", formatDegrees(newEvidence.cues.relativePoseDepth));
-  setText("newCoherence", newEvidence.coherence === null ? "Not measurable" : formatPercent(newEvidence.coherence));
+  setText("newDegrees", formatDegrees(newEvidence.degrees, 2));
+  setText("depthDegrees", formatDegrees(depthEvidence.degrees));
+  setState("newState", newEvidence.detected, newEvidence.degrees);
+  setState("depthState", depthEvidence.detected, depthEvidence.degrees);
+  setText("newShoulder", formatDegrees(newEvidence.cues.pelvisNormalizedShoulderScale));
+  setText("newFace", formatDegrees(newEvidence.cues.pelvisNormalizedFaceScale, 2));
   setText("newReason", newEvidence.supportReason);
-  setText("oldFrames", `${oldTemporal.aboveFrames} / ${oldTemporal.trackedFrames}`);
-  setText("oldRatio", formatPercent(oldTemporal.ratio));
-  setText("oldReason", oldTemporal.confirmed
-    ? "The current production confirmation rule was met."
-    : "Waiting for the production 8-frame and 35% confirmation rule.");
-  return {newEvidence, oldDegrees};
+  setText("depthBaseline", formatDegrees(depthEvidence.upright));
+  setText("depthCurrent", formatDegrees(depthEvidence.current));
+  setText("depthReason", depthEvidence.supportReason);
+  return {newEvidence, depthEvidence};
 }
 
 async function createLandmarker() {
@@ -241,11 +233,21 @@ function processFrame(now) {
     else if (comparing && frameMetrics.valid) {
       const states = updateReadouts(frameMetrics);
       latestNewEvidence = states.newEvidence;
-      latestOldDegrees = states.oldDegrees;
+      latestDepthEvidence = states.depthEvidence;
+    } else if (comparing) {
+      latestNewEvidence = {detected: false};
+      latestDepthEvidence = {detected: false};
+      setState("newState", false, NaN);
+      setState("depthState", false, NaN);
+      for (const id of ["newDegrees", "depthDegrees", "newShoulder", "newFace", "depthCurrent"]) {
+        setText(id, "--°");
+      }
+      setText("newReason", frameMetrics.reason);
+      setText("depthReason", frameMetrics.reason);
     }
   }
   drawSharedFrame(newCanvas, latestLandmarks, "#35d49a", Boolean(latestNewEvidence && latestNewEvidence.detected));
-  drawSharedFrame(oldCanvas, latestLandmarks, "#f4aa54", Number.isFinite(latestOldDegrees) && latestOldDegrees > THRESHOLD);
+  drawSharedFrame(depthCanvas, latestLandmarks, "#f4aa54", Boolean(latestDepthEvidence.detected));
   animationFrame = requestAnimationFrame(processFrame);
 }
 

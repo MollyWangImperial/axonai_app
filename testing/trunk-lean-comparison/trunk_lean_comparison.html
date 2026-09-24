@@ -27,15 +27,14 @@
     .compare{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}
     .detector{min-width:0;border:1px solid var(--line);background:var(--panel);border-radius:8px;overflow:hidden}
     .detector.new{border-top:5px solid var(--green)}
-    .detector.old{border-top:5px solid var(--orange)}
+    .detector.depth{border-top:5px solid var(--orange)}
     .detector-head{display:flex;align-items:flex-start;justify-content:space-between;gap:18px;padding:17px 18px 14px}
     .detector h2{font-size:22px;margin:0 0 5px;letter-spacing:0}
     .detector p{margin:0;color:var(--muted);line-height:1.4;font-size:14px}
     .result{flex:0 0 auto;min-width:145px;text-align:right}
     .degrees{font-size:34px;font-weight:900;line-height:1;color:var(--green)}
-    .old .degrees{color:var(--orange)}
+    .depth .degrees{color:var(--orange)}
     .state{display:inline-flex;margin-top:7px;padding:5px 8px;border-radius:999px;background:var(--green-soft);font-size:12px;font-weight:850;color:var(--green)}
-    .state.signal{background:var(--orange-soft);color:var(--orange)}
     .state.detected{background:var(--red-soft);color:var(--red)}
     .video-wrap{position:relative;background:#15211c;aspect-ratio:16/9;overflow:hidden}
     canvas{display:block;width:100%;height:100%;transform:scaleX(-1)}
@@ -77,35 +76,35 @@
     <section class="compare">
       <article class="detector new">
         <div class="detector-head">
-          <div><h2>New: pelvis-normalized fusion</h2><p>Head and shoulder coherence, upper-body scale relative to the hips, torso shortening and pose depth.</p></div>
+          <div><h2>New: shoulder OR face</h2><p>Immediate trunk-lean signal when the shoulder cue exceeds 12° or the face cue reaches 7°.</p></div>
           <div class="result"><div class="degrees" id="newDegrees">--°</div><div class="state" id="newState">Waiting</div></div>
         </div>
         <div class="video-wrap"><canvas id="newCanvas"></canvas><span class="same-frame">Shared live frame</span></div>
         <div class="evidence">
-          <div class="metric"><span>Shoulder scale vs hips</span><strong id="newScale">--</strong></div>
-          <div class="metric"><span>Torso shortening vs hips</span><strong id="newShortening">--</strong></div>
-          <div class="metric"><span>Pose depth change</span><strong id="newDepth">--</strong></div>
-          <div class="metric"><span>Head + shoulders coherence</span><strong id="newCoherence">--</strong></div>
+          <div class="metric"><span>Shoulder cue vs hips</span><strong id="newShoulder">--</strong></div>
+          <div class="metric"><span>Face cue vs hips</span><strong id="newFace">--</strong></div>
+          <div class="metric"><span>Threshold</span><strong>Shoulder &gt;12° or face ≥7°</strong></div>
+          <div class="metric"><span>Confirmation</span><strong>Immediate</strong></div>
         </div>
         <div class="reason" id="newReason">Calibrate before comparing.</div>
       </article>
 
-      <article class="detector old">
+      <article class="detector depth">
         <div class="detector-head">
-          <div><h2>Current: depth + perspective</h2><p>The existing Graded Forward Reach formula, unchanged: shoulder and face enlargement or pose depth and trunk foreshortening.</p></div>
-          <div class="result"><div class="degrees" id="oldDegrees">--°</div><div class="state" id="oldState">Waiting</div></div>
+          <div><h2>Predicted depth</h2><p>MediaPipe's estimated shoulder-to-hip depth angle, compared with the shared upright baseline.</p></div>
+          <div class="result"><div class="degrees" id="depthDegrees">--°</div><div class="state" id="depthState">Waiting</div></div>
         </div>
-        <div class="video-wrap"><canvas id="oldCanvas"></canvas><span class="same-frame">Shared live frame</span></div>
+        <div class="video-wrap"><canvas id="depthCanvas"></canvas><span class="same-frame">Shared live frame</span></div>
         <div class="evidence">
+          <div class="metric"><span>Upright depth angle</span><strong id="depthBaseline">--°</strong></div>
+          <div class="metric"><span>Current depth angle</span><strong id="depthCurrent">--°</strong></div>
           <div class="metric"><span>Threshold</span><strong>Above 12°</strong></div>
-          <div class="metric"><span>Frames above</span><strong id="oldFrames">0 / 0</strong></div>
-          <div class="metric"><span>Confirmation ratio</span><strong id="oldRatio">0%</strong></div>
-          <div class="metric"><span>Rule</span><strong>8 frames · 35%</strong></div>
+          <div class="metric"><span>Confirmation</span><strong>Immediate</strong></div>
         </div>
-        <div class="reason" id="oldReason">Calibrate before comparing.</div>
+        <div class="reason" id="depthReason">Calibrate before comparing.</div>
       </article>
     </section>
-    <p class="footnote">Both sides use the production 12° threshold and the same 8-frame / 35% confirmation rule. The values are camera-derived estimates for algorithm testing, not a diagnosis or a substitute for clinical assessment.</p>
+    <p class="footnote">The shoulder-or-face side triggers immediately at shoulder &gt;12° or face ≥7°. Predicted depth still triggers at &gt;12°. Both use the same camera frames. These values are angle-like estimates for algorithm testing, not measured anatomical angles or a diagnosis.</p>
   </main>
   <video id="sourceVideo" playsinline muted></video>
   <script src="/api/testing/trunk-lean-comparison/metrics.js"></script>

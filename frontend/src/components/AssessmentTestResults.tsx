@@ -1,10 +1,11 @@
-import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, useWindowDimensions, View } from "react-native";
+import { ActivityIndicator, Linking, Pressable, ScrollView, StyleSheet, Text, useWindowDimensions, View } from "react-native";
 import Svg, { Circle, Line, Polyline, Text as SvgText } from "react-native-svg";
-import { TestingAssessmentReport } from "@/src/api";
+import { LocalAssessmentRecording, TestingAssessmentReport } from "@/src/api";
 import { useDisplayPreferences } from "@/src/displayPreferences";
 
 type Props = {
   report: TestingAssessmentReport | null;
+  recording?: LocalAssessmentRecording | null;
   loading: boolean;
   error: string | null;
   onRetryScore: () => void;
@@ -14,6 +15,7 @@ type Props = {
 
 type ScoredStep = NonNullable<TestingAssessmentReport["task"]>["steps"][number];
 type Criterion = ScoredStep["criteria"][number];
+type Compensation = ScoredStep["compensations"][number];
 
 function measure(value: number | null | undefined, unit: string) {
   if (value == null || !Number.isFinite(value)) return "not measured";
@@ -38,7 +40,8 @@ function metricMeaning(rule: Criterion, stepIndex: number) {
     return `Arm elevation is the angle of the upper arm relative to the torso, where 0° is beside the body. The ${measure(rule.target, rule.unit)} reference represents ${phase}.`;
   }
   if (rule.metric === "elbow_extension") {
-    return `Elbow extension is the 2D image-plane angle formed by the shoulder, elbow and wrist, where 180° is a straight elbow in the camera view. The ${measure(rule.target, rule.unit)} reference represents a near-straight functional reach while allowing a comfortable amount of elbow bend.`;
+    const phase = stepIndex === 0 ? "a meaningful initial straightening of the elbow as the hand moves toward the first target" : "elbow straightening during the forward reach while allowing a comfortable bend";
+    return `Elbow extension is the 2D image-plane angle formed by the shoulder, elbow and wrist, where 180° is a straight elbow in the camera view. The ${measure(rule.target, rule.unit)} reference represents ${phase}.`;
   }
   if (rule.metric === "target_control") {
     return `Target control is the proportion of valid camera samples in which the hand remains inside the target. The ${measure(rule.target, rule.unit)} reference allows brief tracking fluctuations while requiring the hand to remain at the target for most of the step.`;
@@ -47,9 +50,20 @@ function metricMeaning(rule: Criterion, stepIndex: number) {
 }
 
 function statisticExplanation(rule: Criterion) {
+  if (rule.statistic_source === "movement_maximum") return "We use the maximum valid angle reached anywhere during this step. Reaching the reference once earns full angle attainment, even if you lower your arm or bend your elbow afterward. Only clearly tracked samples count; at least five valid samples are required to score the step. A single accepted peak is used, so camera tracking errors can still affect it.";
   if (rule.statistic_source === "sample_proportion") return "We use the proportion of all valid samples recorded inside the target.";
   if (rule.statistic_source === "movement_median") return "Fewer than five valid samples were recorded at the target, so we use the median of all valid movement samples.";
   return "We use the median of the valid samples recorded while the hand is at the target, which reduces the effect of an individual noisy camera frame.";
+}
+
+function trunkLeanAttempt(check: Compensation) {
+  const cues = Object.entries(check.confirmed_cues || {}).filter(([, evidence]) => evidence.duration_ms >= 500);
+  if (cues.length) {
+    const reasons = cues.map(([name, evidence]) =>
+      `the ${name} cue passed its ${measure(evidence.threshold, "deg")} threshold for ${(evidence.duration_ms / 1000).toFixed(2)} seconds (peak ${measure(evidence.peak, "deg")} during that interval)`);
+    return `trunk lean was identified because ${list(reasons)}. The highest estimated shoulder and face cues across the step were ${measure(check.shoulder_peak, "deg")} and ${measure(check.face_peak, "deg")}, respectively.`;
+  }
+  return "trunk lean was identified, but this result does not contain separate cue durations to explain which cue triggered it.";
 }
 
 function TimeSeriesChart({ rule, brand, text, muted, border, surface }: {
@@ -81,6 +95,7 @@ function TimeSeriesChart({ rule, brand, text, muted, border, surface }: {
       <Line x1={left} x2={width - right} y1={targetY} y2={targetY} stroke="#B06737" strokeWidth={2} strokeDasharray="7 6" />
       {rule.observed != null && <Line x1={left} x2={width - right} y1={y(rule.observed)} y2={y(rule.observed)} stroke={muted} strokeWidth={1.5} strokeDasharray="3 5" />}
       <Polyline points={points} fill="none" stroke={brand} strokeWidth={3} strokeLinecap="round" strokeLinejoin="round" />
+      {rule.statistic_source === "movement_maximum" && rule.peak_elapsed_ms != null && rule.observed != null && <Circle cx={x(rule.peak_elapsed_ms)} cy={y(rule.observed)} r={5} fill={surface} stroke={brand} strokeWidth={3} />}
       {series.map((point, index) => point.in_target && (index % Math.max(1, Math.ceil(series.length / 70)) === 0)
         ? <Circle key={`${point.elapsed_ms}-${index}`} cx={x(point.elapsed_ms)} cy={y(point.value)} r={3.4} fill="#B06737" /> : null)}
       <SvgText x={left - 5} y={top + 4} fill={muted} fontSize={labelSize} textAnchor="end">{measure(yMax, rule.unit)}</SvgText>
@@ -88,23 +103,32 @@ function TimeSeriesChart({ rule, brand, text, muted, border, surface }: {
       <SvgText x={left} y={height - 9} fill={muted} fontSize={labelSize}>0 s</SvgText>
       <SvgText x={width - right} y={height - 9} fill={muted} fontSize={labelSize} textAnchor="end">{(maxTime / 1000).toFixed(1)} s</SvgText>
       <SvgText x={width - right - 3} y={Math.max(13, targetY - 7)} fill="#8A4C28" fontSize={labelSize} textAnchor="end">Reference {measure(rule.target, rule.unit)}</SvgText>
-      {rule.observed != null && <SvgText x={left + 4} y={Math.max(13, y(rule.observed) - 6)} fill={muted} fontSize={labelSize}>Scoring value {measure(rule.observed, rule.unit)}</SvgText>}
+      {rule.observed != null && <SvgText x={left + 4} y={Math.max(13, y(rule.observed) - 6)} fill={muted} fontSize={labelSize}>{rule.statistic_source === "movement_maximum" ? "Maximum" : "Scoring value"} {measure(rule.observed, rule.unit)}</SvgText>}
     </Svg>
-    <Text style={[styles.chartNote, { color: muted }]}>Green line: valid measurements · Brown dots: samples recorded at the target · Brown dashed line: reference · Grey dotted line: scoring statistic</Text>
+    <Text style={[styles.chartNote, { color: muted }]}>Green line: valid measurements · Brown dots: samples recorded at the target · Brown dashed line: reference · Grey dotted line: scoring statistic{rule.statistic_source === "movement_maximum" ? ` · Outlined point: maximum at ${((rule.peak_elapsed_ms ?? 0) / 1000).toFixed(2)} s` : ""}</Text>
   </View>;
 }
 
 function ReachStepExplanation({ step, index, palette }: {
   step: ScoredStep; index: number; palette: ReturnType<typeof useDisplayPreferences>["palette"];
 }) {
+  if (step.scoring_method === "target_completion") return <View style={[styles.card, { backgroundColor: palette.surface, borderColor: palette.border }]} testID={`testing-step-${step.step_id}`}>
+    <Text style={[styles.stepTitle, { color: palette.text }]}>{index + 1}. {step.label}</Text>
+    <Text style={[styles.body, { color: palette.text }]}>This step is scored only by completing the calibrated lap target. Reaching and holding that target earns the full 100 points. Angle measurements, form checks, target difficulty and recorded hands-on help do not reduce this step score.</Text>
+    <Text style={[styles.body, { color: palette.text }]}>{step.score === null ? "This step was not recorded, so no score was assigned." : step.completed ? "In this attempt, the lap target was completed." : "In this attempt, the lap target was not completed."}</Text>
+    <Text style={[styles.equation, { color: palette.brand }]}>{step.score === null ? "Score unavailable" : `Lap target ${step.completed ? "completed" : "not completed"} = ${step.score} points`}</Text>
+  </View>;
   const c = step.calculation;
   const detected = step.compensations.filter(check => check.status === "detected");
   const notMeasured = step.compensations.filter(check => check.status === "not_measured");
   const criterionResults = step.criteria.map(rule => rule.observed == null
     ? `${rule.label.toLowerCase()} could not be measured`
-    : `${rule.label.toLowerCase()} was ${measure(rule.observed, rule.unit)} against the ${measure(rule.target, rule.unit)} reference (${measure(rule.attainment, "ratio")} achieved)`).join("; ");
+    : `${rule.statistic_source === "movement_maximum" ? "maximum " : ""}${rule.label.toLowerCase()} was ${measure(rule.observed, rule.unit)} against the ${measure(rule.target, rule.unit)} reference (${measure(rule.attainment, "ratio")} achieved)`).join("; ");
   const compensationNames = list(step.compensations.map(check => check.label.toLowerCase()));
-  const thresholds = step.compensations.map(check => `${check.label.toLowerCase()} above ${measure(check.threshold, "deg")} for at least 0.5 seconds`);
+  const comparisonLean = step.compensations.find(check => check.id === "trunk_lean" && check.method === "pelvis_normalized_shoulder_or_face_v1");
+  const thresholds = step.compensations.map(check => check.method === "pelvis_normalized_shoulder_or_face_v1"
+    ? `the calibrated shoulder cue exceeds ${measure(check.threshold, "deg")} or the face cue reaches ${measure(check.face_threshold, "deg")} for at least 0.5 seconds`
+    : `${check.label.toLowerCase()} exceeds ${measure(check.threshold, "deg")} for at least 0.5 seconds`);
   const statisticText = [...new Set(step.criteria.map(statisticExplanation))].join(" ");
   const pointSummary = step.score == null ? "This step could not be scored because there was not enough valid movement or posture evidence."
     : `${step.completed ? "The target was reached, adding 20 target points" : "The target was not reached, so no target points were added"}. The measured movement contributed ${Number((c.range_points ?? 0).toFixed(1))} of 80 movement points. ${detected.length ? `${list(detected.map(check => check.label))} ${detected.length === 1 ? "was" : "were"} detected, so the form factor was reduced to ${Number(c.form_factor.toFixed(1))}.` : notMeasured.length ? `${list(notMeasured.map(check => check.label))} could not be measured, so the available posture evidence was used.` : "No compensatory movement was detected, so no form penalty was applied."}`;
@@ -114,15 +138,18 @@ function ReachStepExplanation({ step, index, palette }: {
       <Text style={styles.bold}>Movement metric: {rule.label}{"\n"}</Text>
       {metricMeaning(rule, index)} Reaching or exceeding the reference gives 100% attainment for this metric; a lower measurement gives proportional attainment. When a step uses more than one metric, their attainment percentages are averaged to award the 80 movement points.
     </Text>)}
-    <Text style={[styles.body, { color: palette.text }]}>{statisticText} We also check for <Text style={styles.bold}>{compensationNames}</Text>. A compensation is identified when {alternatives(thresholds)}.</Text>
+    <Text style={[styles.body, { color: palette.text }]}>{statisticText} We also check for <Text style={styles.bold}>{compensationNames}</Text>. A compensation is identified when {alternatives(thresholds)}. {comparisonLean ? "The trunk cues compare face and shoulder size with the upright calibration, adjusted by hip size to reduce the effect of moving uniformly toward the camera. They are camera estimates, not anatomical angles." : ""}</Text>
     <Text style={[styles.body, { color: palette.text }]}>In this attempt, {criterionResults || "the required movement statistic was not available"}. {pointSummary}</Text>
-    <Text style={[styles.equation, { color: palette.brand }]}>{step.score === null ? "Score unavailable" : `${c.completion_points} target points + ${Number((c.range_points ?? 0).toFixed(1))} movement points${c.form_factor < 1 ? `, multiplied by ${Number(c.form_factor.toFixed(1))}` : ""} = ${step.score} points`}</Text>
+    {step.adaptation && <Text style={[styles.body, { color: palette.text }]}>
+      The angle references stay fixed when the target is made easier. In this attempt, target difficulty was {measure(step.adaptation.difficulty, "ratio")}{step.adaptation.inherited ? ", carried over from the preceding reach" : ""}. {step.adaptation.reduction_count} target {step.adaptation.axis === "distance" ? "distance" : "height"} reductions occurred in this step. The {Number((c.raw_range_points ?? 0).toFixed(1))} movement points from the measured criteria were multiplied by {c.difficulty_factor ?? "an unavailable factor"}, giving {Number((c.range_points ?? 0).toFixed(1))} movement points. {step.adaptation.assisted ? "Hands-on help was confirmed, so the complete step score is multiplied by 0.5. The camera cannot separate the patient's contribution from the helper's." : "No hands-on help was reported; the assistance factor is 1. Having someone beside you alone does not reduce the score."}
+    </Text>}
+    <Text style={[styles.equation, { color: palette.brand }]}>{step.score === null ? "Score unavailable" : `(${c.completion_points} target points + ${Number((c.range_points ?? 0).toFixed(1))} movement points) × ${Number(c.form_factor.toFixed(1))} form${step.adaptation ? ` × ${c.assistance_factor} assistance` : ""} = ${step.score} points`}</Text>
     <Text style={[styles.subheading, { color: palette.text }]}>Movement evidence over time</Text>
     {step.criteria.map(rule => <TimeSeriesChart key={rule.metric} rule={rule} brand={palette.brand} text={palette.text} muted={palette.muted} border={palette.border} surface={palette.page} />)}
   </View>;
 }
 
-export function AssessmentTestResults({ report, loading, error, onRetryScore, onBack, onTryAgain }: Props) {
+export function AssessmentTestResults({ report, recording, loading, error, onRetryScore, onBack, onTryAgain }: Props) {
   const { palette } = useDisplayPreferences();
   const task = report?.task;
   const card = { backgroundColor: palette.surface, borderColor: palette.border };
@@ -132,6 +159,15 @@ export function AssessmentTestResults({ report, loading, error, onRetryScore, on
       <View style={styles.content}>
         <Text style={[styles.eyebrow, { color: palette.brand }]}>TASK TEST COMPLETE</Text>
         <Text accessibilityRole="header" style={[styles.title, { color: palette.text }]}>{task?.label || "Movement results"}</Text>
+        {recording && <View style={[styles.card, card]} testID="assessment-local-recording">
+          <Text style={[styles.heading, { color: palette.text }]}>{recording.status === "saved" ? "Assessment video saved locally" : "Assessment video"}</Text>
+          {recording.path && <Text selectable style={[styles.body, { color: palette.text }]} testID="assessment-video-path">{recording.path}</Text>}
+          {recording.evidence_path && <Text selectable style={[styles.small, { color: palette.muted }]}>Angle evidence and video timing: {recording.evidence_path}</Text>}
+          {recording.playback_url && <Pressable accessibilityRole="link" testID="assessment-video-playback" onPress={() => void Linking.openURL(recording.playback_url!)} style={styles.link}><Text style={[styles.linkText, { color: palette.brand }]}>Open recorded video</Text></Pressable>}
+          {recording.status === "saved" && <Text style={[styles.small, { color: palette.muted }]}>Includes the camera view from the start of this attempt through completion, including calibration when used, with the visible angle overlay and reference values. No microphone audio is recorded.</Text>}
+          {recording.status === "download_requested" && <Text selectable style={[styles.body, { color: palette.text }]}>Browser download requested: {recording.filename}. Check the browser’s download location; a local server file was not confirmed.</Text>}
+          {(recording.error || recording.warning) && <Text style={[styles.body, { color: palette.text }]}>{recording.error || recording.warning}</Text>}
+        </View>}
         {loading && <View style={styles.loading}><ActivityIndicator color={palette.brand} /><Text style={[styles.body, { color: palette.text }]}>Calculating your movement results…</Text></View>}
         {error && <View accessibilityRole="alert" style={[styles.card, card]}>
           <Text style={[styles.body, { color: palette.text }]}>{error}</Text>
@@ -146,9 +182,20 @@ export function AssessmentTestResults({ report, loading, error, onRetryScore, on
             <Text style={[styles.heading, { color: palette.text }]}>How the score is calculated</Text>
             {isForwardReach ? <>
               <Text style={[styles.body, { color: palette.text }]}>The <Text style={styles.bold}>Seated Forward Reach</Text> exercise is divided into four steps: <Text style={styles.bold}>{task.steps.map((step, index) => `(${index + 1}) ${step.label.toLowerCase()}`).join(", ")}</Text>. Each step is scored out of <Text style={styles.bold}>100 points</Text>, and all four steps have equal weight in the final score.</Text>
-              <Text style={[styles.body, { color: palette.text }]}>For each step, the score is calculated as <Text style={styles.bold}>(Target points + Movement points) × Form factor</Text>. You receive <Text style={styles.bold}>20 target points</Text> when the target is reached. The remaining <Text style={styles.bold}>80 movement points</Text> compare the measured movement with the reference for that step. Meeting or exceeding a reference receives full credit; a lower result receives a proportional score. When a step uses two metrics, their attainment percentages are averaged. We also check for trunk lean and excess shoulder lift. Each detected compensation reduces the pre-penalty step score by 20%.</Text>
+              <Text style={[styles.body, { color: palette.text }]}>For steps 1–3, the score is calculated as <Text style={styles.bold}>{task.adaptation_applied ? "(Target points + Angle points × Target difficulty) × Form factor × Assistance factor" : "(Target points + Movement points) × Form factor"}</Text>. You receive <Text style={styles.bold}>20 target points</Text> when the target is reached. The remaining <Text style={styles.bold}>80 movement points</Text> compare the measured angles with the references. Meeting or exceeding a reference receives full credit; a lower result receives a proportional score. When a step uses two metrics, their attainment percentages are averaged. We also check for trunk lean and excess shoulder lift. Each detected compensation reduces that step's pre-penalty score by 20%. <Text style={styles.bold}>Step 4, return to lap, is completion-only:</Text> completing the calibrated lap target earns 100 points, otherwise 0. Its angle, form and assistance measurements do not reduce that step score.</Text>
+              {task.steps.some(step => step.compensations.some(check => check.id === "trunk_lean" && check.method === "pelvis_normalized_shoulder_or_face_v1")) &&
+                <Text style={[styles.body, { color: palette.text }]}>For trunk lean, the camera first records an upright reference from 45 valid frames. It divides the current shoulder width by its reference width and then divides that result by the corresponding hip-width change. The face cue uses ear-to-ear width in the same way. The shoulder ratio becomes arcsin(2 × (1 − 1 ÷ ratio)); the face ratio becomes arcsin(1.5 × (1 − 1 ÷ ratio)). The arcsin input is limited to 0–1, and each result is converted to degrees. These are estimated camera cues, not anatomical joint angles. Trunk lean is identified only when the shoulder cue exceeds 12° or the face cue reaches 7° continuously for at least 0.5 seconds. For any step where it was identified, the measured cue and duration appear below.</Text>}
+              {task.steps.flatMap((step, index) => step.compensations.filter(check => check.id === "trunk_lean" && check.method === "pelvis_normalized_shoulder_or_face_v1" && check.status === "detected").map(check =>
+                <Text key={`${step.step_id}-trunk-evidence`} style={[styles.body, { color: palette.text }]}>For step {index + 1}, {step.label.toLowerCase()}, {trunkLeanAttempt(check)} This reduced the step's form factor by 0.2.</Text>))}
+              {task.adaptation_applied && <>
+                <Text style={[styles.body, { color: palette.text }]}>For steps 1–3, target difficulty starts at 100% and can fall to 85%, 70%, 55% or 40%. It scales the movement points, while the angle references stay fixed. A supported reach can still earn target points. Confirmed hands-on assistance multiplies those step scores by 0.5. The return-to-lap target does not move or receive these deductions. These are experimental Testing rules, not a clinical scale or a comparison with a “normal” person.</Text>
+                <Text style={[styles.body, { color: palette.text }]}>The agent chooses a reduction of one or two levels only after an 8-second tracked attempt, spoken encouragement and a further 6-second attempt. A successful step gives a reward of 2 × remaining difficulty × assistance factor; an unfinished step gives −1. Each reduction costs 0.04, and future reward is discounted by 0.95. Speech, poor tracking and pauses do not count against the patient. Policy-gradient updates learn the reduction size; the first target always starts at full difficulty.</Text>
+                {task.steps.flatMap(step => (step.adaptation?.learning_history?.length ? step.adaptation.learning_history : step.adaptation?.learning ? [step.adaptation.learning] : []).map((learning, i) => <Text key={`${step.step_id}-policy-${i}`} style={[styles.small, { color: palette.muted }]}>
+                  {step.label}, {learning.success ? "completed" : "unfinished"} policy episode: agent terminal reward {learning.terminal_reward.toFixed(2)} after {learning.reductions} reductions. {learning.updates.map(update => `Chosen reduction: ${update.action} level(s); probabilities ${update.probabilities.map(p => `${(p * 100).toFixed(1)}%`).join(" / ")}; discounted return ${update.return.toFixed(3)}, advantage ${update.advantage.toFixed(3)}.`).join(" ")}
+                </Text>))}
+              </>}
               <Text style={[styles.body, { color: palette.text }]}>The final movement score is the <Text style={styles.bold}>average of the four step scores</Text>. In this assessment, the score is</Text>
-              <Text style={[styles.equation, { color: palette.brand }]}>{task.score === null ? "A final score needs valid evidence for all four steps." : `(${task.steps.map(step => step.score).join(" + ")}) ÷ 4${task.assisted ? " × 0.5 for recorded assistance" : ""} = ${task.score} / 100`}</Text>
+              <Text style={[styles.equation, { color: palette.brand }]}>{task.score === null ? "A final score needs valid evidence for all four steps." : `(${task.steps.map(step => step.score).join(" + ")}) ÷ 4${task.assisted && !task.adaptation_applied ? " × 0.5 for recorded assistance" : ""} = ${task.score} / 100`}</Text>
             </> : <>
               <Text style={[styles.body, { color: palette.text }]}>Each step is scored as <Text style={styles.bold}>(Target points + Movement points) × Form factor</Text>. Reaching the target contributes 20 points, and movement compared with the step reference contributes up to 80 points.</Text>
               <Text style={[styles.body, { color: palette.text }]}>The final movement score is the average of the equally weighted step scores.</Text>

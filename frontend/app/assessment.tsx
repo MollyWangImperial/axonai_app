@@ -5,7 +5,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import * as Haptics from "expo-haptics";
 import { colors, spacing, radius } from "@/src/theme";
-import { AssessmentPackageId, POSE_RUNNER_URL, scoreTestingAssessment, TestingAssessmentReport, TestingTaskResult } from "@/src/api";
+import { AssessmentPackageId, LocalAssessmentRecording, POSE_RUNNER_URL, scoreTestingAssessment, TestingAssessmentReport, TestingTaskResult } from "@/src/api";
 import { cacheAssessmentActivity, completedTasksKey, getAccountGeneration, getUserId, savedTaskVideosKey } from "@/src/auth";
 import { storage } from "@/src/utils/storage";
 import { SafetyStopStrip } from "@/src/components/SafetyStopStrip";
@@ -90,10 +90,12 @@ export default function AssessmentScreen() {
 
 function AssessmentEntry() {
   const router = useRouter();
-  const { walking_test } = useLocalSearchParams<{ walking_test?: string }>();
-  const [cameraReady, setCameraReady] = useState(false);
+  const { walking_test, library_test } = useLocalSearchParams<{ walking_test?: string; library_test?: string }>();
+  const skipSeparateCameraTest = walking_test === "1" || library_test === "1";
+  const [cameraReady, setCameraReady] = useState(skipSeparateCameraTest);
+  // Testing Library tasks go straight to the task-specific camera calibration.
   // Uploaded-video testing does not use the patient's camera.
-  if (!cameraReady && walking_test !== "1") return <CameraSetup purpose="assessment" onReady={() => setCameraReady(true)} onExit={() => router.canGoBack() ? router.back() : router.replace("/")} />;
+  if (!cameraReady && !skipSeparateCameraTest) return <CameraSetup purpose="assessment" onReady={() => setCameraReady(true)} onExit={() => router.canGoBack() ? router.back() : router.replace("/")} />;
   return <AssessmentSession />;
 }
 
@@ -113,6 +115,7 @@ function AssessmentSession() {
   const [error, setError] = useState<string | null>(null);
   const [runnerUri, setRunnerUri] = useState<string | null>(null);
   const [testComplete, setTestComplete] = useState(false);
+  const [testRecording, setTestRecording] = useState<LocalAssessmentRecording | null>(null);
   const [testReport, setTestReport] = useState<TestingAssessmentReport | null>(null);
   const [testReportError, setTestReportError] = useState<string | null>(null);
   const [scoringTest, setScoringTest] = useState(false);
@@ -200,6 +203,7 @@ function AssessmentSession() {
       } else if (msg.type === "library_test_complete" && isLibraryTest) {
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
         testResultRef.current = msg.task_result || null;
+        setTestRecording(msg.recording || null);
         setLoading(false);
         setTestComplete(true);
         void loadTestReport();
@@ -284,11 +288,12 @@ function AssessmentSession() {
 
       {testComplete && (
         <AssessmentTestResults
-          report={testReport} loading={scoringTest} error={testReportError}
+          report={testReport} loading={scoringTest} error={testReportError} recording={testRecording}
           onRetryScore={() => { void loadTestReport(); }}
           onBack={() => router.dismissTo("/testing-library")}
           onTryAgain={() => {
             setTestComplete(false); setTestReport(null); setTestReportError(null);
+            setTestRecording(null);
             testResultRef.current = null; setLoading(true);
             setRunnerRevision(current => current + 1);
           }}

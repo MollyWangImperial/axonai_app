@@ -8,6 +8,8 @@
 **/.pytest_cache
 **/node_modules
 frontend/dist
+backend/voice_samples
+backend/.local_state
 outputs
 *.pyc
 *.pyo
