@@ -52,17 +52,24 @@ const reachVoice=new RehynVoiceGuide.VoiceGuide({fetchAudio:fetchReachMollyAudio
 }});
 reachVoice.enabled=VOICE_GUIDANCE_ENABLED;
 document.getElementById('reachVoiceOn').checked=VOICE_GUIDANCE_ENABLED;
-async function reachSay(text){
-  if(reachFlow.stopped)return false;
-  const ok=await reachVoice.speak(text);
-  if(ok)return !reachFlow.stopped;
-  if(reachFlow.stopped || !reachVoice.failed)return false;
-  // Failed audio must not strand camera calibration or a movement
-  // step. Keep the instruction visible for the caption interval, then proceed.
-  reachFlow.voiceUnavailable=true;
-  reachVoice.enabled=false;
-  document.getElementById('reachVoiceOn').checked=false;
-  return await reachVoice.speak(text) && !reachFlow.stopped;
+let reachSpeechTail=Promise.resolve(),reachSpeechEpoch=0;
+function reachSay(text){
+  const epoch=reachSpeechEpoch;
+  // VoiceGuide.speak replaces the current audio. Keep prompts in order so a
+  // coaching or support cue cannot cut off an unfinished step instruction.
+  const current=reachSpeechTail.catch(()=>false).then(async()=>{
+    if(reachFlow.stopped || epoch!==reachSpeechEpoch)return false;
+    const ok=await reachVoice.speak(text);
+    if(ok)return !reachFlow.stopped && epoch===reachSpeechEpoch;
+    if(reachFlow.stopped || epoch!==reachSpeechEpoch || !reachVoice.failed)return false;
+    // Failed audio must not strand camera calibration or a movement step.
+    reachFlow.voiceUnavailable=true;
+    reachVoice.enabled=false;
+    document.getElementById('reachVoiceOn').checked=false;
+    return await reachVoice.speak(text) && !reachFlow.stopped && epoch===reachSpeechEpoch;
+  });
+  reachSpeechTail=current.catch(()=>false);
+  return current;
 }
 document.getElementById('reachVoiceOn').onchange=event=>{
   reachVoice.enabled=event.target.checked;
@@ -163,7 +170,7 @@ function finishTestingReachStep(success){
   return {...step.snapshot(),support_available:reachFlow.support};
 }
 function stopReachVoice(){
-  reachFlow.stopped=true;reachVoice.cancel();
+  reachFlow.stopped=true;reachSpeechEpoch++;reachVoice.cancel();
 }
 function endReachTest(){
   if(reachFlow.step&&!reachFlow.step.finished)reachFlow.step.finish(false,true);

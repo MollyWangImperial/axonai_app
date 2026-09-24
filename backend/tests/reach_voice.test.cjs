@@ -22,7 +22,7 @@ test('Testing uses signed-in Molly audio and continues with captions if it fails
   assert.match(source,/fetchAudio:fetchReachMollyAudio/);
   assert.match(source,/\/testing\/reach\/voice/);
   assert.match(source,/\.\.\.ACCOUNT_HEADERS/);
-  const start=source.indexOf('async function reachSay(text){');
+  const start=source.indexOf('let reachSpeechTail=Promise.resolve()');
   const end=source.indexOf('\n}',start)+2;
   const calls=[];
   const reachVoice={enabled:true,failed:false,async speak(text){
@@ -38,6 +38,29 @@ test('Testing uses signed-in Molly audio and continues with captions if it fails
   assert.equal(reachVoice.enabled,false);
   assert.equal(context.reachFlow.voiceUnavailable,true);
   assert.equal(checkbox.checked,false);
+});
+
+test('Testing queues overlapping prompts so the first instruction finishes', async () => {
+  const source=fs.readFileSync(path.join(__dirname,'..','testing_reach_flow.js'),'utf8');
+  const start=source.indexOf('let reachSpeechTail=Promise.resolve()');
+  const end=source.indexOf('\n}',start)+2;
+  const seen=[];
+  let finishFirst;
+  const context={reachFlow:{stopped:false,voiceUnavailable:false},
+    reachVoice:{enabled:true,failed:false,speak(text){
+      seen.push(text);
+      if(text==='first')return new Promise(resolve=>{finishFirst=resolve;});
+      return Promise.resolve(true);
+    }},document:{getElementById:()=>({checked:true})}};
+  vm.runInNewContext(source.slice(start,end),context);
+  const first=context.reachSay('first');
+  const second=context.reachSay('second');
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.deepEqual(seen,['first']);
+  finishFirst(true);
+  assert.equal(await first,true);
+  assert.equal(await second,true);
+  assert.deepEqual(seen,['first','second']);
 });
 
 test('testing voice waits for Molly audio to finish', async () => {
@@ -65,6 +88,34 @@ test('failed Molly audio leaves the test waiting for retry or captions', async (
   guide.captionMs = 0;
   assert.equal(await guide.speak('Reach forward'), true);
   assert.equal(guide.status, 'Captions only');
+});
+
+test('a transient media pause resumes the same Molly instruction', async () => {
+  let plays=0;
+  const audio={paused:false,ended:false,duration:7,currentTime:2,pause(){this.paused=true;},
+    play(){plays++;this.paused=false;return Promise.resolve();}};
+  const guide=new VoiceGuide({fetchAudio:async()=> 'SUQz',audio,synth:null});
+  const speaking=guide.speak('Sit upright and reach forward');
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(plays,1);
+  audio.paused=true;
+  audio.onpause();
+  await new Promise(resolve=>setTimeout(resolve,250));
+  assert.equal(plays,2);
+  assert.equal(guide.busy,true);
+  audio.currentTime=audio.duration;
+  audio.onended();
+  assert.equal(await speaking,true);
+});
+
+test('an early media end does not count as a spoken instruction', async () => {
+  const audio={duration:7,currentTime:2,pause(){},play(){return Promise.resolve();}};
+  const guide=new VoiceGuide({fetchAudio:async()=> 'SUQz',audio,synth:null});
+  const speaking=guide.speak('Sit upright and reach forward');
+  await new Promise(resolve=>setImmediate(resolve));
+  audio.onended();
+  assert.equal(await speaking,false);
+  assert.equal(guide.failed,true);
 });
 
 test('Testing gives the hold instruction before the raised target unlocks', () => {
