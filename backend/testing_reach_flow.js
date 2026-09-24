@@ -8,6 +8,17 @@ const reachPolicyKey=`rehyn-testing-reach-policy-1:${CURRENT_USER_ID}:${AFFECTED
 try{reachFlow.policy.restore(JSON.parse(sessionStorage.getItem(reachPolicyKey)||'null'));}catch{}
 function saveReachPolicy(){try{sessionStorage.setItem(reachPolicyKey,JSON.stringify(reachFlow.policy.snapshot()));}catch{}}
 function testingReachEnabled(){return LIBRARY_TEST_MODE && tasks.length===1 && tasks[0]?.id==='T1';}
+function reachStepVoiceLines(step){
+  if(step.id==='T1-S2'){
+    // Give the hold cue before the raised target unlocks so the patient does
+    // not lower their hand between the reach and hold steps. Both lines are
+    // already available as private Molly clips.
+    const holdVoice=tasks[0]?.steps?.find(item=>item.id==='T1-S3')?.voice;
+    return [step.voice,holdVoice].filter(Boolean);
+  }
+  if(step.id==='T1-S3')return [];
+  return [step.voice].filter(Boolean);
+}
 function syncReachCaption(){
   // The calibration card already contains the instruction. Keep the camera
   // clear when speech works; show text in the controls if speech is off.
@@ -113,7 +124,7 @@ function showReachHelp(){
 }
 function beginReachStep(step){
   if(!testingReachEnabled())return;
-  prefetchReachMollyAudio(step.voice);
+  reachStepVoiceLines(step).forEach(prefetchReachMollyAudio);
   const base=step.id==='T1-S1'?forwardReachPlacement.start:step.id==='T1-S4'?assessmentLapTarget:forwardReachPlacement.raised;
   reachFlow.step=new RehynTestingReach.ReachStep({policy:reachFlow.policy,id:step.id,base,lap:mirrorX(assessmentLapTarget),
     level:step.id==='T1-S3'?reachFlow.raisedLevel:0,assisted:reachFlow.assisted});
