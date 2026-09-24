@@ -8,18 +8,21 @@ class VoiceGuide {
   }
   cancel() {
     this.finish?.(false); this.finish = null;
-    if (this.audio) { this.audio.pause(); this.audio.onended = null; this.audio.onerror = null; }
+    if (this.audio) { this.audio.pause(); this.audio.onended = null; this.audio.onerror = null; this.audio.onpause = null; }
     this.synth?.cancel(); this.busy = false; this.failed = false;
   }
   speak(text) {
     this.cancel(); this.caption = text; this.busy = true; this.failed = false;
     this.status = this.enabled ? (this.fetchAudio ? 'Preparing Molly voice' : 'Speaking with device voice') : 'Captions only'; this.onChange(this);
     return new Promise(resolve => {
-      let timer, done = false, utterance;
+      let timer, resumeTimer, done = false, utterance;
       const finish = (ok, error = false) => {
-        if (done) return; done = true; clearTimeout(timer);
+        if (done) return; done = true; clearTimeout(timer); clearTimeout(resumeTimer);
         if (utterance) { utterance.onend = null; utterance.onerror = null; }
-        if (this.audio) { this.audio.onended = null; this.audio.onerror = null; if (error) this.audio.pause(); }
+        if (this.audio) {
+          this.audio.onended = null; this.audio.onerror = null; this.audio.onpause = null;
+          if (error) this.audio.pause();
+        }
         this.finish = null; this.busy = false; this.failed = error;
         this.status = error ? 'Voice unavailable. Retry voice or turn it off to continue with captions.'
           : this.enabled ? (this.fetchAudio ? 'Molly voice' : 'Device voice') : 'Captions only';
@@ -34,8 +37,24 @@ class VoiceGuide {
           if (done) return;
           this.audio.src = source.startsWith('data:') || source.startsWith('blob:') ? source : 'data:audio/mpeg;base64,' + source;
           this.audio.muted = false; this.audio.volume = 1;
-          this.audio.onended = () => finish(true);
+          this.audio.onended = () => {
+            // A media element can report an end after its source is replaced.
+            // Never unlock the movement target after only part of a cue.
+            if (Number.isFinite(this.audio.duration) && Number.isFinite(this.audio.currentTime)
+                && this.audio.duration - this.audio.currentTime > 0.25) finish(false, true);
+            else finish(true);
+          };
           this.audio.onerror = () => finish(false, true);
+          this.audio.onpause = () => {
+            if (done || !this.audio.paused || this.audio.ended) return;
+            // A transient browser/media pause must not leave the patient with
+            // a half-spoken instruction while the test waits indefinitely.
+            clearTimeout(resumeTimer);
+            resumeTimer = setTimeout(() => {
+              if (done || !this.audio.paused || this.audio.ended) return;
+              Promise.resolve().then(() => this.audio.play()).catch(() => finish(false, true));
+            }, 200);
+          };
           this.status = 'Speaking with Molly voice'; this.onChange(this);
           return this.audio.play();
         }).catch(() => finish(false, true));
