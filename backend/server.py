@@ -5799,8 +5799,15 @@ function isBalanceTask(){ return taskDomain() === "balance"; }
 function isWalkingTask(task=tasks[currentTaskIdx]){ return !!(task && task.id === "L6"); }
 
 function postRN(data){
-  if(window.ReactNativeWebView){
-    window.ReactNativeWebView.postMessage(JSON.stringify(data));
+  const message=JSON.stringify(data);
+  if(window.ReactNativeWebView && typeof window.ReactNativeWebView.postMessage==="function"){
+    window.ReactNativeWebView.postMessage(message);
+  }else if(window.parent && window.parent!==window){
+    // The public web app embeds this runner from a different origin, so its
+    // WebView shim cannot inject ReactNativeWebView into this frame.
+    let parentOrigin="*";
+    try{if(document.referrer)parentOrigin=new URL(document.referrer).origin;}catch(e){}
+    window.parent.postMessage(message,parentOrigin);
   }
 }
 
@@ -12035,7 +12042,16 @@ exName.textContent = CFG.name;
 overlayTitle.textContent = CFG.name;
 overlayBody.textContent = CFG.setup_voice;
 
-function postRN(d){ if(window.ReactNativeWebView) window.ReactNativeWebView.postMessage(JSON.stringify(d)); }
+function postRN(d){
+  const message=JSON.stringify(d);
+  if(window.ReactNativeWebView && typeof window.ReactNativeWebView.postMessage==="function"){
+    window.ReactNativeWebView.postMessage(message);
+  }else if(window.parent && window.parent!==window){
+    let parentOrigin="*";
+    try{if(document.referrer)parentOrigin=new URL(document.referrer).origin;}catch(e){}
+    window.parent.postMessage(message,parentOrigin);
+  }
+}
 
 let loopStarted=false;
 let setupVoicePlayed=false;
