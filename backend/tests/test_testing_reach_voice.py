@@ -49,6 +49,26 @@ def test_private_bundle_requires_every_authored_cue(tmp_path, monkeypatch):
         voice._bundle.cache_clear()
 
 
+def test_render_shards_load_only_when_both_are_complete(tmp_path, monkeypatch):
+    from backend.split_testing_reach_voice_bundle import split_bundle
+
+    audio = base64.b64encode(b"ID3" + b"a" * 1100).decode()
+    entries = {hashlib.sha256(line.encode()).hexdigest(): audio for line in LINES}
+    source = tmp_path / "reach-molly-bundle.json"
+    source.write_text(json.dumps({"version": 1, "voice": "Molly", "entries": entries}), encoding="ascii")
+    paths = split_bundle(source)
+    monkeypatch.delenv("TESTING_REACH_VOICE_BUNDLE", raising=False)
+    monkeypatch.setattr(voice, "_bundle_paths", lambda: paths)
+    voice._bundle.cache_clear()
+    try:
+        assert len(voice._bundle()) == len(LINES)
+        paths[1].unlink()
+        voice._bundle.cache_clear()
+        assert voice._bundle() == {}
+    finally:
+        voice._bundle.cache_clear()
+
+
 def test_cues_require_sign_in_and_exact_authored_text(monkeypatch):
     audio = base64.b64encode(b"ID3" + b"a" * 1100).decode()
     monkeypatch.setattr(voice, "_bundle", lambda: {hashlib.sha256(LINES[0].encode()).hexdigest(): audio})
