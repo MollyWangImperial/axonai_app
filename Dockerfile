@@ -24,6 +24,7 @@ COPY backend/requirements-deploy.txt ./backend/requirements-deploy.txt
 RUN pip install --no-cache-dir -r backend/requirements-deploy.txt
 
 COPY backend/ ./backend/
+COPY testing/trunk-lean-comparison/ ./testing/trunk-lean-comparison/
 COPY --from=web-build /app/frontend/dist ./frontend/dist
 
 EXPOSE 8000
