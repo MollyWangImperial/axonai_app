@@ -20,28 +20,38 @@ _ALLOWED = frozenset(LINES)
 _REQUIRED_HASHES = frozenset(hashlib.sha256(text.encode("utf-8")).hexdigest() for text in LINES)
 
 
-def _bundle_path() -> Path:
+def _bundle_paths() -> tuple[Path, ...]:
     configured = os.environ.get("TESTING_REACH_VOICE_BUNDLE", "").strip()
     if configured:
-        return Path(configured)
+        return (Path(configured),)
     local = Path(__file__).resolve().parent / "voice_samples" / "reach-molly-bundle.json"
-    return local if local.is_file() else Path("/etc/secrets/reach-molly-bundle.json")
+    if local.is_file():
+        return (local,)
+    secret_dir = Path("/etc/secrets")
+    parts = tuple(secret_dir / f"reach-molly-bundle-{index}.json" for index in (1, 2))
+    if any(path.is_file() for path in parts):
+        return parts
+    return (secret_dir / "reach-molly-bundle.json",)
 
 
 @lru_cache(maxsize=1)
 def _bundle() -> dict[str, str]:
-    path = _bundle_path()
-    if not path.is_file() or path.stat().st_size > 1_000_000:
-        return {}
     try:
-        content = json.loads(path.read_text(encoding="ascii"))
-        if content.get("version") != 1 or content.get("voice") != "Molly":
-            return {}
-        entries = content.get("entries")
-        if not isinstance(entries, dict) or not _REQUIRED_HASHES.issubset(entries):
+        entries = {}
+        for path in _bundle_paths():
+            if not path.is_file() or path.stat().st_size > 1_000_000:
+                return {}
+            content = json.loads(path.read_text(encoding="ascii"))
+            if content.get("version") != 1 or content.get("voice") != "Molly":
+                return {}
+            part = content.get("entries")
+            if not isinstance(part, dict) or entries.keys() & part.keys():
+                return {}
+            entries.update(part)
+        if set(entries) != _REQUIRED_HASHES:
             return {}
         for key, encoded in entries.items():
-            if key not in _REQUIRED_HASHES or not isinstance(encoded, str):
+            if not isinstance(encoded, str):
                 return {}
             audio = base64.b64decode(encoded, validate=True)
             if not (1000 <= len(audio) <= 200_000) or not (audio.startswith(b"ID3") or audio[:1] == b"\xff"):
