@@ -53,7 +53,8 @@ def test_lap_calibration_starts_before_the_return_step_and_survives_brief_tracki
     source = server.POSE_RUNNER_HTML
     assert "function currentTaskLapStep()" in source
     assert "const lapStep = calibratingAssessment ? upcomingLapStep() : currentTaskLapStep();" in source
-    assert "if(!lapStep || lapTargetCalibration.ready) return;" in source
+    assert "if(!lapStep) return;" in source
+    assert "if(lapTargetCalibration.ready) return;" in source
     assert "now - lapTargetCalibration.lastCandidateAt <= 900" in source
     assert "if(preservePreAssessmentLapCalibration && currentTaskLapStep()){" in source
 

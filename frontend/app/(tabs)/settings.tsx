@@ -196,8 +196,8 @@ export default function SettingsScreen() {
             <SettingsLink
               testID="settings-testing-library"
               icon="fitness-outline"
-              title="Task & exercise library"
-              subtitle="Open every guided item one at a time"
+              title="Testing"
+              subtitle="Six patient assessment tasks, movement metrics and scores"
               onPress={() => router.push("/testing-library" as never)}
               palette={palette}
               scale={scale}

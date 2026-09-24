@@ -61,9 +61,13 @@ def test_both_live_sessions_require_fresh_camera_setup():
     for route in ["assessment", "exercise"]:
         source = (root / "app" / f"{route}.tsx").read_text(encoding="utf-8")
         assert f'<CameraSetup purpose="{route}"' in source
-        assert "const [cameraReady, setCameraReady] = useState(false)" in source
         assert "return isFocused ?" in source
         assert "event.persisted" in source
-    assert "walking_test !== \"1\"" in (root / "app/assessment.tsx").read_text(encoding="utf-8")
+    exercise = (root / "app/exercise.tsx").read_text(encoding="utf-8")
+    assessment = (root / "app/assessment.tsx").read_text(encoding="utf-8")
+    assert "const [cameraReady, setCameraReady] = useState(false)" in exercise
+    assert 'const skipSeparateCameraTest = walking_test === "1" || library_test === "1";' in assessment
+    assert "const [cameraReady, setCameraReady] = useState(skipSeparateCameraTest)" in assessment
+    assert "if (!cameraReady && !skipSeparateCameraTest)" in assessment
     layout = (root / "app/_layout.tsx").read_text(encoding="utf-8")
     assert "if (accountEpoch === null) return null" in layout

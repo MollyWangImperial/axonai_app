@@ -13,7 +13,7 @@ export const discoveryQuestions: DiscoveryQuestion[] = [
   {
     id: "goal",
     title: "Which everyday win would mean the most?",
-    hint: "Picture one small moment you would like to feel easier.",
+    hint: "Choose one small moment you would like to feel easier.",
     options: [
       { id: "reach", label: "Reaching a shelf or lifting a cup" },
       { id: "hand", label: "Using my hand for buttons, cutlery or a pen" },

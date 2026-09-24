@@ -4,7 +4,7 @@ import os
 os.environ.setdefault("MONGO_URL", "mongodb://127.0.0.1:27017")
 os.environ.setdefault("DB_NAME", "rehyn_quality_test")
 from backend.server import ASSESSMENT_RUBRICS, build_functional_metrics
-from backend.assessment_quality import VERSION, score_assessment
+from backend.assessment_quality import VERSION, score_assessment, score_step
 from backend.encouragement import compute_rewards
 
 
@@ -28,12 +28,47 @@ def test_every_task_has_a_rubric_and_equal_module_weight_not_step_weight():
     assert [t["module_weight"] for t in quality["tasks"]] == [50, 50]
 
 
+def test_seated_forward_reach_uses_requested_step_references_without_changing_other_tasks():
+    steps = ASSESSMENT_RUBRICS["T1"]["steps"]
+    assert [[(c["metric"], c["target"]) for c in step["criteria"]] for step in steps[:3]] == [
+        [("elbow_extension", 120)],
+        [("elbow_extension", 110), ("arm_elevation", 50)],
+        [("elbow_extension", 110), ("arm_elevation", 50)],
+    ]
+    assert [(c["metric"], c["target"]) for c in ASSESSMENT_RUBRICS["T2"]["steps"][1]["criteria"]] == [
+        ("elbow_extension", 150), ("arm_elevation", 100),
+    ]
+
+
+def test_forward_reach_scores_the_first_elbow_and_both_later_angles():
+    reach = task("T1")
+    measurements = [step["metrics"]["quality"]["measurements"] for step in reach["steps"]]
+    measurements[0]["elbow_extension"]["value"] = 90  # 75% of 120°
+    measurements[0]["arm_elevation"] = {"value": 90, "samples": 10}  # diagnostic only
+    measurements[1]["elbow_extension"]["value"] = 55  # 50% of 110°
+    measurements[2]["arm_elevation"]["value"] = 25  # 50% of 50°
+    scored = score_assessment([reach], ASSESSMENT_RUBRICS)["tasks"][0]
+    assert [step["score"] for step in scored["steps"]] == [80, 80, 80, 100]
+    assert scored["score"] == 85
+
+
+def test_return_to_lap_uses_target_completion_only():
+    rubric = ASSESSMENT_RUBRICS["T1"]["steps"][3]
+    assert rubric["scoring_method"] == "target_completion"
+    assert rubric["criteria"] == [] and rubric["compensations"] == []
+    completed = {"step_id": "T1-S4", "completed": True, "duration_ms": 1500, "metrics": {}}
+    assert score_step(completed, rubric)["score"] == 100
+    completed["completed"] = False
+    assert score_step(completed, rubric)["score"] == 0
+    assert score_step(None, rubric)["score"] is None
+
+
 def test_reached_target_with_bent_elbow_does_not_receive_full_credit():
     reach = task("T1")
     reach["steps"][1]["metrics"]["quality"]["measurements"]["elbow_extension"]["value"] = 90
     q = score_assessment([reach], ASSESSMENT_RUBRICS)
-    assert q["tasks"][0]["steps"][1]["score"] == 84
-    assert q["modules"]["upper_limb"]["score"] == 96
+    assert q["tasks"][0]["steps"][1]["score"] == 92.7
+    assert q["modules"]["upper_limb"]["score"] == 98.2
 
 
 def test_sustained_compensation_affects_only_that_step_and_assistance_halves_task():
@@ -55,7 +90,7 @@ def test_missing_tasks_and_tracking_are_not_excluded_to_inflate_score():
     assert q["tasks"][0]["module_weight"] == 50
     for invalid in [None, math.nan, True]:
         reach = task("T1")
-        reach["steps"][0]["metrics"]["quality"]["measurements"]["arm_elevation"]["value"] = invalid
+        reach["steps"][0]["metrics"]["quality"]["measurements"]["elbow_extension"]["value"] = invalid
         assert score_assessment([reach], ASSESSMENT_RUBRICS)["tasks"][0]["score"] is None
 
 
@@ -88,6 +123,8 @@ def test_zero_measured_score_is_distinct_from_missing_evidence():
     assert score_assessment([reach], ASSESSMENT_RUBRICS)["modules"]["upper_limb"]["earned_score"] == 0
     for step in reach["steps"]:
         step["metrics"] = {}
+    assert score_assessment([reach], ASSESSMENT_RUBRICS)["modules"]["upper_limb"]["earned_score"] == 0
+    reach["steps"] = []
     assert score_assessment([reach], ASSESSMENT_RUBRICS)["modules"]["upper_limb"]["earned_score"] is None
 
 
@@ -162,7 +199,7 @@ def test_quality_evidence_and_scores_survive_account_save_and_reload(monkeypatch
     assert stored[0]["account_email"] == user["email"]
     assert stored[0]["task_results"][0]["steps"][1]["metrics"]["quality"] == original["steps"][1]["metrics"]["quality"]
     assert reloaded["functional_metrics"]["task_quality"] == saved.metrics["task_quality"]
-    assert reloaded["functional_metrics"]["task_quality"]["modules"]["upper_limb"]["score"] == 80
+    assert reloaded["functional_metrics"]["task_quality"]["modules"]["upper_limb"]["score"] == 85
     assert completed == [(user["id"], saved.created_at)]
 
     # Reopening an older saved snapshot recomputes partial points from its
@@ -172,7 +209,7 @@ def test_quality_evidence_and_scores_survive_account_save_and_reload(monkeypatch
     partial = asyncio.run(server.get_patient_assessment_summary(saved.id, request))
     module = partial["functional_metrics"]["task_quality"]["modules"]["upper_limb"]
     assert module["score"] is None
-    assert module["earned_score"] == 60
+    assert module["earned_score"] == 65
     assert module["measured_steps"] == 3
 
 
@@ -190,3 +227,14 @@ def test_between_task_celebration_is_brief_and_advances_without_a_button():
     assert "currentTaskIdx += 1;" in html
     assert "#celebrate{overflow:auto;padding:24px 16px;box-sizing:border-box;justify-content:center" in html
     assert "justify-content:flex-start;background:#244d3c" not in html
+
+
+def test_elbow_extension_uses_the_aspect_corrected_image_plane_angle():
+    from backend import server
+
+    assessment_html = server.POSE_RUNNER_HTML
+    rehab_html = server.REHAB_RUNNER_HTML_TEMPLATE
+    assert "const elbowAspect=video.videoWidth>0 && video.videoHeight>0 ? video.videoWidth/video.videoHeight : 1;" in rehab_html
+    assert "raw.elbow_extension=angle(elbowPoint(lm[ACTIVE.shoulder]),elbowPoint(lm[ACTIVE.elbow]),elbowPoint(lm[ACTIVE.wrist]));" in rehab_html
+    assert "assessmentQuality.calibrate(landmarks, latestPoseWorldLandmarks, qualityAspect);" in assessment_html
+    assert "aspectRatio:qualityAspect" in assessment_html

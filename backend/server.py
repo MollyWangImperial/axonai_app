@@ -65,7 +65,7 @@ try:
     from backend.patient_insights import build_patient_insights
     from backend.fast_screening import FAST_RUNNER_HTML, evaluate_fast_screen
     from backend.encouragement import MEDALS as REWARD_MEDALS, compute_rewards
-    from backend.assessment_quality import VERSION as ASSESSMENT_QUALITY_VERSION, COMPENSATIONS as ASSESSMENT_COMPENSATIONS, build_rubrics, score_assessment
+    from backend.assessment_quality import VERSION as ASSESSMENT_QUALITY_VERSION, COMPENSATIONS as ASSESSMENT_COMPENSATIONS, build_rubrics, score_assessment, testing_task_report
     from backend.daily_activity_metrics import build_daily_activity_metrics
     from backend.gait_scoring import score_gait_features
     from backend.alira_care_orchestrator import (
@@ -113,7 +113,7 @@ except ImportError:
     from patient_insights import build_patient_insights
     from fast_screening import FAST_RUNNER_HTML, evaluate_fast_screen
     from encouragement import MEDALS as REWARD_MEDALS, compute_rewards
-    from assessment_quality import VERSION as ASSESSMENT_QUALITY_VERSION, COMPENSATIONS as ASSESSMENT_COMPENSATIONS, build_rubrics, score_assessment
+    from assessment_quality import VERSION as ASSESSMENT_QUALITY_VERSION, COMPENSATIONS as ASSESSMENT_COMPENSATIONS, build_rubrics, score_assessment, testing_task_report
     from daily_activity_metrics import build_daily_activity_metrics
     from gait_scoring import score_gait_features
     from alira_care_orchestrator import (
@@ -573,6 +573,8 @@ EMERGENT_LLM_KEY = os.environ.get("EMERGENT_LLM_KEY", "").strip()
 TTS_VOICE = os.environ.get("TTS_VOICE", "nova")  # warm/encouraging default
 TTS_MODEL = os.environ.get("TTS_MODEL", "tts-1")
 INSTRUCTION_TTS_PROVIDER = os.environ.get("INSTRUCTION_TTS_PROVIDER", "openai").strip().lower()
+CHATTERBOX_REFERENCE_AUDIO = os.environ.get("CHATTERBOX_REFERENCE_AUDIO", "").strip()
+CHATTERBOX_FFMPEG_PATH = os.environ.get("CHATTERBOX_FFMPEG_PATH", "").strip()
 ELEVENLABS_API_KEY = os.environ.get("ELEVENLABS_API_KEY", "").strip()
 ELEVENLABS_VOICE_ID = os.environ.get("ELEVENLABS_VOICE_ID", "").strip()
 ELEVENLABS_TTS_MODEL = os.environ.get("ELEVENLABS_TTS_MODEL", "eleven_multilingual_v2").strip()
@@ -946,7 +948,7 @@ TASKS_DATA: List[Dict[str, Any]] = [
             {
                 "id": "T1-S1",
                 "voice": "Welcome. Sit upright with your affected hand on your lap. Slowly lift that hand forward to the first circle.",
-                "target": {"x": 0.5, "y": 0.60, "r": 0.11, "landmark": "WRIST"},
+                "target": {"x": 0.64, "y": 0.60, "r": 0.11, "landmark": "WRIST"},
                 "hold_ms": 900,
                 "caption": "Initiate the forward reach",
                 "failure_phenotype": {"code": "REACH_INITIATION_IMPAIRED", "domain": "reach_initiation", "label": "Difficulty initiating a forward reach", "description": "The affected arm did not complete the initial movement away from the lap toward the first reach position.", "severity": "moderate", "source": "Fugl-Meyer UE; task-specific movement observation", "rehab_code": "REACH_INCOMPLETE"},
@@ -954,7 +956,7 @@ TASKS_DATA: List[Dict[str, Any]] = [
             {
                 "id": "T1-S2",
                 "voice": "Now, slowly reach your affected arm forward, as far as you comfortably can, toward the bright circle in front of you. Keep your back straight and stay relaxed.",
-                "target": {"x": 0.5, "y": 0.40, "r": 0.10, "landmark": "WRIST"},
+                "target": {"x": 0.64, "y": 0.40, "r": 0.10, "landmark": "WRIST"},
                 "hold_ms": 1500,
                 "caption": "Reach forward to the target",
                 "measure": ["reach_distance", "trunk_lean", "elbow_extension"],
@@ -963,7 +965,7 @@ TASKS_DATA: List[Dict[str, Any]] = [
             {
                 "id": "T1-S3",
                 "voice": "Hold your hand steadily at the forward target for a moment.",
-                "target": {"x": 0.5, "y": 0.40, "r": 0.10, "landmark": "WRIST"},
+                "target": {"x": 0.64, "y": 0.40, "r": 0.10, "landmark": "WRIST"},
                 "hold_ms": 1500,
                 "movement_required": False,
                 "caption": "Hold the reach steadily",
@@ -3299,14 +3301,23 @@ OPENAI_TTS_VOICES = {"alloy", "ash", "coral", "echo", "fable", "nova", "onyx", "
 
 
 def _instruction_clone_ready() -> bool:
-    return (
-        INSTRUCTION_TTS_PROVIDER == "elevenlabs"
-        and bool(ELEVENLABS_API_KEY)
-        and bool(ELEVENLABS_VOICE_ID)
-    )
+    if INSTRUCTION_TTS_PROVIDER == "chatterbox-nano":
+        return bool(CHATTERBOX_REFERENCE_AUDIO) and Path(CHATTERBOX_REFERENCE_AUDIO).is_file()
+    return INSTRUCTION_TTS_PROVIDER == "elevenlabs" and bool(ELEVENLABS_API_KEY) and bool(ELEVENLABS_VOICE_ID)
 
 
 def _tts_request_config(purpose: str, requested_voice: Optional[str] = None) -> Dict[str, str]:
+    if purpose == "instruction" and INSTRUCTION_TTS_PROVIDER == "chatterbox-nano":
+        if not _instruction_clone_ready():
+            return {"provider": "unavailable", "model": "chatterbox-nano", "voice": "molly", "public_voice": "Molly", "output_format": "mp3"}
+        reference_digest = hashlib.sha256(Path(CHATTERBOX_REFERENCE_AUDIO).read_bytes()).hexdigest()[:16]
+        return {
+            "provider": "chatterbox-nano",
+            "model": "chatterbox-nano",
+            "voice": f"molly-{reference_digest}",
+            "public_voice": "Molly",
+            "output_format": "mp3-loudnorm-v1",
+        }
     if purpose == "instruction" and _instruction_clone_ready():
         return {
             "provider": "elevenlabs",
@@ -3328,7 +3339,7 @@ def _tts_request_config(purpose: str, requested_voice: Optional[str] = None) -> 
 
 def _tts_cache_key(text: str, voice: str, purpose: str = "general") -> str:
     config = _tts_request_config(purpose, voice)
-    if config["provider"] != "elevenlabs":
+    if config["provider"] not in {"elevenlabs", "chatterbox-nano"}:
         # Preserve existing OpenAI hashes so the committed nova assets keep
         # working whenever the cloned instruction voice is not enabled.
         material = f"{config['model']}|{config['voice']}|{text}"
@@ -3382,6 +3393,10 @@ def _tts_cache_put(key: str, audio_b64: str, persist: bool = True) -> None:
 def _synthesize_tts_audio_bytes(text: str, voice: str, purpose: str = "general") -> bytes:
     """Blocking provider call - always run through asyncio.to_thread."""
     config = _tts_request_config(purpose, voice)
+    if config["provider"] == "chatterbox-nano":
+        from backend.chatterbox_nano_tts import synthesize_mp3
+
+        return synthesize_mp3(text, Path(CHATTERBOX_REFERENCE_AUDIO), CHATTERBOX_FFMPEG_PATH)
     if config["provider"] == "elevenlabs":
         response = httpx.post(
             f"https://api.elevenlabs.io/v1/text-to-speech/{config['voice']}",
@@ -3433,7 +3448,7 @@ async def _generate_tts_audio_base64(text: str, voice: str, purpose: str = "gene
     future: "asyncio.Future[str]" = loop.create_future()
     _tts_inflight[key] = future
     try:
-        if config["provider"] in {"openai-direct", "elevenlabs"}:
+        if config["provider"] in {"openai-direct", "elevenlabs", "chatterbox-nano"}:
             audio_bytes = await asyncio.to_thread(_synthesize_tts_audio_bytes, text, voice, purpose)
             audio_b64 = base64.b64encode(audio_bytes).decode("ascii")
         else:
@@ -3498,6 +3513,12 @@ def _instruction_text_allowed(text: str) -> bool:
     for template_name in ("POSE_RUNNER_HTML", "REHAB_RUNNER_HTML_TEMPLATE"):
         template = globals().get(template_name)
         if isinstance(template, str) and candidate in template:
+            return True
+    for side in ("left", "right"):
+        if candidate in {
+            f"Let us check a small movement first. Without help, gently move your {side} hand or arm away from its resting position, as much as is comfortable. Even a small movement is useful.",
+            f"I have not seen a clear movement yet. If comfortable, try a small movement with your {side} hand or arm once more. Take your time; do not force it.",
+        }:
             return True
     return candidate in _instruction_text_catalog()
 
@@ -5656,19 +5677,24 @@ function newLapTargetCalibration(){
 let lapTargetCalibration = newLapTargetCalibration();
 let assessmentLapTarget = null;
 let assessmentLapTargetRadius = null;
+let forwardReachPlacement = null;
 let lapCalibrationDiagnostic = {
   reason:"waiting_for_pose",
   guidance:"Keep your affected hand relaxed on the top of your same-side thigh."
 };
 const LAP_CALIBRATION_MIN_SAMPLES = 8;
 const LAP_CALIBRATION_MIN_MS = 650;
+const TESTING_REACH_LAP_MIN_MS = 2000;
+const TESTING_REACH_TRUNK_BASELINE_WAIT_MS = 6000;
 const CALIBRATION_INSTRUCTION = "Before we begin, sit still with your affected hand resting on the visible part of your lap. Keep your face, shoulders, affected arm, and the top of your affected thigh in view. You do not need to show your knees or your full lap. I will locate your lap target for the assessment.";
+const TESTING_REACH_CALIBRATION_INSTRUCTION = "Rest your affected hand on your lap where the camera can see it. Hold it still for two seconds. Keep your face, both shoulders, affected arm, and both hips in view for the movement and trunk lean checks. You can tilt the camera instead of moving farther away.";
 const CALIBRATION_COMPLETE_INSTRUCTION = "Calibration complete. Stay seated in this position and do not move the camera. We will begin the assessment now.";
 let calibratingAssessment = false;
 let calibrationInstructionFinished = false;
 let preAssessmentCalibrationReady = false;
 let preservePreAssessmentLapCalibration = false;
 let calibrationAutoStartInProgress = false;
+let testingReachTrunkBaselineWaitSince = null;
 let handOpenScore = 0;                 // 0..1 — finger extension confidence
 let fistClosureScore = 0;              // 0..1 — mass finger flexion confidence
 let pinchScore = 0;                    // 0..1 — pinch confidence (1 = very close)
@@ -5729,7 +5755,10 @@ const PREVIOUSLY_COMPLETED_TASK_IDS = new Set(
   (URL_PARAMS.get("completed_tasks") || "").split(",").map(value => value.trim()).filter(Boolean)
 );
 const AFFECTED_SIDE = URL_PARAMS.get("affected_side") === "left" ? "left" : "right";
-const assessmentQuality = new RehynAssessmentQuality.Tracker(window.REHYN_ASSESSMENT_RUBRIC, AFFECTED_SIDE);
+const assessmentQuality = new RehynAssessmentQuality.Tracker(window.REHYN_ASSESSMENT_RUBRIC, AFFECTED_SIDE, {
+  peakReachAngles:LIBRARY_TEST_MODE,
+  testingReachTrunkLean:LIBRARY_TEST_MODE && ASSIGNED_TASK_IDS.length===1 && ASSIGNED_TASK_IDS[0]==="T1",
+});
 let lastQualityPoseAt = -1;
 let lastQualityCaption = "";
 const IS_MOBILE_CAPTURE_DEVICE = CAMERA_DEVICE_CLASS !== "web";
@@ -6181,6 +6210,7 @@ async function setupCamera(){
     });
     await video.play().catch(() => null);
     syncCameraViewport();
+    startLocalReview(tasks[currentTaskIdx]?.id);
     return true;
   }catch(e){
     captionEl.textContent = String(e && e.message ? e.message : "Camera permission denied. Please allow camera access.");
@@ -7069,7 +7099,7 @@ async function fetchVoiceAudio(text,purpose="instruction"){
 }
 
 function prefetchVoice(text){
-  if(!VOICE_GUIDANCE_ENABLED || !text) return;
+  if(testingReachEnabled() || !VOICE_GUIDANCE_ENABLED || !text) return;
   fetchVoiceAudio(text).catch(() => {});
 }
 
@@ -7099,6 +7129,7 @@ function offerVoiceRetry(text,purpose="instruction"){
 }
 
 async function playVoice(text,purpose="instruction"){
+  if(testingReachEnabled()) return reachSay(text);
   if(!VOICE_GUIDANCE_ENABLED){
     voiceText.textContent = "Voice guidance off · follow on-screen text";
     return;
@@ -7207,11 +7238,13 @@ async function startStep(){
     await setupHand();
   }
   if(currentStepIdx === 0) beginTaskRecording(task.id);
+  if(currentStepIdx === 0) startLocalReview(task.id);
+  markLocalReviewStep(step.id);
   stepStartTime = performance.now();
   stepStartedAt = stepStartTime;
   voiceFinishedAt = 0;
   arrivedAfterMovement = !movementGateRequired(step);
-  stepStartWristXY = null;
+  stepStartWristXY = testingReachEnabled() && latestPoseLandmarks ? activeControlPoint(latestPoseLandmarks) : null;
   inTargetSince = null;
   lastInTargetTs = 0;
   stepCompleted = false;
@@ -7281,6 +7314,7 @@ async function startStep(){
     dynamicTargetPos = lapTargetCalibration.target;
   }
   if(currentStepIdx === 0) resetAdvancedTracking();
+  beginReachStep(step);
   stepTitle.textContent = `Task ${currentTaskIdx+1} of ${tasks.length} · ${task.title}`;
   captionEl.textContent = step.caption;
   renderDots();
@@ -7493,6 +7527,22 @@ function lapWristZoneReason(wrist, hip, midShoulder, torsoLength){
 
 function lapTargetCandidateStatus(lm){
   const sideLabel = AFFECTED_SIDE === "left" ? "left" : "right";
+  if(testingReachEnabled()){
+    const wrist=lm && lm.length>=33 ? sideLandmarks(lm,AFFECTED_SIDE).wrist : null;
+    if(!landmarkIsInFrame(wrist,0.45)) return {
+      candidate:null,
+      reason:"affected_hand_not_visible",
+      guidance:`Rest your ${sideLabel} hand on your lap where the camera can see it. Keep the hand in view for two seconds.`,
+    };
+    // The affected wrist is the only landmark needed to locate this test's
+    // lap point. Shoulder and hip visibility are checked separately for reach
+    // target placement and the trunk-lean reference.
+    return {
+      candidate:{x:wrist.x,y:wrist.y},
+      reason:"stabilizing",
+      guidance:`Hold your ${sideLabel} hand still on your lap for two seconds.`,
+    };
+  }
   if(!lm || lm.length < 33) return {
     candidate:null,
     reason:"pose_missing",
@@ -7557,6 +7607,8 @@ function lapTargetCandidateStatus(lm){
       shoulderWidth: Math.max(0.03, distance(leftShoulder, rightShoulder)),
       bodyX:(midShoulder.x + affected.hip.x) / 2,
       bodyY:(midShoulder.y + affected.hip.y) / 2,
+      shoulderX:affected.shoulder.x,
+      shoulderY:affected.shoulder.y,
     },
     reason:"stabilizing",
     guidance:`Keep your ${sideLabel} hand relaxed and still on your upper thigh for one moment.`,
@@ -7571,7 +7623,16 @@ function lapTargetCandidate(lm){
 
 function updateLapTargetCalibration(lm, now){
   const lapStep = calibratingAssessment ? upcomingLapStep() : currentTaskLapStep();
-  if(!lapStep || lapTargetCalibration.ready) return;
+  if(!lapStep) return;
+  if(testingReachEnabled()){
+    if(lapTargetCalibration.ready){
+      if(!forwardReachPlacement?.ready) updateTestingReachPlacement(lm);
+      return;
+    }
+    updateTestingReachLapCalibration(lm,now,lapStep);
+    return;
+  }
+  if(lapTargetCalibration.ready) return;
   const candidate = lapTargetCandidate(lm);
   if(!candidate){
     if(lapTargetCalibration.lastCandidateAt && now - lapTargetCalibration.lastCandidateAt <= 900) return;
@@ -7588,6 +7649,8 @@ function updateLapTargetCalibration(lm, now){
     y:candidate.y,
     bodyX:candidate.bodyX,
     bodyY:candidate.bodyY,
+    shoulderX:candidate.shoulderX,
+    shoulderY:candidate.shoulderY,
     t:now,
     shoulderWidth:candidate.shoulderWidth,
   });
@@ -7621,6 +7684,20 @@ function updateLapTargetCalibration(lm, now){
     y:medianValue(stableSamples.map(s => s.y)),
   };
 
+  // Do not lock an unusable lap: allow the patient to reframe and recalibrate
+  // when there is not enough room to the screen-right of the affected arm.
+  if(needsForwardReachPlacement()){
+    const calibratedShoulder = {
+      x:medianValue(stableSamples.map(s => s.shoulderX)),
+      y:medianValue(stableSamples.map(s => s.shoulderY)),
+    };
+    const placement = calculateForwardReachPlacement(lm, center, calibratedShoulder);
+    if(!placement.ready){
+      lapCalibrationDiagnostic = {reason:placement.reason, guidance:placement.guidance || "Keep your affected arm visible."};
+      return;
+    }
+    forwardReachPlacement = placement;
+  }
   lapTargetCalibration.ready = true;
   lapTargetCalibration.target = center;
   dynamicTargetPos = center;
@@ -7637,6 +7714,99 @@ function updateLapTargetCalibration(lm, now){
   }
 }
 
+function updateTestingReachPlacement(lm){
+  if(!lm || !lapTargetCalibration.ready) return;
+  const shoulder=sideLandmarks(lm,AFFECTED_SIDE).shoulder;
+  if(![lm[11],lm[12],shoulder].every(point=>landmarkIsInFrame(point,0.35))){
+    lapCalibrationDiagnostic={reason:"shoulders_not_visible",guidance:"Keep both shoulders visible so the reach targets can be placed. You can tilt the camera without moving farther away."};
+    return;
+  }
+  const placement=calculateForwardReachPlacement(lm,lapTargetCalibration.target,shoulder);
+  if(!placement.ready){
+    lapCalibrationDiagnostic={reason:placement.reason,guidance:placement.guidance || "Adjust the camera so both reach circles fit in view."};
+    return;
+  }
+  forwardReachPlacement=placement;
+}
+
+function updateTestingReachLapCalibration(lm,now,lapStep){
+  const candidate=lapTargetCandidate(lm);
+  const state=lapTargetCalibration;
+  if(!candidate){
+    if(state.samples.length && now-state.lastCandidateAt>250){
+      state.samples=[];state.target=null;dynamicTargetPos=null;
+    }
+    return;
+  }
+  // A tracking gap starts a new hold; an old wrist location cannot become the
+  // lap point when the hand reappears elsewhere in the frame.
+  if(state.samples.length && now-state.lastCandidateAt>250) state.samples=[];
+  state.lastCandidateAt=now;
+  const samples=state.samples;
+  samples.push({x:candidate.x,y:candidate.y,t:now});
+  while(samples.length>240 || (samples.length && now-samples[0].t>2100))samples.shift();
+  const center={x:medianValue(samples.map(s=>s.x)),y:medianValue(samples.map(s=>s.y))};
+  state.target=center;
+  dynamicTargetPos=center;
+  const heldMs=now-samples[0].t;
+  const maxJitter=0.04;
+  const stable=samples.every(s=>Math.hypot(s.x-center.x,s.y-center.y)<=maxJitter);
+  lapCalibrationDiagnostic={reason:"stabilizing",guidance:stable
+    ? `Keep your hand still on your lap · ${(Math.min(heldMs,TESTING_REACH_LAP_MIN_MS)/1000).toFixed(1)} of 2 seconds.`
+    : "Keep your hand still on your lap for two seconds; tracking will restart once it settles."};
+  if(samples.length<LAP_CALIBRATION_MIN_SAMPLES || heldMs<TESTING_REACH_LAP_MIN_MS || !stable)return;
+  state.ready=true;
+  state.target=center;
+  if(!state.announced){
+    state.announced=true;
+    postRN({type:"lap_target_calibrated",task_id:tasks[currentTaskIdx].id,step_id:lapStep.id,
+      x:+center.x.toFixed(4),y:+center.y.toFixed(4),sample_count:samples.length});
+  }
+  updateTestingReachPlacement(lm);
+}
+
+function needsForwardReachPlacement(){
+  return tasks.slice(currentTaskIdx).some(task => task.id === "T1");
+}
+
+function isForwardReachTarget(step){
+  return !!step && ["T1-S1", "T1-S2", "T1-S3"].includes(step.id);
+}
+
+function calculateForwardReachPlacement(lm, rawLap, rawShoulder=null){
+  const affected = lm && sideLandmarks(lm, AFFECTED_SIDE);
+  const radius = Math.min(Math.max(0.11, shoulderWidth(lm) * 0.55), 0.18);
+  // A phone's cover view can crop part of the source frame. Reserve space
+  // inside the displayed part too, not just inside the camera image.
+  const viewRect = typeof stage !== "undefined" ? stage.getBoundingClientRect() : null;
+  const frameRect = typeof cameraFrame !== "undefined" ? cameraFrame.getBoundingClientRect() : null;
+  const leftEdge = viewRect?.width > 0 && frameRect?.width > 0
+    ? Math.min(1, Math.max(0, (viewRect.left-frameRect.left)/frameRect.width)) : 0;
+  const rightEdge = viewRect?.width > 0 && frameRect?.width > 0
+    ? Math.min(1, Math.max(0, (viewRect.right-frameRect.left)/frameRect.width)) : 1;
+  const topEdge = viewRect?.height > 0 && frameRect?.height > 0
+    ? Math.max(0, (viewRect.top-frameRect.top)/frameRect.height) : 0;
+  const bottomEdge = viewRect?.height > 0 && frameRect?.height > 0
+    ? Math.min(1, (viewRect.bottom-frameRect.top)/frameRect.height) : 1;
+  const shoulder = rawShoulder || affected?.shoulder;
+  return RehynReachTarget.fitSeatedForwardReachTargets({
+    lap:rawLap && mirrorX(rawLap),
+    shoulder:shoulder && mirrorX(shoulder),
+    shoulderWidth:lm && lm[11] && lm[12] ? Math.abs(lm[11].x-lm[12].x) : 0,
+    radius,
+    leftEdge,
+    rightEdge,
+    topEdge,
+    bottomEdge,
+    aspect:video.videoWidth && video.videoHeight ? video.videoWidth/video.videoHeight : 4/3,
+  });
+}
+
+function forwardReachDistance(a,b){
+  return RehynReachTarget.screenDistance(a,b,
+    video.videoWidth && video.videoHeight ? video.videoWidth/video.videoHeight : 4/3);
+}
+
 function calibrationLandmarkStatus(lm){
   const cameraReady = video.readyState >= 2 && video.videoWidth > 0 && video.videoHeight > 0;
   if(!lm || lm.length < 33){
@@ -7647,9 +7817,11 @@ function calibrationLandmarkStatus(lm){
   const faceVisible = [lm[0], lm[9], lm[10]].some(point => landmarkIsInFrame(point, visibility));
   const armVisible = faceVisible && [lm[11], lm[12], affected.elbow, affected.wrist]
     .every(point => landmarkIsInFrame(point, visibility));
-  const seatedAnchorsVisible = [affected.hip, affected.wrist]
-    .every(point => landmarkIsInFrame(point, visibility));
-  const lapReady = !!(lapTargetCalibration.ready && lapTargetCalibration.target);
+  const seatedAnchorsVisible = testingReachEnabled()
+    ? landmarkIsInFrame(affected.wrist, visibility)
+    : [affected.hip, affected.wrist].every(point => landmarkIsInFrame(point, visibility));
+  const lapReady = !!(lapTargetCalibration.ready && lapTargetCalibration.target
+    && (!needsForwardReachPlacement() || forwardReachPlacement?.ready));
   return {
     cameraReady,
     armVisible,
@@ -7668,7 +7840,21 @@ function setCalibrationCheck(element, complete){
 function updatePreAssessmentCalibrationUI(lm){
   if(!calibratingAssessment) return;
   const status = calibrationLandmarkStatus(lm);
-  if(!calibrationAutoStartInProgress) preAssessmentCalibrationReady = status.ready;
+  const lapGuidance=status.lapGuidance || "Rest your affected hand on your lap where the camera can see it.";
+  const lapLocated=testingReachEnabled() ? lapTargetCalibration.ready : status.lapReady;
+  const trunkBaselineReady = !testingReachEnabled() || !!assessmentQuality.trunkLeanBaseline;
+  if(testingReachEnabled() && lapTargetCalibration.ready && forwardReachPlacement?.ready
+      && testingReachTrunkBaselineWaitSince===null)
+    testingReachTrunkBaselineWaitSince=performance.now();
+  const trunkBaselineWaited=testingReachTrunkBaselineWaitSince===null ? 0 : performance.now()-testingReachTrunkBaselineWaitSince;
+  const trunkBaselineTimedOut=testingReachEnabled() && trunkBaselineWaited>=TESTING_REACH_TRUNK_BASELINE_WAIT_MS;
+  const trunkBaselineReason=testingReachEnabled() && !trunkBaselineReady && status.ready
+    ? assessmentQuality.trunkLeanMetrics?.metricsFromLandmarks(lm,video.videoWidth/video.videoHeight)?.reason : null;
+  const trunkBaselineGuidance=trunkBaselineReason
+    ? `${trunkBaselineReason} The lap target is set; the trunk-lean reference is still being checked.`
+    : `Checking upright posture: ${assessmentQuality.trunkLeanBaselineFrames.length} of 45 clear frames. The lap target is set.`;
+  if(!calibrationAutoStartInProgress)
+    preAssessmentCalibrationReady = status.ready && (trunkBaselineReady || trunkBaselineTimedOut);
   if(preAssessmentCalibrationReady){
     setCalibrationCheck(calibrationCamera, true);
     setCalibrationCheck(calibrationArm, true);
@@ -7676,27 +7862,45 @@ function updatePreAssessmentCalibrationUI(lm){
     setCalibrationCheck(calibrationLap, true);
     calibrationProgressFill.style.width = "100%";
     calibrationTitle.textContent = "Calibration complete";
-    calibrationLead.textContent = "Your seated position and lap target are set. Stay seated and do not move the camera.";
+    calibrationLead.textContent = trunkBaselineReady
+      ? "Your seated position and lap target are set. Stay seated and do not move the camera."
+      : "Your lap and reach targets are set. The trunk-lean reference was unavailable, so that check may be unscored. The exercise will begin now.";
     calibrationAutoStatus.classList.add("ready");
     calibrationAutoStatus.textContent = calibrationInstructionFinished
       ? "Calibration complete. Starting assessment..."
+      : reachVoice.failed
+      ? "Voice paused. Retry voice or turn it off to continue with captions."
       : "Calibration complete. Please finish listening.";
     if(calibrationInstructionFinished) void completePreAssessmentCalibration();
   }else{
     setCalibrationCheck(calibrationCamera, status.cameraReady);
     setCalibrationCheck(calibrationArm, status.armVisible);
     setCalibrationCheck(calibrationSeat, status.seatedAnchorsVisible);
-    setCalibrationCheck(calibrationLap, status.lapReady);
-    const completed = [status.cameraReady, status.armVisible, status.seatedAnchorsVisible, status.lapReady].filter(Boolean).length;
-    calibrationProgressFill.style.width = `${completed * 25}%`;
-    calibrationTitle.textContent = "Let us find your seated position";
-    calibrationLead.textContent = status.armVisible && !status.seatedAnchorsVisible
+    setCalibrationCheck(calibrationLap, lapLocated);
+    const completed = [status.cameraReady, status.armVisible, status.seatedAnchorsVisible, lapLocated].filter(Boolean).length;
+    calibrationProgressFill.style.width = `${!preAssessmentCalibrationReady && completed===4 ? 90 : completed * 25}%`;
+    calibrationTitle.textContent = testingReachEnabled() && lapTargetCalibration.ready && !forwardReachPlacement?.ready
+      ? "Positioning the reach circles"
+      : status.ready && !trunkBaselineReady ? "Checking upright posture" : "Let us find your seated position";
+    calibrationLead.textContent = testingReachEnabled() && !lapTargetCalibration.ready
+      ? lapGuidance
+      : testingReachEnabled() && !forwardReachPlacement?.ready
+      ? lapGuidance
+      : status.ready && !trunkBaselineReady
+      ? trunkBaselineGuidance
+      : status.armVisible && !status.seatedAnchorsVisible
       ? "Tilt the camera down slightly until your affected hand and the top of your affected thigh are visible. You do not need to show your knees or full lap."
       : status.armVisible && status.seatedAnchorsVisible && !status.lapReady
         ? status.lapGuidance
       : "Sit still with your affected hand resting on the visible part of your lap. Keep your face, shoulders, affected arm, and the top of your affected thigh in view.";
     calibrationAutoStatus.classList.remove("ready");
-    calibrationAutoStatus.textContent = status.armVisible && status.seatedAnchorsVisible && !status.lapReady
+    calibrationAutoStatus.textContent = testingReachEnabled() && !lapTargetCalibration.ready
+      ? lapGuidance
+      : testingReachEnabled() && !forwardReachPlacement?.ready
+      ? `Lap point saved. ${lapGuidance}`
+      : status.ready && !trunkBaselineReady
+      ? trunkBaselineGuidance
+      : status.armVisible && status.seatedAnchorsVisible && !status.lapReady
       ? status.lapGuidance
       : "Keep still. Assessment will start automatically.";
   }
@@ -7707,7 +7911,9 @@ async function completePreAssessmentCalibration(){
   calibrationAutoStartInProgress = true;
   calibrationAutoStatus.classList.add("ready");
   calibrationAutoStatus.textContent = "Calibration complete. Starting assessment...";
-  calibrationLead.textContent = "Stay seated in this position and do not move the camera. The assessment will begin automatically.";
+  calibrationLead.textContent = assessmentQuality.trunkLeanBaseline
+    ? "Stay seated in this position and do not move the camera. The assessment will begin automatically."
+    : "Your lap and reach targets are set. The trunk-lean reference was unavailable; the exercise will begin automatically.";
   await playVoice(CALIBRATION_COMPLETE_INSTRUCTION);
   if(!calibratingAssessment) return;
   finalizePatientFaceReference();
@@ -7716,7 +7922,9 @@ async function completePreAssessmentCalibration(){
     : null;
   const lapStep = upcomingLapStep();
   assessmentLapTargetRadius = lapStep
-    ? Math.min(Math.max(0.10, shoulderWidth(latestPoseLandmarks) * 0.55), 0.18)
+    ? testingReachEnabled() && forwardReachPlacement?.ready
+      ? (forwardReachPlacement.lapRadius || forwardReachPlacement.radius)
+      : Math.min(Math.max(0.10, shoulderWidth(latestPoseLandmarks) * 0.55), 0.18)
     : null;
   preservePreAssessmentLapCalibration = true;
   calibratingAssessment = false;
@@ -7728,6 +7936,7 @@ async function completePreAssessmentCalibration(){
     lap_target:lapTargetCalibration.target,
     lap_target_radius:assessmentLapTargetRadius,
     sample_count:lapTargetCalibration.samples.length,
+    trunk_lean_reference_ready:!!assessmentQuality.trunkLeanBaseline,
     automatic:true,
   });
   await startStep();
@@ -7852,6 +8061,10 @@ if(URL_PARAMS.get("test_mode") === "mouth_target"){
 if(URL_PARAMS.get("test_mode") === "upper_limb_endpoint"){
   window.__rehynUpperLimbEndpointTest = {
     affectedSide:AFFECTED_SIDE,
+    placeReach:(landmarks, rawLap) => {
+      forwardReachPlacement = calculateForwardReachPlacement(landmarks, rawLap);
+      return forwardReachPlacement;
+    },
     gateRequiredById:(stepId) => !["T1-S1", "T1-S2", "T3-S1", "T3-S2"].includes(stepId),
     centeredStartTarget:(step, landmarks=null) => {
       const savedPose = latestPoseLandmarks;
@@ -7860,9 +8073,10 @@ if(URL_PARAMS.get("test_mode") === "upper_limb_endpoint"){
       latestPoseLandmarks = savedPose;
       return target;
     },
+    canvasTarget:(step, target) => targetCanvasPoint(step, target),
     evaluateReachHit:(landmarks, target, radius=0.10) => {
       const point = closestAffectedReachPointToTarget(landmarks, target);
-      return {point, distance:distXY(point, target), hit:distXY(point, target) < radius};
+      return {point, distance:forwardReachDistance(point, target), hit:forwardReachDistance(point, target) < radius};
     },
   };
 }
@@ -7984,7 +8198,7 @@ function computeMetrics(landmarks){
 function mirrorX(p){ return {x: 1 - p.x, y: p.y}; }
 
 const CENTERED_ARM_START_STEP_IDS = new Set([
-  "T1-S1", "T2-S1", "T3-S1", "T5-S1", "T6-S1", "T7-S1",
+  "T2-S1", "T3-S1", "T5-S1", "T6-S1", "T7-S1",
   "H1-S1", "H2-S1", "H3-S1", "H4-S1",
 ]);
 
@@ -8045,7 +8259,7 @@ function affectedReachContactPoints(lm){
 function closestAffectedReachPointToTarget(lm, target){
   const points = affectedReachContactPoints(lm);
   if(!points.length || !target) return null;
-  return points.reduce((closest, point) => distXY(point, target) < distXY(closest, target) ? point : closest);
+  return points.reduce((closest, point) => forwardReachDistance(point, target) < forwardReachDistance(closest, target) ? point : closest);
 }
 
 function affectedMouthContactPoints(lm){
@@ -8126,8 +8340,13 @@ function resolveLandmarkPoint(which){
 }
 
 function getEffectiveTargetXY(step){
+  if(testingReachEnabled() && reachFlow.step?.id===step?.id) return {...reachFlow.step.target};
   if(isLapTarget(step)){
     return assessmentLapTarget || lapTargetCalibration.target || {x: step.target.x, y: step.target.y};
+  }
+  if(isForwardReachTarget(step)){
+    if(!forwardReachPlacement?.ready) return null;
+    return {...(step.id === "T1-S1" ? forwardReachPlacement.start : forwardReachPlacement.raised)};
   }
   if(isCenteredArmStartStep(step)){
     return {x:0.5, y:step.target.y};
@@ -8160,6 +8379,15 @@ function getEffectiveTargetXY(step){
     return p ? {x: p.x, y: p.y} : {x: step.target.x, y: step.target.y};
   }
   return {x: step.target.x, y: step.target.y};
+}
+
+function targetCanvasPoint(step, target){
+  if(!target) return null;
+  // The preview canvas is mirrored with CSS. Lap and mouth targets are stored
+  // in raw camera coordinates; configured and other resolved targets use the
+  // user's on-screen coordinates and must be flipped before canvas drawing.
+  if(isLapTarget(step) || isMouthTarget(step)) return target;
+  return {x:1-target.x, y:target.y};
 }
 
 // ---------- Hand metrics (from HandLandmarker) ----------
@@ -8460,6 +8688,7 @@ function shoulderWidth(lm){
 // regardless of how close they are to the camera. Tightened (Phase B+) so a
 // resting wrist doesn't accidentally trigger the next target.
 function effectiveRadius(step, lm){
+  if(isForwardReachTarget(step) && forwardReachPlacement?.ready) return forwardReachPlacement.radius;
   const baseR = step.target.r || 0.10;
   if(isLapTarget(step)){
     if(Number.isFinite(assessmentLapTargetRadius)) return assessmentLapTargetRadius;
@@ -8581,6 +8810,7 @@ function targetAttemptGestureSnapshot(){
 function targetAttemptPoint(lm, step){
   if(isHandTask()) return activeHandPoint();
   if(!lm || !step) return null;
+  if(isForwardReachTarget(step)) return closestAffectedReachPointToTarget(lm, getEffectiveTargetXY(step));
   const which = step.target.landmark;
   if(which === "MOUTH"){
     return closestAffectedHandPointToTarget(lm, getEffectiveTargetXY(step));
@@ -8720,7 +8950,7 @@ function getTargetNearMiss(lm){
   const target = getEffectiveTargetXY(step);
   if(!target) return null;
   const radius = effectiveRadius(step, isHandTask() ? null : lm);
-  const distance = distXY(point, target);
+  const distance = isForwardReachTarget(step) ? forwardReachDistance(point, target) : distXY(point, target);
   const intentional = hasIntentionalTargetAttempt(lm, step, radius);
   if(!qualifiesAsNearTargetAttempt(distance, radius, intentional)) return null;
   return {
@@ -8984,7 +9214,7 @@ function checkTarget(landmarks){
   const wristDist = () => {
     const task = tasks[currentTaskIdx];
     if(task && task.id === "T1"){
-      return distXY(closestAffectedReachPointToTarget(landmarks, targetXY), targetXY);
+      return forwardReachDistance(closestAffectedReachPointToTarget(landmarks, targetXY), targetXY);
     }
     const affectedWrist = sideLandmarks(landmarks, AFFECTED_SIDE).wrist;
     return distXY(affectedWrist ? mirrorX(affectedWrist) : null, targetXY);
@@ -9067,25 +9297,99 @@ function checkTarget(landmarks){
 
 // ---------- Drawing ----------
 const ICON_EMOJI = { cup: "☕", table: "🪵", towel: "🧺", ball: "🏐", coin: "🪙" };
+let lastAngleVideoTime = -1, lastAngleVideoAt = 0;
+
+function drawTestingReachAngles(landmarks, world=latestPoseWorldLandmarks){
+  const panel = document.getElementById("testingReachAngles");
+  const enabled = LIBRARY_TEST_MODE && tasks[currentTaskIdx]?.id === "T1";
+  panel.classList.toggle("hidden", !enabled);
+  if(!enabled) return null;
+  const aspect = video.videoWidth > 0 && video.videoHeight > 0 ? video.videoWidth/video.videoHeight : 1;
+  const readout = RehynReachAngles.assessmentReadout(assessmentQuality, landmarks, world, aspect);
+  const format = v => Number.isFinite(v) ? `${v.toFixed(1)}°` : "—";
+  document.getElementById("liveArmElevationScore").textContent = format(readout.armScore);
+  document.getElementById("liveArmElevationArc").textContent = format(readout.armElevationArc?.degrees);
+  document.getElementById("liveElbowExtension").textContent = format(readout.elbowScore);
+  // Use the same shared comparison detector as Tracker.sample(), rather than
+  // deriving display-only shoulder/face values from a different formula.
+  const trunk=assessmentQuality.trunkLeanReadout(landmarks,aspect);
+  const shoulder=trunk.cues?.pelvisNormalizedShoulderScale;
+  const face=trunk.cues?.pelvisNormalizedFaceScale;
+  const runs=assessmentQuality.compensations?.trunk_lean?.cue_runs;
+  const shoulderConfirmed=(runs?.shoulder?.confirmed_ms||0)>=500;
+  const faceConfirmed=(runs?.face?.confirmed_ms||0)>=500;
+  document.getElementById("liveTrunkLeanShoulder").textContent=format(shoulder);
+  document.getElementById("liveTrunkLeanFace").textContent=format(face);
+  document.getElementById("liveTrunkLeanFaceScale").textContent=Number.isFinite(trunk.faceScale) ? `${trunk.faceScale.toFixed(4)}×` : "—";
+  const cueState=(value,above,confirmed,duration)=>!assessmentQuality.trunkLeanBaseline
+    ? "Waiting for upright calibration"
+    : !Number.isFinite(value) ? "Not measurable in this frame"
+    : confirmed ? `Confirmed for this step (${(duration/1000).toFixed(2)} s)`
+    : above ? "Above threshold now · hold for 0.5 s" : "Below threshold";
+  document.getElementById("liveTrunkLeanShoulderState").textContent=cueState(shoulder,Number.isFinite(shoulder)&&shoulder>12,shoulderConfirmed,runs?.shoulder?.confirmed_ms||0);
+  document.getElementById("liveTrunkLeanFaceState").textContent=cueState(face,Number.isFinite(face)&&face+1e-9>=7,faceConfirmed,runs?.face?.confirmed_ms||0);
+  document.getElementById("liveTrunkLeanState").textContent=trunk.supported
+    ? shoulderConfirmed || faceConfirmed ? "Trunk lean counted in this step" : trunk.detected ? "Cue above threshold now; hold for 0.5 s" : "Neither cue is above its threshold"
+    : assessmentQuality.trunkLeanBaseline ? "Torso landmarks unavailable" : "Waiting for upright calibration";
+  // Both video and canvas are CSS-mirrored. Counter-flip this screen-space
+  // overlay once so arc positions align and degree labels remain readable.
+  ctx.save(); ctx.translate(canvas.width,0); ctx.scale(-1,1);
+  RehynReachAngles.drawAngleArcs(ctx,readout,canvas.width,canvas.height,canvas.clientWidth);
+  ctx.restore();
+  return readout;
+}
 
 function drawOverlay(landmarks){
   ctx.clearRect(0,0,canvas.width,canvas.height);
+  const armOnly = LIBRARY_TEST_MODE && tasks[currentTaskIdx]?.id === "T1";
   // draw skeleton
   if(landmarks){
-    drawingUtils.drawLandmarks(landmarks, {color:"#D9E5DC", radius:3});
-    drawingUtils.drawConnectors(landmarks, PoseLandmarker.POSE_CONNECTIONS, {color:"#4A7856", lineWidth:4});
+    if(armOnly){
+      const a = sideLandmarks(landmarks, AFFECTED_SIDE);
+      const arm = [a.shoulder,a.elbow,a.wrist];
+      const visible = p => p && [p.x,p.y].every(Number.isFinite) && (p.visibility ?? 0) >= .65;
+      ctx.save(); ctx.strokeStyle="#80f0ba";ctx.lineWidth=4;ctx.fillStyle="#d9ffeb";
+      for(let i=0;i<arm.length-1;i++){
+        const p=arm[i],q=arm[i+1];if(!visible(p)||!visible(q))continue;
+        ctx.beginPath();ctx.moveTo(p.x*canvas.width,p.y*canvas.height);ctx.lineTo(q.x*canvas.width,q.y*canvas.height);ctx.stroke();
+      }
+      for(const p of arm){if(!visible(p))continue;ctx.beginPath();ctx.arc(p.x*canvas.width,p.y*canvas.height,5,0,Math.PI*2);ctx.fill();}
+      ctx.restore();
+      // Pose Landmarker face points 0-10 are shown only in the T1 testing view.
+      // Its ear points (7, 8) are the measurements used by the face-width cue.
+      const faceVisible = p => p && [p.x,p.y].every(Number.isFinite) && (p.visibility ?? 0) >= .45;
+      const leftEar=landmarks[7],rightEar=landmarks[8];
+      ctx.save();
+      if(faceVisible(leftEar)&&faceVisible(rightEar)){
+        ctx.strokeStyle="#ff6e91";ctx.lineWidth=2;
+        ctx.beginPath();ctx.moveTo(leftEar.x*canvas.width,leftEar.y*canvas.height);
+        ctx.lineTo(rightEar.x*canvas.width,rightEar.y*canvas.height);ctx.stroke();
+      }
+      for(let i=0;i<=10;i++){
+        const p=landmarks[i];if(!faceVisible(p))continue;
+        const ear=i===7||i===8;
+        ctx.fillStyle=ear?"#ff6e91":"#ffb4c3";
+        ctx.beginPath();ctx.arc(p.x*canvas.width,p.y*canvas.height,ear?5:2.5,0,Math.PI*2);ctx.fill();
+      }
+      ctx.restore();
+    }else{
+      drawingUtils.drawLandmarks(landmarks, {color:"#D9E5DC", radius:3});
+      drawingUtils.drawConnectors(landmarks, PoseLandmarker.POSE_CONNECTIONS, {color:"#4A7856", lineWidth:4});
+    }
   }
-  if(latestHandLandmarks && latestHandLandmarks.length >= 21){
+  if(!armOnly && latestHandLandmarks && latestHandLandmarks.length >= 21){
     drawingUtils.drawConnectors(latestHandLandmarks, HAND_CONNECTIONS, {color:"rgba(127,229,163,0.88)", lineWidth:2});
     drawingUtils.drawLandmarks(latestHandLandmarks, {color:"rgba(217,229,220,0.72)", radius:1.4});
   }
-  if(!calibratingAssessment && !stepCompleted && voiceFinishedAt > 0) assessmentQuality.draw(ctx, landmarks, canvas.width, canvas.height);
+  if(!armOnly && !calibratingAssessment && !stepCompleted && voiceFinishedAt > 0) assessmentQuality.draw(ctx, landmarks, canvas.width, canvas.height);
   if(calibratingAssessment){
     lapStatus.classList.add("hidden");
     if(lapTargetCalibration.ready && lapTargetCalibration.target){
       const tx = lapTargetCalibration.target.x * canvas.width;
       const ty = lapTargetCalibration.target.y * canvas.height;
-      const tr = 0.075 * Math.min(canvas.width, canvas.height);
+      const previewRadius = testingReachEnabled() && forwardReachPlacement?.ready
+        ? (forwardReachPlacement.lapRadius || forwardReachPlacement.radius) : 0.075;
+      const tr = previewRadius * Math.min(canvas.width, canvas.height);
       ctx.save();
       ctx.beginPath();
       ctx.arc(tx, ty, tr, 0, Math.PI*2);
@@ -9124,8 +9428,9 @@ function drawOverlay(landmarks){
   lapStatus.classList.add("hidden");
   const targetXY = getEffectiveTargetXY(step);
   if(!targetXY) return;
-  const tx = targetXY.x * canvas.width;
-  const ty = targetXY.y * canvas.height;
+  const canvasTarget = targetCanvasPoint(step, targetXY);
+  const tx = canvasTarget.x * canvas.width;
+  const ty = canvasTarget.y * canvas.height;
   // Visual radius MATCHES the actual hit radius — so what the user sees == what triggers.
   const effR = effectiveRadius(step, landmarks);
   const tr = effR * Math.min(canvas.width, canvas.height);
@@ -9154,6 +9459,14 @@ function drawOverlay(landmarks){
     ctx.fillStyle = "rgba(225,142,109,0.4)";
     ctx.fill();
   }
+  if(testingReachEnabled()){
+    // Keep the centre easy to pick out even when the lap-return ring has been
+    // fitted smaller to stay completely inside the camera view.
+    ctx.beginPath();
+    ctx.arc(tx, ty, Math.max(5, Math.min(10, tr*0.16)), 0, Math.PI*2);
+    ctx.fillStyle = armed ? "#fff" : "rgba(255,255,255,0.8)";
+    ctx.fill();
+  }
 
   // icon emoji (cup / table / towel ...) — drawn unmirrored using counter-flip
   const icon = step.target.icon;
@@ -9175,7 +9488,7 @@ function drawOverlay(landmarks){
     const elapsed = performance.now() - inTargetSince;
     const progress = Math.min(1, elapsed / step.hold_ms);
     ctx.beginPath();
-    ctx.arc(tx, ty, tr*1.25, -Math.PI/2, -Math.PI/2 + progress*Math.PI*2);
+    ctx.arc(tx, ty, tr*(testingReachEnabled() ? 0.82 : 1.25), -Math.PI/2, -Math.PI/2 + progress*Math.PI*2);
     ctx.strokeStyle = "#3C8255";
     ctx.lineWidth = 8;
     ctx.stroke();
@@ -9225,7 +9538,9 @@ function nextStep(skipped=false){
     };
   }
   const stepDurationMs = Math.round(performance.now() - stepStartTime);
+  const adaptationEvidence = finishTestingReachStep(!skipped);
   const qualityEvidence = assessmentQuality.snapshot();
+  if(localReview.active && assessmentQuality.seriesStart!==null) qualityEvidence.video_start_ms=Math.round(assessmentQuality.seriesStart-localReview.active.startedAt);
   const leanEvidence = qualityEvidence.compensations.trunk_lean;
   const confirmedTrunkLean = leanEvidence?.max_streak_ms >= 500 ? leanEvidence.max_value : 0;
   taskResults[currentTaskIdx].steps.push({
@@ -9235,6 +9550,7 @@ function nextStep(skipped=false){
     duration_ms: stepDurationMs,
     metrics: {
       quality: qualityEvidence,
+      ...(adaptationEvidence ? {testing_reach:adaptationEvidence} : {}),
       trunk_lean_deg: leanEvidence?.eligible_ms >= 500 ? Math.round(confirmedTrunkLean) : null,
       shoulder_flexion_ratio: +shoulderFlexionMax.toFixed(2),
       shoulder_hike: shoulderHikeDetected,
@@ -9312,6 +9628,7 @@ async function celebrateAndAdvance(){
   if(navigator.vibrate) navigator.vibrate([60, 40, 100]);
 
   stopAndSaveTaskRecording(finishedTask.id);
+  await finishLocalReview(taskResults[currentTaskIdx]);
   persistTaskProgress(finishedTask.id);
 
   postRN({type:"task_complete", package_id: ASSESSMENT_PACKAGE, task_id: finishedTask.id, task_index: currentTaskIdx});
@@ -9348,9 +9665,16 @@ async function finishAssessment(){
   running = false;
   audioEl.pause();
   if(LIBRARY_TEST_MODE){
+    if(testingReachEnabled()){
+      if(taskResults[0])taskResults[0].metrics.testing_reach={support_available:reachFlow.support,stopped:reachFlow.stopped};
+      stopReachVoice();
+    }
     captionEl.textContent = "Task test complete";
     voiceText.textContent = "This test was not added to Assessment history or Progress.";
-    postRN({type:"library_test_complete", package_id:ASSESSMENT_PACKAGE, task_id:tasks[0] ? tasks[0].id : null});
+    const testResult=taskResults.filter(Boolean)[0] || null;
+    const recording=await finishLocalReview(testResult);
+    postRN({type:"library_test_complete", package_id:ASSESSMENT_PACKAGE, task_id:tasks[0] ? tasks[0].id : null, task_result:testResult, recording});
+    if(video.srcObject) video.srcObject.getTracks().forEach(track=>track.stop());
     return;
   }
   captionEl.textContent = "Saving your task videos and results…";
@@ -9469,13 +9793,21 @@ function loop(){
   }
   if(calibratingAssessment) updatePreAssessmentCalibrationUI(landmarks);
   computeHandMetrics();
-  const inTarget = !calibratingAssessment && !correctionVoicePlaying && checkTarget(landmarks);
+  tickTestingReach(landmarks,now);
+  const reachFrameValid = !testingReachEnabled() || !!reachObservation(landmarks,now);
+  const inTarget = !calibratingAssessment && reachCanMeasure() && reachFrameValid && !correctionVoicePlaying && checkTarget(landmarks);
   if(lastPoseScanTs !== lastQualityPoseAt){
     lastQualityPoseAt = lastPoseScanTs;
-    if(calibratingAssessment || (!assessmentQuality.baseline && voiceFinishedAt === 0)) assessmentQuality.calibrate(landmarks, latestPoseWorldLandmarks);
-    if(!calibratingAssessment && voiceFinishedAt > 0 && !stepCompleted && !celebrateEl.classList.contains("show")){
+    const qualityAspect=video.videoWidth>0 && video.videoHeight>0 ? video.videoWidth/video.videoHeight : 1;
+    // For Testing reach, establish the upright posture reference only after
+    // the affected hand has settled at its locked lap position. Reaching down
+    // to place the hand must not become part of the trunk-lean baseline.
+    const postureCalibrationReady=!calibratingAssessment || !testingReachEnabled() || lapTargetCalibration.ready;
+    if(postureCalibrationReady && (calibratingAssessment || (!assessmentQuality.baseline && voiceFinishedAt === 0)))
+      assessmentQuality.calibrate(landmarks, latestPoseWorldLandmarks, qualityAspect);
+    if(!calibratingAssessment && reachCanMeasure() && reachFrameValid && voiceFinishedAt > 0 && !stepCompleted && !celebrateEl.classList.contains("show")){
       const freshHand = now - latestHandSeenAt <= 150 ? latestHandLandmarks : null;
-      assessmentQuality.sample({pose:landmarks,world:latestPoseWorldLandmarks,hand:freshHand,handOpen:handOpenScore,handClosed:fistClosureScore,pinch:pinchScore,gaitAlternations:gaitAlternationCount,inTarget,now});
+      assessmentQuality.sample({pose:landmarks,world:latestPoseWorldLandmarks,hand:freshHand,handOpen:handOpenScore,handClosed:fistClosureScore,pinch:pinchScore,gaitAlternations:gaitAlternationCount,inTarget,now,aspectRatio:qualityAspect});
       const active=assessmentQuality.active();
       if(active.includes("shoulder_hike")) shoulderHikeDetected=true;
       const qualityCaption=active.map(id=>window.REHYN_ASSESSMENT_RUBRIC.compensations[id].cue).join(" ");
@@ -9488,10 +9820,19 @@ function loop(){
   updateRuntimeDiagnostics(now);
 
   drawOverlay(landmarks);
+  // The readout uses the same raw scoring measurements, without adding any
+  // samples or changing the task's score, target, or compensation logic.
+  if(cameraFrameReady && video.currentTime !== lastAngleVideoTime){lastAngleVideoTime=video.currentTime;lastAngleVideoAt=performance.now();}
+  const anglesFresh = cameraFrameReady && performance.now()-lastPoseScanTs <= 250 && performance.now()-lastAngleVideoAt <= 250;
+  drawTestingReachAngles(anglesFresh ? landmarks : null, anglesFresh ? latestPoseWorldLandmarks : null);
 
   if(calibratingAssessment){
     requestAnimationFrame(loop);
     return;
+  }
+
+  if(testingReachEnabled() && (!reachCanMeasure() || !reachFrameValid)){
+    inTargetSince=null;lastInTargetTs=0;requestAnimationFrame(loop);return;
   }
 
   // check target hit — with a small "grace period" so brief jitter doesn't reset the hold
@@ -9512,7 +9853,7 @@ function loop(){
       if(inTargetSince != null && (now - lastInTargetTs) > 350){
         inTargetSince = null;
       }
-      if(!correctionVoicePlaying) handleTargetNearMiss(landmarks, now);
+      if(!testingReachEnabled() && !correctionVoicePlaying) handleTargetNearMiss(landmarks, now);
     }
   }
   requestAnimationFrame(loop);
@@ -9540,6 +9881,9 @@ async function beginAssessmentSetup(){
     postRN({type:"assessment_start_error", message:`Could not load assessment tasks: ${String(error)}`});
     return;
   }
+  if(testingReachEnabled() && reachFlow.support===null){
+    startSetupInProgress=false;startBtn.removeAttribute("aria-busy");askReachSupport();return;
+  }
   if(WALKING_TEST_MODE){
     const task = tasks[currentTaskIdx];
     if(!task || !isWalkingTask(task) || tasks.length !== 1){
@@ -9558,15 +9902,23 @@ async function beginAssessmentSetup(){
     return;
   }
   const firstStep = tasks[currentTaskIdx] && tasks[currentTaskIdx].steps && tasks[currentTaskIdx].steps[0];
-  const firstVoicePromise = firstStep && firstStep.voice
+  const firstVoicePromise = !testingReachEnabled() && firstStep && firstStep.voice
     ? fetchVoiceAudio(firstStep.voice).catch(() => null)
     : Promise.resolve(null);
   calibratingAssessment = shouldRunSeatedCalibration();
   calibrationInstructionFinished = false;
   preAssessmentCalibrationReady = false;
   calibrationAutoStartInProgress = false;
+  testingReachTrunkBaselineWaitSince = null;
   assessmentLapTarget = null;
   assessmentLapTargetRadius = null;
+  forwardReachPlacement = null;
+  if(testingReachEnabled()){
+    assessmentQuality.trunkLeanBaselineFrames=[];
+    assessmentQuality.trunkLeanBaseline=null;
+    assessmentQuality.baselines=[];
+    assessmentQuality.baseline=null;
+  }
   patientFaceReferenceSamples = [];
   patientFaceReference = null;
   lastPatientFaceReferenceAt = 0;
@@ -9576,8 +9928,12 @@ async function beginAssessmentSetup(){
     calibrationOverlay.classList.remove("hidden");
     calibrationTitle.textContent = "Preparing your camera";
     calibrationLead.textContent = "Sit still with your affected hand resting on your lap while the camera and movement model get ready.";
+    if(testingReachEnabled()){
+      calibrationSeat.querySelector("span:last-child").textContent = "Affected hand is visible";
+      calibrationLap.querySelector("span:last-child").textContent = "Hold your hand still on your lap for 2 seconds";
+    }
     updatePreAssessmentCalibrationUI(null);
-    prefetchVoice(CALIBRATION_INSTRUCTION);
+    prefetchVoice(testingReachEnabled() ? TESTING_REACH_CALIBRATION_INSTRUCTION : CALIBRATION_INSTRUCTION);
     prefetchVoice(CALIBRATION_COMPLETE_INSTRUCTION);
   }
   startBtn.textContent = "Opening camera...";
@@ -9611,7 +9967,7 @@ async function beginAssessmentSetup(){
   running = true;
   requestAnimationFrame(loop);
   if(calibratingAssessment){
-    await playVoice(CALIBRATION_INSTRUCTION);
+    await playVoice(testingReachEnabled() ? TESTING_REACH_CALIBRATION_INSTRUCTION : CALIBRATION_INSTRUCTION);
     calibrationInstructionFinished = true;
     updatePreAssessmentCalibrationUI(latestPoseLandmarks);
     return;
@@ -9621,7 +9977,7 @@ async function beginAssessmentSetup(){
 
 startBtn.addEventListener("click", beginAssessmentSetup);
 if(window.__rehynStartRequested) void beginAssessmentSetup();
-if(WALKING_TEST_MODE && !window.__rehynStartRequested) void beginAssessmentSetup();
+if((LIBRARY_TEST_MODE || WALKING_TEST_MODE) && !window.__rehynStartRequested) void beginAssessmentSetup();
 
 walkingVideoInput.addEventListener("click", () => {
   setWalkingCaptureStatus("Choose or record a walking video on this device.");
@@ -9840,12 +10196,19 @@ markerStoreBtn.addEventListener("click", () => {
 });
 
 skipBtn.addEventListener("click", () => {
+  if(testingReachEnabled() && (!reachCanMeasure() || stepCompleted)) return;
   if(!running) return;
   if(waitingForAdvancedGate) return;
   nextStep(true);
 });
 
-exitBtn.addEventListener("click", () => {
+exitBtn.addEventListener("click", async () => {
+  if(localReview.active){
+    running=false;
+    const task=tasks[currentTaskIdx];
+    await finishLocalReview(taskResults[currentTaskIdx] || {task_id:task.id,completed_steps:0,total_steps:task.steps.length,steps:[],metrics:{stopped:true}});
+  }
+  if(testingReachEnabled()){stopReachVoice();running=false;if(video.srcObject)video.srcObject.getTracks().forEach(t=>t.stop());}
   postRN({type:"exit"});
 });
 
@@ -9860,8 +10223,40 @@ postRN({type:"ready"});
 """
 
 
+# Testing-only support, adaptation and narration share the existing runner geometry.
+for _testing_script in ("testing_reach.js", "reach_voice.js"):
+    POSE_RUNNER_HTML = POSE_RUNNER_HTML.replace("</head>", "<script>" + (ROOT_DIR / _testing_script).read_text(encoding="utf-8") + "</script></head>")
+POSE_RUNNER_HTML = POSE_RUNNER_HTML.replace('<div id="stage">', '<div id="stage">' + (ROOT_DIR / "testing_reach_ui.html").read_text(encoding="utf-8"), 1)
+POSE_RUNNER_HTML = POSE_RUNNER_HTML.replace('let startSetupInProgress = false;', (ROOT_DIR / "testing_reach_flow.js").read_text(encoding="utf-8") + '\nlet startSetupInProgress = false;', 1)
+
+POSE_RUNNER_HTML = POSE_RUNNER_HTML.replace('let startSetupInProgress = false;', (ROOT_DIR / "local_assessment_video.js").read_text(encoding="utf-8") + '\nlet startSetupInProgress = false;', 1)
+
+_reach_target_script = (ROOT_DIR / "reach_target.js").read_text(encoding="utf-8")
+POSE_RUNNER_HTML = POSE_RUNNER_HTML.replace("</head>", "<script>" + _reach_target_script + "</script></head>")
+_reach_angles_script = (ROOT_DIR / "reach_angles.js").read_text(encoding="utf-8")
+POSE_RUNNER_HTML = POSE_RUNNER_HTML.replace("</head>", "<script>" + _reach_angles_script + "</script></head>")
+_trunk_lean_metrics_script = (ROOT_DIR.parent / "testing" / "trunk-lean-comparison" / "trunk_lean_metrics.js").read_text(encoding="utf-8")
+POSE_RUNNER_HTML = POSE_RUNNER_HTML.replace("</head>", "<script>" + _trunk_lean_metrics_script + "</script></head>")
+POSE_RUNNER_HTML = POSE_RUNNER_HTML.replace('<div id="lapStatus"', '''<aside id="testingReachAngles" class="hidden" aria-label="Live seated forward reach angles">
+  <div class="reachAngleArm"><b>Arm elevation</b><strong id="liveArmElevationScore">—</strong><span>Scoring value · model 3D</span><span>Cyan 2D arc: <b id="liveArmElevationArc">—</b></span></div>
+  <div class="reachAngleElbow"><b>Elbow extension</b><strong id="liveElbowExtension">—</strong><span>Scoring value &amp; yellow arc · 2D</span><span>180° = straight</span></div>
+  <div class="reachTrunkLean"><b>Trunk lean camera cues</b><span id="liveTrunkLeanState">Waiting for upright calibration</span>
+    <div class="reachTrunkCueGrid">
+      <div class="reachTrunkCue"><b>Shoulder cue</b><strong id="liveTrunkLeanShoulder">—</strong><span>Threshold: above 12°</span><span id="liveTrunkLeanShoulderState">Waiting for upright calibration</span></div>
+      <div class="reachTrunkCue"><b>Face cue</b><strong id="liveTrunkLeanFace">—</strong><span>Threshold: at least 7°</span><span id="liveTrunkLeanFaceState">Waiting for upright calibration</span>
+        <div class="reachTrunkRatio"><span>Face-to-hip width ratio (Sface)</span><b id="liveTrunkLeanFaceScale">—</b></div>
+        <span>Ear-width change ÷ hip-width change; 1.0000× is the upright baseline. Pink dots show tracked face points; the brighter dots and line mark the ears.</span>
+      </div>
+    </div>
+  </div>
+  <small>Each cue must stay above its threshold for 0.5 seconds to affect this step's score. These are camera estimates, not anatomical angles.</small>
+</aside><div id="lapStatus"''', 1)
 _assessment_quality_script = (ROOT_DIR / "assessment_quality.js").read_text(encoding="utf-8")
 POSE_RUNNER_HTML = POSE_RUNNER_HTML.replace("</head>", """<style>
+#testingReachAngles{position:absolute;top:calc(80px + env(safe-area-inset-top,0px));left:16px;z-index:4;pointer-events:none;background:rgba(5,25,23,.88);border-radius:10px;padding:12px;display:grid;grid-template-columns:1fr 1fr;gap:12px;width:min(370px,calc(100% - 32px));font-size:13px;line-height:1.35}
+#testingReachAngles span,#testingReachAngles strong{display:block}#testingReachAngles strong{font-size:25px}#testingReachAngles small{grid-column:1/-1;color:#e5efec;font-size:11px}
+.reachAngleArm{color:#67e8f9}.reachAngleElbow{color:#facc15}
+.reachTrunkLean{grid-column:1/-1;color:#fda4af;border-top:1px solid rgba(255,255,255,.25);padding-top:8px}.reachTrunkCueGrid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px}.reachTrunkCue{background:rgba(255,255,255,.08);border-radius:8px;padding:8px;min-width:0}.reachTrunkCue b,.reachTrunkCue span{display:block}.reachTrunkCue strong{font-size:23px!important;line-height:1.2}.reachTrunkCue span{font-size:11px;line-height:1.35}.reachTrunkRatio{border-top:1px solid rgba(255,255,255,.2);margin-top:7px;padding-top:6px}.reachTrunkRatio b{font-size:16px;line-height:1.3}
 #assessmentQualityStatus{color:#fff;background:#8a2424;border-radius:8px;max-width:900px;margin:6px auto;padding:8px 12px;font-size:16px;line-height:1.4}
 #assessmentQualityStatus:empty{display:none}
 #celebrate{overflow:auto;padding:24px 16px;box-sizing:border-box;justify-content:center;background:#244d3c}
@@ -11089,12 +11484,13 @@ async def record_emergency_fast_check(payload: FastCheckSubmit, request: Request
 
 
 @api_router.get("/testing/library")
-async def get_testing_library(request: Request):
+async def get_testing_library(request: Request, patient_tasks_only: bool = False):
     user = await _user_from_header(dict(request.headers))
     if not user:
         raise HTTPException(status_code=401, detail="Sign in required")
 
     assessment_packages = []
+    patient_ids = {task["id"] for task in INITIAL_ASSESSMENT_TASKS if task["id"] != "L6"}
     for package_id in ("upper_limb", "hand", "lower_limb", "balance"):
         package = ASSESSMENT_PACKAGES[package_id]
         assessment_packages.append({
@@ -11111,10 +11507,11 @@ async def get_testing_library(request: Request):
                     "safety_tier": task.get("safety_tier", "seated"),
                     "safety_note": task.get("safety_note"),
                 }
-                for task in package["tasks"]
+                for task in package["tasks"] if not patient_tasks_only or task["id"] in patient_ids
             ],
         })
 
+    assessment_packages = [package for package in assessment_packages if package["tasks"]]
     exercises = []
     seen_exercise_ids = set()
     for exercise in EXERCISE_LIBRARY.values():
@@ -11158,6 +11555,20 @@ async def get_testing_library(request: Request):
     }
 
 
+@api_router.post("/testing/assessment-score")
+async def get_testing_assessment_score(payload: TaskResult, request: Request):
+    user = await _user_from_header(dict(request.headers))
+    if not user:
+        raise HTTPException(status_code=401, detail="Sign in required")
+    if payload.task_id not in ASSESSMENT_RUBRICS or payload.task_id == "L6":
+        raise HTTPException(status_code=422, detail="Choose a guided assessment task from Testing")
+    expected = {step["id"] for step in ASSESSMENT_RUBRICS[payload.task_id]["steps"]}
+    ids = [step.step_id for step in payload.steps]
+    if len(ids) != len(set(ids)) or not set(ids).issubset(expected):
+        raise HTTPException(status_code=422, detail="The recorded steps do not match this task")
+    return testing_task_report(payload, ASSESSMENT_RUBRICS)
+
+
 def _rehab_runner_html(
     exercise_id: str,
     prescribed_reps: Optional[int] = None,
@@ -11180,6 +11591,43 @@ async def rehab_runner(
     variation: str = "standard",
 ):
     return HTMLResponse(content=_rehab_runner_html(exercise_id, reps, difficulty, variation))
+
+
+TRUNK_LEAN_COMPARISON_DIR = ROOT_DIR.parent / "testing" / "trunk-lean-comparison"
+TRUNK_LEAN_COMPARISON_HTML = TRUNK_LEAN_COMPARISON_DIR / "trunk_lean_comparison.html"
+TRUNK_LEAN_COMPARISON_APP = TRUNK_LEAN_COMPARISON_DIR / "trunk_lean_comparison.js"
+TRUNK_LEAN_COMPARISON_METRICS = TRUNK_LEAN_COMPARISON_DIR / "trunk_lean_metrics.js"
+TRUNK_LEAN_COMPARISON_HEADERS = {
+    "Cache-Control": "no-store, max-age=0, must-revalidate",
+    "Pragma": "no-cache",
+    "Expires": "0",
+}
+
+
+@api_router.get("/testing/trunk-lean-comparison", response_class=HTMLResponse)
+async def trunk_lean_comparison():
+    return HTMLResponse(
+        content=TRUNK_LEAN_COMPARISON_HTML.read_text(encoding="utf-8"),
+        headers=TRUNK_LEAN_COMPARISON_HEADERS,
+    )
+
+
+@api_router.get("/testing/trunk-lean-comparison/app.js", response_class=Response)
+async def trunk_lean_comparison_app():
+    return Response(
+        content=TRUNK_LEAN_COMPARISON_APP.read_text(encoding="utf-8"),
+        media_type="application/javascript",
+        headers=TRUNK_LEAN_COMPARISON_HEADERS,
+    )
+
+
+@api_router.get("/testing/trunk-lean-comparison/metrics.js", response_class=Response)
+async def trunk_lean_comparison_metrics():
+    return Response(
+        content=TRUNK_LEAN_COMPARISON_METRICS.read_text(encoding="utf-8"),
+        media_type="application/javascript",
+        headers=TRUNK_LEAN_COMPARISON_HEADERS,
+    )
 
 
 @api_router.get("/rehab/games")
@@ -12416,7 +12864,9 @@ function rawMovementMetrics(lm, handLm, freshHand=true){
     raw.shoulder_flexion=angle(lm[ACTIVE.hip],lm[ACTIVE.shoulder],lm[ACTIVE.elbow]);
     raw.shoulder_abduction=angle(lm[ACTIVE.hip],lm[ACTIVE.shoulder],lm[ACTIVE.wrist]);
     raw.other_shoulder_flexion=angle(lm[OTHER.hip],lm[OTHER.shoulder],lm[OTHER.elbow]);
-    raw.elbow_extension=angle(lm[ACTIVE.shoulder],lm[ACTIVE.elbow],lm[ACTIVE.wrist]);
+    const elbowAspect=video.videoWidth>0 && video.videoHeight>0 ? video.videoWidth/video.videoHeight : 1;
+    const elbowPoint=point=>({x:point.x*elbowAspect,y:point.y,z:0});
+    raw.elbow_extension=angle(elbowPoint(lm[ACTIVE.shoulder]),elbowPoint(lm[ACTIVE.elbow]),elbowPoint(lm[ACTIVE.wrist]));
     raw.knee_extension=angle(lm[ACTIVE.hip],lm[ACTIVE.knee],lm[ACTIVE.ankle]);
     raw.other_knee_extension=angle(lm[OTHER.hip],lm[OTHER.knee],lm[OTHER.ankle]);
     raw.hip_extension=angle(lm[ACTIVE.shoulder],lm[ACTIVE.hip],lm[ACTIVE.knee]);

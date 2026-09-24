@@ -14,6 +14,7 @@ os.environ.setdefault("DB_NAME", "axonai_instruction_voice_test")
 
 from backend import server
 from backend import clone_instruction_voice
+from backend import chatterbox_nano_tts
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -92,6 +93,44 @@ def test_cloned_voice_rejects_arbitrary_text_but_general_voice_remains_available
     result = asyncio.run(server.generate_tts(server.TTSRequest(text="A normal Alira reply", purpose="general")))
     assert result.audio_b64 == "bXAz"
     assert calls[-1][2] == "general"
+
+
+def test_chatterbox_nano_uses_private_reference_only_for_instructions(tmp_path, monkeypatch):
+    sample = tmp_path / "molly.wav"
+    sample.write_bytes(b"private-reference")
+    monkeypatch.setattr(server, "INSTRUCTION_TTS_PROVIDER", "chatterbox-nano")
+    monkeypatch.setattr(server, "CHATTERBOX_REFERENCE_AUDIO", str(sample))
+    monkeypatch.setattr(server, "CHATTERBOX_FFMPEG_PATH", "ffmpeg-test")
+    monkeypatch.setattr(server, "openai_tts_client", object())
+    calls = []
+
+    def fake_synthesize(text, reference, ffmpeg_path):
+        calls.append((text, reference, ffmpeg_path))
+        return b"ID3-molly-audio"
+
+    monkeypatch.setattr(chatterbox_nano_tts, "synthesize_mp3", fake_synthesize)
+    first = server._tts_request_config("instruction", "nova")
+    assert first["provider"] == "chatterbox-nano"
+    assert first["public_voice"] == "Molly"
+    assert first["voice"].startswith("molly-")
+    assert server._tts_request_config("general", "nova")["provider"] == "openai-direct"
+    assert server._synthesize_tts_audio_bytes("Wonderful. Here we go.", "nova", "instruction") == b"ID3-molly-audio"
+    assert calls == [("Wonderful. Here we go.", sample, "ffmpeg-test")]
+    first_key = server._tts_cache_key("Wonderful. Here we go.", "nova", "instruction")
+    sample.write_bytes(b"different-private-reference")
+    assert server._tts_cache_key("Wonderful. Here we go.", "nova", "instruction") != first_key
+
+
+def test_testing_reach_side_specific_prompts_are_allowed_for_clone(monkeypatch):
+    monkeypatch.setattr(server, "INSTRUCTION_TTS_PROVIDER", "chatterbox-nano")
+    for side in ("left", "right"):
+        assert server._instruction_text_allowed(
+            f"Let us check a small movement first. Without help, gently move your {side} hand or arm away from its resting position, as much as is comfortable. Even a small movement is useful."
+        )
+        assert server._instruction_text_allowed(
+            f"I have not seen a clear movement yet. If comfortable, try a small movement with your {side} hand or arm once more. Take your time; do not force it."
+        )
+    assert not server._instruction_text_allowed("Let us check a small movement first. Move your voice clone anywhere.")
 
 
 def test_runners_mark_fixed_guidance_as_instruction_speech():

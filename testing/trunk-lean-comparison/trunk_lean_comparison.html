@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Rehyn trunk lean comparison</title>
+  <style>
+    :root{color-scheme:light;--ink:#123d31;--muted:#53665f;--green:#0b6b48;--green-soft:#e3f0e9;--orange:#b85d13;--orange-soft:#fff0df;--red:#b72b2b;--red-soft:#fae7e4;--line:#cdd8d2;--paper:#f7faf7;--panel:#fff}
+    *{box-sizing:border-box}
+    html,body{margin:0;min-height:100%;background:var(--paper);color:var(--ink);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;letter-spacing:0}
+    button{font:inherit}
+    .page{width:min(1500px,100%);margin:0 auto;padding:20px 24px 40px}
+    header{display:flex;align-items:flex-start;justify-content:space-between;gap:24px;margin-bottom:18px}
+    .brand{font-size:15px;font-weight:900;letter-spacing:4px;color:var(--green)}
+    h1{font-size:clamp(26px,3vw,42px);line-height:1.08;margin:7px 0 6px;letter-spacing:0}
+    .lede{max-width:850px;color:var(--muted);font-size:17px;line-height:1.5;margin:0}
+    .badge{flex:0 0 auto;border:1px solid #e0cda3;background:#fff8e5;color:#72520a;border-radius:6px;padding:10px 12px;font-weight:750;font-size:13px}
+    .toolbar{display:grid;grid-template-columns:minmax(300px,1fr) auto;gap:16px;align-items:center;padding:14px 16px;border:1px solid var(--line);background:#eef4f0;border-radius:8px;margin-bottom:16px}
+    .instruction{font-size:15px;line-height:1.45}
+    .instruction strong{display:block;font-size:17px;margin-bottom:2px}
+    .actions{display:flex;gap:10px;align-items:center;flex-wrap:wrap;justify-content:flex-end}
+    .button{min-height:44px;border:1px solid var(--green);border-radius:6px;padding:10px 15px;font-weight:800;cursor:pointer;background:var(--panel);color:var(--green)}
+    .button.primary{background:var(--green);color:#fff}
+    .button:disabled{opacity:.45;cursor:not-allowed}
+    .progress{height:6px;background:#d7e1dc;border-radius:999px;overflow:hidden;margin-top:8px}
+    .progress>span{display:block;height:100%;width:0;background:var(--green);transition:width .12s linear}
+    .compare{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}
+    .detector{min-width:0;border:1px solid var(--line);background:var(--panel);border-radius:8px;overflow:hidden}
+    .detector.new{border-top:5px solid var(--green)}
+    .detector.depth{border-top:5px solid var(--orange)}
+    .detector-head{display:flex;align-items:flex-start;justify-content:space-between;gap:18px;padding:17px 18px 14px}
+    .detector h2{font-size:22px;margin:0 0 5px;letter-spacing:0}
+    .detector p{margin:0;color:var(--muted);line-height:1.4;font-size:14px}
+    .result{flex:0 0 auto;min-width:145px;text-align:right}
+    .degrees{font-size:34px;font-weight:900;line-height:1;color:var(--green)}
+    .depth .degrees{color:var(--orange)}
+    .state{display:inline-flex;margin-top:7px;padding:5px 8px;border-radius:999px;background:var(--green-soft);font-size:12px;font-weight:850;color:var(--green)}
+    .state.detected{background:var(--red-soft);color:var(--red)}
+    .video-wrap{position:relative;background:#15211c;aspect-ratio:16/9;overflow:hidden}
+    canvas{display:block;width:100%;height:100%;transform:scaleX(-1)}
+    .same-frame{position:absolute;left:10px;bottom:10px;background:rgba(10,24,18,.78);color:#fff;padding:6px 8px;border-radius:4px;font-size:11px;font-weight:800}
+    .evidence{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1px;background:var(--line);border-top:1px solid var(--line)}
+    .metric{min-height:72px;background:#fff;padding:11px 13px}
+    .metric span{display:block;color:var(--muted);font-size:11px;font-weight:750;text-transform:uppercase}
+    .metric strong{display:block;font-size:17px;margin-top:5px}
+    .reason{padding:12px 16px;border-top:1px solid var(--line);font-size:13px;color:var(--muted);min-height:44px}
+    .footnote{font-size:13px;color:var(--muted);margin:15px 2px 0;line-height:1.5}
+    #sourceVideo{position:fixed;width:1px;height:1px;opacity:0;pointer-events:none}
+    @media (max-width:850px){.page{padding:14px 12px 32px}.compare{grid-template-columns:1fr}.toolbar{grid-template-columns:1fr}.actions{justify-content:flex-start}.badge{display:none}.detector-head{flex-direction:column}.result{text-align:left}.evidence{grid-template-columns:1fr 1fr}}
+  </style>
+</head>
+<body>
+  <main class="page">
+    <header>
+      <div>
+        <div class="brand">REHYN LAB</div>
+        <h1>Trunk lean comparison</h1>
+        <p class="lede">One camera frame and one set of pose landmarks feed both detectors. Sit upright for calibration, then press <strong>Start both</strong> and perform the seated forward reach once.</p>
+      </div>
+      <div class="badge">Testing only · not a clinical measure</div>
+    </header>
+
+    <section class="toolbar" aria-label="Comparison controls">
+      <div class="instruction">
+        <strong id="instructionTitle">Keep your head, shoulders and hips in view.</strong>
+        <span id="instructionText">Place the camera on a fixed surface. Sit upright and face the camera or use a slight oblique angle.</span>
+        <div class="progress" aria-hidden="true"><span id="calibrationFill"></span></div>
+      </div>
+      <div class="actions">
+        <button class="button primary" id="cameraButton" type="button">Start camera</button>
+        <button class="button primary" id="startButton" type="button" disabled>Start both</button>
+        <button class="button" id="recalibrateButton" type="button" disabled>Recalibrate</button>
+      </div>
+    </section>
+
+    <section class="compare">
+      <article class="detector new">
+        <div class="detector-head">
+          <div><h2>New: shoulder OR face</h2><p>Immediate trunk-lean signal when the shoulder cue exceeds 12° or the face cue reaches 7°.</p></div>
+          <div class="result"><div class="degrees" id="newDegrees">--°</div><div class="state" id="newState">Waiting</div></div>
+        </div>
+        <div class="video-wrap"><canvas id="newCanvas"></canvas><span class="same-frame">Shared live frame</span></div>
+        <div class="evidence">
+          <div class="metric"><span>Shoulder cue vs hips</span><strong id="newShoulder">--</strong></div>
+          <div class="metric"><span>Face cue vs hips</span><strong id="newFace">--</strong></div>
+          <div class="metric"><span>Threshold</span><strong>Shoulder &gt;12° or face ≥7°</strong></div>
+          <div class="metric"><span>Confirmation</span><strong>Immediate</strong></div>
+        </div>
+        <div class="reason" id="newReason">Calibrate before comparing.</div>
+      </article>
+
+      <article class="detector depth">
+        <div class="detector-head">
+          <div><h2>Predicted depth</h2><p>MediaPipe's estimated shoulder-to-hip depth angle, compared with the shared upright baseline.</p></div>
+          <div class="result"><div class="degrees" id="depthDegrees">--°</div><div class="state" id="depthState">Waiting</div></div>
+        </div>
+        <div class="video-wrap"><canvas id="depthCanvas"></canvas><span class="same-frame">Shared live frame</span></div>
+        <div class="evidence">
+          <div class="metric"><span>Upright depth angle</span><strong id="depthBaseline">--°</strong></div>
+          <div class="metric"><span>Current depth angle</span><strong id="depthCurrent">--°</strong></div>
+          <div class="metric"><span>Threshold</span><strong>Above 12°</strong></div>
+          <div class="metric"><span>Confirmation</span><strong>Immediate</strong></div>
+        </div>
+        <div class="reason" id="depthReason">Calibrate before comparing.</div>
+      </article>
+    </section>
+    <p class="footnote">The shoulder-or-face side triggers immediately at shoulder &gt;12° or face ≥7°. Predicted depth still triggers at &gt;12°. Both use the same camera frames. These values are angle-like estimates for algorithm testing, not measured anatomical angles or a diagnosis.</p>
+  </main>
+  <video id="sourceVideo" playsinline muted></video>
+  <script src="/api/testing/trunk-lean-comparison/metrics.js"></script>
+  <script type="module" src="/api/testing/trunk-lean-comparison/app.js"></script>
+</body>
+</html>

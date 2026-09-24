@@ -1,6 +1,32 @@
 # Rehyn instruction voice cloning
 
-Rehyn can use one ElevenLabs voice clone for fixed assessment and exercise instructions. Alira chat, emergency speech, and dynamic movement feedback keep the existing OpenAI voice. The cloned voice endpoint only accepts app-authored rehabilitation guidance, so it cannot be used to make the clone say arbitrary text.
+Rehyn can use a private voice reference for assessment and exercise instructions. Alira chat, emergency speech, and dynamic movement feedback keep the existing OpenAI voice. The cloned instruction endpoint only accepts app-authored rehabilitation guidance, so it cannot be used to make the clone say arbitrary text.
+
+## Local Chatterbox Nano (Molly)
+
+The local seated forward-reach test and other instruction requests can use Chatterbox Nano. Keep Molly's recording and the derived 10-second WAV in `backend/voice_samples/`, which is ignored by Git. The source recording is never served as a static asset. Obtain the speaker's permission before using her voice.
+
+The Nano API is currently in the official Chatterbox repository, not in the latest PyPI wheel. Use an isolated Python environment with CPU PyTorch, torchaudio and FFmpeg, then install the pinned source revision:
+
+```powershell
+python -m venv --system-site-packages backend/voice_samples/venv
+backend/voice_samples/venv/Scripts/python.exe -m pip install chatterbox-tts==0.1.7
+backend/voice_samples/venv/Scripts/python.exe -m pip install --force-reinstall --no-deps "git+https://github.com/resemble-ai/chatterbox.git@5de7a54aa4e5e2baadb0182dde554908b48b85c2"
+```
+
+Set `INSTRUCTION_TTS_PROVIDER=chatterbox-nano`, `CHATTERBOX_REFERENCE_AUDIO` to the private WAV path, and `HF_HOME` to a disk with several GB free. `CHATTERBOX_FFMPEG_PATH` is optional if FFmpeg is on `PATH`. Start the backend with that environment's Python. The first voice request downloads the model; subsequent lines are cached in `backend/.local_state/tts_cache`. `/api/tts/health?purpose=instruction` should report `provider: chatterbox-nano` and `voice: Molly`.
+
+This local setup does not change Render's voice. Its free web service does not include the private sample or the model dependencies; deployment needs a separately provisioned voice worker or private storage and enough memory. Do not commit Molly's recording or generated voice clips to public assets.
+
+## Seated Forward Reach Testing on Render
+
+The Testing version of Seated Forward Reach has a finite set of authored cues. Its private `/api/testing/reach/voice` endpoint serves those cues to signed-in users using either an existing configured clone provider or a prepared private bundle. It never accepts arbitrary speech text and never falls back to the preset Nova voice. If cloned audio is unavailable, the exercise continues with captions.
+
+For a Render Free service without a voice worker, generate the clips locally with `python -m backend.build_testing_reach_voice_bundle --reference <private-molly-wav>`. Use the Chatterbox Nano environment described above, set `HF_HOME` to the disk containing the cached model, and keep the generated `backend/voice_samples/reach-molly-bundle.json` out of Git. Place that JSON in the service's private secret files as `/etc/secrets/reach-molly-bundle.json`. A restart loads the file; `/api/testing/reach/voice/health` then reports `ready: true`, `voice: Molly`, and the cue count. The original recording is never uploaded to Render for this approach.
+
+If an ElevenLabs Molly clone is already configured on Render, the same Testing endpoint can synthesize the authored cues on demand. Verify an actual cue after configuration; a configured provider alone does not prove the voice is working.
+
+## ElevenLabs alternative
 
 ## Create the clone
 

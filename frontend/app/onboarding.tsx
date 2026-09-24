@@ -266,6 +266,10 @@ export default function OnboardingScreen() {
           placeholder={step.type === "number" ? "e.g. 6" : "Type here…"}
           placeholderTextColor={colors.onSurfaceTertiary}
           keyboardType={step.type === "number" ? "number-pad" : "default"}
+          returnKeyType={idx === steps.length - 1 ? "done" : "next"}
+          onSubmitEditing={() => {
+            if (!saving && !loadingProfile && canContinue()) void onContinue();
+          }}
           autoFocus
           style={styles.textInput}
         />
