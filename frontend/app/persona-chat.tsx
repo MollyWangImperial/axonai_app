@@ -33,7 +33,7 @@ export default function PersonaChatScreen() {
     (async () => {
       if (!persona_id) return;
       const sessKey = `persona_session_${persona_id}`;
-      let id = await storage.getItem(sessKey);
+      let id = await storage.getItem<string>(sessKey, "");
       if (!id) {
         id = "s_" + Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
         await storage.setItem(sessKey, id);

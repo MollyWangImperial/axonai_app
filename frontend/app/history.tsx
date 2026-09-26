@@ -29,7 +29,7 @@ export default function HistoryScreen() {
         <View style={{ width: 40 }} />
       </View>
 
-      <ScrollView contentContainerStyle={{ padding: spacing.lg, paddingBottom: spacing.xxl }}>
+      <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
         {loading ? (
           <ActivityIndicator color={colors.brandPrimary} />
         ) : items.length === 0 ? (
@@ -72,16 +72,17 @@ export default function HistoryScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.surface },
-  header: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: spacing.md, paddingBottom: spacing.sm, borderBottomWidth: 1, borderBottomColor: colors.divider },
-  backBtn: { width: 40, height: 40, alignItems: "center", justifyContent: "center" },
-  headerTitle: { fontSize: 17, fontWeight: "700", color: colors.onSurface },
-  empty: { alignItems: "center", paddingVertical: spacing.xxl, gap: spacing.sm },
-  emptyTitle: { fontSize: 18, fontWeight: "700", color: colors.onSurface },
-  emptySub: { fontSize: 14, color: colors.onSurfaceSecondary, textAlign: "center", paddingHorizontal: spacing.md },
-  emptyBtn: { backgroundColor: colors.brandPrimary, paddingHorizontal: spacing.lg, paddingVertical: spacing.md, borderRadius: radius.lg, marginTop: spacing.md },
-  emptyBtnText: { color: colors.onBrandPrimary, fontWeight: "700" },
-  row: { flexDirection: "row", alignItems: "center", padding: spacing.md, backgroundColor: colors.surfaceSecondary, borderRadius: radius.lg, marginBottom: spacing.sm, gap: spacing.md },
-  rowIcon: { width: 44, height: 44, borderRadius: 12, backgroundColor: colors.brandTertiary, alignItems: "center", justifyContent: "center" },
-  rowTitle: { fontSize: 16, fontWeight: "700", color: colors.onSurface },
-  rowSub: { fontSize: 13, color: colors.onSurfaceSecondary, marginTop: 2 },
+  scrollContent: { padding: spacing.lg, paddingBottom: spacing.xxl, flexGrow: 1 },
+  header: { minHeight: 72, flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: spacing.md, paddingBottom: spacing.sm, backgroundColor: colors.surface, borderBottomWidth: 1, borderBottomColor: colors.border },
+  backBtn: { width: 48, height: 48, alignItems: "center", justifyContent: "center" },
+  headerTitle: { fontSize: 22, lineHeight: 28, fontWeight: "800", color: colors.onSurface },
+  empty: { alignItems: "center", paddingVertical: spacing.xxl, gap: spacing.md },
+  emptyTitle: { fontSize: 24, lineHeight: 31, fontWeight: "800", color: colors.onSurface, textAlign: "center" },
+  emptySub: { maxWidth: 420, fontSize: 16, lineHeight: 24, color: colors.onSurfaceSecondary, textAlign: "center", paddingHorizontal: spacing.md },
+  emptyBtn: { minHeight: 52, backgroundColor: colors.brandPrimary, paddingHorizontal: spacing.lg, paddingVertical: spacing.md, borderRadius: radius.md, marginTop: spacing.md, justifyContent: "center" },
+  emptyBtnText: { color: colors.onBrandPrimary, fontSize: 16, fontWeight: "700" },
+  row: { minHeight: 88, flexDirection: "row", alignItems: "center", padding: spacing.md, backgroundColor: "#FFFEFA", borderWidth: 1, borderColor: colors.border, borderRadius: radius.md, marginBottom: spacing.md, gap: spacing.md, shadowColor: "#24362F", shadowOpacity: 0.04, shadowRadius: 8, shadowOffset: { width: 0, height: 2 }, elevation: 1 },
+  rowIcon: { width: 52, height: 52, borderRadius: 26, backgroundColor: colors.brandTertiary, alignItems: "center", justifyContent: "center" },
+  rowTitle: { fontSize: 18, lineHeight: 24, fontWeight: "800", color: colors.onSurface },
+  rowSub: { fontSize: 16, lineHeight: 22, color: colors.onSurfaceSecondary, marginTop: 3 },
 });

@@ -150,9 +150,9 @@ export default function SignInScreen() {
   };
 
   return (
-    <LinearGradient colors={[colors.brandPrimary, "#1C201D"]} style={[styles.container, { paddingTop: insets.top + spacing.lg }]}>
+    <LinearGradient colors={["#355945", "#1E382D"]} style={[styles.container, { paddingTop: insets.top + spacing.lg }]}>
       <View style={styles.brand}>
-        <Ionicons name="heart" size={32} color="#fff" />
+        <Ionicons name="heart" size={32} color="#FFFDF5" />
         <Text style={styles.brandText}>Rehyn</Text>
       </View>
       <Text style={styles.title}>Welcome.</Text>
@@ -160,12 +160,12 @@ export default function SignInScreen() {
 
       <View style={styles.tabs}>
         <Pressable onPress={() => setRole("patient")} style={[styles.tab, role === "patient" && styles.tabActive]} testID="role-patient">
-          <Ionicons name="person" size={18} color={role === "patient" ? colors.brandPrimary : "#fff"} />
-          <Text style={[styles.tabText, role === "patient" && { color: colors.brandPrimary }]}>{"I'm a patient"}</Text>
+          <Ionicons name="person" size={18} color={role === "patient" ? "#244436" : "#FFFDF5"} />
+          <Text style={[styles.tabText, role === "patient" && { color: "#244436" }]}>{"I'm a patient"}</Text>
         </Pressable>
         <Pressable onPress={() => setRole("therapist")} style={[styles.tab, role === "therapist" && styles.tabActive]} testID="role-therapist">
-          <Ionicons name="medkit" size={18} color={role === "therapist" ? colors.brandPrimary : "#fff"} />
-          <Text style={[styles.tabText, role === "therapist" && { color: colors.brandPrimary }]}>{"I'm a therapist"}</Text>
+          <Ionicons name="medkit" size={18} color={role === "therapist" ? "#244436" : "#FFFDF5"} />
+          <Text style={[styles.tabText, role === "therapist" && { color: "#244436" }]}>{"I'm a therapist"}</Text>
         </Pressable>
       </View>
 
@@ -178,9 +178,9 @@ export default function SignInScreen() {
               style={[styles.googleBtn, googleLoading && { opacity: 0.6 }]}
               testID="signin-google"
             >
-              {googleLoading ? <ActivityIndicator color={colors.brandPrimary} /> : (
+              {googleLoading ? <ActivityIndicator color="#244436" /> : (
                 <>
-                  <Ionicons name="logo-google" size={20} color={colors.brandPrimary} />
+                  <Ionicons name="logo-google" size={20} color="#244436" />
                   <Text style={styles.googleBtnText}>Continue with Google</Text>
                 </>
               )}
@@ -192,14 +192,14 @@ export default function SignInScreen() {
             </View>
           </>
         )}
-        <TextInput value={name} onChangeText={setName} placeholder="Your name" placeholderTextColor="#bcc2ba" style={styles.input} testID="signin-name" autoCapitalize="words" />
-        <TextInput value={email} onChangeText={setEmail} placeholder="Email" placeholderTextColor="#bcc2ba" style={styles.input} keyboardType="email-address" autoCapitalize="none" testID="signin-email" />
+        <TextInput value={name} onChangeText={setName} placeholder="Your name" placeholderTextColor="#BFCBBE" style={styles.input} testID="signin-name" autoCapitalize="words" />
+        <TextInput value={email} onChangeText={setEmail} placeholder="Email" placeholderTextColor="#BFCBBE" style={styles.input} keyboardType="email-address" autoCapitalize="none" testID="signin-email" />
         {err && <Text style={styles.err}>{err}</Text>}
         <Pressable onPress={submit} style={styles.submit} disabled={loading} testID="signin-submit">
-          {loading ? <ActivityIndicator color="#fff" /> : <Text style={styles.submitText}>{role === "patient" ? "Continue with Email" : "Open therapist portal"}</Text>}
+          {loading ? <ActivityIndicator color="#FFFDF5" /> : <Text style={styles.submitText}>{role === "patient" ? "Continue with Email" : "Open therapist portal"}</Text>}
         </Pressable>
         <Text style={styles.disclaim}>
-          New here? Your patient account starts with <Text style={{ color: colors.brandSecondary, fontWeight: "800" }}>100 credits</Text> — enough for one assessment, one personalized plan, and one guided exercise.
+          New here? Your patient account starts with <Text style={{ color: "#F2D69D", fontWeight: "800" }}>100 credits</Text> — enough for one assessment, one personalized plan, and one guided exercise.
         </Text>
       </KeyboardAvoidingView>
     </LinearGradient>
@@ -208,23 +208,23 @@ export default function SignInScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, padding: spacing.lg },
-  brand: { flexDirection: "row", alignItems: "center", gap: 8, marginBottom: spacing.xl },
-  brandText: { color: "#fff", fontWeight: "800", fontSize: 22, letterSpacing: 1 },
-  title: { color: "#fff", fontSize: 32, fontWeight: "800", marginBottom: spacing.xs },
-  sub: { color: colors.brandTertiary, fontSize: 15, marginBottom: spacing.lg },
-  tabs: { flexDirection: "row", gap: spacing.sm, backgroundColor: "rgba(255,255,255,0.1)", padding: 4, borderRadius: radius.lg, marginBottom: spacing.md },
-  tab: { flex: 1, flexDirection: "row", gap: 6, padding: 12, borderRadius: radius.md, alignItems: "center", justifyContent: "center" },
-  tabActive: { backgroundColor: "#fff" },
-  tabText: { color: "#fff", fontWeight: "700", fontSize: 13 },
-  input: { backgroundColor: "rgba(255,255,255,0.12)", color: "#fff", padding: spacing.md, borderRadius: radius.md, fontSize: 16, marginBottom: spacing.sm },
-  googleBtn: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 10, backgroundColor: "#fff", padding: 14, borderRadius: radius.lg, minHeight: 52, marginBottom: spacing.md },
-  googleBtnText: { color: colors.brandPrimary, fontWeight: "800", fontSize: 15 },
+  brand: { flexDirection: "row", alignItems: "center", gap: 10, marginBottom: spacing.xl },
+  brandText: { color: "#FFFDF5", fontWeight: "800", fontSize: 24, letterSpacing: 0.8 },
+  title: { color: "#FFFDF5", fontSize: 34, fontWeight: "800", marginBottom: 6, letterSpacing: -0.4 },
+  sub: { color: "#DCE8D9", fontSize: 17, lineHeight: 24, marginBottom: spacing.xl },
+  tabs: { flexDirection: "row", gap: 6, backgroundColor: "rgba(228, 238, 224, 0.18)", padding: 5, borderRadius: radius.lg, marginBottom: spacing.lg, borderWidth: 1, borderColor: "rgba(255, 253, 245, 0.18)" },
+  tab: { flex: 1, flexDirection: "row", gap: 7, minHeight: 48, paddingHorizontal: 10, borderRadius: radius.md, alignItems: "center", justifyContent: "center" },
+  tabActive: { backgroundColor: "#FFFDF5", shadowColor: "#10271D", shadowOpacity: 0.18, shadowRadius: 5, shadowOffset: { width: 0, height: 2 }, elevation: 2 },
+  tabText: { color: "#FFFDF5", fontWeight: "700", fontSize: 15 },
+  input: { backgroundColor: "rgba(255, 253, 245, 0.13)", borderWidth: 1, borderColor: "rgba(235, 244, 230, 0.3)", color: "#FFFDF5", minHeight: 54, paddingHorizontal: spacing.md, paddingVertical: 12, borderRadius: radius.md, fontSize: 17, marginBottom: spacing.sm },
+  googleBtn: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 10, backgroundColor: "#FFFDF5", paddingHorizontal: 16, paddingVertical: 12, borderRadius: radius.lg, minHeight: 54, marginBottom: spacing.md, shadowColor: "#10271D", shadowOpacity: 0.16, shadowRadius: 7, shadowOffset: { width: 0, height: 3 }, elevation: 2 },
+  googleBtnText: { color: "#244436", fontWeight: "800", fontSize: 17 },
   divider: { flexDirection: "row", alignItems: "center", gap: spacing.sm, marginVertical: spacing.sm },
-  dividerLine: { flex: 1, height: 1, backgroundColor: "rgba(255,255,255,0.2)" },
-  dividerText: { color: "rgba(255,255,255,0.55)", fontSize: 11, fontWeight: "700", letterSpacing: 1 },
-  submit: { backgroundColor: colors.brandSecondary, padding: 16, borderRadius: radius.lg, alignItems: "center", marginTop: spacing.sm },
-  submitText: { color: colors.onBrandSecondary, fontWeight: "800", fontSize: 16 },
-  err: { color: "#FFA0A0", marginBottom: spacing.xs },
-  disclaim: { color: colors.brandTertiary, fontSize: 13, marginTop: spacing.md, lineHeight: 19 },
-  mvp: { color: "rgba(255,255,255,0.5)", fontSize: 11, marginTop: spacing.sm, fontStyle: "italic" },
+  dividerLine: { flex: 1, height: 1, backgroundColor: "rgba(235, 244, 230, 0.3)" },
+  dividerText: { color: "#C8D7C5", fontSize: 12, fontWeight: "800", letterSpacing: 1.1 },
+  submit: { backgroundColor: "#AFC7A8", minHeight: 54, paddingHorizontal: 16, paddingVertical: 12, borderRadius: radius.lg, alignItems: "center", justifyContent: "center", marginTop: spacing.sm },
+  submitText: { color: "#173126", fontWeight: "800", fontSize: 17 },
+  err: { color: "#FFD2CC", fontSize: 16, lineHeight: 22, marginBottom: spacing.sm },
+  disclaim: { color: "#DCE8D9", fontSize: 16, marginTop: spacing.lg, lineHeight: 23 },
+  mvp: { color: "#C8D7C5", fontSize: 14, marginTop: spacing.sm, fontStyle: "italic" },
 });

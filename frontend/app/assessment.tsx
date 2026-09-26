@@ -124,9 +124,9 @@ export default function AssessmentScreen() {
         // iOS — grant camera permission inline (Expo Go limitations may apply on first load)
         {...(Platform.OS === "ios" ? { mediaCapturePermissionGrantType: "grant" as any } : {})}
         // Android — auto-grant camera permission requests
-        onPermissionRequest={(event: any) => {
+        {...({ onPermissionRequest: (event: any) => {
           try { event?.grant(event?.resources || []); } catch {}
-        }}
+        } } as any)}
         onLoadEnd={() => setLoading(false)}
         onMessage={onMessage}
         onError={(e) => setError(String(e.nativeEvent.description || e.nativeEvent))}
@@ -163,9 +163,9 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: "#0c100e" },
   web: { flex: 1, backgroundColor: "#0c100e" },
   overlay: { ...StyleSheet.absoluteFillObject, alignItems: "center", justifyContent: "center", backgroundColor: "#0c100e", gap: spacing.md },
-  overlayText: { color: colors.onSurfaceInverse, fontSize: 16, fontWeight: "600" },
+  overlayText: { color: colors.onSurfaceInverse, fontSize: 18, lineHeight: 25, fontWeight: "600" },
   errorWrap: { ...StyleSheet.absoluteFillObject, alignItems: "center", justifyContent: "center", padding: spacing.lg, gap: spacing.md, backgroundColor: "#0c100eEE" },
-  errorTitle: { color: colors.onSurfaceInverse, fontSize: 16, textAlign: "center", lineHeight: 22 },
-  errorBtn: { backgroundColor: colors.brandPrimary, paddingHorizontal: spacing.lg, paddingVertical: spacing.md, borderRadius: radius.lg },
-  errorBtnText: { color: "#fff", fontWeight: "700" },
+  errorTitle: { color: colors.onSurfaceInverse, fontSize: 17, textAlign: "center", lineHeight: 25 },
+  errorBtn: { minHeight: 52, backgroundColor: colors.brandPrimary, paddingHorizontal: spacing.xl, paddingVertical: spacing.md, borderRadius: radius.md, alignItems: "center", justifyContent: "center" },
+  errorBtnText: { color: colors.onBrandPrimary, fontSize: 16, fontWeight: "700" },
 });

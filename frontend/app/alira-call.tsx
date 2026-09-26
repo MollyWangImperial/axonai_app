@@ -154,7 +154,7 @@ export default function AliraCallScreen() {
       </View>
 
       <ScrollView contentContainerStyle={styles.content}>
-        <View style={styles.avatar}><Ionicons name="heart" size={46} color="#FFFFFF" /></View>
+        <View style={styles.avatar}><Ionicons name="heart" size={46} color="#FFFEFA" /></View>
         <Text style={styles.aliraName}>Alira</Text>
         <Text style={styles.safety}>Alira can support reflection and recovery questions. She cannot diagnose or replace your therapist. This is not an emergency service.</Text>
 
@@ -174,7 +174,7 @@ export default function AliraCallScreen() {
             style={[styles.micButton, phase === "listening" && styles.micListening, (busy || !sessionId) && styles.disabled]}
             accessibilityLabel={phase === "listening" ? "Stop listening" : "Speak to Alira"}
           >
-            {busy ? <ActivityIndicator size="large" color="#FFFFFF" /> : <Ionicons name={phase === "listening" ? "stop" : "mic"} size={38} color="#FFFFFF" />}
+            {busy ? <ActivityIndicator size="large" color="#FFFEFA" /> : <Ionicons name={phase === "listening" ? "stop" : "mic"} size={38} color="#FFFEFA" />}
           </Pressable>
           <Text style={styles.status}>{status}</Text>
         </View>
@@ -184,28 +184,28 @@ export default function AliraCallScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: "#F8FBF8" },
-  header: { minHeight: 72, flexDirection: "row", alignItems: "center", paddingHorizontal: spacing.md, borderBottomWidth: 1, borderBottomColor: colors.divider, backgroundColor: colors.surface },
+  container: { flex: 1, backgroundColor: "#F7F6F0" },
+  header: { minHeight: 76, flexDirection: "row", alignItems: "center", paddingHorizontal: spacing.md, borderBottomWidth: 1, borderBottomColor: colors.border, backgroundColor: colors.surface },
   headerButton: { width: 44, height: 44, alignItems: "center", justifyContent: "center" },
   headerCopy: { flex: 1, alignItems: "center" },
-  title: { fontSize: 18, fontWeight: "800", color: colors.onSurface },
-  subtitle: { marginTop: 2, fontSize: 11, color: colors.onSurfaceTertiary },
+  title: { fontSize: 20, lineHeight: 26, fontWeight: "800", color: colors.onSurface },
+  subtitle: { marginTop: 2, fontSize: 13, lineHeight: 18, color: colors.onSurfaceTertiary },
   livePill: { minWidth: 70, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 5 },
   liveDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: colors.success },
   liveText: { fontSize: 11, fontWeight: "700", color: colors.brandPrimary },
   content: { flexGrow: 1, alignItems: "center", padding: spacing.lg, paddingBottom: spacing.xxl },
-  avatar: { width: 104, height: 104, borderRadius: 52, alignItems: "center", justifyContent: "center", backgroundColor: "#4C8A5A", marginTop: spacing.lg },
+  avatar: { width: 104, height: 104, borderRadius: 52, alignItems: "center", justifyContent: "center", backgroundColor: "#3D6B4F", marginTop: spacing.lg },
   aliraName: { marginTop: spacing.sm, fontSize: 27, fontWeight: "900", color: colors.onSurface },
-  safety: { maxWidth: 520, marginTop: spacing.sm, fontSize: 12, lineHeight: 18, textAlign: "center", color: colors.onSurfaceTertiary },
-  conversationCard: { width: "100%", maxWidth: 620, minHeight: 150, marginTop: spacing.lg, padding: spacing.lg, borderRadius: radius.md, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface },
-  label: { fontSize: 11, fontWeight: "800", color: colors.brandPrimary, textTransform: "uppercase" },
-  heard: { marginTop: 5, fontSize: 15, lineHeight: 22, color: colors.onSurfaceSecondary },
-  reply: { marginTop: 5, fontSize: 17, lineHeight: 25, color: colors.onSurface, fontWeight: "600" },
-  errorCard: { width: "100%", maxWidth: 620, flexDirection: "row", alignItems: "flex-start", gap: spacing.sm, marginTop: spacing.md, padding: spacing.md, borderRadius: radius.md, backgroundColor: "#FFF1EF" },
+  safety: { maxWidth: 520, marginTop: spacing.sm, fontSize: 16, lineHeight: 24, textAlign: "center", color: colors.onSurfaceTertiary },
+  conversationCard: { width: "100%", maxWidth: 620, minHeight: 170, marginTop: spacing.lg, padding: spacing.lg, borderRadius: radius.lg, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, shadowColor: "#24362F", shadowOpacity: 0.05, shadowRadius: 12, shadowOffset: { width: 0, height: 4 }, elevation: 1 },
+  label: { fontSize: 12, lineHeight: 17, fontWeight: "800", color: colors.brandPrimary, textTransform: "uppercase", letterSpacing: 0.6 },
+  heard: { marginTop: 5, fontSize: 16, lineHeight: 24, color: colors.onSurfaceSecondary },
+  reply: { marginTop: 5, fontSize: 18, lineHeight: 28, color: colors.onSurface, fontWeight: "600" },
+  errorCard: { width: "100%", maxWidth: 620, flexDirection: "row", alignItems: "flex-start", gap: spacing.sm, marginTop: spacing.md, padding: spacing.md, borderRadius: radius.md, backgroundColor: "#F7E7E0" },
   errorText: { flex: 1, fontSize: 13, lineHeight: 19, color: colors.error },
   controls: { flex: 1, justifyContent: "flex-end", alignItems: "center", minHeight: 190, paddingTop: spacing.xl },
   micButton: { width: 92, height: 92, borderRadius: 46, alignItems: "center", justifyContent: "center", backgroundColor: colors.brandPrimary },
   micListening: { backgroundColor: colors.brandSecondary },
   disabled: { opacity: 0.55 },
-  status: { marginTop: spacing.md, fontSize: 14, fontWeight: "700", color: colors.onSurfaceSecondary, textAlign: "center" },
+  status: { marginTop: spacing.md, fontSize: 16, lineHeight: 22, fontWeight: "700", color: colors.onSurfaceSecondary, textAlign: "center" },
 });

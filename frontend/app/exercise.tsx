@@ -56,7 +56,7 @@ export default function ExerciseScreen() {
   const saveProgress = async (newReps: number, score: number | null) => {
     if (!exercise_id) return;
     try {
-      const raw = await storage.getItem(PROGRESS_KEY(planId, exercise_id));
+      const raw = await storage.getItem<string>(PROGRESS_KEY(planId, exercise_id), "");
       const prev: ExerciseProgress = raw
         ? JSON.parse(raw)
         : { completed_reps: 0, total_reps: totalAll, last_score: null, best_score: null, sessions: 0 };
@@ -92,7 +92,7 @@ export default function ExerciseScreen() {
         setDoneInfo({ reps: msg.reps || 0, avgScore: avg });
         // Mark this session complete — bump sessions counter
         try {
-          const raw = await storage.getItem(PROGRESS_KEY(planId, exercise_id || ""));
+          const raw = await storage.getItem<string>(PROGRESS_KEY(planId, exercise_id || ""), "");
           if (raw) {
             const p: ExerciseProgress = JSON.parse(raw);
             p.sessions += 1;
@@ -121,7 +121,7 @@ export default function ExerciseScreen() {
         mediaPlaybackRequiresUserAction={false}
         allowsInlineMediaPlayback
         {...(Platform.OS === "ios" ? { mediaCapturePermissionGrantType: "grant" as any } : {})}
-        onPermissionRequest={(event: any) => { try { event?.grant(event?.resources || []); } catch {} }}
+        {...({ onPermissionRequest: (event: any) => { try { event?.grant(event?.resources || []); } catch {} } } as any)}
         onMessage={onMessage}
         onLoadEnd={() => setLoading(false)}
         onError={(e) => setError(String(e.nativeEvent.description || e.nativeEvent))}
@@ -176,19 +176,19 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: "#0c100e" },
   web: { flex: 1, backgroundColor: "#0c100e" },
   overlay: { ...StyleSheet.absoluteFillObject, alignItems: "center", justifyContent: "center", backgroundColor: "#0c100e", gap: spacing.md },
-  overlayText: { color: colors.onSurfaceInverse, fontSize: 16, fontWeight: "600" },
-  doneTitle: { color: colors.onSurfaceInverse, fontSize: 22, fontWeight: "800" },
-  doneScore: { color: colors.brandSecondary, fontSize: 18, fontWeight: "700" },
-  doneSub: { color: colors.onSurfaceTertiary, fontSize: 15 },
+  overlayText: { color: colors.onSurfaceInverse, fontSize: 18, lineHeight: 25, fontWeight: "600" },
+  doneTitle: { color: colors.onSurfaceInverse, fontSize: 26, lineHeight: 33, fontWeight: "800" },
+  doneScore: { color: "#D59B80", fontSize: 20, lineHeight: 27, fontWeight: "700" },
+  doneSub: { color: "#D4DED5", fontSize: 16, lineHeight: 23 },
   // Per-rep score toast
   repToast: { position: "absolute", top: "30%", left: 0, right: 0, alignItems: "center", pointerEvents: "none" },
-  repToastInner: { backgroundColor: "rgba(28,32,29,0.92)", borderRadius: radius.lg, paddingHorizontal: 28, paddingVertical: 18, alignItems: "center", gap: 4, minWidth: 200 },
-  repToastRep: { color: "#D9E5DC", fontSize: 13, fontWeight: "700", letterSpacing: 1, textTransform: "uppercase" },
-  repToastScore: { color: "#fff", fontSize: 44, fontWeight: "800" },
-  repToastSlash: { color: "#D9E5DC", fontSize: 18, fontWeight: "600" },
-  repToastLabel: { color: "#7FE5A3", fontSize: 15, fontWeight: "700" },
+  repToastInner: { backgroundColor: "rgba(27, 49, 38, 0.96)", borderRadius: radius.lg, borderWidth: 1, borderColor: "rgba(227, 230, 222, 0.28)", paddingHorizontal: 30, paddingVertical: 20, alignItems: "center", gap: 5, minWidth: 220 },
+  repToastRep: { color: "#E4ECE2", fontSize: 16, fontWeight: "700", letterSpacing: 0.7, textTransform: "uppercase" },
+  repToastScore: { color: "#FFFEFA", fontSize: 48, lineHeight: 54, fontWeight: "800" },
+  repToastSlash: { color: "#E4ECE2", fontSize: 20, fontWeight: "600" },
+  repToastLabel: { color: "#B7E8C5", fontSize: 16, lineHeight: 22, fontWeight: "700" },
   errorWrap: { ...StyleSheet.absoluteFillObject, alignItems: "center", justifyContent: "center", padding: spacing.lg, gap: spacing.md, backgroundColor: "#0c100eEE" },
-  errorTitle: { color: colors.onSurfaceInverse, fontSize: 16, textAlign: "center", lineHeight: 22 },
-  errorBtn: { backgroundColor: colors.brandPrimary, paddingHorizontal: spacing.lg, paddingVertical: spacing.md, borderRadius: radius.lg },
-  errorBtnText: { color: "#fff", fontWeight: "700" },
+  errorTitle: { color: colors.onSurfaceInverse, fontSize: 17, textAlign: "center", lineHeight: 25 },
+  errorBtn: { minHeight: 52, backgroundColor: colors.brandPrimary, paddingHorizontal: spacing.xl, paddingVertical: spacing.md, borderRadius: radius.md, alignItems: "center", justifyContent: "center" },
+  errorBtnText: { color: colors.onBrandPrimary, fontSize: 16, fontWeight: "700" },
 });

@@ -217,7 +217,7 @@ export default function ResultsScreen() {
 
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
         <View style={[styles.report, { width: reportWidth }]}>
-          {isDemo && <View style={styles.demoBanner}><Ionicons name="sparkles" size={20} color="#675080" /><Text style={styles.demoBannerText}>Sample data for preview only. This is not your assessment result.</Text></View>}
+          {isDemo && <View style={styles.demoBanner}><Ionicons name="sparkles" size={20} color="#775C97" /><Text style={styles.demoBannerText}>Sample data for preview only. This is not your assessment result.</Text></View>}
           <View style={[styles.snapshotPanel, isWide && styles.snapshotPanelWide]} testID="results-summary">
             <View style={[styles.anatomyPane, isWide && styles.anatomyPaneWide]}>
               <View style={[styles.anatomyStage, isWide && styles.anatomyStageWide]} testID="interactive-anatomy">
@@ -279,7 +279,7 @@ export default function ResultsScreen() {
 
               <View style={[styles.walkingCallout, walkingInsight.tone === "attention" && styles.walkingCalloutAttention, walkingInsight.tone === "pending" && styles.walkingCalloutPending]}>
                 <View style={[styles.walkingIcon, walkingInsight.tone === "attention" && styles.walkingIconAttention, walkingInsight.tone === "pending" && styles.walkingIconPending, walkingInsight.tone === "quiet" && styles.walkingIconQuiet]}>
-                  <Ionicons name={walkingInsight.tone === "well" ? "checkmark" : walkingInsight.tone === "pending" ? "hourglass-outline" : walkingInsight.tone === "attention" ? "alert" : "remove"} size={27} color="#FFFFFF" />
+                  <Ionicons name={walkingInsight.tone === "well" ? "checkmark" : walkingInsight.tone === "pending" ? "hourglass-outline" : walkingInsight.tone === "attention" ? "alert" : "remove"} size={27} color="#FFFEFA" />
                 </View>
                 <View style={styles.walkingCopy}>
                   <Text style={styles.walkingEyebrow}>{walkingInsight.eyebrow}</Text>
@@ -311,7 +311,7 @@ export default function ResultsScreen() {
 
           <Pressable onPress={goMap} style={styles.cta} testID={canViewPlan ? "results-view-plan" : "results-return-home"}>
             <Text style={styles.ctaText}>Explore your movement map</Text>
-            <Ionicons name="arrow-forward" size={23} color="#FFFFFF" />
+            <Ionicons name="arrow-forward" size={23} color="#FFFEFA" />
           </Pressable>
 
           <Pressable onPress={() => setShowDetails((current) => !current)} style={styles.detailToggle}>
@@ -355,7 +355,7 @@ export default function ResultsScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: "#FFFEFB" },
+  container: { flex: 1, backgroundColor: "#FFFEFA" },
   center: { alignItems: "center", justifyContent: "center", padding: spacing.lg },
   loadingText: { marginTop: spacing.md, color: colors.onSurfaceSecondary },
   errorText: { color: colors.error, textAlign: "center" },
@@ -370,10 +370,10 @@ const styles = StyleSheet.create({
   samplePillText: { color: "#34423C", fontSize: 13, lineHeight: 17, fontWeight: "700" },
   content: { alignItems: "center", paddingTop: spacing.lg, paddingHorizontal: spacing.sm },
   demoBanner: { minHeight: 66, flexDirection: "row", alignItems: "center", gap: spacing.sm, borderRadius: radius.sm, paddingHorizontal: spacing.lg, paddingVertical: spacing.sm, marginBottom: spacing.lg, backgroundColor: "#F3ECF9", borderWidth: 1, borderColor: "#D8C7EA" },
-  demoBannerText: { flex: 1, fontSize: 14, lineHeight: 20, fontWeight: "800", color: "#5C486F" },
+  demoBannerText: { flex: 1, fontSize: 14, lineHeight: 20, fontWeight: "800", color: "#67527C" },
   report: { alignSelf: "center" },
   lead: { fontSize: 17, lineHeight: 24, color: colors.onSurface, textAlign: "center", paddingHorizontal: spacing.sm },
-  snapshotPanel: { overflow: "hidden", borderWidth: 1, borderColor: "#CDD6CE", borderRadius: radius.sm, backgroundColor: "#FFFFFF" },
+  snapshotPanel: { overflow: "hidden", borderWidth: 1, borderColor: "#CDD6CE", borderRadius: radius.sm, backgroundColor: "#FFFEFA" },
   snapshotPanelWide: { flexDirection: "row", alignItems: "stretch" },
   anatomyPane: { backgroundColor: "#FFFCF8" },
   anatomyPaneWide: { width: "48%", borderRightWidth: 1, borderRightColor: "#D8DED8" },
@@ -382,7 +382,7 @@ const styles = StyleSheet.create({
   anatomyCanvas: { height: "100%", aspectRatio: 866 / 1817, position: "relative" },
   anatomyImage: { ...StyleSheet.absoluteFillObject, width: "100%", height: "100%" },
   bodyMarker: { position: "absolute", width: 68, height: 68, marginTop: -34, marginLeft: -34, borderRadius: 34, borderWidth: 2, borderColor: "#F26E5A", backgroundColor: "rgba(241,108,90,0.24)", alignItems: "center", justifyContent: "center", shadowColor: "#F06B58", shadowOpacity: 0.22, shadowRadius: 10, shadowOffset: { width: 0, height: 0 } },
-  markerCore: { width: 16, height: 16, borderRadius: 8, backgroundColor: "#F06B58", borderWidth: 3, borderColor: "#FFFFFF" },
+  markerCore: { width: 16, height: 16, borderRadius: 8, backgroundColor: "#F06B58", borderWidth: 3, borderColor: "#FFFEFA" },
   anatomyFindingLabel: { position: "absolute", top: spacing.sm, right: spacing.sm, minHeight: 36, paddingHorizontal: spacing.sm, borderRadius: radius.pill, backgroundColor: "rgba(255,254,251,0.96)", borderWidth: 1, borderColor: "#F06B58", flexDirection: "row", alignItems: "center" },
   anatomyFindingLabelWide: { top: "18%", right: spacing.lg },
   anatomyFindingDot: { width: 9, height: 9, borderRadius: 5, backgroundColor: "#F06B58" },
@@ -391,7 +391,7 @@ const styles = StyleSheet.create({
   zoomButton: { width: 38, height: 38, borderRadius: 19, alignItems: "center", justifyContent: "center" },
   zoomButtonDisabled: { opacity: 0.3 },
   zoomValue: { width: 46, textAlign: "center", color: "#174834", fontSize: 11, fontWeight: "800" },
-  insightPane: { padding: spacing.lg, backgroundColor: "#FFFFFF" },
+  insightPane: { padding: spacing.lg, backgroundColor: "#FFFEFA" },
   insightPaneWide: { flex: 1, justifyContent: "center", paddingHorizontal: 44, paddingVertical: 48 },
   insightEyebrow: { color: "#397753", fontSize: 13, lineHeight: 18, fontWeight: "900" },
   insightEyebrowAttention: { color: "#D65340" },
@@ -432,7 +432,7 @@ const styles = StyleSheet.create({
   noProblemIcon: { width: 50, height: 50, borderRadius: 25, alignItems: "center", justifyContent: "center", backgroundColor: "#DCEEDD" },
   moreProblemsText: { fontSize: 12, lineHeight: 18, color: colors.onSurfaceTertiary, textAlign: "center" },
   summaryNote: { minHeight: 124, marginTop: spacing.lg, flexDirection: "row", gap: spacing.md, padding: spacing.lg, alignItems: "center", borderWidth: 1, borderColor: "#CDD8CE", borderRadius: radius.sm, backgroundColor: "#FBFDF9" },
-  storyIcon: { width: 54, height: 54, borderRadius: 27, alignItems: "center", justifyContent: "center", backgroundColor: "#FFFFFF", borderWidth: 1, borderColor: "#D3DFD5" },
+  storyIcon: { width: 54, height: 54, borderRadius: 27, alignItems: "center", justifyContent: "center", backgroundColor: "#FFFEFA", borderWidth: 1, borderColor: "#D3DFD5" },
   storyCopy: { flex: 1 },
   storyLabel: { marginBottom: 8, fontSize: 12, lineHeight: 17, fontWeight: "900", color: colors.brandPrimary },
   summaryNoteText: { fontSize: 15, lineHeight: 23, color: colors.onSurfaceSecondary },
@@ -441,8 +441,8 @@ const styles = StyleSheet.create({
   reviewTitle: { fontSize: 16, fontWeight: "800", color: "#174834" },
   reviewText: { marginTop: 4, fontSize: 13, lineHeight: 19, color: colors.onSurfaceSecondary },
   reviewNext: { marginTop: 7, fontSize: 13, lineHeight: 19, fontWeight: "700", color: "#174834" },
-  cta: { minHeight: 70, marginTop: spacing.lg, borderRadius: radius.sm, backgroundColor: "#07543B", flexDirection: "row", alignItems: "center", justifyContent: "center", gap: spacing.sm, paddingHorizontal: spacing.lg },
-  ctaText: { color: "#FFFFFF", fontSize: 20, fontWeight: "900" },
+  cta: { minHeight: 70, marginTop: spacing.lg, borderRadius: radius.sm, backgroundColor: "#3D6B4F", flexDirection: "row", alignItems: "center", justifyContent: "center", gap: spacing.sm, paddingHorizontal: spacing.lg },
+  ctaText: { color: "#FFFEFA", fontSize: 20, fontWeight: "900" },
   detailToggle: { minHeight: 48, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 5 },
   detailToggleText: { color: colors.brandPrimary, fontSize: 14, fontWeight: "700" },
   details: { gap: spacing.sm, marginTop: spacing.sm },

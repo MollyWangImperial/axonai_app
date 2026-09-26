@@ -66,7 +66,7 @@ export default function BillingReturnScreen() {
         ) : (
           <>
             <View style={styles.icFail}><Ionicons name="alert" size={36} color="#fff" /></View>
-            <Text style={styles.title}>Couldn't verify the payment</Text>
+            <Text style={styles.title}>Couldn’t verify the payment</Text>
             <Text style={styles.body}>If you completed checkout, your unlock may take a minute to apply. Try refreshing your credits later.</Text>
             <Pressable onPress={() => router.replace("/")} style={styles.cta}>
               <Text style={styles.ctaText}>Back to Rehyn</Text>
@@ -80,11 +80,11 @@ export default function BillingReturnScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.surface, padding: spacing.lg },
-  card: { backgroundColor: colors.surfaceSecondary, borderRadius: radius.lg, padding: spacing.xl, alignItems: "center", gap: spacing.md, marginTop: spacing.xl },
+  card: { maxWidth: 540, width: "100%", alignSelf: "center", backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border, borderRadius: radius.lg, padding: spacing.xl, alignItems: "center", gap: spacing.md, marginTop: spacing.xl, shadowColor: "#24362F", shadowOpacity: 0.06, shadowRadius: 16, shadowOffset: { width: 0, height: 5 }, elevation: 2 },
   icOk: { width: 70, height: 70, borderRadius: 35, backgroundColor: colors.success, alignItems: "center", justifyContent: "center" },
   icFail: { width: 70, height: 70, borderRadius: 35, backgroundColor: colors.brandSecondary, alignItems: "center", justifyContent: "center" },
-  title: { fontSize: 22, fontWeight: "800", color: colors.onSurface, textAlign: "center" },
-  body: { fontSize: 14, color: colors.onSurfaceSecondary, textAlign: "center", lineHeight: 22 },
-  cta: { backgroundColor: colors.brandPrimary, borderRadius: radius.lg, padding: 14, paddingHorizontal: 28, marginTop: spacing.md },
-  ctaText: { color: colors.onBrandPrimary, fontWeight: "800", fontSize: 15 },
+  title: { fontSize: 26, lineHeight: 33, fontWeight: "800", color: colors.onSurface, textAlign: "center" },
+  body: { fontSize: 16, color: colors.onSurfaceSecondary, textAlign: "center", lineHeight: 24 },
+  cta: { minHeight: 52, backgroundColor: colors.brandPrimary, borderRadius: radius.md, padding: 14, paddingHorizontal: 28, marginTop: spacing.md, justifyContent: "center" },
+  ctaText: { color: colors.onBrandPrimary, fontWeight: "800", fontSize: 16 },
 });

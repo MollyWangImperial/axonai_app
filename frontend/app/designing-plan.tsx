@@ -65,9 +65,9 @@ const styles = StyleSheet.create({
   d2: { backgroundColor: colors.brandTertiary, bottom: 0, left: 20 },
   d3: { backgroundColor: "#fff", bottom: 0, right: 20 },
   iconWrap: { width: 72, height: 72, borderRadius: 36, backgroundColor: "rgba(255,255,255,0.15)", alignItems: "center", justifyContent: "center", marginBottom: spacing.md },
-  title: { fontSize: 24, fontWeight: "800", color: "#fff", textAlign: "center", marginBottom: spacing.sm },
-  sub: { fontSize: 15, color: colors.brandTertiary, textAlign: "center", marginBottom: spacing.lg, paddingHorizontal: spacing.lg },
+  title: { fontSize: 30, lineHeight: 37, fontWeight: "800", color: "#fff", textAlign: "center", marginBottom: spacing.sm },
+  sub: { fontSize: 17, lineHeight: 25, color: colors.brandTertiary, textAlign: "center", marginBottom: spacing.lg, paddingHorizontal: spacing.lg },
   steps: { gap: spacing.sm, alignItems: "flex-start" },
   step: { flexDirection: "row", gap: spacing.sm, alignItems: "center" },
-  stepText: { color: "#fff", fontSize: 14, fontWeight: "600", opacity: 0.9 },
+  stepText: { color: "#fff", fontSize: 16, lineHeight: 22, fontWeight: "600", opacity: 0.92 },
 });
