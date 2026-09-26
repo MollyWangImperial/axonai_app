@@ -57,17 +57,17 @@ export default function SessionCheckScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, paddingHorizontal: spacing.lg, backgroundColor: colors.surface },
-  backButton: { width: 44, height: 44, alignItems: "center", justifyContent: "center", marginLeft: -spacing.sm },
+  container: { flex: 1, paddingHorizontal: 20, backgroundColor: colors.surface },
+  backButton: { width: 48, height: 48, alignItems: "center", justifyContent: "center", marginLeft: -spacing.xs, borderRadius: 24, backgroundColor: colors.surfaceSecondary, borderWidth: 1, borderColor: colors.border },
   content: { flex: 1, justifyContent: "center", width: "100%", maxWidth: 560, alignSelf: "center" },
-  icon: { width: 58, height: 58, borderRadius: 29, alignItems: "center", justifyContent: "center", backgroundColor: colors.brandTertiary, marginBottom: spacing.md },
-  title: { fontSize: 28, lineHeight: 34, fontWeight: "800", color: colors.onSurface },
-  subtitle: { fontSize: 15, lineHeight: 22, color: colors.onSurfaceSecondary, marginTop: spacing.sm },
-  options: { gap: spacing.sm, marginTop: spacing.xl },
-  option: { flexDirection: "row", alignItems: "center", gap: spacing.md, minHeight: 86, padding: spacing.md, borderRadius: radius.md, borderWidth: 2, borderColor: colors.border, backgroundColor: colors.surface },
+  icon: { width: 64, height: 64, borderRadius: 32, alignItems: "center", justifyContent: "center", backgroundColor: colors.brandTertiary, marginBottom: spacing.lg },
+  title: { fontSize: 32, lineHeight: 40, fontWeight: "800", color: colors.onSurface },
+  subtitle: { fontSize: 18, lineHeight: 27, color: colors.onSurfaceSecondary, marginTop: spacing.sm },
+  options: { gap: spacing.md, marginTop: spacing.xl },
+  option: { flexDirection: "row", alignItems: "center", gap: spacing.md, minHeight: 108, padding: 20, borderRadius: radius.md, borderWidth: 2, borderColor: colors.border, backgroundColor: colors.surface },
   optionActive: { borderColor: colors.brandPrimary, backgroundColor: colors.brandTertiary },
-  optionTitle: { fontSize: 16, fontWeight: "800", color: colors.onSurface },
-  optionBody: { fontSize: 13, lineHeight: 18, color: colors.onSurfaceSecondary, marginTop: 2 },
-  continueButton: { width: "100%", maxWidth: 560, alignSelf: "center", minHeight: 56, borderRadius: radius.md, backgroundColor: colors.brandPrimary, alignItems: "center", justifyContent: "center" },
-  continueText: { color: colors.onBrandPrimary, fontSize: 17, fontWeight: "800" },
+  optionTitle: { fontSize: 19, lineHeight: 25, fontWeight: "800", color: colors.onSurface },
+  optionBody: { fontSize: 16, lineHeight: 23, color: colors.onSurfaceSecondary, marginTop: 4 },
+  continueButton: { width: "100%", maxWidth: 560, alignSelf: "center", minHeight: 60, borderRadius: radius.md, backgroundColor: colors.brandPrimary, alignItems: "center", justifyContent: "center", shadowColor: colors.onBrandTertiary, shadowOpacity: 0.16, shadowRadius: 10, shadowOffset: { width: 0, height: 5 }, elevation: 3 },
+  continueText: { color: colors.onBrandPrimary, fontSize: 18, lineHeight: 24, fontWeight: "800" },
 });

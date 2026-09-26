@@ -125,7 +125,7 @@ export default function AccountCenterScreen() {
   const dark = Boolean(preferences?.darkMode);
   const palette = useMemo(() => ({
     page: dark ? "#10201B" : "#F8FAF9",
-    surface: dark ? "#193028" : "#FFFFFF",
+    surface: dark ? "#193028" : "#FFFEFA",
     surfaceSoft: dark ? "#213A32" : "#ECF5F2",
     text: dark ? "#F3F8F6" : "#173D35",
     muted: dark ? "#B8C9C3" : colors.onSurfaceTertiary,
@@ -249,18 +249,18 @@ export default function AccountCenterScreen() {
               <ReadOnlyRow label="Account email" value={email} palette={palette} scale={scale} />
               <ReadOnlyRow label="Affected side" value={String(profile.side_affected || "Not recorded")} palette={palette} scale={scale} />
               <Pressable testID="personal-save" disabled={saving || !name.trim()} onPress={savePersonal} style={[styles.primaryButton, (!name.trim() || saving) && styles.disabled]}>
-                {saving ? <ActivityIndicator color="#FFFFFF" /> : <Text style={styles.primaryButtonText}>Save details</Text>}
+                {saving ? <ActivityIndicator color="#FFFEFA" /> : <Text style={styles.primaryButtonText}>Save details</Text>}
               </Pressable>
             </View>
           ) : null}
 
           {section === "care-circle" ? (
             <>
-              <Text style={[styles.lead, { color: palette.muted, fontSize: 15 * scale }]}>Add family members, carers, or clinicians you want to involve. Nothing is shared automatically.</Text>
+              <Text style={[styles.lead, { color: palette.muted, fontSize: 16 * scale }]}>Add family members, carers, or clinicians you want to involve. Nothing is shared automatically.</Text>
               {contacts.map((contact) => (
                 <View key={contact.id} style={[styles.contactCard, { backgroundColor: palette.surface, borderColor: palette.border }]}>
                   <View style={[styles.iconBox, { backgroundColor: palette.surfaceSoft }]}><Ionicons name="people-outline" size={22} color={colors.brandPrimary} /></View>
-                  <View style={styles.flex}><Text style={[styles.cardTitle, { color: palette.text, fontSize: 17 * scale }]}>{contact.name}</Text><Text style={[styles.cardBody, { color: palette.muted }]}>{contact.relationship}{contact.contact ? ` · ${contact.contact}` : ""}</Text></View>
+                  <View style={styles.flex}><Text style={[styles.cardTitle, { color: palette.text, fontSize: 17 * scale }]}>{contact.name}</Text><Text style={[styles.cardBody, { color: palette.muted, fontSize: 16 * scale }]}>{contact.relationship}{contact.contact ? ` · ${contact.contact}` : ""}</Text></View>
                   <Pressable accessibilityLabel={`Remove ${contact.name}`} onPress={() => removeContact(contact.id)} style={styles.iconButton}><Ionicons name="trash-outline" size={21} color={colors.error} /></Pressable>
                 </View>
               ))}
@@ -272,7 +272,7 @@ export default function AccountCenterScreen() {
                   <Field label="Email or phone (optional)" value={contactMethod} onChangeText={setContactMethod} palette={palette} scale={scale} />
                   <View style={styles.actionRow}><Pressable onPress={() => setShowContactForm(false)} style={[styles.secondaryButton, { borderColor: palette.border }]}><Text style={[styles.secondaryText, { color: palette.text }]}>Cancel</Text></Pressable><Pressable testID="care-circle-save" onPress={addContact} disabled={!contactName.trim() || !relationship.trim()} style={[styles.primarySmall, (!contactName.trim() || !relationship.trim()) && styles.disabled]}><Text style={styles.primaryButtonText}>Add person</Text></Pressable></View>
                 </View>
-              ) : <Pressable testID="care-circle-add" onPress={() => setShowContactForm(true)} style={styles.primaryButton}><Ionicons name="person-add-outline" size={20} color="#FFFFFF" /><Text style={styles.primaryButtonText}>Add someone</Text></Pressable>}
+              ) : <Pressable testID="care-circle-add" onPress={() => setShowContactForm(true)} style={styles.primaryButton}><Ionicons name="person-add-outline" size={20} color="#FFFEFA" /><Text style={styles.primaryButtonText}>Add someone</Text></Pressable>}
             </>
           ) : null}
 
@@ -281,7 +281,7 @@ export default function AccountCenterScreen() {
               <View style={[styles.card, { backgroundColor: palette.surface, borderColor: palette.border }]}>
                 <ReadOnlyRow label="Email" value={email} palette={palette} scale={scale} />
                 <ReadOnlyRow label="Sign-in method" value="Secure email-only sign-in" palette={palette} scale={scale} />
-                <Text style={[styles.lead, { color: palette.muted }]}>Rehyn does not store a password for this account. Use the same email to return to your saved survey and assessments.</Text>
+                <Text style={[styles.lead, { color: palette.muted, fontSize: 16 * scale }]}>Rehyn does not store a password for this account. Use the same email to return to your saved survey and assessments.</Text>
               </View>
               <Pressable testID="account-sign-out" onPress={async () => { await signOut(); router.replace("/sign-in"); }} style={styles.dangerButton}><Ionicons name="log-out-outline" size={20} color={colors.error} /><Text style={styles.dangerText}>Log out</Text></Pressable>
             </>
@@ -318,22 +318,22 @@ export default function AccountCenterScreen() {
             <>
               {FAQS.map(([question, answer], index) => (
                 <Pressable key={question} onPress={() => setExpandedFaq(expandedFaq === index ? null : index)} style={[styles.faq, { backgroundColor: palette.surface, borderColor: palette.border }]}>
-                  <View style={styles.flex}><Text style={[styles.cardTitle, { color: palette.text, fontSize: 16 * scale }]}>{question}</Text>{expandedFaq === index ? <Text style={[styles.cardBody, { color: palette.muted, fontSize: 14 * scale }]}>{answer}</Text> : null}</View>
+                  <View style={styles.flex}><Text style={[styles.cardTitle, { color: palette.text, fontSize: 17 * scale }]}>{question}</Text>{expandedFaq === index ? <Text style={[styles.cardBody, { color: palette.muted, fontSize: 16 * scale }]}>{answer}</Text> : null}</View>
                   <Ionicons name={expandedFaq === index ? "chevron-up" : "chevron-down"} size={20} color={palette.muted} />
                 </Pressable>
               ))}
-              <Pressable onPress={() => router.push({ pathname: "/(tabs)/chat", params: { prompt: "I need help using Rehyn" } })} style={styles.primaryButton}><Ionicons name="chatbubbles-outline" size={20} color="#FFFFFF" /><Text style={styles.primaryButtonText}>Ask Alira</Text></Pressable>
+              <Pressable onPress={() => router.push({ pathname: "/(tabs)/chat", params: { prompt: "I need help using Rehyn" } })} style={styles.primaryButton}><Ionicons name="chatbubbles-outline" size={20} color="#FFFEFA" /><Text style={styles.primaryButtonText}>Ask Alira</Text></Pressable>
               <Pressable onPress={() => router.push({ pathname: "/account-center" as never, params: { section: "support" } })} style={[styles.secondaryButton, { borderColor: palette.border }]}><Text style={[styles.secondaryText, { color: palette.text }]}>Contact support</Text></Pressable>
             </>
           ) : null}
 
           {section === "support" ? (
             <View style={[styles.card, { backgroundColor: palette.surface, borderColor: palette.border }]}>
-              <Text style={[styles.lead, { color: palette.muted, fontSize: 15 * scale }]}>Tell us what happened. Your email app will open with the details ready to send.</Text>
+              <Text style={[styles.lead, { color: palette.muted, fontSize: 16 * scale }]}>Tell us what happened. Your email app will open with the details ready to send.</Text>
               <Field label="Subject" value={supportSubject} onChangeText={setSupportSubject} palette={palette} scale={scale} />
               <Text style={[styles.fieldLabel, { color: palette.text, fontSize: 13 * scale }]}>Message</Text>
               <TextInput testID="support-message" value={supportMessage} onChangeText={setSupportMessage} multiline textAlignVertical="top" placeholder="What can we help with?" placeholderTextColor={palette.muted} style={[styles.input, styles.messageInput, { backgroundColor: palette.surfaceSoft, borderColor: palette.border, color: palette.text, fontSize: 16 * scale }]} />
-              <Pressable testID="support-send" disabled={!supportMessage.trim()} onPress={sendSupportRequest} style={[styles.primaryButton, !supportMessage.trim() && styles.disabled]}><Ionicons name="mail-outline" size={20} color="#FFFFFF" /><Text style={styles.primaryButtonText}>Open email to send</Text></Pressable>
+              <Pressable testID="support-send" disabled={!supportMessage.trim()} onPress={sendSupportRequest} style={[styles.primaryButton, !supportMessage.trim() && styles.disabled]}><Ionicons name="mail-outline" size={20} color="#FFFEFA" /><Text style={styles.primaryButtonText}>Open email to send</Text></Pressable>
             </View>
           ) : null}
         </View>
@@ -365,7 +365,7 @@ function ActionRow({ icon, title, subtitle, action, onPress, palette, scale }: {
 }
 
 function ToggleRow({ title, subtitle, value, onValueChange, palette, scale }: { title: string; subtitle: string; value: boolean; onValueChange: (value: boolean) => void; palette: Palette; scale: number }) {
-  return <View style={styles.actionItem}><View style={styles.flex}><Text style={[styles.cardTitle, { color: palette.text, fontSize: 16 * scale }]}>{title}</Text><Text style={[styles.cardBody, { color: palette.muted }]}>{subtitle}</Text></View><Switch value={value} onValueChange={onValueChange} trackColor={{ false: "#8AA198", true: colors.brandPrimary }} thumbColor="#FFFFFF" /></View>;
+  return <View style={styles.actionItem}><View style={styles.flex}><Text style={[styles.cardTitle, { color: palette.text, fontSize: 16 * scale }]}>{title}</Text><Text style={[styles.cardBody, { color: palette.muted }]}>{subtitle}</Text></View><Switch value={value} onValueChange={onValueChange} trackColor={{ false: "#8AA198", true: colors.brandPrimary }} thumbColor="#FFFEFA" /></View>;
 }
 
 function Divider({ color }: { color: string }) { return <View style={[styles.divider, { backgroundColor: color }]} />; }
@@ -373,42 +373,42 @@ function Divider({ color }: { color: string }) { return <View style={[styles.div
 const styles = StyleSheet.create({
   container: { flex: 1 },
   center: { flex: 1, alignItems: "center", justifyContent: "center" },
-  page: { paddingHorizontal: spacing.md, paddingBottom: 48 },
-  inner: { width: "100%", maxWidth: 620, alignSelf: "center", gap: spacing.md },
-  header: { minHeight: 56, flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
-  headerButton: { width: 42, height: 42, borderRadius: 21, borderWidth: 1, alignItems: "center", justifyContent: "center" },
-  headerSpacer: { width: 42, height: 42 },
+  page: { paddingHorizontal: 20, paddingBottom: 52 },
+  inner: { width: "100%", maxWidth: 620, alignSelf: "center", gap: 20 },
+  header: { minHeight: 64, flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
+  headerButton: { width: 48, height: 48, borderRadius: 24, borderWidth: 1, alignItems: "center", justifyContent: "center" },
+  headerSpacer: { width: 48, height: 48 },
   headerTitle: { fontWeight: "800", textAlign: "center" },
-  notice: { minHeight: 48, borderRadius: radius.sm, paddingHorizontal: spacing.md, flexDirection: "row", alignItems: "center", gap: spacing.xs },
-  noticeText: { flex: 1, fontSize: 13, lineHeight: 19, fontWeight: "600" },
-  lead: { fontSize: 15, lineHeight: 22 },
-  card: { borderRadius: radius.md, borderWidth: 1, padding: spacing.md, gap: spacing.md },
-  fieldLabel: { fontWeight: "800", marginBottom: 6 },
-  input: { minHeight: 50, borderWidth: 1, borderRadius: radius.sm, paddingHorizontal: spacing.md },
-  messageInput: { minHeight: 150, paddingTop: spacing.md },
-  readOnlyRow: { paddingBottom: spacing.sm, borderBottomWidth: 1 },
-  readOnlyLabel: { fontWeight: "700", marginBottom: 4 },
+  notice: { minHeight: 54, borderRadius: radius.md, paddingHorizontal: spacing.md, flexDirection: "row", alignItems: "center", gap: spacing.sm },
+  noticeText: { flex: 1, fontSize: 16, lineHeight: 23, fontWeight: "700" },
+  lead: { fontSize: 16, lineHeight: 24 },
+  card: { borderRadius: radius.lg, borderWidth: 1, padding: spacing.lg, gap: 20 },
+  fieldLabel: { fontWeight: "800", marginBottom: 8 },
+  input: { minHeight: 54, borderWidth: 1, borderRadius: radius.md, paddingHorizontal: spacing.md },
+  messageInput: { minHeight: 160, paddingTop: spacing.md },
+  readOnlyRow: { paddingBottom: spacing.md, borderBottomWidth: 1 },
+  readOnlyLabel: { fontWeight: "800", marginBottom: 5 },
   readOnlyValue: { fontWeight: "600", textTransform: "none" },
-  primaryButton: { minHeight: 52, borderRadius: radius.pill, backgroundColor: colors.brandPrimary, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: spacing.xs, paddingHorizontal: spacing.lg },
-  primarySmall: { minHeight: 46, borderRadius: radius.sm, backgroundColor: colors.brandPrimary, alignItems: "center", justifyContent: "center", paddingHorizontal: spacing.md },
-  primaryButtonText: { color: "#FFFFFF", fontSize: 15, fontWeight: "800" },
-  secondaryButton: { minHeight: 50, borderRadius: radius.pill, borderWidth: 1, alignItems: "center", justifyContent: "center", paddingHorizontal: spacing.md },
-  secondaryText: { fontSize: 15, fontWeight: "800" },
+  primaryButton: { minHeight: 54, borderRadius: radius.pill, backgroundColor: colors.brandPrimary, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: spacing.xs, paddingHorizontal: spacing.lg },
+  primarySmall: { minHeight: 48, borderRadius: radius.md, backgroundColor: colors.brandPrimary, alignItems: "center", justifyContent: "center", paddingHorizontal: spacing.md },
+  primaryButtonText: { color: "#FFFEFA", fontSize: 17, fontWeight: "800" },
+  secondaryButton: { minHeight: 52, borderRadius: radius.pill, borderWidth: 1, alignItems: "center", justifyContent: "center", paddingHorizontal: spacing.md },
+  secondaryText: { fontSize: 17, fontWeight: "800" },
   disabled: { opacity: 0.45 },
   actionRow: { flexDirection: "row", justifyContent: "flex-end", gap: spacing.sm },
-  contactCard: { minHeight: 82, borderRadius: radius.md, borderWidth: 1, padding: spacing.md, flexDirection: "row", alignItems: "center", gap: spacing.sm },
-  iconBox: { width: 44, height: 44, borderRadius: radius.sm, alignItems: "center", justifyContent: "center" },
-  iconButton: { width: 42, height: 42, alignItems: "center", justifyContent: "center" },
+  contactCard: { minHeight: 88, borderRadius: radius.lg, borderWidth: 1, padding: spacing.md, flexDirection: "row", alignItems: "center", gap: spacing.sm },
+  iconBox: { width: 48, height: 48, borderRadius: 14, alignItems: "center", justifyContent: "center" },
+  iconButton: { width: 44, height: 44, alignItems: "center", justifyContent: "center" },
   flex: { flex: 1, minWidth: 0 },
   cardTitle: { fontWeight: "800" },
-  cardBody: { marginTop: 4, fontSize: 13, lineHeight: 19 },
-  emptyState: { minHeight: 190, borderRadius: radius.md, borderWidth: 1, padding: spacing.lg, alignItems: "center", justifyContent: "center", gap: spacing.sm },
-  dangerButton: { minHeight: 52, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.error, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: spacing.xs },
-  dangerText: { color: colors.error, fontSize: 15, fontWeight: "800" },
-  policySection: { gap: 4, paddingBottom: spacing.sm },
-  actionItem: { minHeight: 76, flexDirection: "row", alignItems: "center", gap: spacing.sm },
-  checkButton: { minHeight: 40, minWidth: 70, borderRadius: radius.pill, backgroundColor: colors.brandPrimary, alignItems: "center", justifyContent: "center", paddingHorizontal: spacing.sm },
-  checkButtonText: { color: "#FFFFFF", fontSize: 13, fontWeight: "800" },
+  cardBody: { marginTop: 5, fontSize: 16, lineHeight: 23 },
+  emptyState: { minHeight: 210, borderRadius: radius.lg, borderWidth: 1, padding: spacing.lg, alignItems: "center", justifyContent: "center", gap: spacing.sm },
+  dangerButton: { minHeight: 54, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.error, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: spacing.xs },
+  dangerText: { color: colors.error, fontSize: 17, fontWeight: "800" },
+  policySection: { gap: 5, paddingBottom: spacing.sm },
+  actionItem: { minHeight: 82, flexDirection: "row", alignItems: "center", gap: spacing.sm },
+  checkButton: { minHeight: 44, minWidth: 76, borderRadius: radius.pill, backgroundColor: colors.brandPrimary, alignItems: "center", justifyContent: "center", paddingHorizontal: spacing.sm },
+  checkButtonText: { color: "#FFFEFA", fontSize: 16, fontWeight: "800" },
   divider: { height: 1 },
-  faq: { minHeight: 74, borderRadius: radius.md, borderWidth: 1, padding: spacing.md, flexDirection: "row", alignItems: "center", gap: spacing.sm },
+  faq: { minHeight: 82, borderRadius: radius.lg, borderWidth: 1, padding: spacing.md, flexDirection: "row", alignItems: "center", gap: spacing.sm },
 });

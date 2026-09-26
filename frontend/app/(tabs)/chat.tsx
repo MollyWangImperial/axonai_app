@@ -145,8 +145,8 @@ export default function ChatScreen() {
 
   const conversationTurns = turns.length === 1 && turns[0]?.role === "assistant" ? [] : turns;
   const actions = [
-    { id: "progress", icon: "trending-up-outline" as const, text: "Check My Progress", tone: preferences.darkMode ? palette.soft : "#EFF6F4", onPress: () => router.push("/progress") },
-    { id: "exercise", icon: "walk-outline" as const, text: "Start Guided Exercise", tone: preferences.darkMode ? palette.soft : "#F1F4EC", onPress: () => void startGuidedExercise() },
+    { id: "progress", icon: "trending-up-outline" as const, text: "Check My Progress", tone: preferences.darkMode ? palette.soft : "#E9EDE5", onPress: () => router.push("/progress") },
+    { id: "exercise", icon: "walk-outline" as const, text: "Start Guided Exercise", tone: preferences.darkMode ? palette.soft : "#F1F2EB", onPress: () => void startGuidedExercise() },
     { id: "pain", icon: "heart" as const, text: "Pain Check-in", tone: preferences.darkMode ? palette.soft : "#F5F0FA", onPress: () => void sendMessage("Please guide me through a gentle pain check-in. Ask me one short question at a time, beginning with where I feel pain and how strong it is from zero to ten.", true) },
     { id: "reflect", icon: "book-outline" as const, text: "Reflect on Today", tone: preferences.darkMode ? palette.soft : "#FAF3EA", onPress: () => void sendMessage("Please guide me through a short reflection on today's recovery. Ask me one encouraging question at a time and help me notice one small win.", true) },
   ];
@@ -157,7 +157,7 @@ export default function ChatScreen() {
         <ScrollView ref={scrollRef} contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
           <View style={styles.page}>
             <View style={[styles.header, { borderBottomColor: palette.border }]}>
-              <View style={styles.headerAvatar}><Ionicons name="heart" size={25} color="#FFFFFF" /></View>
+              <View style={styles.headerAvatar}><Ionicons name="heart" size={25} color="#FFFEFA" /></View>
               <View style={styles.headerCopy}>
                 <Text style={[styles.headerTitle, { color: palette.text }]}>Alira</Text>
                 <Text style={styles.headerSub}>Your recovery companion</Text>
@@ -182,7 +182,7 @@ export default function ChatScreen() {
                 <Text style={[styles.callSub, { color: palette.muted }]}>Speak naturally and hear Alira reply</Text>
               </View>
               <Pressable testID="alira-call" onPress={() => router.push("/alira-call" as never)} style={styles.callButton}>
-                <Ionicons name="call" size={19} color="#FFFFFF" />
+                <Ionicons name="call" size={19} color="#FFFEFA" />
                 <Text style={styles.callButtonText}>Call Alira</Text>
               </Pressable>
             </View>
@@ -200,7 +200,7 @@ export default function ChatScreen() {
             {conversationTurns.length > 0 && <Text style={[styles.conversationTitle, { color: palette.text }]}>Your conversation</Text>}
             {conversationTurns.map((item, index) => (
               <View key={`${item.ts}-${index}`} style={[styles.messageRow, item.role === "user" && styles.userRow]}>
-                {item.role === "assistant" && <View style={styles.messageAvatar}><Ionicons name="heart" size={17} color="#FFFFFF" /></View>}
+                {item.role === "assistant" && <View style={styles.messageAvatar}><Ionicons name="heart" size={17} color="#FFFEFA" /></View>}
                 <View style={[styles.bubble, item.role === "user" ? styles.userBubble : styles.assistantBubble, { backgroundColor: item.role === "user" ? palette.soft : palette.surface, borderColor: palette.border }]}>
                   <Text style={[styles.bubbleText, { color: palette.text }]}>{item.text}</Text>
                   <Text style={[styles.timeText, { color: palette.muted }]}>{formatTime(item.ts)}</Text>
@@ -218,7 +218,7 @@ export default function ChatScreen() {
             </Pressable>
             <TextInput ref={inputRef} value={input} onChangeText={setInput} placeholder="Message Alira..." placeholderTextColor={palette.muted} style={[styles.input, { backgroundColor: palette.surface, borderColor: palette.border, color: palette.text }]} multiline maxLength={500} testID="chat-input" />
             <Pressable onPress={send} disabled={sending || !input.trim()} style={[styles.sendBtn, (sending || !input.trim()) && styles.sendBtnDisabled]} testID="chat-send">
-              <Ionicons name="send" size={21} color="#FFFFFF" />
+              <Ionicons name="send" size={21} color="#FFFEFA" />
             </Pressable>
           </View>
         </View>
@@ -228,29 +228,29 @@ export default function ChatScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: "#FCFDFB" },
+  container: { flex: 1, backgroundColor: "#F7F6F0" },
   keyboard: { flex: 1 },
   scrollContent: { paddingBottom: spacing.xl },
   page: { width: "100%", maxWidth: 1080, alignSelf: "center", paddingHorizontal: spacing.md },
   header: { flexDirection: "row", alignItems: "center", gap: spacing.sm, paddingVertical: spacing.sm, borderBottomWidth: 1, borderBottomColor: colors.divider },
-  headerAvatar: { width: 52, height: 52, borderRadius: 26, backgroundColor: "#4C8A5A", alignItems: "center", justifyContent: "center" },
+  headerAvatar: { width: 52, height: 52, borderRadius: 26, backgroundColor: "#3D6B4F", alignItems: "center", justifyContent: "center" },
   headerCopy: { flex: 1 },
-  headerTitle: { fontSize: 28, lineHeight: 32, fontWeight: "900", color: "#123326" },
+  headerTitle: { fontSize: 28, lineHeight: 32, fontWeight: "900", color: "#24362F" },
   headerSub: { marginTop: 1, fontSize: 14, color: colors.brandPrimary, fontWeight: "600" },
-  sparkleButton: { width: 46, height: 46, borderRadius: radius.md, backgroundColor: "#F1F5EF", alignItems: "center", justifyContent: "center" },
+  sparkleButton: { width: 46, height: 46, borderRadius: radius.md, backgroundColor: "#F1F2EB", alignItems: "center", justifyContent: "center" },
   hero: { paddingTop: spacing.xl, alignItems: "center" },
   heroWide: { minHeight: 280, flexDirection: "row", justifyContent: "space-between" },
   heroCopy: { width: "100%", maxWidth: 420, alignSelf: "flex-start", zIndex: 1 },
-  heroTitle: { fontSize: 35, lineHeight: 42, fontWeight: "800", color: "#123326" },
+  heroTitle: { fontSize: 35, lineHeight: 42, fontWeight: "800", color: "#24362F" },
   heroSub: { marginTop: spacing.md, maxWidth: 360, fontSize: 17, lineHeight: 25, color: colors.onSurfaceTertiary },
   companionImage: { width: "100%", maxWidth: 540, height: 210, marginTop: -12 },
-  callCard: { flexDirection: "row", alignItems: "center", gap: spacing.sm, padding: spacing.md, borderWidth: 1, borderColor: "#DCE3DA", borderRadius: radius.md, backgroundColor: "#FBFCF9" },
-  callIcon: { width: 46, height: 46, borderRadius: 23, backgroundColor: "#EAF3E8", alignItems: "center", justifyContent: "center" },
+  callCard: { flexDirection: "row", alignItems: "center", gap: spacing.sm, padding: spacing.md, borderWidth: 1, borderColor: "#E0E4DB", borderRadius: radius.md, backgroundColor: "#FFFEFA" },
+  callIcon: { width: 46, height: 46, borderRadius: 23, backgroundColor: "#E4ECE2", alignItems: "center", justifyContent: "center" },
   callCopy: { flex: 1 },
   callTitle: { fontSize: 16, fontWeight: "800", color: colors.onSurface },
   callSub: { fontSize: 12, lineHeight: 17, color: colors.onSurfaceTertiary, marginTop: 2 },
-  callButton: { minHeight: 46, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 7, borderRadius: radius.pill, backgroundColor: "#2F7540", paddingHorizontal: spacing.md },
-  callButtonText: { color: "#FFFFFF", fontSize: 14, fontWeight: "800" },
+  callButton: { minHeight: 46, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 7, borderRadius: radius.pill, backgroundColor: "#3D6B4F", paddingHorizontal: spacing.md },
+  callButtonText: { color: "#FFFEFA", fontSize: 14, fontWeight: "800" },
   actionGrid: { flexDirection: "row", flexWrap: "wrap", gap: spacing.sm, marginTop: spacing.md },
   actionGridWide: { flexWrap: "nowrap" },
   actionCard: { width: "48%", minHeight: 118, padding: spacing.md, borderWidth: 1, borderColor: "rgba(74,120,86,0.12)", borderRadius: radius.md, justifyContent: "space-between" },
@@ -263,15 +263,15 @@ const styles = StyleSheet.create({
   userRow: { justifyContent: "flex-end" },
   messageAvatar: { width: 38, height: 38, borderRadius: 19, alignItems: "center", justifyContent: "center", backgroundColor: colors.brandPrimary },
   bubble: { maxWidth: "78%", borderRadius: radius.md, paddingHorizontal: spacing.md, paddingVertical: spacing.sm },
-  assistantBubble: { backgroundColor: "#FFFFFF", borderWidth: 1, borderColor: colors.border },
-  userBubble: { backgroundColor: "#E5EEE4" },
+  assistantBubble: { backgroundColor: "#FFFEFA", borderWidth: 1, borderColor: colors.border },
+  userBubble: { backgroundColor: "#E4ECE2" },
   bubbleText: { fontSize: 15, lineHeight: 22, color: colors.onSurface },
   timeText: { marginTop: 4, fontSize: 11, color: colors.onSurfaceTertiary },
   typingWrap: { marginVertical: spacing.sm },
   inputBar: { borderTopWidth: 1, borderTopColor: colors.divider, backgroundColor: "rgba(252,253,251,0.98)", paddingHorizontal: spacing.md, paddingTop: spacing.sm },
   inputInner: { width: "100%", maxWidth: 1080, alignSelf: "center", flexDirection: "row", alignItems: "center", gap: spacing.sm },
-  micButton: { width: 46, height: 46, borderRadius: 23, borderWidth: 1, borderColor: "#DCE3DA", backgroundColor: "#FFFFFF", alignItems: "center", justifyContent: "center" },
-  input: { flex: 1, minHeight: 46, maxHeight: 92, borderRadius: radius.pill, borderWidth: 1, borderColor: "#DCE3DA", backgroundColor: "#FFFFFF", paddingHorizontal: spacing.md, paddingVertical: Platform.OS === "ios" ? 12 : 8, fontSize: 16, color: colors.onSurface },
+  micButton: { width: 46, height: 46, borderRadius: 23, borderWidth: 1, borderColor: "#E0E4DB", backgroundColor: "#FFFEFA", alignItems: "center", justifyContent: "center" },
+  input: { flex: 1, minHeight: 46, maxHeight: 92, borderRadius: radius.pill, borderWidth: 1, borderColor: "#E0E4DB", backgroundColor: "#FFFEFA", paddingHorizontal: spacing.md, paddingVertical: Platform.OS === "ios" ? 12 : 8, fontSize: 16, color: colors.onSurface },
   sendBtn: { width: 48, height: 48, borderRadius: 24, backgroundColor: colors.brandPrimary, alignItems: "center", justifyContent: "center" },
   sendBtnDisabled: { opacity: 0.5 },
 });

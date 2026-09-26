@@ -88,14 +88,14 @@ export default function TherapistPortal() {
       <View style={[styles.container, { paddingTop: insets.top + spacing.sm }]}>
         <View style={styles.header}>
           <Text style={styles.headerTitle}>Therapist onboarding</Text>
-          <Pressable onPress={doSignOut} testID="therapist-signout">
-            <Ionicons name="log-out" size={22} color={colors.onSurfaceSecondary} />
+          <Pressable onPress={doSignOut} style={styles.iconButton} testID="therapist-signout">
+            <Ionicons name="log-out" size={22} color="#385342" />
           </Pressable>
         </View>
         <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : undefined}>
           <ScrollView contentContainerStyle={{ padding: spacing.lg, gap: spacing.md, paddingBottom: 120 }}>
             <Text style={styles.intro}>
-              Your answers train your <Text style={{ color: colors.brandPrimary, fontWeight: "800" }}>AI persona</Text> — a chat experience that reflects your clinical voice for patients in early access. You earn <Text style={{ color: colors.brandPrimary, fontWeight: "800" }}>70% commission</Text> on paid chats, video calls, and in-person sessions.
+              Your answers train your <Text style={{ color: "#244436", fontWeight: "800" }}>AI persona</Text> — a chat experience that reflects your clinical voice for patients in early access. You earn <Text style={{ color: "#244436", fontWeight: "800" }}>70% commission</Text> on paid chats, video calls, and in-person sessions.
             </Text>
 
             <Text style={styles.label}>Your upper-limb specialties</Text>
@@ -104,7 +104,7 @@ export default function TherapistPortal() {
                 const active = specialties.includes(o.code);
                 return (
                   <Pressable key={o.code} onPress={() => toggleSpec(o.code)} style={[styles.chip, active && styles.chipActive]} testID={`spec-${o.code}`}>
-                    <Text style={[styles.chipText, active && { color: "#fff" }]}>{o.label}</Text>
+                    <Text style={[styles.chipText, active && { color: "#FFFDF5" }]}>{o.label}</Text>
                   </Pressable>
                 );
               })}
@@ -117,16 +117,16 @@ export default function TherapistPortal() {
                   value={answers[q.id] || ""}
                   onChangeText={(t) => setAnswers((a) => ({ ...a, [q.id]: t }))}
                   placeholder="Your answer…"
-                  placeholderTextColor={colors.onSurfaceTertiary}
+                  placeholderTextColor="#738274"
                   multiline={q.type === "text"}
-                  style={[styles.input, q.type === "text" && { minHeight: 70, textAlignVertical: "top" }]}
+                  style={[styles.input, q.type === "text" && { minHeight: 108, textAlignVertical: "top" }]}
                   testID={`ans-${q.id}`}
                 />
               </View>
             ))}
 
             <Pressable onPress={submitOnboard} disabled={submitting || specialties.length === 0} style={[styles.submit, (submitting || specialties.length === 0) && { opacity: 0.5 }]} testID="onboard-submit">
-              {submitting ? <ActivityIndicator color="#fff" /> : <Text style={styles.submitText}>Create my AI persona</Text>}
+              {submitting ? <ActivityIndicator color="#FFFDF5" /> : <Text style={styles.submitText}>Create my AI persona</Text>}
             </Pressable>
           </ScrollView>
         </KeyboardAvoidingView>
@@ -142,8 +142,8 @@ export default function TherapistPortal() {
     <View style={[styles.container, { paddingTop: insets.top + spacing.sm }]}>
       <View style={styles.header}>
         <Text style={styles.headerTitle}>Therapist Portal</Text>
-        <Pressable onPress={doSignOut} testID="therapist-signout-2">
-          <Ionicons name="log-out" size={22} color={colors.onSurfaceSecondary} />
+        <Pressable onPress={doSignOut} style={styles.iconButton} testID="therapist-signout-2">
+          <Ionicons name="log-out" size={22} color="#385342" />
         </Pressable>
       </View>
       <ScrollView contentContainerStyle={{ padding: spacing.lg, paddingBottom: 32 }}>
@@ -154,12 +154,12 @@ export default function TherapistPortal() {
 
         <View style={styles.statsRow}>
           <View style={styles.statCard}>
-            <Ionicons name="cash" size={20} color={colors.brandPrimary} />
+            <Ionicons name="cash" size={20} color="#315440" />
             <Text style={styles.statValue}>£{totalGBP}</Text>
             <Text style={styles.statLabel}>Commissions earned</Text>
           </View>
           <View style={styles.statCard}>
-            <Ionicons name="calendar" size={20} color={colors.brandPrimary} />
+            <Ionicons name="calendar" size={20} color="#315440" />
             <Text style={styles.statValue}>{bookings.length}</Text>
             <Text style={styles.statLabel}>Booked sessions</Text>
           </View>
@@ -180,7 +180,7 @@ export default function TherapistPortal() {
 
         <Text style={styles.sectionTitle}>Your AI persona</Text>
         <View style={styles.personaCard}>
-          <Ionicons name="sparkles" size={20} color={colors.brandSecondary} />
+          <Ionicons name="sparkles" size={20} color="#6E875E" />
           <Text style={styles.personaText}>
             Trained on your responses · {profile?.specialties?.length || 0} specialties · {profile?.commission_pct}% commission per booking
           </Text>
@@ -191,34 +191,35 @@ export default function TherapistPortal() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: colors.surface },
+  container: { flex: 1, backgroundColor: "#F7F4EB" },
   center: { alignItems: "center", justifyContent: "center" },
-  header: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", paddingHorizontal: spacing.lg, paddingBottom: spacing.sm, borderBottomWidth: 1, borderBottomColor: colors.divider },
-  headerTitle: { fontSize: 20, fontWeight: "800", color: colors.onSurface },
-  intro: { fontSize: 14, color: colors.onSurfaceSecondary, lineHeight: 20, marginBottom: spacing.sm },
-  label: { fontSize: 14, fontWeight: "700", color: colors.onSurface, marginBottom: 6 },
-  qBlock: { gap: 6 },
-  input: { backgroundColor: colors.surfaceSecondary, padding: spacing.md, borderRadius: radius.md, fontSize: 15, color: colors.onSurface },
-  chips: { flexDirection: "row", flexWrap: "wrap", gap: 6 },
-  chip: { backgroundColor: colors.surfaceTertiary, paddingHorizontal: 12, paddingVertical: 8, borderRadius: radius.pill },
-  chipActive: { backgroundColor: colors.brandPrimary },
-  chipText: { color: colors.onSurfaceSecondary, fontSize: 12, fontWeight: "700" },
-  submit: { backgroundColor: colors.brandPrimary, padding: 16, borderRadius: radius.lg, alignItems: "center", marginTop: spacing.md },
-  submitText: { color: "#fff", fontWeight: "800", fontSize: 16 },
-  heroCard: { backgroundColor: colors.brandTertiary, padding: spacing.md, borderRadius: radius.lg, marginBottom: spacing.md, gap: 4 },
-  heroTitle: { fontSize: 18, fontWeight: "800", color: colors.onBrandTertiary },
-  heroSub: { fontSize: 13, color: colors.onBrandTertiary },
-  statsRow: { flexDirection: "row", gap: spacing.sm, marginBottom: spacing.md },
-  statCard: { flex: 1, backgroundColor: colors.surfaceSecondary, padding: spacing.md, borderRadius: radius.lg, gap: 4 },
-  statValue: { fontSize: 22, fontWeight: "800", color: colors.onSurface },
-  statLabel: { fontSize: 12, color: colors.onSurfaceTertiary },
-  sectionTitle: { fontSize: 18, fontWeight: "800", color: colors.onSurface, marginTop: spacing.md, marginBottom: spacing.sm },
-  muted: { color: colors.onSurfaceTertiary, fontStyle: "italic" },
-  bookCard: { flexDirection: "row", alignItems: "center", backgroundColor: colors.surfaceSecondary, padding: spacing.md, borderRadius: radius.lg, marginBottom: spacing.sm },
-  bookKind: { fontSize: 10, fontWeight: "800", letterSpacing: 1, color: colors.brandPrimary },
-  bookName: { fontSize: 16, fontWeight: "700", color: colors.onSurface, marginTop: 2 },
-  bookSlot: { fontSize: 12, color: colors.onSurfaceTertiary },
-  bookAmount: { fontSize: 18, fontWeight: "800", color: colors.brandPrimary },
-  personaCard: { flexDirection: "row", gap: 10, alignItems: "center", backgroundColor: colors.surfaceSecondary, padding: spacing.md, borderRadius: radius.lg },
-  personaText: { flex: 1, color: colors.onSurfaceSecondary, fontSize: 13 },
+  header: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", minHeight: 60, paddingHorizontal: spacing.lg, paddingBottom: spacing.sm, backgroundColor: "#FCFAF3", borderBottomWidth: 1, borderBottomColor: "#D7E1D2" },
+  headerTitle: { fontSize: 22, fontWeight: "800", color: "#1F3D30", letterSpacing: -0.2 },
+  iconButton: { width: 44, height: 44, borderRadius: 22, alignItems: "center", justifyContent: "center", backgroundColor: "#E8F0E4" },
+  intro: { fontSize: 17, color: "#40554A", lineHeight: 25, marginBottom: spacing.sm },
+  label: { fontSize: 16, fontWeight: "800", color: "#294738", lineHeight: 22, marginBottom: 7 },
+  qBlock: { gap: 7 },
+  input: { backgroundColor: "#FFFEFA", borderWidth: 1, borderColor: "#CCD9C7", minHeight: 54, paddingHorizontal: spacing.md, paddingVertical: 13, borderRadius: radius.md, fontSize: 17, lineHeight: 23, color: "#23382C" },
+  chips: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
+  chip: { backgroundColor: "#E7EEE3", borderWidth: 1, borderColor: "#D2DDD0", minHeight: 44, paddingHorizontal: 14, paddingVertical: 9, borderRadius: radius.pill, justifyContent: "center" },
+  chipActive: { backgroundColor: "#315440", borderColor: "#315440" },
+  chipText: { color: "#385342", fontSize: 15, fontWeight: "700" },
+  submit: { backgroundColor: "#315440", minHeight: 54, paddingHorizontal: 16, paddingVertical: 12, borderRadius: radius.lg, alignItems: "center", justifyContent: "center", marginTop: spacing.md, shadowColor: "#183326", shadowOpacity: 0.16, shadowRadius: 6, shadowOffset: { width: 0, height: 3 }, elevation: 2 },
+  submitText: { color: "#FFFDF5", fontWeight: "800", fontSize: 17 },
+  heroCard: { backgroundColor: "#DCE8D7", borderWidth: 1, borderColor: "#C4D5BD", padding: spacing.lg, borderRadius: radius.lg, marginBottom: spacing.lg, gap: 6 },
+  heroTitle: { fontSize: 20, fontWeight: "800", color: "#214333" },
+  heroSub: { fontSize: 16, lineHeight: 23, color: "#385342" },
+  statsRow: { flexDirection: "row", gap: spacing.sm, marginBottom: spacing.lg },
+  statCard: { flex: 1, backgroundColor: "#FFFEFA", borderWidth: 1, borderColor: "#DCE5D7", padding: spacing.md, borderRadius: radius.lg, gap: 5 },
+  statValue: { fontSize: 24, fontWeight: "800", color: "#214333" },
+  statLabel: { fontSize: 14, lineHeight: 19, color: "#5B6F61" },
+  sectionTitle: { fontSize: 20, fontWeight: "800", color: "#214333", marginTop: spacing.lg, marginBottom: spacing.sm },
+  muted: { color: "#5B6F61", fontSize: 16, lineHeight: 23, fontStyle: "italic" },
+  bookCard: { flexDirection: "row", alignItems: "center", backgroundColor: "#FFFEFA", borderWidth: 1, borderColor: "#DCE5D7", padding: spacing.md, borderRadius: radius.lg, marginBottom: spacing.sm },
+  bookKind: { fontSize: 12, fontWeight: "800", letterSpacing: 0.9, color: "#52705B" },
+  bookName: { fontSize: 17, fontWeight: "800", color: "#294738", marginTop: 3 },
+  bookSlot: { fontSize: 15, lineHeight: 21, color: "#5B6F61", marginTop: 2 },
+  bookAmount: { fontSize: 20, fontWeight: "800", color: "#315440" },
+  personaCard: { flexDirection: "row", gap: 11, alignItems: "center", backgroundColor: "#EEF4EA", borderWidth: 1, borderColor: "#D4E0CE", padding: spacing.md, borderRadius: radius.lg },
+  personaText: { flex: 1, color: "#40554A", fontSize: 16, lineHeight: 23 },
 });

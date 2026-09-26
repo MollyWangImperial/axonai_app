@@ -21,25 +21,25 @@ export type DisplayPalette = {
 };
 
 const LIGHT_PALETTE: DisplayPalette = {
-  page: "#F4F6F4",
-  surface: "#FAFBFA",
-  soft: "#E9EFEB",
-  text: "#183A32",
-  muted: "#53635C",
-  border: "#D8DFDA",
-  brand: "#2F754D",
+  page: "#F4F1E8",
+  surface: "#FFFEFA",
+  soft: "#E9EDE5",
+  text: "#24362F",
+  muted: "#5D6B61",
+  border: "#E0E4DB",
+  brand: "#3D6B4F",
   onBrand: "#FFFFFF",
 };
 
 const DARK_PALETTE: DisplayPalette = {
-  page: "#0F1D18",
-  surface: "#182A23",
-  soft: "#22382F",
-  text: "#F2F7F4",
-  muted: "#B7C8C0",
-  border: "#365046",
-  brand: "#78B58A",
-  onBrand: "#0E1B16",
+  page: "#16231B",
+  surface: "#202E24",
+  soft: "#2B3B2D",
+  text: "#F4F3EA",
+  muted: "#C2C9BC",
+  border: "#455244",
+  brand: "#92B78F",
+  onBrand: "#1C2A20",
 };
 
 type DisplayPreferencesValue = {

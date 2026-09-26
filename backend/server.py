@@ -2517,6 +2517,77 @@ POSE_RUNNER_HTML = r"""<!DOCTYPE html>
   @keyframes pop{0%{transform:scale(0.3) rotate(-12deg);opacity:0}60%{transform:scale(1.2) rotate(8deg);opacity:1}100%{transform:scale(1) rotate(0);opacity:1}}
   .confetti{position:absolute;width:10px;height:14px;border-radius:2px;animation:fall 1.4s ease-out forwards;opacity:.9}
   @keyframes fall{0%{transform:translateY(-30vh) rotate(0deg);opacity:0}10%{opacity:1}100%{transform:translateY(120vh) rotate(720deg);opacity:0}}
+
+  /* Rehyn visual layer: CSS-only; camera, scoring, event and navigation logic remain unchanged. */
+  #top{background:rgba(27,43,33,.91);border:1px solid rgba(240,246,237,.32);border-radius:18px;padding:13px 16px;backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px)}
+  #top .label{font-size:16px;line-height:1.35}
+  #top .dot{width:11px;height:11px}
+  #top .dot.active{background:#D6A184;box-shadow:0 0 0 4px rgba(214,161,132,.24)}
+  #top .dot.done{background:#94B59A}
+  #exitBtn{min-width:48px;min-height:46px;padding:10px 15px;border:1px solid rgba(255,255,255,.36);border-radius:13px;background:rgba(255,255,255,.12);font-size:15px}
+  #bottom{background:rgba(25,42,31,.94);border:1px solid rgba(245,248,237,.30);border-radius:20px;padding:18px 20px;box-shadow:0 12px 34px rgba(0,0,0,.22)}
+  body.step-active #bottom{opacity:.88;transform:none}
+  body.step-active #bottom:hover,body.step-active #bottom:focus-within{opacity:1;transform:none}
+  #stepTitle{font-size:16px;color:#DCE8D9;line-height:1.4}
+  #caption{font-size:21px;line-height:1.42}
+  #voiceText{font-size:15px;line-height:1.4;color:#E3EBDD}
+  #voiceWave span{background:#D6A184}
+  #skipBtn{min-height:56px;padding:14px 16px;border-radius:14px;background:#477452;font-size:17px}
+  #overlay{background:rgba(24,39,29,.95);padding:max(28px,env(safe-area-inset-top,0px)) 24px max(28px,env(safe-area-inset-bottom,0px));gap:19px}
+  #overlay h1{font-size:30px;line-height:1.15}
+  #overlay p{max-width:440px;font-size:18px;line-height:1.58;color:#E4EADF}
+  #overlay button{min-width:210px;min-height:56px;padding:15px 26px;border-radius:14px;background:#477452;font-size:18px}
+  #calibrationOverlay .calibrationPanel{border:1px solid #E0E5DC;border-radius:22px;padding:22px;box-shadow:0 20px 55px rgba(0,0,0,.27)}
+  #calibrationOverlay h2{font-size:26px;line-height:1.2;color:#24362F}
+  #calibrationOverlay .calibrationLead{font-size:18px;line-height:1.5;color:#53645A}
+  .calibrationCheck{font-size:16px;line-height:1.4;color:#405248}
+  .calibrationCheck .statusDot{width:28px;height:28px;flex-basis:28px;background:#E9EDE5}
+  .calibrationCheck.done .statusDot{background:#E4ECE2;color:#3D6B4F}
+  #calibrationProgress{height:8px;border-radius:5px;background:#E3E6DE}
+  #calibrationProgressFill{background:#3D6B4F}
+  #calibrationAutoStatus{min-height:52px;display:flex;align-items:center;justify-content:center;border-radius:13px;padding:13px 16px;background:#E9EDE5;color:#405248;font-size:17px}
+  #calibrationAutoStatus.ready{background:#3D6B4F;color:#fff}
+  #walkingCapture .walkingCard{border:1px solid #E0E5DC;border-radius:22px;padding:24px}
+  #walkingCapture .walkingEyebrow{font-size:14px;color:#3D6B4F;letter-spacing:.8px}
+  #walkingCapture h2{font-size:27px;line-height:1.2;color:#24362F}
+  #walkingCapture p{font-size:18px;line-height:1.55;color:#405248}
+  #walkingCapture li{font-size:16px;line-height:1.5;color:#405248}
+  #walkingCapture button{min-height:54px;border-radius:14px;background:#3D6B4F;font-size:17px}
+  #walkingProceedUnconfirmedBtn{background:#F2F3ED;color:#34533E;border:2px solid #98AD97}
+  #walkingCaptureStatus{border-radius:12px;padding:13px;font-size:15px;line-height:1.5}
+  #advancedMarkerGate .gateCard{border:1px solid #E0E5DC;border-radius:22px;padding:24px}
+  #advancedMarkerGate .gateEyebrow{font-size:14px;color:#3D6B4F;letter-spacing:.8px}
+  #advancedMarkerGate h2{font-size:27px;line-height:1.25;color:#24362F}
+  #advancedMarkerGate p{font-size:17px;line-height:1.55;color:#405248}
+  #advancedMarkerGate .gateBox{background:#E9EDE5;border-radius:14px;color:#354C3C}
+  #advancedMarkerGate .gateBox.warn{background:#F6ECE5;color:#61402E}
+  #advancedMarkerGate li{font-size:16px;line-height:1.5}
+  #advancedMarkerGate .gateActions{gap:11px}
+  #advancedMarkerGate button{min-height:54px;border-radius:14px;font-size:16px}
+  #markerConfirmBtn,#markerStoreBtn{background:#3D6B4F;color:#fff}
+  #markerMissingBtn{background:#B96E50;color:#fff}
+  #markerBasicBtn,#markerBackBtn{background:#E9EDE5;color:#293D31}
+  #lapStatus{width:min(420px,calc(100% - 40px));border-radius:16px;padding:14px 16px;background:rgba(27,43,33,.94);font-size:16px;line-height:1.5}
+  #diagnosticsBadge{border-radius:13px;padding:11px 13px;font-size:13px}
+  #celebrate{background:linear-gradient(145deg,rgba(51,91,61,.96),rgba(27,47,34,.97));gap:16px}
+  #celebrate .star{font-size:62px}
+  #celebrate h2{font-size:31px;line-height:1.2}
+  #celebrate .next{font-size:15px;color:#E1EBDD}
+  #celebrate .msg{font-size:18px;line-height:1.55}
+  @media(max-width:600px){
+    #ui{padding:calc(env(safe-area-inset-top,16px) + 7px) 12px calc(env(safe-area-inset-bottom,16px) + 9px)}
+    #top{border-radius:16px;padding:11px 12px}
+    #bottom{padding:15px 16px;border-radius:18px}
+    #caption{font-size:19px}
+    #calibrationOverlay{overflow:auto;align-items:center;padding:calc(12px + env(safe-area-inset-top,0px)) 12px calc(12px + env(safe-area-inset-bottom,0px))}
+    #calibrationOverlay .calibrationPanel{padding:18px}
+    #walkingCapture{padding:12px}
+    #walkingCapture .walkingCard,#advancedMarkerGate .gateCard{padding:18px}
+    #advancedMarkerGate{padding:12px}
+    #overlay h1{font-size:28px}
+    #overlay p{font-size:17px}
+  }
+  @media(prefers-reduced-motion:reduce){#voiceWave span,#celebrate .star,.confetti{animation:none!important;transition:none!important}}
 </style>
 </head>
 <body>
@@ -6879,6 +6950,46 @@ REHAB_RUNNER_HTML_TEMPLATE = r"""<!DOCTYPE html>
   #fb button.primary{background:#4A7856}
   #fb .check{font-size:14px;color:#D9E5DC;display:flex;gap:8px;align-items:center;justify-content:center}
   #fb .check span.ok{color:#7FE5A3}
+
+  /* Rehyn visual layer: CSS-only; movement tracking, scoring, voice and runner events remain unchanged. */
+  #top{background:rgba(27,43,33,.92);border:1px solid rgba(240,246,237,.32);border-radius:18px;padding:13px 15px;backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px)}
+  #top .name{font-size:16px;line-height:1.35}
+  #top .rep{font-size:14px;color:#E1EBDD}
+  #exitBtn{min-width:48px;min-height:46px;padding:10px 14px;border:1px solid rgba(255,255,255,.34);border-radius:13px;background:rgba(255,255,255,.12);font-size:15px}
+  #bottom{background:rgba(25,42,31,.95);border:1px solid rgba(245,248,237,.3);border-radius:20px;padding:18px 20px;box-shadow:0 12px 34px rgba(0,0,0,.22)}
+  #caption{font-size:21px;line-height:1.45;min-height:52px}
+  #voiceText{font-size:15px;line-height:1.4;color:#E3EBDD}
+  #voiceWave span{background:#D6A184}
+  #tapBtn{min-height:58px;margin-top:14px;padding:14px 18px;border-radius:14px;background:#477452;font-size:18px;line-height:1.3}
+  #overlay{background:rgba(24,39,29,.95);padding:max(28px,env(safe-area-inset-top,0px)) 24px max(28px,env(safe-area-inset-bottom,0px));gap:19px}
+  #overlay h1{font-size:30px;line-height:1.15}
+  #overlay p{max-width:440px;font-size:18px;line-height:1.58;color:#E4EADF}
+  #overlay button{min-width:210px;min-height:56px;padding:15px 26px;border-radius:14px;background:#477452;font-size:18px}
+  #fb{background:linear-gradient(145deg,rgba(43,78,52,.97),rgba(24,43,31,.985));padding:max(24px,env(safe-area-inset-top,0px)) 24px max(24px,env(safe-area-inset-bottom,0px));gap:18px}
+  #fb .step{font-size:15px;color:#E0EADB;letter-spacing:1.1px}
+  #fb .title{font-size:28px;line-height:1.25}
+  #fb .body{font-size:18px;line-height:1.58;background:rgba(255,255,255,.11);padding:17px;border-radius:16px}
+  #fb .prompt{font-size:17px;line-height:1.5;color:#F1F3EA}
+  #fb .mic{min-height:50px;background:rgba(214,161,132,.16);border-radius:14px;border-color:rgba(214,161,132,.38)}
+  #fb .mic .dot{background:#D6A184}
+  #fb .heard{font-size:15px;line-height:1.4}
+  #fb .row{gap:12px;margin-top:8px}
+  #fb button{min-width:120px;min-height:50px;padding:13px 18px;border-radius:13px;font-size:16px}
+  #fb button.primary{background:#477452}
+  #fb .check{font-size:15px;line-height:1.5}
+  @media(max-width:600px){
+    #ui{padding:calc(env(safe-area-inset-top,16px) + 7px) 12px calc(env(safe-area-inset-bottom,16px) + 9px)}
+    #top{border-radius:16px;padding:11px 12px}
+    #bottom{padding:15px 16px;border-radius:18px}
+    #caption{font-size:19px;min-height:46px}
+    #fb{padding:calc(18px + env(safe-area-inset-top,0px)) 16px calc(18px + env(safe-area-inset-bottom,0px));gap:15px}
+    #fb .title{font-size:25px}
+    #fb .row{width:100%}
+    #fb .row button{flex:1;padding:12px 10px}
+    #overlay h1{font-size:28px}
+    #overlay p{font-size:17px}
+  }
+  @media(prefers-reduced-motion:reduce){#voiceWave span,#fb .mic .dot{animation:none!important;transition:none!important}}
 </style>
 </head>
 <body>

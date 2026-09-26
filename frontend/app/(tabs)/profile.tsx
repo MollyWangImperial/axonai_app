@@ -222,7 +222,7 @@ export default function ProfileScreen() {
             {loading ? <ActivityIndicator color={colors.brandPrimary} /> : (
               <>
                 <Text testID="profile-name" style={[styles.name, { color: palette.text, fontSize: 24 * scale, lineHeight: 30 * scale }]}>{name}</Text>
-                <Text style={[styles.profileGreeting, { color: palette.muted, fontSize: 15 * scale, lineHeight: 21 * scale }]}>This space is yours, {name.split(" ")[0]}.</Text>
+                <Text style={[styles.profileGreeting, { color: palette.muted, fontSize: 17 * scale, lineHeight: 24 * scale }]}>This space is yours, {name.split(" ")[0]}.</Text>
               </>
             )}
             <Pressable testID="profile-add-photo" onPress={choosePhoto} style={styles.photoButton}>
@@ -234,7 +234,7 @@ export default function ProfileScreen() {
           </View>
 
           <Pressable testID="profile-edit-facility" onPress={() => openEditor("facility")} style={[styles.facilityCard, { backgroundColor: palette.soft }]}>
-            <View style={[styles.rowIcon, { backgroundColor: palette.surface }]}><Ionicons name="medkit-outline" size={23} color="#24594F" /></View>
+            <View style={[styles.rowIcon, { backgroundColor: palette.surface }]}><Ionicons name="medkit-outline" size={23} color={colors.brandPrimary} /></View>
             <View style={styles.rowCopy}>
               <Text style={[styles.rowEyebrow, { color: palette.muted }]}>Your care facility</Text>
               <Text style={[styles.facilityName, { color: palette.text, fontSize: 16 * scale }]}>{facility || "Not connected yet"}</Text>
@@ -325,10 +325,10 @@ function ScreenHeader({ title, onBack, onHelp, palette, scale }: { title: string
 function ProfileRow({ icon, title, subtitle, onPress, testID, palette, scale }: { icon: keyof typeof Ionicons.glyphMap; title: string; subtitle: string; onPress: () => void; testID?: string; palette: ProfilePalette; scale: number }) {
   return (
     <Pressable testID={testID} onPress={onPress} style={styles.profileRow}>
-      <View style={[styles.rowIcon, { backgroundColor: palette.soft }]}><Ionicons name={icon} size={22} color="#4A7856" /></View>
+      <View style={[styles.rowIcon, { backgroundColor: palette.soft }]}><Ionicons name={icon} size={22} color={colors.brandPrimary} /></View>
       <View style={styles.rowCopy}>
         <Text style={[styles.rowTitle, { color: palette.text, fontSize: 16 * scale }]}>{title}</Text>
-        <Text style={[styles.rowSubtitle, { color: palette.muted, fontSize: 12 * scale, lineHeight: 17 * scale }]} numberOfLines={2}>{subtitle}</Text>
+        <Text style={[styles.rowSubtitle, { color: palette.muted, fontSize: 16 * scale, lineHeight: 22 * scale }]} numberOfLines={2}>{subtitle}</Text>
       </View>
       <Ionicons name="chevron-forward" size={20} color={palette.muted} />
     </Pressable>
@@ -336,44 +336,44 @@ function ProfileRow({ icon, title, subtitle, onPress, testID, palette, scale }: 
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: "#F8FAF9" },
-  page: { paddingHorizontal: spacing.md, paddingBottom: 32 },
-  inner: { width: "100%", maxWidth: 620, alignSelf: "center", gap: spacing.md },
-  header: { minHeight: 56, flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
-  headerButton: { width: 42, height: 42, borderRadius: 21, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, alignItems: "center", justifyContent: "center" },
-  headerTitle: { fontSize: 22, fontWeight: "800", color: "#173D35" },
-  heroCard: { alignItems: "center", borderRadius: radius.md, backgroundColor: colors.surface, paddingHorizontal: spacing.lg, paddingVertical: spacing.lg, borderWidth: 1, borderColor: colors.divider, gap: spacing.xs },
-  avatarLarge: { width: 116, height: 116, borderRadius: 58, overflow: "hidden", backgroundColor: "#E7F1EE", alignItems: "center", justifyContent: "center", marginBottom: spacing.sm },
+  container: { flex: 1, backgroundColor: colors.surface },
+  page: { paddingHorizontal: 20, paddingBottom: spacing.xl },
+  inner: { width: "100%", maxWidth: 620, alignSelf: "center", gap: 20 },
+  header: { minHeight: 64, flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
+  headerButton: { width: 48, height: 48, borderRadius: 24, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, alignItems: "center", justifyContent: "center" },
+  headerTitle: { fontSize: 24, fontWeight: "800", color: colors.onSurface },
+  heroCard: { alignItems: "center", borderRadius: radius.lg, backgroundColor: colors.surface, paddingHorizontal: spacing.lg, paddingVertical: 28, borderWidth: 1, borderColor: colors.border, gap: spacing.sm },
+  avatarLarge: { width: 120, height: 120, borderRadius: 60, overflow: "hidden", backgroundColor: colors.brandTertiary, alignItems: "center", justifyContent: "center", marginBottom: spacing.sm },
   avatarImage: { width: "100%", height: "100%" },
-  name: { fontSize: 24, lineHeight: 30, fontWeight: "800", color: "#173D35", textAlign: "center" },
-  profileGreeting: { fontSize: 15, lineHeight: 21, color: colors.onSurfaceTertiary, textAlign: "center" },
-  photoButton: { minHeight: 48, marginTop: spacing.sm, borderRadius: radius.pill, backgroundColor: "#176257", flexDirection: "row", alignItems: "center", justifyContent: "center", gap: spacing.xs, paddingHorizontal: spacing.lg },
-  photoButtonText: { color: colors.onBrandPrimary, fontSize: 15, fontWeight: "800" },
-  removePhotoText: { color: colors.error, fontSize: 13, fontWeight: "800", paddingVertical: 4 },
-  photoNote: { maxWidth: 390, marginTop: spacing.sm, fontSize: 12, lineHeight: 18, color: colors.onSurfaceTertiary, textAlign: "center" },
-  facilityCard: { minHeight: 94, borderRadius: radius.md, padding: spacing.md, backgroundColor: "#E8F3F1", flexDirection: "row", alignItems: "center", gap: spacing.sm },
-  sectionCard: { borderRadius: radius.md, paddingHorizontal: spacing.md, paddingBottom: spacing.xs, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.divider },
-  sectionLabel: { fontSize: 11, fontWeight: "800", color: "#61766F", paddingTop: spacing.sm, paddingBottom: 2 },
-  profileRow: { minHeight: 82, flexDirection: "row", alignItems: "center", gap: spacing.sm },
-  rowIcon: { width: 44, height: 44, borderRadius: radius.sm, backgroundColor: "#ECF5F2", alignItems: "center", justifyContent: "center" },
+  name: { fontSize: 26, lineHeight: 32, fontWeight: "800", color: colors.onSurface, textAlign: "center" },
+  profileGreeting: { fontSize: 17, lineHeight: 24, color: colors.onSurfaceTertiary, textAlign: "center" },
+  photoButton: { minHeight: 52, marginTop: spacing.sm, borderRadius: radius.pill, backgroundColor: colors.brandPrimary, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: spacing.xs, paddingHorizontal: spacing.lg },
+  photoButtonText: { color: colors.onBrandPrimary, fontSize: 17, fontWeight: "800" },
+  removePhotoText: { color: colors.error, fontSize: 16, fontWeight: "800", paddingVertical: 6 },
+  photoNote: { maxWidth: 390, marginTop: spacing.sm, fontSize: 16, lineHeight: 23, color: colors.onSurfaceTertiary, textAlign: "center" },
+  facilityCard: { minHeight: 100, borderRadius: radius.lg, padding: spacing.md, backgroundColor: colors.brandTertiary, flexDirection: "row", alignItems: "center", gap: spacing.sm },
+  sectionCard: { borderRadius: radius.lg, paddingHorizontal: spacing.md, paddingBottom: spacing.xs, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border },
+  sectionLabel: { fontSize: 13, fontWeight: "800", color: colors.onSurfaceTertiary, paddingTop: spacing.md, paddingBottom: 4, letterSpacing: 0.4 },
+  profileRow: { minHeight: 92, flexDirection: "row", alignItems: "center", gap: spacing.sm },
+  rowIcon: { width: 48, height: 48, borderRadius: 14, backgroundColor: colors.surfaceSecondary, alignItems: "center", justifyContent: "center" },
   rowCopy: { flex: 1, minWidth: 0 },
-  rowEyebrow: { fontSize: 11, fontWeight: "800", color: "#61766F", marginBottom: 3 },
-  facilityName: { fontSize: 16, lineHeight: 21, color: colors.onSurface, fontWeight: "600" },
-  rowTitle: { fontSize: 16, fontWeight: "800", color: "#173D35" },
-  rowSubtitle: { fontSize: 12, lineHeight: 17, color: colors.onSurfaceTertiary, marginTop: 2 },
-  divider: { height: 1, backgroundColor: colors.divider, marginLeft: 56 },
-  logoutButton: { minHeight: 52, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.error, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: spacing.xs, backgroundColor: colors.surface },
-  logoutText: { color: colors.error, fontSize: 16, fontWeight: "800" },
-  footerNote: { fontSize: 12, lineHeight: 18, color: colors.onSurfaceTertiary, textAlign: "center", marginBottom: spacing.md },
-  modalScrim: { flex: 1, backgroundColor: "rgba(19,34,29,0.4)", alignItems: "center", justifyContent: "center", padding: spacing.lg },
-  modalCard: { width: "100%", maxWidth: 440, borderRadius: radius.md, backgroundColor: colors.surface, padding: spacing.lg },
-  modalTitle: { fontSize: 20, fontWeight: "800", color: "#173D35" },
-  modalBody: { fontSize: 14, lineHeight: 20, color: colors.onSurfaceTertiary, marginTop: spacing.xs },
-  input: { minHeight: 50, borderWidth: 1, borderColor: colors.borderStrong, borderRadius: radius.sm, paddingHorizontal: spacing.md, fontSize: 16, color: colors.onSurface, marginTop: spacing.md },
+  rowEyebrow: { fontSize: 14, fontWeight: "800", color: colors.onSurfaceTertiary, marginBottom: 4 },
+  facilityName: { fontSize: 17, lineHeight: 23, color: colors.onSurface, fontWeight: "700" },
+  rowTitle: { fontSize: 18, fontWeight: "800", color: colors.onSurface },
+  rowSubtitle: { fontSize: 16, lineHeight: 22, color: colors.onSurfaceTertiary, marginTop: 3 },
+  divider: { height: 1, backgroundColor: colors.divider, marginLeft: 60 },
+  logoutButton: { minHeight: 54, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.error, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: spacing.xs, backgroundColor: colors.surface },
+  logoutText: { color: colors.error, fontSize: 17, fontWeight: "800" },
+  footerNote: { fontSize: 16, lineHeight: 23, color: colors.onSurfaceTertiary, textAlign: "center", marginBottom: spacing.md },
+  modalScrim: { flex: 1, backgroundColor: "rgba(36,54,47,0.48)", alignItems: "center", justifyContent: "center", padding: spacing.lg },
+  modalCard: { width: "100%", maxWidth: 440, borderRadius: radius.lg, backgroundColor: colors.surface, padding: spacing.lg },
+  modalTitle: { fontSize: 22, fontWeight: "800", color: colors.onSurface },
+  modalBody: { fontSize: 16, lineHeight: 23, color: colors.onSurfaceTertiary, marginTop: spacing.xs },
+  input: { minHeight: 54, borderWidth: 1, borderColor: colors.borderStrong, borderRadius: radius.md, paddingHorizontal: spacing.md, fontSize: 17, color: colors.onSurface, marginTop: spacing.md },
   modalActions: { flexDirection: "row", justifyContent: "flex-end", gap: spacing.sm, marginTop: spacing.md },
-  cancelButton: { minHeight: 44, minWidth: 90, alignItems: "center", justifyContent: "center", borderRadius: radius.sm, backgroundColor: colors.surfaceSecondary },
-  cancelText: { color: colors.onSurfaceSecondary, fontWeight: "700" },
-  saveButton: { minHeight: 44, minWidth: 100, alignItems: "center", justifyContent: "center", borderRadius: radius.sm, backgroundColor: "#176257" },
+  cancelButton: { minHeight: 48, minWidth: 100, alignItems: "center", justifyContent: "center", borderRadius: radius.md, backgroundColor: colors.surfaceSecondary },
+  cancelText: { color: colors.onSurfaceSecondary, fontSize: 16, fontWeight: "800" },
+  saveButton: { minHeight: 48, minWidth: 108, alignItems: "center", justifyContent: "center", borderRadius: radius.md, backgroundColor: colors.brandPrimary },
   disabledButton: { opacity: 0.45 },
-  saveText: { color: colors.onBrandPrimary, fontWeight: "800" },
+  saveText: { color: colors.onBrandPrimary, fontSize: 16, fontWeight: "800" },
 });

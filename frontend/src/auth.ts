@@ -36,7 +36,7 @@ export async function getCachedPatientProfile(userId: string): Promise<Record<st
   }
   const [preferredName, affectedSide] = await Promise.all([
     storage.getItem(preferredNameKey(userId), ""),
-    storage.getItem(affectedSideKey(userId), ""),
+    storage.getItem<string>(affectedSideKey(userId), ""),
   ]);
   if (!preferredName && affectedSide !== "left" && affectedSide !== "right") return null;
   return {

@@ -152,7 +152,7 @@ export default function FunctionSummaryScreen() {
 
       <ScrollView contentContainerStyle={[styles.content, isWide && styles.contentWide]} showsVerticalScrollIndicator={false}>
         <View style={styles.page}>
-          {isDemo && <View style={styles.demoBanner}><Ionicons name="sparkles" size={18} color="#675080" /><Text style={styles.demoBannerText}>Sample assessment preview</Text></View>}
+          {isDemo && <View style={styles.demoBanner}><Ionicons name="sparkles" size={18} color="#775C97" /><Text style={styles.demoBannerText}>Sample assessment preview</Text></View>}
           <View style={styles.intro}>
             <Text style={[styles.eyebrow, isWide && styles.eyebrowWide]}>FUNCTION AT A GLANCE</Text>
             <Text style={[styles.title, isWide && styles.titleWide]}>Three parts of everyday movement</Text>
@@ -164,7 +164,7 @@ export default function FunctionSummaryScreen() {
 
           <Pressable testID="function-summary-view-snapshot" onPress={() => router.push({ pathname: "/results", params: { id } })} style={[styles.primaryButton, isWide && styles.primaryButtonWide]}>
             <Text style={[styles.primaryButtonText, isWide && styles.primaryButtonTextWide]}>View movement snapshot</Text>
-            <Ionicons name="arrow-forward" size={22} color="#FFFFFF" />
+            <Ionicons name="arrow-forward" size={22} color="#FFFEFA" />
           </Pressable>
         </View>
       </ScrollView>
@@ -173,42 +173,42 @@ export default function FunctionSummaryScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: "#FFFEFB" },
+  container: { flex: 1, backgroundColor: colors.surface },
   center: { alignItems: "center", justifyContent: "center", gap: spacing.md, padding: spacing.lg },
   loadingText: { color: colors.onSurfaceSecondary },
   errorText: { color: colors.error, textAlign: "center" },
-  header: { minHeight: 66, flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: spacing.sm, paddingBottom: spacing.sm, borderBottomWidth: 1, borderBottomColor: colors.divider },
-  headerButton: { width: 48, height: 44, alignItems: "center", justifyContent: "center" },
+  header: { minHeight: 72, flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: spacing.sm, paddingBottom: spacing.sm, backgroundColor: colors.surface, borderBottomWidth: 1, borderBottomColor: colors.border },
+  headerButton: { width: 48, height: 48, alignItems: "center", justifyContent: "center" },
   headerCopy: { flex: 1, alignItems: "center" },
-  headerTitle: { fontSize: 18, lineHeight: 23, fontWeight: "800", color: "#164631", textAlign: "center" },
-  headerDate: { marginTop: 2, fontSize: 12, color: colors.onSurfaceTertiary },
-  content: { paddingVertical: spacing.lg, paddingHorizontal: spacing.sm, paddingBottom: 48 },
+  headerTitle: { fontSize: 20, lineHeight: 27, fontWeight: "800", color: colors.onSurface, textAlign: "center" },
+  headerDate: { marginTop: 3, fontSize: 14, lineHeight: 20, color: colors.onSurfaceTertiary },
+  content: { paddingVertical: spacing.lg, paddingHorizontal: spacing.md, paddingBottom: 56 },
   contentWide: { paddingHorizontal: 48 },
   page: { width: "100%", maxWidth: 1160, alignSelf: "center" },
-  demoBanner: { minHeight: 42, flexDirection: "row", alignItems: "center", gap: spacing.xs, paddingHorizontal: spacing.sm, borderWidth: 1, borderColor: "#DCCFEA", borderRadius: radius.sm, backgroundColor: "#F5EFFA" },
-  demoBannerText: { color: "#675080", fontSize: 12, fontWeight: "800" },
-  intro: { alignItems: "center", paddingVertical: 30 },
-  eyebrow: { color: "#4A7856", fontSize: 11, lineHeight: 15, fontWeight: "900" },
+  demoBanner: { minHeight: 48, flexDirection: "row", alignItems: "center", gap: spacing.sm, paddingHorizontal: spacing.md, borderWidth: 1, borderColor: "#E6CFC0", borderRadius: radius.md, backgroundColor: "#F6F0EA" },
+  demoBannerText: { color: "#6B493A", fontSize: 14, lineHeight: 20, fontWeight: "800" },
+  intro: { alignItems: "center", paddingVertical: 32 },
+  eyebrow: { color: colors.brandPrimary, fontSize: 13, lineHeight: 18, fontWeight: "900", letterSpacing: 0.5 },
   eyebrowWide: { fontSize: 16, lineHeight: 21 },
-  title: { marginTop: 6, color: "#12392B", fontSize: 26, lineHeight: 32, fontWeight: "900", textAlign: "center" },
+  title: { marginTop: 8, color: colors.onSurface, fontSize: 30, lineHeight: 37, fontWeight: "900", textAlign: "center" },
   titleWide: { marginTop: 10, fontSize: 44, lineHeight: 52 },
   domainList: { gap: spacing.sm },
   domainListWide: { flexDirection: "row", gap: spacing.md },
-  domainCard: { flex: 1, minWidth: 0, minHeight: 540, alignItems: "center", paddingHorizontal: spacing.lg, paddingTop: 48, paddingBottom: spacing.lg, borderWidth: 1, borderTopWidth: 6, borderRadius: radius.sm, backgroundColor: "#FFFFFF", shadowColor: "#173E2F", shadowOffset: { width: 0, height: 5 }, shadowOpacity: 0.09, shadowRadius: 12, elevation: 2 },
-  domainCardCompact: { minHeight: 320, paddingTop: spacing.lg, paddingHorizontal: spacing.md },
+  domainCard: { flex: 1, minWidth: 0, minHeight: 540, alignItems: "center", paddingHorizontal: spacing.lg, paddingTop: 48, paddingBottom: spacing.lg, borderWidth: 1, borderTopWidth: 6, borderRadius: radius.md, backgroundColor: "#FFFEFA", shadowColor: "#24362F", shadowOffset: { width: 0, height: 5 }, shadowOpacity: 0.07, shadowRadius: 12, elevation: 2 },
+  domainCardCompact: { minHeight: 336, paddingTop: spacing.lg, paddingHorizontal: spacing.md },
   iconCircle: { width: 208, height: 208, borderRadius: 104, alignItems: "center", justifyContent: "center" },
   iconCircleCompact: { width: 124, height: 124, borderRadius: 62 },
   footprintPair: { flexDirection: "row", alignItems: "center", justifyContent: "center", width: "100%" },
   leftFootprint: { transform: [{ rotate: "-12deg" }, { translateY: -6 }] },
   rightFootprint: { marginLeft: -10, transform: [{ rotate: "12deg" }, { translateY: 8 }] },
   domainTitle: { marginTop: 28, color: "#12392B", fontSize: 30, lineHeight: 37, fontWeight: "900", textAlign: "center" },
-  domainTitleCompact: { marginTop: spacing.md, fontSize: 25, lineHeight: 31 },
-  statusPill: { marginTop: 14, paddingHorizontal: 20, paddingVertical: 8, borderRadius: radius.pill },
-  statusText: { color: "#FFFFFF", fontSize: 16, lineHeight: 20, fontWeight: "900" },
-  domainMessage: { maxWidth: 272, marginTop: 18, color: "#303A35", fontSize: 17, lineHeight: 26, fontWeight: "500", textAlign: "center" },
-  domainMessageCompact: { maxWidth: 310, marginTop: 14, fontSize: 15, lineHeight: 22 },
-  primaryButton: { minHeight: 56, marginTop: spacing.lg, paddingHorizontal: spacing.lg, borderRadius: radius.sm, backgroundColor: "#15543C", flexDirection: "row", alignItems: "center", justifyContent: "center", gap: spacing.sm },
+  domainTitleCompact: { marginTop: spacing.md, fontSize: 26, lineHeight: 32 },
+  statusPill: { marginTop: 14, paddingHorizontal: 20, paddingVertical: 9, borderRadius: radius.pill },
+  statusText: { color: "#FFFEFA", fontSize: 16, lineHeight: 20, fontWeight: "900" },
+  domainMessage: { maxWidth: 272, marginTop: 18, color: colors.onSurfaceSecondary, fontSize: 17, lineHeight: 26, fontWeight: "500", textAlign: "center" },
+  domainMessageCompact: { maxWidth: 310, marginTop: 14, fontSize: 16, lineHeight: 24 },
+  primaryButton: { minHeight: 56, marginTop: spacing.lg, paddingHorizontal: spacing.lg, borderRadius: radius.md, backgroundColor: colors.brandPrimary, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: spacing.sm },
   primaryButtonWide: { minHeight: 84, marginTop: 36 },
-  primaryButtonText: { color: "#FFFFFF", fontSize: 16, fontWeight: "800" },
+  primaryButtonText: { color: colors.onBrandPrimary, fontSize: 18, lineHeight: 24, fontWeight: "800" },
   primaryButtonTextWide: { fontSize: 22 },
 });

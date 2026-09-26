@@ -16,15 +16,17 @@ export default function TabsLayout() {
         tabBarStyle: {
           backgroundColor: palette.surface,
           borderTopColor: palette.border,
+          borderTopWidth: 1,
           height: isWeb ? 80 : Platform.OS === "ios" ? 88 : 64,
           paddingBottom: isWeb ? 14 : Platform.OS === "ios" ? 28 : 8,
           paddingTop: isWeb ? 7 : 8,
+          elevation: 4,
         },
-        tabBarItemStyle: { minHeight: 58 },
+        tabBarItemStyle: { minHeight: 58, paddingHorizontal: 4 },
         tabBarLabelStyle: {
-          fontSize: 11 * scale,
-          lineHeight: 16 * scale,
-          fontWeight: "600",
+          fontSize: 13 * scale,
+          lineHeight: 18 * scale,
+          fontWeight: "700",
           marginBottom: isWeb ? 2 : 0,
         },
       }}

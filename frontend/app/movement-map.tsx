@@ -12,9 +12,9 @@ import { DEMO_ASSESSMENT_ID, demoAssessment, demoPatientAssessmentSummary } from
 type DomainId = "upper_limb" | "hand" | "lower_limb";
 
 function statusColor(findings: number, completion: number) {
-  if (findings > 0) return { color: "#F05F4C", soft: "#FCE7E3", label: "Needs attention", icon: "alert" as const };
-  if (completion < 100) return { color: "#DEA128", soft: "#FFF3D8", label: "Building strength", icon: "barbell-outline" as const };
-  return { color: "#3E8256", soft: "#E5F1E8", label: "Moving well", icon: "checkmark" as const };
+  if (findings > 0) return { color: "#B95C49", soft: "#F7E7E0", label: "Needs attention", icon: "alert" as const };
+  if (completion < 100) return { color: "#A27A36", soft: "#F7F0DF", label: "Building strength", icon: "barbell-outline" as const };
+  return { color: "#4D805B", soft: "#E4ECE2", label: "Moving well", icon: "checkmark" as const };
 }
 
 function areaTitle(domain: DomainId, affectedSide: "left" | "right") {
@@ -116,7 +116,7 @@ export default function MovementMapScreen() {
     <View style={styles.container}>
       <View style={[styles.header, { paddingTop: insets.top + spacing.sm }]}>
         <Pressable onPress={() => router.back()} style={styles.headerButton} accessibilityLabel="Go back" testID="movement-map-back">
-          <Ionicons name="chevron-back" size={26} color="#154B34" />
+          <Ionicons name="chevron-back" size={26} color="#2C523B" />
         </Pressable>
         <Text style={[styles.headerTitle, !isWide && styles.headerTitleNarrow]}>Movement map</Text>
         <View style={styles.headerButton} />
@@ -126,7 +126,7 @@ export default function MovementMapScreen() {
         <View style={[styles.page, { width: pageWidth }]}>
           {isDemo && (
             <View style={styles.demoBanner} testID="movement-map-demo-banner">
-              <Ionicons name="sparkles" size={23} color="#675080" />
+              <Ionicons name="sparkles" size={23} color="#775C97" />
               <Text style={styles.demoBannerText}>Sample movement map. Your real map will use your completed assessment.</Text>
             </View>
           )}
@@ -138,9 +138,9 @@ export default function MovementMapScreen() {
 
             <View style={[styles.legend, isWide && styles.legendWide]}>
               {[
-                { color: "#F05F4C", soft: "#FCE7E3", label: "Needs attention", icon: "alert" as const },
-                { color: "#DEA128", soft: "#FFF3D8", label: "Building strength", icon: "barbell-outline" as const },
-                { color: "#3E8256", soft: "#E5F1E8", label: "Moving well", icon: "checkmark" as const },
+                { color: "#B95C49", soft: "#F7E7E0", label: "Needs attention", icon: "alert" as const },
+                { color: "#A27A36", soft: "#F7F0DF", label: "Building strength", icon: "barbell-outline" as const },
+                { color: "#4D805B", soft: "#E4ECE2", label: "Moving well", icon: "checkmark" as const },
               ].map((item) => (
                 <View key={item.label} style={[styles.legendItem, !isWide && styles.legendItemNarrow]}>
                   <View style={[styles.legendIcon, !isWide && styles.legendIconNarrow, { borderColor: item.color, backgroundColor: item.soft }]}>
@@ -239,7 +239,7 @@ export default function MovementMapScreen() {
             <Text style={styles.planTitle}>{canViewPlan ? "Your rehab plan is ready" : noRehabNeeded ? "No rehab plan is needed" : "Your plan is waiting for review"}</Text>
             <Text style={styles.planText}>{canViewPlan ? "Your plan focuses on the movement areas that need support." : reviewGate?.patient_message}</Text>
             <Pressable onPress={openPlan} style={styles.planButton} testID={canViewPlan ? "movement-map-view-plan" : "movement-map-return-home"}>
-              <Ionicons name={canViewPlan ? "clipboard-outline" : "home-outline"} size={23} color="#FFFFFF" />
+              <Ionicons name={canViewPlan ? "clipboard-outline" : "home-outline"} size={23} color="#FFFEFA" />
               <Text style={styles.planButtonText}>{canViewPlan ? "View your rehab plan" : "Return home"}</Text>
             </Pressable>
           </View>
@@ -250,23 +250,23 @@ export default function MovementMapScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: "#FFFEFB" },
-  center: { flex: 1, alignItems: "center", justifyContent: "center", gap: spacing.md, padding: spacing.lg, backgroundColor: "#FFFEFB" },
+  container: { flex: 1, backgroundColor: "#FFFEFA" },
+  center: { flex: 1, alignItems: "center", justifyContent: "center", gap: spacing.md, padding: spacing.lg, backgroundColor: "#FFFEFA" },
   loadingText: { color: colors.onSurfaceSecondary },
   errorText: { color: colors.error, textAlign: "center" },
-  header: { minHeight: 76, flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: spacing.lg, paddingBottom: spacing.sm, backgroundColor: "#FFFEFB" },
+  header: { minHeight: 76, flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: spacing.lg, paddingBottom: spacing.sm, backgroundColor: "#FFFEFA" },
   headerButton: { width: 46, height: 46, alignItems: "center", justifyContent: "center" },
-  headerTitle: { fontSize: 38, lineHeight: 46, fontWeight: "800", color: "#123E2D" },
+  headerTitle: { fontSize: 38, lineHeight: 46, fontWeight: "800", color: "#24362F" },
   headerTitleNarrow: { fontSize: 24, lineHeight: 30 },
   content: { alignItems: "center", paddingBottom: spacing.xl },
   page: { alignSelf: "center" },
-  demoBanner: { minHeight: 72, flexDirection: "row", alignItems: "center", gap: spacing.md, borderRadius: radius.sm, paddingHorizontal: spacing.lg, paddingVertical: spacing.md, marginBottom: spacing.lg, backgroundColor: "#F3EDFA", borderWidth: 1, borderColor: "#D9C8ED" },
-  demoBannerText: { flex: 1, fontSize: 16, lineHeight: 23, color: "#5C486F" },
-  mapPanel: { borderWidth: 1, borderColor: "#C9CEC9", borderRadius: radius.sm, backgroundColor: "#FFFFFF", padding: spacing.xl },
+  demoBanner: { minHeight: 72, flexDirection: "row", alignItems: "center", gap: spacing.md, borderRadius: radius.sm, paddingHorizontal: spacing.lg, paddingVertical: spacing.md, marginBottom: spacing.lg, backgroundColor: "#F1EDF6", borderWidth: 1, borderColor: "#D7CAE4" },
+  demoBannerText: { flex: 1, fontSize: 16, lineHeight: 23, color: "#67527C" },
+  mapPanel: { borderWidth: 1, borderColor: "#B9C2B8", borderRadius: radius.sm, backgroundColor: "#FFFEFA", padding: spacing.xl },
   mapPanelNarrow: { padding: spacing.md },
   panelLead: { minHeight: 58, flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: spacing.lg },
   panelLeadNarrow: { flexDirection: "column", alignItems: "stretch", gap: spacing.md },
-  panelInstruction: { flex: 1, fontSize: 17, lineHeight: 24, fontWeight: "800", color: "#174833" },
+  panelInstruction: { flex: 1, fontSize: 17, lineHeight: 24, fontWeight: "800", color: "#2C523B" },
   legend: { flexDirection: "row", flexWrap: "wrap", gap: spacing.md, marginTop: spacing.md },
   legendWide: { justifyContent: "space-between", paddingRight: 80 },
   legendItem: { minWidth: 180, flexDirection: "row", alignItems: "center", gap: spacing.sm },
@@ -285,32 +285,32 @@ const styles = StyleSheet.create({
   mapMarker: { position: "absolute", width: 60, height: 60, marginLeft: -30, marginTop: -30, borderRadius: 30, borderWidth: 2, alignItems: "center", justifyContent: "center", zIndex: 3 },
   mapMarkerActive: { borderWidth: 4, transform: [{ scale: 1.08 }], zIndex: 5 },
   mapMarkerInner: { width: 42, height: 42, borderRadius: 21, backgroundColor: "rgba(255,255,255,0.92)", alignItems: "center", justifyContent: "center" },
-  markerLabel: { position: "absolute", top: 12, width: 132, minHeight: 36, justifyContent: "center", paddingHorizontal: spacing.sm, borderWidth: 1, borderRadius: radius.sm, backgroundColor: "#FFFFFF" },
+  markerLabel: { position: "absolute", top: 12, width: 132, minHeight: 36, justifyContent: "center", paddingHorizontal: spacing.sm, borderWidth: 1, borderRadius: radius.sm, backgroundColor: "#FFFEFA" },
   markerLabelRight: { left: 66 },
   markerLabelLeft: { right: 66 },
   markerLabelText: { fontSize: 12, fontWeight: "800", textAlign: "center" },
-  detailPanel: { marginTop: spacing.md, borderWidth: 1, borderColor: "#CDD3CE", borderRadius: radius.sm, backgroundColor: "#FFFEFB", padding: spacing.lg },
+  detailPanel: { marginTop: spacing.md, borderWidth: 1, borderColor: "#B9C2B8", borderRadius: radius.sm, backgroundColor: "#FFFEFA", padding: spacing.lg },
   detailPanelWide: { width: 430, minHeight: 700, marginTop: 0, padding: spacing.xl },
   detailHeader: { flexDirection: "row", alignItems: "center", gap: spacing.md },
   detailIcon: { width: 72, height: 72, borderRadius: 36, alignItems: "center", justifyContent: "center" },
   detailHeadingCopy: { flex: 1, minWidth: 0 },
-  detailTitle: { fontSize: 27, lineHeight: 33, fontWeight: "800", color: "#155039" },
+  detailTitle: { fontSize: 27, lineHeight: 33, fontWeight: "800", color: "#2C523B" },
   statusPill: { alignSelf: "flex-start", marginTop: 6, borderRadius: radius.pill, paddingHorizontal: spacing.md, paddingVertical: 6 },
   statusPillText: { fontSize: 13, fontWeight: "800" },
   detailSummary: { marginTop: spacing.lg, fontSize: 18, lineHeight: 28, color: colors.onSurfaceSecondary },
   detailDivider: { height: 1, backgroundColor: colors.divider, marginVertical: spacing.lg },
   metricList: { gap: spacing.lg },
   metricRow: { minHeight: 60, flexDirection: "row", alignItems: "center", gap: spacing.md },
-  metricIcon: { width: 54, height: 54, borderRadius: 27, alignItems: "center", justifyContent: "center", backgroundColor: "#EDF4EF", borderWidth: 1, borderColor: "#D9E5DC" },
-  metricValue: { minWidth: 92, fontSize: 34, lineHeight: 40, fontWeight: "800", color: "#07543B" },
+  metricIcon: { width: 54, height: 54, borderRadius: 27, alignItems: "center", justifyContent: "center", backgroundColor: "#EDF4EF", borderWidth: 1, borderColor: "#E4ECE2" },
+  metricValue: { minWidth: 92, fontSize: 34, lineHeight: 40, fontWeight: "800", color: "#3D6B4F" },
   metricLabel: { flex: 1, fontSize: 15, lineHeight: 20, color: colors.onSurfaceSecondary },
   selectButton: { minHeight: 54, marginTop: spacing.xl, borderWidth: 1, borderColor: colors.brandPrimary, borderRadius: radius.sm, alignItems: "center", justifyContent: "center" },
   selectButtonWide: { marginTop: "auto" },
   selectButtonText: { color: colors.brandPrimary, fontSize: 16, fontWeight: "800" },
-  planSection: { marginTop: spacing.xl, borderWidth: 1, borderColor: "#BFD2C4", borderRadius: radius.sm, backgroundColor: "#F7FAF7", padding: spacing.xl },
+  planSection: { marginTop: spacing.xl, borderWidth: 1, borderColor: "#C8D6C7", borderRadius: radius.sm, backgroundColor: "#F7FAF7", padding: spacing.xl },
   planEyebrow: { fontSize: 13, fontWeight: "900", color: colors.brandPrimary },
   planTitle: { marginTop: spacing.sm, fontSize: 31, lineHeight: 38, fontWeight: "800", color: "#164631" },
   planText: { marginTop: spacing.sm, fontSize: 16, lineHeight: 23, color: colors.onSurfaceSecondary },
-  planButton: { minHeight: 64, marginTop: spacing.lg, borderRadius: radius.sm, backgroundColor: "#07543B", flexDirection: "row", alignItems: "center", justifyContent: "center", gap: spacing.sm, paddingHorizontal: spacing.lg },
-  planButtonText: { color: "#FFFFFF", fontSize: 18, fontWeight: "800" },
+  planButton: { minHeight: 64, marginTop: spacing.lg, borderRadius: radius.sm, backgroundColor: "#3D6B4F", flexDirection: "row", alignItems: "center", justifyContent: "center", gap: spacing.sm, paddingHorizontal: spacing.lg },
+  planButtonText: { color: "#FFFEFA", fontSize: 18, fontWeight: "800" },
 });

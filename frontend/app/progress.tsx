@@ -199,7 +199,7 @@ function MovementProgressRow({ item, isLast, wide }: { item: MovementRow; isLast
     <View style={[styles.movementRow, !wide && styles.movementRowMobile, !isLast && styles.movementRowDivider]} testID={`progress-domain-${item.id}`}>
       <View style={[styles.movementIdentity, !wide && styles.movementIdentityMobile]}>
         <View style={[styles.movementIcon, !wide && styles.movementIconMobile]}>
-          <Ionicons name={item.icon} size={wide ? 34 : 28} color="#0B5D38" />
+          <Ionicons name={item.icon} size={wide ? 34 : 28} color="#3D6B4F" />
         </View>
         <View style={styles.movementCopy}>
           <Text style={[styles.movementLabel, wide && styles.movementLabelWide, !wide && styles.movementLabelMobile]}>{item.label}</Text>
@@ -208,7 +208,7 @@ function MovementProgressRow({ item, isLast, wide }: { item: MovementRow; isLast
       </View>
       <View style={[styles.movementValueWrap, !wide && styles.movementValueWrapMobile]}>
         <View style={[styles.movementDirection, !wide && styles.movementDirectionMobile]}>
-          <Ionicons name={item.direction === "up" ? "trending-up-outline" : "arrow-forward-outline"} size={wide ? 28 : 23} color="#16833F" />
+          <Ionicons name={item.direction === "up" ? "trending-up-outline" : "arrow-forward-outline"} size={wide ? 28 : 23} color="#4D805B" />
         </View>
         <Text style={[styles.movementValue, wide && styles.movementValueWide, !wide && styles.movementValueMobile]}>{item.value}</Text>
       </View>
@@ -284,7 +284,7 @@ export default function ProgressScreen() {
     <View style={[styles.container, { paddingTop: insets.top }]}>
       <View style={styles.topBar}>
         <Pressable onPress={() => router.back()} hitSlop={12} style={styles.backButton} testID="progress-back" accessibilityLabel="Go back">
-          <Ionicons name="chevron-back" size={28} color="#073F2A" />
+          <Ionicons name="chevron-back" size={28} color="#2C523B" />
         </Pressable>
         <Text style={styles.title}>Progress</Text>
       </View>
@@ -298,7 +298,7 @@ export default function ProgressScreen() {
           <Text style={styles.emptyBody}>Complete your first assessment to create a recovery baseline and see what changes over time.</Text>
           <Pressable onPress={() => router.replace("/")} style={styles.primaryButton} testID="progress-empty-cta">
             <Text style={styles.primaryButtonText}>Start assessment</Text>
-            <Ionicons name="chevron-forward" size={21} color="#FFFFFF" />
+            <Ionicons name="chevron-forward" size={21} color="#FFFEFA" />
           </Pressable>
         </View>
       ) : (
@@ -306,14 +306,14 @@ export default function ProgressScreen() {
           <View style={styles.page}>
             {demoMode && (
               <View style={styles.demoBanner} testID="progress-demo-banner">
-                <Ionicons name="sparkles" size={24} color="#674AA8" />
+                <Ionicons name="sparkles" size={24} color="#775C97" />
                 <Text style={styles.demoBannerText}>Demo progress using sample data.</Text>
               </View>
             )}
 
             <View style={[styles.heroCard, !wide && styles.heroCardMobile]} testID="progress-hero">
               <View style={[styles.heroIcon, wide && styles.heroIconWide]}>
-                <Ionicons name="trending-up-outline" size={wide ? 96 : 48} color="#07542F" />
+                <Ionicons name="trending-up-outline" size={wide ? 96 : 48} color="#3D6B4F" />
               </View>
               <View style={styles.heroCopy}>
                 <Text style={[styles.heroHeadline, wide && styles.heroHeadlineWide]}>{viewModel.headline}</Text>
@@ -343,7 +343,7 @@ export default function ProgressScreen() {
                   const complete = index < viewModel.sessionsCompleted;
                   return (
                     <View key={index} style={[styles.sessionDot, wide && styles.sessionDotWide, complete && styles.sessionDotComplete]}>
-                      {complete && <Ionicons name="checkmark" size={wide ? 22 : 16} color="#FFFFFF" />}
+                      {complete && <Ionicons name="checkmark" size={wide ? 22 : 16} color="#FFFEFA" />}
                     </View>
                   );
                 })}
@@ -352,14 +352,14 @@ export default function ProgressScreen() {
 
             <View style={[styles.nextCard, !wide && styles.nextCardMobile]} testID="progress-next-step">
               <View style={[styles.nextIdentity, !wide && styles.nextIdentityMobile]}>
-                <View style={[styles.nextIcon, wide && styles.nextIconWide]}><Ionicons name="locate-outline" size={wide ? 52 : 34} color="#07542F" /></View>
+                <View style={[styles.nextIcon, wide && styles.nextIconWide]}><Ionicons name="locate-outline" size={wide ? 52 : 34} color="#3D6B4F" /></View>
                 <View style={styles.nextCopy}>
                   <Text style={styles.nextEyebrow}>NEXT STEP</Text>
                   <Text style={[styles.nextTitle, wide && styles.nextTitleWide]}>{viewModel.nextStep}</Text>
                 </View>
               </View>
               <Pressable onPress={continuePlan} style={[styles.primaryButton, wide && styles.primaryButtonWide]} testID="progress-continue-plan">
-                <Ionicons name="chevron-forward" size={24} color="#FFFFFF" />
+                <Ionicons name="chevron-forward" size={24} color="#FFFEFA" />
                 <Text style={[styles.primaryButtonText, wide && styles.primaryButtonTextWide]}>{"Continue today's plan"}</Text>
               </Pressable>
             </View>
@@ -371,20 +371,20 @@ export default function ProgressScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: "#FCFDFB" },
-  topBar: { minHeight: 66, alignItems: "center", justifyContent: "center", borderBottomWidth: 1, borderBottomColor: "#E1E5DE", paddingHorizontal: spacing.md },
+  container: { flex: 1, backgroundColor: "#F7F6F0" },
+  topBar: { minHeight: 66, alignItems: "center", justifyContent: "center", borderBottomWidth: 1, borderBottomColor: "#E0E4DB", paddingHorizontal: spacing.md },
   backButton: { position: "absolute", left: spacing.md, width: 44, height: 44, alignItems: "center", justifyContent: "center" },
-  title: { fontSize: 24, lineHeight: 30, fontWeight: "900", color: "#073F2A" },
+  title: { fontSize: 24, lineHeight: 30, fontWeight: "900", color: "#2C523B" },
   scroll: { paddingHorizontal: spacing.md, paddingTop: spacing.md, paddingBottom: 56 },
   page: { width: "100%", maxWidth: 1422, alignSelf: "center", gap: spacing.md },
-  demoBanner: { minHeight: 68, flexDirection: "row", alignItems: "center", gap: spacing.md, paddingHorizontal: spacing.md, paddingVertical: spacing.sm, borderWidth: 1, borderColor: "#D6C5EE", borderRadius: radius.md, backgroundColor: "#F4EFFB" },
-  demoBannerText: { flex: 1, fontSize: 16, lineHeight: 22, fontWeight: "800", color: "#563E94" },
-  heroCard: { minHeight: 260, flexDirection: "row", alignItems: "center", gap: 44, paddingHorizontal: 58, paddingVertical: 28, borderWidth: 1, borderColor: "#DDE5D8", borderRadius: radius.md, backgroundColor: "#F3F7F0" },
+  demoBanner: { minHeight: 68, flexDirection: "row", alignItems: "center", gap: spacing.md, paddingHorizontal: spacing.md, paddingVertical: spacing.sm, borderWidth: 1, borderColor: "#D7CAE4", borderRadius: radius.md, backgroundColor: "#F1EDF6" },
+  demoBannerText: { flex: 1, fontSize: 16, lineHeight: 22, fontWeight: "800", color: "#67527C" },
+  heroCard: { minHeight: 260, flexDirection: "row", alignItems: "center", gap: 44, paddingHorizontal: 58, paddingVertical: 28, borderWidth: 1, borderColor: "#E0E4DB", borderRadius: radius.md, backgroundColor: "#F1F2EB" },
   heroCardMobile: { minHeight: 0, flexDirection: "column", alignItems: "flex-start", gap: spacing.md, paddingHorizontal: spacing.md, paddingVertical: spacing.lg },
-  heroIcon: { width: 84, height: 84, borderRadius: 42, alignItems: "center", justifyContent: "center", backgroundColor: "#E7EFE3", flexShrink: 0 },
+  heroIcon: { width: 84, height: 84, borderRadius: 42, alignItems: "center", justifyContent: "center", backgroundColor: "#E4ECE2", flexShrink: 0 },
   heroIconWide: { width: 210, height: 210, borderRadius: 105 },
   heroCopy: { flex: 1, minWidth: 0 },
-  heroHeadline: { fontSize: 28, lineHeight: 34, fontWeight: "900", color: "#06452D" },
+  heroHeadline: { fontSize: 28, lineHeight: 34, fontWeight: "900", color: "#2C523B" },
   heroHeadlineWide: { fontSize: 50, lineHeight: 56 },
   heroMetricRow: { flexDirection: "row", alignItems: "center", gap: 76, marginTop: spacing.md },
   heroMetricRowMobile: { alignItems: "flex-end", gap: spacing.md, marginTop: spacing.sm },
@@ -395,55 +395,55 @@ const styles = StyleSheet.create({
   heroMetricWide: { fontSize: 26, lineHeight: 32 },
   heroSupport: { fontSize: 15, lineHeight: 21, color: "#26342D", marginTop: 4 },
   heroSupportWide: { fontSize: 22, lineHeight: 29 },
-  movementCard: { borderWidth: 1, borderColor: "#DDE3DA", borderRadius: radius.md, backgroundColor: "#FFFFFF", paddingHorizontal: spacing.md },
+  movementCard: { borderWidth: 1, borderColor: "#E0E4DB", borderRadius: radius.md, backgroundColor: "#FFFEFA", paddingHorizontal: spacing.md },
   movementRow: { minHeight: 106, flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: spacing.md, paddingVertical: spacing.sm, paddingHorizontal: 30 },
   movementRowMobile: { minHeight: 90, gap: spacing.sm, paddingHorizontal: spacing.sm },
-  movementRowDivider: { borderBottomWidth: 1, borderBottomColor: "#E5E8E2" },
+  movementRowDivider: { borderBottomWidth: 1, borderBottomColor: "#E5E8E0" },
   movementIdentity: { flex: 1, minWidth: 0, flexDirection: "row", alignItems: "center", gap: spacing.md },
   movementIdentityMobile: { gap: spacing.sm },
-  movementIcon: { width: 68, height: 68, borderRadius: 34, alignItems: "center", justifyContent: "center", backgroundColor: "#F0F4ED" },
+  movementIcon: { width: 68, height: 68, borderRadius: 34, alignItems: "center", justifyContent: "center", backgroundColor: "#E9EDE5" },
   movementIconMobile: { width: 48, height: 48, borderRadius: 24 },
   movementCopy: { flex: 1, minWidth: 0 },
-  movementLabel: { fontSize: 22, lineHeight: 27, fontWeight: "900", color: "#0B4A31" },
+  movementLabel: { fontSize: 22, lineHeight: 27, fontWeight: "900", color: "#365E46" },
   movementLabelWide: { fontSize: 30, lineHeight: 36 },
   movementLabelMobile: { fontSize: 18, lineHeight: 22 },
-  movementStatus: { fontSize: 15, lineHeight: 21, color: "#16833F", fontWeight: "700", marginTop: 2 },
+  movementStatus: { fontSize: 15, lineHeight: 21, color: "#4D805B", fontWeight: "700", marginTop: 2 },
   movementStatusMobile: { fontSize: 13, lineHeight: 18 },
   movementValueWrap: { flexDirection: "row", alignItems: "center", justifyContent: "flex-end", gap: spacing.md, maxWidth: "43%" },
   movementValueWrapMobile: { gap: spacing.xs, maxWidth: "40%" },
-  movementDirection: { width: 52, height: 52, borderRadius: 26, alignItems: "center", justifyContent: "center", borderWidth: 1.5, borderColor: "#16833F" },
+  movementDirection: { width: 52, height: 52, borderRadius: 26, alignItems: "center", justifyContent: "center", borderWidth: 1.5, borderColor: "#4D805B" },
   movementDirectionMobile: { width: 40, height: 40, borderRadius: 20 },
-  movementValue: { fontSize: 17, lineHeight: 22, fontWeight: "900", color: "#16833F", textAlign: "right" },
+  movementValue: { fontSize: 17, lineHeight: 22, fontWeight: "900", color: "#4D805B", textAlign: "right" },
   movementValueWide: { minWidth: 158, fontSize: 22, lineHeight: 28, textAlign: "left" },
   movementValueMobile: { maxWidth: 76, fontSize: 14, lineHeight: 18 },
-  sessionsCard: { minHeight: 86, flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: spacing.lg, paddingHorizontal: 44, paddingVertical: spacing.md, borderWidth: 1, borderColor: "#DDE3DA", borderRadius: radius.md, backgroundColor: "#FFFFFF" },
+  sessionsCard: { minHeight: 86, flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: spacing.lg, paddingHorizontal: 44, paddingVertical: spacing.md, borderWidth: 1, borderColor: "#E0E4DB", borderRadius: radius.md, backgroundColor: "#FFFEFA" },
   sessionsCardMobile: { flexDirection: "column", alignItems: "stretch", paddingHorizontal: spacing.md },
   sessionCopy: { flexDirection: "row", alignItems: "baseline", flexWrap: "wrap", gap: spacing.md, flex: 1 },
-  sessionCount: { fontSize: 30, lineHeight: 36, fontWeight: "900", color: "#06472D" },
+  sessionCount: { fontSize: 30, lineHeight: 36, fontWeight: "900", color: "#2C523B" },
   sessionCountWide: { fontSize: 40, lineHeight: 46 },
   sessionLabel: { fontSize: 15, lineHeight: 21, fontWeight: "700", color: colors.onSurface },
   sessionLabelWide: { fontSize: 20, lineHeight: 26 },
   sessionDots: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
-  sessionDot: { width: 34, height: 34, borderRadius: 17, alignItems: "center", justifyContent: "center", borderWidth: 1.5, borderColor: "#C9CEC6", backgroundColor: "#FFFFFF" },
+  sessionDot: { width: 34, height: 34, borderRadius: 17, alignItems: "center", justifyContent: "center", borderWidth: 1.5, borderColor: "#B9C2B8", backgroundColor: "#FFFEFA" },
   sessionDotWide: { width: 42, height: 42, borderRadius: 21 },
-  sessionDotComplete: { borderColor: "#076136", backgroundColor: "#076136" },
-  nextCard: { minHeight: 140, flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: spacing.lg, paddingHorizontal: 34, paddingVertical: spacing.md, borderWidth: 1, borderColor: "#DCE4D8", borderRadius: radius.md, backgroundColor: "#F1F6EE" },
+  sessionDotComplete: { borderColor: "#3D6B4F", backgroundColor: "#3D6B4F" },
+  nextCard: { minHeight: 140, flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: spacing.lg, paddingHorizontal: 34, paddingVertical: spacing.md, borderWidth: 1, borderColor: "#E0E4DB", borderRadius: radius.md, backgroundColor: "#F1F2EB" },
   nextCardMobile: { flexDirection: "column", alignItems: "stretch", paddingHorizontal: spacing.md, paddingVertical: spacing.lg },
   nextIdentity: { flex: 1, minWidth: 0, flexDirection: "row", alignItems: "center", gap: spacing.md },
   nextIdentityMobile: { alignItems: "flex-start" },
-  nextIcon: { width: 68, height: 68, borderRadius: 34, alignItems: "center", justifyContent: "center", backgroundColor: "#E4EEE0", flexShrink: 0 },
+  nextIcon: { width: 68, height: 68, borderRadius: 34, alignItems: "center", justifyContent: "center", backgroundColor: "#E4ECE2", flexShrink: 0 },
   nextIconWide: { width: 86, height: 86, borderRadius: 43 },
   nextCopy: { flex: 1, minWidth: 0 },
-  nextEyebrow: { fontSize: 13, lineHeight: 18, fontWeight: "900", color: "#16833F" },
-  nextTitle: { fontSize: 22, lineHeight: 28, fontWeight: "900", color: "#06472D", marginTop: 3 },
+  nextEyebrow: { fontSize: 13, lineHeight: 18, fontWeight: "900", color: "#4D805B" },
+  nextTitle: { fontSize: 22, lineHeight: 28, fontWeight: "900", color: "#2C523B", marginTop: 3 },
   nextTitleWide: { fontSize: 29, lineHeight: 35 },
-  primaryButton: { minHeight: 54, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: spacing.sm, paddingHorizontal: spacing.lg, borderRadius: radius.sm, backgroundColor: "#00613B" },
+  primaryButton: { minHeight: 54, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: spacing.sm, paddingHorizontal: spacing.lg, borderRadius: radius.sm, backgroundColor: "#3D6B4F" },
   primaryButtonWide: { minWidth: 340, minHeight: 70 },
-  primaryButtonText: { color: "#FFFFFF", fontSize: 16, lineHeight: 21, fontWeight: "900", textAlign: "center" },
+  primaryButtonText: { color: "#FFFEFA", fontSize: 16, lineHeight: 21, fontWeight: "900", textAlign: "center" },
   primaryButtonTextWide: { fontSize: 20, lineHeight: 26 },
   center: { flex: 1, alignItems: "center", justifyContent: "center" },
   emptyWrap: { flex: 1, alignItems: "center", justifyContent: "center", padding: spacing.lg, gap: spacing.md },
-  emptyIcon: { width: 88, height: 88, borderRadius: 44, backgroundColor: "#E8F0E5", alignItems: "center", justifyContent: "center" },
-  emptyTitle: { fontSize: 24, lineHeight: 30, fontWeight: "900", color: "#073F2A", textAlign: "center" },
+  emptyIcon: { width: 88, height: 88, borderRadius: 44, backgroundColor: "#E4ECE2", alignItems: "center", justifyContent: "center" },
+  emptyTitle: { fontSize: 24, lineHeight: 30, fontWeight: "900", color: "#2C523B", textAlign: "center" },
   emptyBody: { maxWidth: 420, fontSize: 16, lineHeight: 23, color: colors.onSurfaceSecondary, textAlign: "center" },
 });

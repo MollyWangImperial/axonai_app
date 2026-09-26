@@ -101,7 +101,7 @@ export default function JourneyScreen() {
             <View style={[styles.historyEmpty, { backgroundColor: palette.surface, borderColor: palette.border }]}>
               <View style={[styles.sectionIcon, { backgroundColor: palette.soft }]}><Ionicons name="clipboard-outline" size={24} color={palette.brand} /></View>
               <Text style={[styles.historyEmptyText, { color: palette.muted }]}>Your assessments will appear here</Text>
-              <Ionicons name="sparkles" size={18} color="#78A87E" />
+              <Ionicons name="sparkles" size={18} color="#729878" />
             </View>
           ) : <>
             {demoMode && (
@@ -167,15 +167,15 @@ export default function JourneyScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: "#FCFDFB" },
+  container: { flex: 1, backgroundColor: "#F7F6F0" },
   content: { paddingHorizontal: spacing.md, paddingBottom: 120 },
   page: { width: "100%", maxWidth: 1080, alignSelf: "center", gap: spacing.md },
   headerRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: spacing.xs },
-  title: { fontSize: 34, lineHeight: 40, fontWeight: "900", color: "#113126" },
-  addButton: { flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: spacing.md, minHeight: 44, borderRadius: radius.pill, backgroundColor: "#26783A" },
+  title: { fontSize: 34, lineHeight: 40, fontWeight: "900", color: "#24362F" },
+  addButton: { flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: spacing.md, minHeight: 44, borderRadius: radius.pill, backgroundColor: "#3D6B4F" },
   addButtonText: { color: colors.onBrandPrimary, fontWeight: "800" },
-  summaryCard: { flexDirection: "row", alignItems: "center", gap: spacing.md, padding: spacing.md, borderRadius: radius.md, backgroundColor: "#FBFCF9", borderWidth: 1, borderColor: "#DCE3DA" },
-  summaryIcon: { width: 58, height: 58, borderRadius: 29, backgroundColor: "#EFF6EC", alignItems: "center", justifyContent: "center" },
+  summaryCard: { flexDirection: "row", alignItems: "center", gap: spacing.md, padding: spacing.md, borderRadius: radius.md, backgroundColor: "#FFFEFA", borderWidth: 1, borderColor: "#E0E4DB" },
+  summaryIcon: { width: 58, height: 58, borderRadius: 29, backgroundColor: "#E9EDE5", alignItems: "center", justifyContent: "center" },
   summaryCopy: { flex: 1 },
   summaryTitle: { fontSize: 16, fontWeight: "800", color: colors.onSurface },
   progressTrack: { height: 9, borderRadius: 5, backgroundColor: "#E6ECE4", overflow: "hidden", marginTop: spacing.sm },
@@ -184,33 +184,33 @@ const styles = StyleSheet.create({
   sectionTitle: { fontSize: 17, lineHeight: 22, fontWeight: "800", color: colors.onSurface, marginTop: spacing.sm },
   articleGrid: { gap: spacing.sm },
   articleGridWide: { flexDirection: "row" },
-  articleCard: { overflow: "hidden", borderRadius: radius.md, borderWidth: 1, borderColor: "#DDE3DA", backgroundColor: colors.surface },
+  articleCard: { overflow: "hidden", borderRadius: radius.md, borderWidth: 1, borderColor: "#E0E4DB", backgroundColor: colors.surface },
   articleCardWide: { flex: 1 },
   articleImage: { width: "100%", height: 146 },
   articleFooter: { minHeight: 64, flexDirection: "row", alignItems: "center", gap: spacing.sm, paddingHorizontal: spacing.md, backgroundColor: "rgba(255,255,255,0.96)" },
-  articleIcon: { width: 38, height: 38, borderRadius: 19, backgroundColor: "#EEF5EB", alignItems: "center", justifyContent: "center" },
+  articleIcon: { width: 38, height: 38, borderRadius: 19, backgroundColor: "#E9EDE5", alignItems: "center", justifyContent: "center" },
   articleTitle: { flex: 1, fontSize: 16, lineHeight: 21, fontWeight: "800", color: colors.onSurface },
-  journalPrompt: { flexDirection: "row", alignItems: "center", gap: spacing.sm, padding: spacing.md, borderRadius: radius.md, borderWidth: 1, borderColor: "#DDE3DA", backgroundColor: "#FBFCF9" },
-  sectionIcon: { width: 46, height: 46, borderRadius: 23, backgroundColor: "#EEF5EB", alignItems: "center", justifyContent: "center" },
+  journalPrompt: { flexDirection: "row", alignItems: "center", gap: spacing.sm, padding: spacing.md, borderRadius: radius.md, borderWidth: 1, borderColor: "#E0E4DB", backgroundColor: "#FFFEFA" },
+  sectionIcon: { width: 46, height: 46, borderRadius: 23, backgroundColor: "#E9EDE5", alignItems: "center", justifyContent: "center" },
   journalPromptText: { flex: 1, fontSize: 16, fontWeight: "800", color: colors.onSurface },
-  smallAddButton: { minHeight: 40, borderRadius: radius.pill, paddingHorizontal: spacing.md, flexDirection: "row", alignItems: "center", gap: 4, backgroundColor: "#26783A" },
+  smallAddButton: { minHeight: 40, borderRadius: radius.pill, paddingHorizontal: spacing.md, flexDirection: "row", alignItems: "center", gap: 4, backgroundColor: "#3D6B4F" },
   smallAddText: { color: colors.onBrandPrimary, fontWeight: "800", fontSize: 13 },
   entryCard: { padding: spacing.md, borderRadius: radius.md, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface },
   entryTop: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: spacing.xs },
   entryTag: { fontSize: 11, fontWeight: "800", color: colors.brandPrimary, backgroundColor: colors.brandTertiary, paddingHorizontal: spacing.sm, paddingVertical: 5, borderRadius: radius.pill },
   entryDate: { fontSize: 12, color: colors.onSurfaceTertiary },
   entryBody: { fontSize: 14, lineHeight: 21, color: colors.onSurfaceSecondary },
-  historyEmpty: { flexDirection: "row", alignItems: "center", gap: spacing.sm, minHeight: 76, paddingHorizontal: spacing.md, borderWidth: 1, borderColor: "#DDE3DA", borderRadius: radius.md, backgroundColor: "#FBFCF9" },
+  historyEmpty: { flexDirection: "row", alignItems: "center", gap: spacing.sm, minHeight: 76, paddingHorizontal: spacing.md, borderWidth: 1, borderColor: "#E0E4DB", borderRadius: radius.md, backgroundColor: "#FFFEFA" },
   historyEmptyText: { flex: 1, fontSize: 15, fontWeight: "700", color: colors.onSurfaceSecondary },
   historyRow: { flexDirection: "row", alignItems: "center", gap: spacing.sm, padding: spacing.md, borderWidth: 1, borderColor: colors.border, borderRadius: radius.md, backgroundColor: colors.surface },
-  historyIcon: { width: 42, height: 42, borderRadius: 21, alignItems: "center", justifyContent: "center", backgroundColor: "#EEF5EB" },
+  historyIcon: { width: 42, height: 42, borderRadius: 21, alignItems: "center", justifyContent: "center", backgroundColor: "#E9EDE5" },
   historyCopy: { flex: 1 },
   historyTitle: { fontSize: 15, fontWeight: "800", color: colors.onSurface },
   historyMeta: { fontSize: 12, lineHeight: 17, color: colors.onSurfaceTertiary, marginTop: 2 },
   demoHistoryRow: { borderColor: "#DCCFEA", backgroundColor: "#FBF8FE" },
-  demoHistoryIcon: { backgroundColor: "#F0E9F7" },
+  demoHistoryIcon: { backgroundColor: "#EEE8F3" },
   demoTitleRow: { flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: spacing.xs },
-  demoBadge: { paddingHorizontal: 7, paddingVertical: 3, borderRadius: radius.pill, backgroundColor: "#EADFF4", color: "#675080", fontSize: 9, fontWeight: "900" },
+  demoBadge: { paddingHorizontal: 7, paddingVertical: 3, borderRadius: radius.pill, backgroundColor: "#E9E2F0", color: "#775C97", fontSize: 9, fontWeight: "900" },
   modalScrim: { flex: 1, justifyContent: "flex-end", backgroundColor: "rgba(28,32,29,0.36)" },
   composer: { padding: spacing.lg, backgroundColor: colors.surface, borderTopLeftRadius: radius.lg, borderTopRightRadius: radius.lg, gap: spacing.md },
   composerHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
